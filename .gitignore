@@ -1,0 +1,26 @@
+# Amiga material belongs to whoever licensed it, not in this repository:
+# Kickstart ROMs, Workbench floppy images, Cloanto's rom.key, and third-party
+# file system and graphics handlers. The tool finds them locally instead.
+samples/*
+!samples/README.md
+
+# Build output
+*.img
+*.hdf
+*.hdz
+*.vhd
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Editors and desktops
+.idea/
+.vscode/
+*.swp
+.DS_Store

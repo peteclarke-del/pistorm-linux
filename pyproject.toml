@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pistorm-imager"
+version = "0.1.0"
+description = "Prepare PiStorm/Emu68 SD cards on Linux, including PiMiga images"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+# Everything else is either in the standard library or provided by the
+# distribution: PyGObject with GTK 4 and libadwaita for the interface, and
+# dosfstools for mkfs.vfat.
+dependencies = []
+
+[project.scripts]
+pistorm-imager-cli = "pistorm_imager.cli:main"
+
+[project.gui-scripts]
+pistorm-imager = "pistorm_imager.app:main"
+
+[tool.setuptools]
+packages = ["pistorm_imager", "pistorm_imager.core", "pistorm_imager.ui"]
