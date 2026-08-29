@@ -1,4 +1,5 @@
 """Tests for target machine profiles and the hardware-driven setup."""
+import json
 import shutil
 import sys
 import tempfile
@@ -191,7 +192,7 @@ class TestSavedSessions(unittest.TestCase):
                    "pimiga_folder": "/somewhere/pimiga", "trapdoor": True}
         path = self.scratch() / "session.json"
         jobs.save_session(config, choices, path)
-        back, restored = jobs.load_session(path)
+        back, restored, _reduced = jobs.load_session(path)
         self.assertEqual(back, config)
         self.assertEqual(restored, choices)
 
@@ -200,9 +201,50 @@ class TestSavedSessions(unittest.TestCase):
         config = builder.BuildConfig(target="/tmp/card.img")
         path = self.scratch() / "old.json"
         jobs.save(config, path)
-        back, choices = jobs.load_session(path)
+        back, choices, _reduced = jobs.load_session(path)
         self.assertEqual(back, config)
         self.assertEqual(choices, {})
+
+    def test_a_session_from_before_the_fix_drops_its_partitions(self):
+        """Version 1 recorded partitions whose contents had been lost.
+
+        Restoring them would rebuild the card empty with nothing to say so, so
+        the layout is discarded and worked out again instead.
+        """
+        path = self.scratch() / "old.json"
+        path.write_text(json.dumps({
+            "version": 1,
+            "config": {
+                "mode": "fresh", "target": "/tmp/card.img",
+                "amiga_partitions": [
+                    {"name": "DH0", "size": None, "dostype": "PFS3",
+                     "bootable": True, "boot_priority": 0,
+                     "content_folder": "", "content_hdf": "",
+                     "content_hdf_partition": "", "volume_name": "",
+                     "overlays": [], "exclude": []}],
+            },
+            "interface": {"machine": "a500"},
+        }))
+        config, choices, reduced = jobs.load_session(path)
+        self.assertTrue(reduced, "the caller must be told it was reduced")
+        self.assertEqual(choices["machine"], "a500",
+                         "the rest of the setup is still worth keeping")
+        #  Falls back to the default layout rather than an empty one.
+        self.assertTrue(config.amiga_partitions)
+        self.assertEqual(config.validate(), [])
+
+    def test_a_current_session_keeps_its_partitions(self):
+        config = builder.BuildConfig(
+            target="/tmp/card.img",
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH2", None, "PFS3", False, -128,
+                content_folder="/x/Games", volume_name="Games")])
+        path = self.scratch() / "new.json"
+        jobs.save_session(config, {}, path)
+        back, _choices, reduced = jobs.load_session(path)
+        self.assertFalse(reduced)
+        self.assertEqual(back.amiga_partitions[0].volume_name, "Games")
+        self.assertEqual(back.amiga_partitions[0].content_folder, "/x/Games")
 
     def test_a_corrupt_file_is_refused_clearly(self):
         path = self.scratch() / "broken.json"

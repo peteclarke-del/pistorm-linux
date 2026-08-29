@@ -14,7 +14,11 @@ from pathlib import Path
 
 from . import bootcfg, builder
 
-FORMAT_VERSION = 1
+#  2: partition entries gained volume names and kept their content sources.
+#     Version 1 files recorded partitions whose contents had been silently
+#     dropped, so those entries are discarded rather than restored.
+FORMAT_VERSION = 2
+DAMAGED_PARTITIONS_BEFORE = 2
 
 
 def to_dict(config: builder.BuildConfig) -> dict:
@@ -24,14 +28,24 @@ def to_dict(config: builder.BuildConfig) -> dict:
 
 
 def from_dict(payload: dict) -> builder.BuildConfig:
-    if payload.get("version") != FORMAT_VERSION:
-        raise ValueError(f"unsupported job format version {payload.get('version')!r}")
+    version = payload.get("version")
+    if version not in (1, FORMAT_VERSION):
+        raise ValueError(f"unsupported job format version {version!r}")
     data = dict(payload["config"])
+    if version < DAMAGED_PARTITIONS_BEFORE:
+        #  Those entries lost where their contents came from, so restoring them
+        #  would rebuild the card empty with nothing to say so.  Drop them and
+        #  let the layout be worked out again.
+        data.pop("amiga_partitions", None)
+        data.pop("extra_partitions", None)
     data["mode"] = builder.BuildMode(data["mode"])
     data["boot_options"] = bootcfg.BootOptions(**data.get("boot_options", {}))
     for field in ("amiga_partitions", "extra_partitions"):
-        data[field] = [builder.AmigaPartitionSpec(**spec)
-                       for spec in data.get(field, [])]
+        #  Only convert what is actually there: a field that was dropped above
+        #  should fall back to the dataclass default, not to an empty list.
+        if field in data:
+            data[field] = [builder.AmigaPartitionSpec(**spec)
+                           for spec in data[field]]
     known = {f.name for f in dataclasses.fields(builder.BuildConfig)}
     unknown = set(data) - known
     for key in unknown:
@@ -79,15 +93,17 @@ def save_session(config: builder.BuildConfig, interface: dict,
     return path
 
 
-def load_session(path: str | Path | None = None) -> tuple[builder.BuildConfig, dict]:
-    """Load a saved build and its interface choices.
+def load_session(path: str | Path | None = None) -> tuple[builder.BuildConfig, dict, bool]:
+    """Load a saved build, its interface choices, and whether it was reduced.
 
     Files written before the interface section existed still load; they simply
-    return no choices.
+    return no choices.  The third value says whether the saved partition layout
+    had to be discarded because an older version could not record it faithfully.
     """
     path = Path(path) if path is not None else session_file()
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return from_dict(payload), payload.get("interface") or {}
+    reduced = payload.get("version", FORMAT_VERSION) < DAMAGED_PARTITIONS_BEFORE
+    return from_dict(payload), payload.get("interface") or {}, reduced
 
 
 def have_session() -> bool:

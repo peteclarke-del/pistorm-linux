@@ -1543,7 +1543,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         if not jobs.have_session():
             return
         try:
-            config, state = jobs.load_session()
+            config, state, reduced = jobs.load_session()
         except Exception as error:  # noqa: BLE001 - a stale file is not fatal
             self._append_log(f"Could not restore the last session: {error}")
             return
@@ -1554,6 +1554,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._toast(f"Could not restore the last session: {error}")
             return
 
+        if reduced:
+            self._toast("Restored your last setup, but its partition layout was "
+                        "saved by an older version and has been reset - apply "
+                        "the quick setup again")
+            return
         #  A card that is no longer plugged in cannot be the target; fall back
         #  to an image file rather than leaving nothing selected.
         if self.quick_target.get_selected() == 0 and not self.device_list:
@@ -1598,7 +1603,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             except Exception:  # noqa: BLE001
                 return
             try:
-                config, state = jobs.load_session(file.get_path())
+                config, state, _reduced = jobs.load_session(file.get_path())
                 self.apply(config)
                 self.apply_interface_state(state)
                 self._toast("Settings loaded")
