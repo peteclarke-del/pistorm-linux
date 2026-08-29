@@ -17,7 +17,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from ..core import (amigaos, bootcfg, builder, devices, emu68, hdfcheck, jobs,  # noqa: E402
-                    kickstart, machines, prepare, presets, rdb)
+                    kickstart, machines, packages, prepare, presets, rdb)
 from ..core.util import (GIB, MIB, Progress, describe_size, human_size,  # noqa: E402
                          parse_size)
 from .widgets import FileRow, SaveRow, combo, show_full_value  # noqa: E402
@@ -185,6 +185,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.device_row, self.os_version_row,
         )
         self._ready = True
+        self._refresh_packages()
         self._mirror_target()
         self._on_machine_changed()
         self._detect_material()
@@ -587,7 +588,9 @@ class ImagerWindow(Adw.ApplicationWindow):
             trapdoor_to_chip=self.quick_trapdoor.get_active(),
             system_source=SYSTEM_SOURCES[self.quick_system_source.get_selected()],
             hdf_source=self.quick_hdf.path,
-            work_partition=self.quick_work.get_active())
+            work_partition=self.quick_work.get_active(),
+            package_donor=self._package_donor(),
+            package_keys=self._chosen_packages())
 
     def _on_layout_changed(self) -> None:
         """Something that shapes the partition layout has changed.
@@ -825,6 +828,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.os_group.add(self.os_disks)
         page.add(self.os_group)
 
+        self.packages_group = Adw.PreferencesGroup(
+            title="Software to add",
+            description="A Workbench built from the original disks is exactly "
+                        "what shipped in 1994: no archiver, no installer, no "
+                        "WHDLoad. None of this is included here - it belongs to "
+                        "its authors - so it is copied out of a system you "
+                        "already have, such as a PiMiga installation.")
+        self.package_donor = FileRow(
+            "Take it from", "A Workbench System drive, or a PiMiga folder",
+            folder=True, on_change=lambda _p: self._refresh_packages())
+        self.packages_group.add(self.package_donor)
+        self.package_rows: dict[str, Adw.SwitchRow] = {}
+        for package in packages.CATALOGUE:
+            row = Adw.SwitchRow(title=package.label,
+                                subtitle=package.description)
+            row.set_active(package.default)
+            row.connect("notify::active", lambda *_a: self._on_layout_changed())
+            self.package_rows[package.key] = row
+            self.packages_group.add(row)
+        page.add(self.packages_group)
+
 
         self.expand_group = Adw.PreferencesGroup(
             title="Unused space",
@@ -1031,6 +1055,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
         self.os_group.set_visible(mode is builder.BuildMode.FRESH)
+        #  Only a Workbench built from floppies needs anything added to it.
+        self.packages_group.set_visible(mode is builder.BuildMode.FRESH
+                                        and self._system_source() == "adf")
         installing = (not self.quick_hdf.path
                       and self._system_source() == "adf")
         for row in (self.adf_row, self.os_version_row, self.volume_row, self.os_disks):
@@ -1146,6 +1173,40 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.partition_rows.remove(row)
         self.partition_group.remove(row)
         self._update_summary()
+
+    def _package_donor(self) -> str:
+        """Where optional software is copied from."""
+        return self.package_donor.path or self.quick_pimiga.path
+
+    def _refresh_packages(self) -> None:
+        """Offer only the software the chosen donor can actually supply."""
+        if not self._ready:
+            return
+        donor = self._package_donor()
+        found = packages.available(donor) if donor else {}
+        rtg = self._display().uses_rtg
+        for key, row in self.package_rows.items():
+            package = packages.CATALOGUE_BY_KEY[key]
+            usable = key in found and (rtg or not package.rtg_only)
+            row.set_sensitive(usable)
+            if not donor:
+                row.set_subtitle(package.description
+                                 + "  -  choose where to take it from first.")
+            elif key not in found:
+                row.set_subtitle(package.description
+                                 + "  -  not present in that system.")
+            elif package.rtg_only and not rtg:
+                row.set_subtitle(package.description
+                                 + "  -  only useful with an RTG display.")
+            else:
+                row.set_subtitle(package.description)
+            if not usable:
+                row.set_active(False)
+        self._on_layout_changed()
+
+    def _chosen_packages(self) -> list[str]:
+        return [key for key, row in self.package_rows.items()
+                if row.get_active() and row.get_sensitive()]
 
     def _refresh_devices(self) -> None:
         if not self._ready:

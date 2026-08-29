@@ -20,7 +20,7 @@ import dataclasses
 import time
 from pathlib import Path
 
-from . import amigaos, builder, emu68, kickstart, machines
+from . import amigaos, builder, emu68, kickstart, machines, packages
 from .util import GIB, MIB, human_size
 
 DEFAULT_BOOT_SIZE = 256 * MIB
@@ -346,18 +346,18 @@ def excluded_for(machine: machines.Machine) -> list[str]:
     return [] if machine.aga else list(AGA_ONLY_CATEGORIES)
 
 
-def whdload_overlays(disks: Path | None) -> list[tuple[str, str]]:
-    """WHDLoad, taken from a PiMiga system so every build has it."""
-    if disks is None:
+def package_overlays(donor: str | Path | None, keys: list[str] | None,
+                     rtg: bool) -> list[tuple[str, str]]:
+    """Optional software to lay on top of a Workbench built from floppies.
+
+    A Workbench installed from the original disks has no archiver, no installer
+    and no WHDLoad, so the pieces almost everyone adds next are offered here.
+    They are copied out of a system the user already has rather than shipped.
+    """
+    if donor is None:
         return []
-    overlays: list[tuple[str, str]] = []
-    executable = disks / "System" / "C" / "WHDLoad"
-    drawer = disks / "System" / "Expansion" / "WHDLoad"
-    if executable.is_file():
-        overlays.append((str(executable), "C"))
-    if drawer.is_dir():
-        overlays.append((str(drawer), "Expansion/WHDLoad"))
-    return overlays
+    chosen = packages.default_keys(rtg) if keys is None else keys
+    return packages.overlays_for(donor, chosen, rtg)
 
 
 def machine_setup(machine: machines.Machine, display: machines.Display,
@@ -369,7 +369,9 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
                   trapdoor_to_chip: bool = False,
                   system_source: str = "auto",
                   hdf_source: str = "",
-                  work_partition: bool = True) -> builder.BuildConfig:
+                  work_partition: bool = True,
+                  package_donor: str = "",
+                  package_keys: list[str] | None = None) -> builder.BuildConfig:
     """A complete card for one machine.
 
     The content is the same on every model - Workbench, WHDLoad, the games and
@@ -430,8 +432,11 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
         config.adf_folder = ""
         system.overlays = []
     else:
-        #  A Workbench installed from floppies has never heard of WHDLoad.
-        system.overlays = whdload_overlays(disks)
+        #  A Workbench installed from floppies has never heard of WHDLoad, an
+        #  archiver, or the installer most software expects.
+        system.overlays = package_overlays(
+            package_donor or pimiga_folder or None, package_keys,
+            display.uses_rtg)
 
     if disks is not None:
         #  The system partition must take a fixed size now: the PiMiga drives
@@ -608,6 +613,62 @@ class ImageSystem:
                   if key != "bootable" and self.found.get(key)]
         detail = f"; {', '.join(traits)}" if traits else ""
         return f"a complete system that {SYSTEM_MARKERS[0][2]}{detail}"
+
+
+def installed_monitors(reader) -> list[str]:
+    """Monitor drivers a system has installed, from DEVS:Monitors.
+
+    STORAGE:Monitors is deliberately not consulted: AmigaOS ships the whole set
+    there uninstalled, so its contents say nothing about what a system expects.
+    """
+    entry = reader.find("Devs/Monitors")
+    if entry is None:
+        return []
+    handle = getattr(entry, "block", None)
+    if handle is None:
+        handle = getattr(entry, "anode", None)
+    if handle is None:
+        return []
+    return [e.name for e in reader.listdir(handle)
+            if not e.name.lower().endswith(".info")]
+
+
+def check_image_for_machine(path: str | Path, machine: machines.Machine,
+                            partition: str = "") -> list[str]:
+    """Warn where an imported system expects more hardware than the target has.
+
+    Plenty of ready-made drives are built for an A1200 and say so only by the
+    display modes they install; put one on an A500 and Workbench opens in a mode
+    the chipset cannot produce.
+    """
+    from . import amigaos
+
+    warnings: list[str] = []
+    try:
+        reader, _label = amigaos.open_amiga_volume(path, partition)
+    except Exception as error:  # noqa: BLE001 - reported, never raised at the user
+        return [f"could not be examined: {error}"]
+    try:
+        monitors = installed_monitors(reader)
+        beyond = machines.monitors_beyond(machine, monitors)
+        if beyond:
+            names = ", ".join(f"{n} (needs {c.value})" for n, c in beyond)
+            warnings.append(
+                f"installs display modes this machine cannot produce: {names}. "
+                f"Workbench may open on a screen the {machine.chipset.value} "
+                f"chipset cannot show.")
+        if reader.find("Prefs/Env-Archive/Sys/ScreenMode.prefs") is not None \
+                and beyond:
+            warnings.append(
+                "it also carries a saved screen mode, which is what Workbench "
+                "will try to use; it is removed automatically when the display "
+                "is the Amiga's own video output.")
+    finally:
+        try:
+            reader.f.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return warnings
 
 
 def inspect_image_system(path: str | Path, partition: str = "") -> ImageSystem:
