@@ -224,6 +224,25 @@ def on_activate(app: ImagerApplication) -> None:
         window._add_partition(
             builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0))
 
+        #  The boot partition takes its space from the Amiga drives, so typing
+        #  a size there has to reach the layout - it used to be ignored by the
+        #  quick setup and then overwritten by it.
+        window.quick_system_source.set_selected(0)
+        window.quick_card_size.set_text("8GB")
+        window.boot_size_row.set_text("512M")
+        check(window.gather().boot_size == 512 * 1024 * 1024,
+              f"the boot size is used ({window.gather().boot_size})")
+        check(window._quick_config().boot_size == 512 * 1024 * 1024,
+              "the quick setup uses it too, rather than its own default")
+        window.boot_size_row.set_text("256M")
+
+        #  Every menu item must be reachable as an action, or choosing it does
+        #  nothing and the menu stays open.
+        for name in ("save-settings", "load-settings", "forget-session",
+                     "inspect-target", "about"):
+            check(window.lookup_action(name) is not None,
+                  f"menu action {name} exists")
+
         hdf_index = next(i for i, m in enumerate(MODES)
                          if m[1] is builder.BuildMode.HDF)
         window.mode_row.set_selected(hdf_index)
