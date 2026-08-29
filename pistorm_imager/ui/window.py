@@ -14,7 +14,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from ..core import (amigaos, bootcfg, builder, devices, emu68, hdfcheck, jobs,  # noqa: E402
                     kickstart, machines, prepare, presets, rdb)
@@ -204,22 +204,24 @@ class ImagerWindow(Adw.ApplicationWindow):
                                     policy=Adw.ViewSwitcherPolicy.WIDE)
         header.set_title_widget(switcher)
 
-        menu = Gtk.MenuButton(icon_name="open-menu-symbolic")
-        popover = Gtk.Popover()
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=6,
-                      margin_bottom=6, margin_start=6, margin_end=6)
-        for label, handler in (("Save settings…", self._on_save_settings),
-                               ("Load settings…", self._on_load_settings),
-                               ("Forget saved setup", self._on_forget_session),
-                               ("Inspect the target", self._on_inspect),
-                               ("About", self._on_about)):
-            button = Gtk.Button(label=label)
-            button.add_css_class("flat")
-            button.connect("clicked", handler)
-            box.append(button)
-        popover.set_child(box)
-        menu.set_popover(popover)
-        header.pack_end(menu)
+        #  A real menu model rather than a popover full of buttons: this is
+        #  what closes itself when an item is chosen, and it brings keyboard
+        #  navigation and the platform's own styling with it.
+        entries = (("Save settings…", "save-settings", self._on_save_settings),
+                   ("Load settings…", "load-settings", self._on_load_settings),
+                   ("Forget saved setup", "forget-session", self._on_forget_session),
+                   ("Inspect the target", "inspect-target", self._on_inspect),
+                   ("About", "about", self._on_about))
+        model = Gio.Menu()
+        for label, name, handler in entries:
+            action = Gio.SimpleAction.new(name, None)
+            #  The handlers predate this and take a widget they do not use.
+            action.connect("activate", lambda _a, _p, run=handler: run(None))
+            self.add_action(action)
+            model.append(label, f"win.{name}")
+        header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic",
+                                       menu_model=model,
+                                       tooltip_text="Menu"))
         view.add_top_bar(header)
 
         self.stack.add_titled_with_icon(self._page_quick(), "quick", "Quick setup",
@@ -470,6 +472,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._sync_visibility()
         self._relayout_partitions()
 
+    def _boot_size(self) -> int:
+        """The boot partition size, as typed on the Target page."""
+        try:
+            return parse_size(self.boot_size_row.get_text())
+        except ValueError:
+            return presets.DEFAULT_BOOT_SIZE
+
     def _show_size(self) -> None:
         """Spell out the size, because "32 GB" has two different meanings.
 
@@ -574,7 +583,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             base.target_is_device, size, detected,
             pimiga_folder=self.quick_pimiga.path,
             hdmi=(hdmi_choice[1], hdmi_choice[2]),
-            system_size=system, trapdoor_to_chip=self.quick_trapdoor.get_active(),
+            system_size=system, boot_size=self._boot_size(),
+            trapdoor_to_chip=self.quick_trapdoor.get_active(),
             system_source=SYSTEM_SOURCES[self.quick_system_source.get_selected()],
             hdf_source=self.quick_hdf.path,
             work_partition=self.quick_work.get_active())
@@ -948,6 +958,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             description="Holds Emu68, the Raspberry Pi firmware and your Kickstart.")
         self.boot_size_row = Adw.EntryRow(title="Size")
         self.boot_size_row.set_text("256M")
+        self.boot_size_row.connect("changed",
+                                   lambda _r: self._on_layout_changed())
         self.boot_group.add(self.boot_size_row)
         page.add(self.boot_group)
         return page
@@ -1347,10 +1359,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             image_size = parse_size(self.file_size_row.get_text())
         except ValueError:
             image_size = 8 * GIB
-        try:
-            boot_size = parse_size(self.boot_size_row.get_text())
-        except ValueError:
-            boot_size = 256 * MIB
+        boot_size = self._boot_size()
 
         return builder.BuildConfig(
             mode=mode,
