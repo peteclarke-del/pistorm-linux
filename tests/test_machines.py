@@ -246,6 +246,20 @@ class TestSavedSessions(unittest.TestCase):
         self.assertEqual(back.amiga_partitions[0].volume_name, "Games")
         self.assertEqual(back.amiga_partitions[0].content_folder, "/x/Games")
 
+    def test_the_system_source_is_stored_by_name(self):
+        """Storing the combo's position breaks when an option is inserted.
+
+        A saved session that meant "install from floppies" would silently come
+        back meaning something else entirely.
+        """
+        from pistorm_imager.ui import window as ui  # noqa: PLC0415
+        self.assertIn("image", ui.SYSTEM_SOURCES)
+        config = builder.BuildConfig(target="/tmp/card.img")
+        path = self.scratch() / "s.json"
+        jobs.save_session(config, {"system_source": "adf"}, path)
+        _cfg, choices, _reduced = jobs.load_session(path)
+        self.assertEqual(choices["system_source"], "adf")
+
     def test_a_corrupt_file_is_refused_clearly(self):
         path = self.scratch() / "broken.json"
         path.write_text("{not json at all")

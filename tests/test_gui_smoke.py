@@ -157,6 +157,25 @@ def on_activate(app: ImagerApplication) -> None:
         check(restored["pimiga_folder"] == saved["pimiga_folder"],
               "folders are restored")
 
+        #  A source defines the partition layout, so changing it must redraw
+        #  it: the rows are what a build reads, and leaving them behind would
+        #  copy from a place the user had just cleared.
+        window.quick_system_source.set_selected(0)          # "Choose for me"
+        window.target_row.set_selected(1)
+        window.quick_target.set_selected(1)
+        window.quick_file.set_path(str(SCRATCH / "layout.img"))
+        pimiga_root = SCRATCH / "pimiga"
+        for drive in ("System", "Games", "Demos", "Work"):
+            (pimiga_root / "disks" / drive).mkdir(parents=True, exist_ok=True)
+        window.quick_pimiga.set_path(str(pimiga_root))
+        with_source = window.gather().amiga_partitions
+        check(len(with_source) == 4 and all(p.content_folder for p in with_source[1:]),
+              f"a PiMiga source lays out its drives ({[p.name for p in with_source]})")
+        window.quick_pimiga.set_path("")
+        without = window.gather().amiga_partitions
+        check(not any(p.content_folder for p in without),
+              "clearing the source clears the partitions that came from it")
+
         #  Editing a partition must not discard what the editor does not show:
         #  a drive whose contents come from PiMiga would otherwise be built
         #  empty, with nothing to say so.
