@@ -10,36 +10,67 @@ top of it.
 
 ## What it does
 
-Three tasks, all ending with the same boot-partition customisation pass:
+Four ways to end up with a card, all finishing with the same boot-partition pass:
 
 | Task | What happens |
 | --- | --- |
-| **Build a new card** | Writes an MBR with a FAT32 boot partition (Emu68 + Raspberry Pi firmware + your Kickstart) and a type `0x76` Amiga partition carrying a Rigid Disk Block. Optionally installs AmigaOS onto it from a set of Workbench floppy images, so the card boots straight to Workbench. |
-| **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
-| **Import an Amiga hard disk image** | Takes a WinUAE/FS-UAE/HstWB `.hdf` — the Amiga drive on its own, with no partition table — and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
+| **Build a new card** | Writes an MBR with a FAT32 boot partition (Emu68 + Raspberry Pi firmware + your Kickstart) and a type `0x76` Amiga partition carrying a Rigid Disk Block. Optionally installs AmigaOS onto it from Workbench floppy images, so the card boots straight to Workbench. |
+| **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Can turn the card's leftover space into further Amiga partitions. |
+| **Import an Amiga hard disk image** | Reads a WinUAE/FS-UAE/HstWB `.hdf` and builds the card around it, copying its *contents* rather than its blocks, so its partition scheme is reproduced and its graphics driver adapted on the way in. Images with no Rigid Disk Block get one generated. A whole card image such as PiMiga works here too: only its Amiga drive is taken, so it can move onto a card of a different size. |
+| **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
 
 It can also produce a bare **Amiga hard disk image** instead of a card, which
 works here and in WinUAE or FS-UAE.
-| **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
 
-Along the way it will:
+## Quick setup
 
-* download the right Emu68 release for your board, **including the 1.1 asset
-  rename** (`Emu68-pistorm.zip` meant the classic PiStorm up to 1.0.7 and means
-  the FPGA boards from 1.1 onwards), and fetch the Raspberry Pi boot firmware
-  separately for releases that no longer bundle it;
-* identify Kickstart ROMs by looking *inside* them rather than by file name,
-  warn when a ROM is not an A1200/AGA one, decrypt Cloanto `AMIROMTYPE1` ROMs
-  when `rom.key` is available, and silently correct byte-swapped dumps;
-* edit the `config.txt` that ships with your chosen Emu68 release rather than
-  generating a new one, so upstream's comments and per-release tuning survive
-  and only the keys you actually set are changed;
-* write `cmdline.txt` from the documented Emu68 options (`vc4.mem`, `vbr_move`,
-  `chip_slowdown`, `sd.unit0=rw`, and anything else you type in);
-* install AmigaOS from ADFs, recognising each disk by the **volume name inside
-  it** rather than its file name, and keeping the whole set to one release (a
-  2.0 Extras drawer on a 3.1 system is a broken install, and collections
-  routinely hold several releases side by side).
+The first page asks what hardware you have and works the rest out. Almost
+everything on a card is the same whatever Amiga it goes into; the model decides
+only a handful of things:
+
+| From the model | From the display |
+| --- | --- |
+| Which Emu68 build to download | Whether an RTG driver is installed |
+| Which Kickstart suits the machine | Whether an HDMI mode is forced |
+| `chip_slowdown` for OCS/ECS | `unicam` for a Framethrower |
+| The slow-RAM options | How much video memory P96 is given |
+| Which chipset-specific games are worth copying | |
+
+Supported models: **A500, A500+, A600, A1000, A2000, A1200**, and a bare
+Raspberry Pi. `vbr_move` is never enabled by default on any of them - it is
+faster, but Emu68's own documentation says it badly hurts floppy-loaded games
+and demos, which is the wrong trade on machines that exist to run them.
+
+The Kickstart, the Workbench disks and the PFS3 handler are found on their own
+if they are in `samples/`, so a typical setup is: pick the model, pick how you
+look at it, choose where to write, and read the plan.
+
+## Sizes: GB and GiB are not the same
+
+A card sold as 32 GB holds 29.8 GiB, so an image built as "32 GiB" is over two
+gigabytes too big for it. Sizes therefore distinguish the two:
+
+| You type | You get |
+| --- | --- |
+| `32GB` | 29.80 GiB - fits a 32 GB card |
+| `32GiB` | 32.00 GiB |
+| `32G` | 32.00 GiB, binary by the usual convention |
+
+The size is shown in both readings as you type, along with the capacity of card
+an image will need. When writing to a card the field is not used at all: the
+real device size is.
+
+## Saved settings
+
+The setup is remembered between runs - in `~/.config/pistorm-imager/session.json`
+- and restored when the application starts. It is saved when a quick setup is
+applied, when a build finishes, and when the window closes. **Forget saved
+setup** in the menu discards it, and settings can also be saved to and loaded
+from a file of your choosing.
+
+A saved file records the build *and* the choices behind it: which Amiga, which
+display, which folders. A build configuration alone cannot express those, so
+saving it by itself would still leave the hardware to be picked again.
 
 ## Requirements
 
@@ -111,6 +142,10 @@ pistorm_imager/
     pfs3.py      PFS3: reads real volumes, creates and fills new ones
     compat.py    automatic emulator-to-PiStorm fixes (RTG driver, startup)
     amigainfo.py Workbench .info icons, enough to retarget tool types
+    machines.py  target Amiga models and what each decides
+    presets.py   quick setup: finding material and laying out a card
+    jobs.py      saved settings and sessions
+    prepare.py   downloads done as you, before the privileged write
     builder.py   the orchestrator
     jobs.py      job serialisation across the privilege boundary
   ui/            the GTK4 interface
@@ -121,7 +156,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 92 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 162 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -140,14 +175,16 @@ a reader and writer that share a mistake agree with each other perfectly.
 
 Working and tested end to end: partitioning, FAT32 creation and population,
 Emu68 installation, Kickstart handling, `config.txt`/`cmdline.txt`, RDB
-creation, image writing (including compressed sources), and expansion into
-unused space.
+creation and repair, PFS3 and FFS volume creation, image writing (including
+compressed sources), copying a drive's contents from an image or a directory,
+and the automatic compatibility pass.
 
 Validated against real material: a full Workbench 3.1 install built from the
 original floppy images (643 files, verified in `xdftool`), a 106 GiB HstWB
-`120gb.hdf` (its RDB, its PFS3 19.2 and FFS 45.13 handlers), the 500 MiB
-ClassicWB `System_P96.hdf` (wrapped in a generated RDB), and a collection of
-about 100 Kickstart ROMs including Cloanto-encrypted ones.
+`120gb.hdf` (its RDB, its PFS3 19.2 and FFS 45.13 handlers, and its three PFS3
+partitions), the 500 MiB ClassicWB `System_P96.hdf` (copied into a PFS3
+partition with its graphics driver swapped), PiMiga 5, and a collection of about
+100 Kickstart ROMs including Cloanto-encrypted ones.
 
 **Not yet verified:** none of this has been booted on real PiStorm hardware.
 Every structure is checked against the format specifications and against
@@ -219,6 +256,14 @@ carries a matching PFS3, and the handler is lifted straight out of its RDB. A
 PFS3 and a PDS3 handler are the same binary, so either satisfies a partition
 asking for the other. FFS partitions need no driver.
 
+PFS3 volumes are created with the full **107-character** file name limit rather
+than the conservative 32 that `pfs3aio`'s own formatter writes. That matters
+because renaming a file breaks whatever refers to it by name - a WHDLoad slave,
+an icon's tool types - so a games or demos drive copies with nothing renamed at
+all. FFS has a hard 30-character limit and no way round it; where a name must
+be shortened there, a file that has an icon is given 25 characters so the icon
+still fits alongside it, and the log says which files were affected.
+
 The PFS3 implementation was written from the on-disk format in
 [`tonioni/pfsdoctor`](https://github.com/tonioni/pfsdoctor) and the reference
 implementation in [`tonioni/pfs3aio`](https://github.com/tonioni/pfs3aio), then
@@ -234,6 +279,12 @@ A system built for Amiberry or WinUAE is ordinary Amiga software — AmigaOS 3.9
 Scalos and a Kickstart ROM all behave the same on a PiStorm. What does not carry
 over is the *emulator's own drivers*, and a graphics driver for a card that does
 not exist leaves Workbench with nowhere to appear.
+
+PiMiga 5 is worth a word of warning: despite the name it is **not a PiStorm
+image**. It is a Debian system running the Amiberry emulator, with an ext4 root
+and no `0x76` partition at all, so it cannot be written to a card and booted by
+Emu68. Its Amiga drives are plain directories under `disks/`, which is what
+makes the conversion below possible.
 
 Give a partition a **content folder** — a directory-based drive from an emulator,
 such as PiMiga's `disks/System` — and it is copied into a real Amiga partition
