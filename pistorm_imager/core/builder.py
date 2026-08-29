@@ -118,6 +118,11 @@ class BuildConfig:
     #  Whether the machine is being watched on an RTG display, which decides
     #  whether an emulator's graphics driver is replaced or simply removed.
     rtg_display: bool = False
+    #  Whether the Amiga's own video output is also in use.  Both can be true:
+    #  RTG on the Pi's HDMI with a monitor still on the Amiga's video port.
+    native_display: bool = False
+    #  Which of the two Workbench should open on when there is a choice.
+    workbench_on_rtg: bool = True
     #  A folder of known-good replacement files, used if a source file cannot
     #  be read (a transient error on a loop-mounted image, say).
     spare_files_folder: str = ""
@@ -596,7 +601,9 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
 def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibility":
     """The compatibility pass, set up the same way wherever it is used."""
     fixer = compat.Compatibility(progress, enabled=config.fix_compatibility,
-                                 rtg=config.rtg_display)
+                                 rtg=config.rtg_display,
+                                 native=config.native_display,
+                                 workbench_on_rtg=config.workbench_on_rtg)
     if config.spare_files_folder:
         found = fixer.add_spares(config.spare_files_folder)
         if found:

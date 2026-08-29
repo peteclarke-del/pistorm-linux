@@ -36,6 +36,12 @@ class Display(enum.Enum):
 
     NATIVE = "native"           # the Amiga's own RGB/composite output
     RTG_HDMI = "rtg"            # the Pi's HDMI, using Emu68's RTG driver
+    #  Both outputs live at once: the Pi's HDMI for RTG and the Amiga's own
+    #  video port for native screens, on two monitors.  This is a common
+    #  PiStorm setup - Workbench on a flat panel, games on a 1084 - and it is
+    #  not the same as RTG alone, where native screens go nowhere anyone can
+    #  see, nor the same as a Framethrower, which brings both to one screen.
+    BOTH = "both"
     FRAMETHROWER = "framethrower"  # Amiga video captured into the Pi's HDMI
 
     @property
@@ -43,12 +49,24 @@ class Display(enum.Enum):
         return {
             Display.NATIVE: "The Amiga's own video output",
             Display.RTG_HDMI: "The Pi's HDMI output (RTG)",
+            Display.BOTH: "Both - RTG on the Pi's HDMI and the Amiga's own "
+                          "video output",
             Display.FRAMETHROWER: "Framethrower - Amiga video and RTG on HDMI",
         }[self]
 
     @property
     def uses_rtg(self) -> bool:
-        return self in (Display.RTG_HDMI, Display.FRAMETHROWER)
+        return self in (Display.RTG_HDMI, Display.BOTH, Display.FRAMETHROWER)
+
+    @property
+    def uses_native(self) -> bool:
+        """Whether the Amiga's own screen modes end up somewhere visible."""
+        return self in (Display.NATIVE, Display.BOTH, Display.FRAMETHROWER)
+
+    @property
+    def has_choice_of_screen(self) -> bool:
+        """Whether Workbench could sensibly open on either output."""
+        return self.uses_rtg and self.uses_native
 
 
 @dataclasses.dataclass(frozen=True)
@@ -138,6 +156,20 @@ def monitors_beyond(machine: Machine, monitors: list[str]) -> list[tuple[str, Ch
     return out
 
 
+def workbench_on_rtg(display: Display, prefer_rtg: bool = True) -> bool:
+    """Where Workbench should open, given what is actually plugged in.
+
+    Only a setup with both outputs has a choice to make; with one output the
+    answer is forced, and honouring a stale preference instead would put
+    Workbench on a screen nobody is looking at.
+    """
+    if not display.uses_rtg:
+        return False
+    if not display.uses_native:
+        return True
+    return prefer_rtg
+
+
 def boot_options(machine: Machine, display: Display,
                  hdmi: tuple[int | None, int | None] = (None, None),
                  trapdoor_to_chip: bool = False) -> bootcfg.BootOptions:
@@ -194,6 +226,14 @@ def advice(machine: Machine, display: Display) -> list[str]:
             "Attach a monitor or splitter to the Pi's HDMI before powering on: "
             "the port is configured once at startup and the driver cannot "
             "change it later.")
+    if display is Display.BOTH:
+        out.append(
+            "Both outputs stay live: RTG screens appear on the Pi's HDMI and "
+            f"native {machine.chipset.value} screens on the Amiga's own video "
+            "port, so games and demos are watched on the Amiga's monitor.")
+        out.append(
+            "A native monitor driver is installed so native screen modes can "
+            "be chosen in Prefs; without one only the default mode is offered.")
     if display is Display.FRAMETHROWER:
         out.append(
             "Framethrower captures the Amiga's own video into the Pi so native "

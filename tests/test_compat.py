@@ -172,6 +172,98 @@ class TestDisplayAdaptation(unittest.TestCase):
                          "no RTG")
 
 
+class FakeVolume:
+    """Just enough of a filled volume to see what the fixer adds to it."""
+
+    root = 0
+
+    def __init__(self):
+        self.written: list[tuple[str, str]] = []
+        self._dirs: dict[int, str] = {0: ""}
+
+    def makedirs(self, path):
+        handle = len(self._dirs) + 1
+        self._dirs[handle] = path
+        return handle
+
+    def write_file(self, parent, name, data, **kwargs):
+        self.written.append((self._dirs.get(parent, "?"), name))
+
+
+class TestBothDisplays(unittest.TestCase):
+    """A machine can have RTG on the Pi's HDMI *and* its own video port in use.
+
+    That is neither of the two cases the fixer used to know about: the RTG
+    driver still has to be installed, but Workbench may belong on the Amiga's
+    own output, and native screen modes have to be selectable at all.
+    """
+
+    def both(self, on_rtg: bool) -> compat.Compatibility:
+        return compat.Compatibility(QUIET, enabled=True, rtg=True,
+                                    native=True, workbench_on_rtg=on_rtg)
+
+    def test_workbench_on_rtg_keeps_the_saved_screen_mode(self):
+        fixer = self.both(on_rtg=True)
+        path = "Prefs/Env-Archive/Sys/ScreenMode.prefs"
+        fixer.offer(path, b"binary prefs")
+        self.assertFalse(fixer.skip(path))
+
+    def test_workbench_on_the_amiga_drops_the_saved_rtg_screen_mode(self):
+        fixer = self.both(on_rtg=False)
+        path = "Prefs/Env-Archive/Sys/ScreenMode.prefs"
+        fixer.offer(path, b"binary prefs")
+        self.assertTrue(fixer.skip(path),
+                        "a saved RTG mode would open Workbench on the HDMI "
+                        "screen, not the Amiga's own output")
+
+    def test_the_rtg_driver_is_still_replaced_not_removed(self):
+        fixer = self.both(on_rtg=False)
+        fixer.offer("Devs/Monitors/uaegfx", b"monitor")
+        self.assertTrue(fixer.skip("Devs/Monitors/uaegfx"))
+        self.assertEqual(fixer.monitor_file, b"monitor",
+                         "RTG is still in use, so the monitor is kept to be "
+                         "retargeted rather than thrown away")
+
+    def test_a_native_monitor_is_installed_from_storage(self):
+        fixer = self.both(on_rtg=True)
+        fixer.offer("Devs/Monitors/uaegfx", b"monitor")
+        fixer.offer("Storage/Monitors/PAL", b"pal driver")
+        fixer.offer("Storage/Monitors/PAL.info", b"pal icon")
+        volume = FakeVolume()
+        fixer.finish(volume, QUIET)
+        self.assertIn(("Devs/Monitors", "PAL"), volume.written,
+                      "with the Amiga's video port in use there must be a "
+                      "native screen mode to choose")
+        self.assertIn(("Devs/Monitors", "PAL.info"), volume.written)
+
+    def test_an_installed_native_monitor_is_left_alone(self):
+        fixer = self.both(on_rtg=True)
+        fixer.offer("Devs/Monitors/PAL", b"already installed")
+        fixer.offer("Storage/Monitors/PAL", b"spare copy")
+        volume = FakeVolume()
+        fixer.finish(volume, QUIET)
+        self.assertEqual(volume.written, [])
+
+    def test_nothing_native_is_installed_for_an_rtg_only_display(self):
+        fixer = compat.Compatibility(QUIET, enabled=True, rtg=True,
+                                     native=False)
+        fixer.offer("Storage/Monitors/PAL", b"pal driver")
+        volume = FakeVolume()
+        fixer.finish(volume, QUIET)
+        self.assertEqual(volume.written, [],
+                         "nobody is looking at the Amiga's video port")
+
+    def test_one_output_ignores_a_stale_preference(self):
+        #  Asking for Workbench on the Amiga's output when there is no RTG at
+        #  all, and vice versa, must not be honoured.
+        rtg_only = compat.Compatibility(QUIET, enabled=True, rtg=True,
+                                        native=False, workbench_on_rtg=False)
+        self.assertTrue(rtg_only.workbench_on_rtg)
+        native_only = compat.Compatibility(QUIET, enabled=True, rtg=False,
+                                           native=True, workbench_on_rtg=True)
+        self.assertFalse(native_only.workbench_on_rtg)
+
+
 class TestContentInstall(_Scratch):
     def test_directory_tree_becomes_a_pfs3_partition(self):
         """An emulator-style directory drive becomes a real Amiga partition."""

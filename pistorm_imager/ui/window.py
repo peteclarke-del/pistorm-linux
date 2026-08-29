@@ -330,8 +330,17 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="How you look at it",
             model=combo([d.label for d in machines.Display]))
         self.quick_display.connect("notify::selected",
-                                   lambda *_a: self._on_layout_changed())
+                                   lambda *_a: self._on_display_changed())
         group.add(self.quick_display)
+        #  Only a setup with both outputs has anything to decide here; with one
+        #  output the answer is forced and the row is hidden.
+        self.quick_workbench_screen = Adw.ComboRow(
+            title="Workbench opens on",
+            model=combo(["The RTG screen on the Pi's HDMI",
+                         "A native screen on the Amiga's own video output"]))
+        self.quick_workbench_screen.connect(
+            "notify::selected", lambda *_a: self._on_layout_changed())
+        group.add(self.quick_workbench_screen)
         self.quick_trapdoor = Adw.SwitchRow(
             title="Trapdoor 512K fitted, use it as chip RAM",
             subtitle="A500 and A500+ only")
@@ -561,6 +570,18 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _display(self) -> machines.Display:
         return list(machines.Display)[self.quick_display.get_selected()]
 
+    def _prefer_rtg_screen(self) -> bool:
+        """Whether Workbench is wanted on the RTG screen, where there is a choice."""
+        return self.quick_workbench_screen.get_selected() == 0
+
+    def _workbench_on_rtg(self) -> bool:
+        return machines.workbench_on_rtg(self._display(),
+                                         self._prefer_rtg_screen())
+
+    def _on_display_changed(self) -> None:
+        self._sync_visibility()
+        self._on_layout_changed()
+
     def _on_machine_changed(self) -> None:
         if not self._ready:
             return
@@ -647,7 +668,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             hdf_source=self.quick_hdf.path,
             work_partition=self.quick_work.get_active(),
             package_donor=self._package_donor(),
-            package_keys=self._chosen_packages())
+            package_keys=self._chosen_packages(),
+            prefer_rtg_screen=self._prefer_rtg_screen())
 
     def _on_layout_changed(self) -> None:
         """Something that shapes the partition layout has changed.
@@ -1114,6 +1136,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             row.set_visible(primary == "image")
         for row in (self.quick_system_source, self.quick_os_hint):
             row.set_visible(primary == "default")
+        self.quick_workbench_screen.set_visible(
+            self._display().has_choice_of_screen)
         self.mode_hint.set_subtitle(MODES[self.mode_row.get_selected()][2])
         self.image_group.set_visible(mode is builder.BuildMode.IMAGE)
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
@@ -1512,6 +1536,15 @@ class ImagerWindow(Adw.ApplicationWindow):
             adf_folder=self.adf_row.path,
             adf_version=self._selected_adf_version(),
             amiga_volume_name=self.volume_row.get_text().strip() or "Workbench",
+            #  The display choice lives on the Quick setup page but decides
+            #  what happens to a copied system's graphics setup, so it has to
+            #  reach every build - not only one started from that page.
+            system_source=self._system_source(),
+            rtg_display=self._display().uses_rtg,
+            native_display=self._display().uses_native,
+            workbench_on_rtg=self._workbench_on_rtg(),
+            spare_files_folder=getattr(self, "detected",
+                                       presets.Detected()).spare_folder,
             boot_options=options,
             kickstart_path=self.rom_row.path,
             kickstart_key=self.rom_key_row.path,
@@ -1703,6 +1736,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         return {
             "machine": self._machine().key,
             "display": self._display().name,
+            "workbench_screen": "rtg" if self._prefer_rtg_screen() else "native",
             "primary_source": self._primary(),
             "system_source": self._system_source(),
             "pimiga_folder": self.quick_pimiga.path,
@@ -1730,6 +1764,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             for index, display in enumerate(machines.Display):
                 if display.name == state.get("display"):
                     self.quick_display.set_selected(index)
+            self.quick_workbench_screen.set_selected(
+                1 if state.get("workbench_screen") == "native" else 0)
             #  Older sessions stored the combo position, which no longer means
             #  the same thing; only a recognised name is honoured.
             saved_source = state.get("system_source")

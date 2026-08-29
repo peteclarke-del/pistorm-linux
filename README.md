@@ -285,6 +285,37 @@ small-index and SUPERINDEX layouts), and volumes written here against
 Rust implementation, which reports them clean and extracts their files
 byte-identically.
 
+## Two outputs at once
+
+A PiStorm does not take the Amiga's own video away. The chipset carries on
+driving the RGB port whatever the Pi is doing, so a very common setup has both
+live: Workbench on a flat panel over the Pi's HDMI, games and demos on a 1084
+plugged into the Amiga. **Both — RTG on the Pi's HDMI and the Amiga's own video
+output** covers that, and it is not the same as either output alone:
+
+| | Emu68 RTG driver | Native monitor driver | Saved screen mode |
+| --- | --- | --- | --- |
+| The Amiga's own output | removed | installed | dropped |
+| The Pi's HDMI (RTG) | installed | not needed | kept |
+| Both | installed | installed | depends on the next question |
+| Framethrower | installed | installed | depends on the next question |
+
+With two outputs there is a real question — **where Workbench opens** — and the
+answer changes what is written. Left on the RTG screen (the default) the saved
+screen mode is kept as it is. Moved to the Amiga's own output, the saved mode is
+dropped so Workbench falls back to a native one, while the RTG driver stays
+installed for whatever wants it.
+
+Native screen modes need a monitor driver to be selectable, and a system built
+around an emulator's RTG board usually has nothing in `DEVS:Monitors` but that
+board. Wherever the Amiga's own output is in use, the uninstalled `PAL` (or
+`NTSC`) copy that AmigaOS ships in `STORAGE:Monitors` is installed, so Prefs has
+something to offer. Where one is already installed, nothing is touched.
+
+With one output there is nothing to decide, so the question is not asked, and a
+preference left over from a two-output setup is ignored rather than obeyed —
+honouring it would open Workbench on a screen nobody is looking at.
+
 ## Bringing an emulator installation to real hardware
 
 A system built for Amiberry or WinUAE is ordinary Amiga software — AmigaOS 3.9,

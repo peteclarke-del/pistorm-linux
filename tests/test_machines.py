@@ -518,3 +518,51 @@ class TestOptionalSoftware(unittest.TestCase):
         overlays = config.amiga_partitions[0].overlays
         self.assertTrue(overlays)
         self.assertTrue(any("WHDLoad" in src for src, _d in overlays))
+
+
+class TestBothOutputs(unittest.TestCase):
+    """A PiStorm target can use HDMI RTG and the Amiga's own video at once."""
+
+    def test_both_counts_as_rtg_and_as_native(self):
+        both = machines.Display.BOTH
+        self.assertTrue(both.uses_rtg)
+        self.assertTrue(both.uses_native)
+        self.assertTrue(both.has_choice_of_screen)
+
+    def test_a_single_output_leaves_nothing_to_choose(self):
+        for display in (machines.Display.NATIVE, machines.Display.RTG_HDMI):
+            self.assertFalse(display.has_choice_of_screen, display)
+
+    def test_the_screen_choice_is_only_honoured_where_there_is_one(self):
+        rtg = machines.Display.RTG_HDMI
+        native = machines.Display.NATIVE
+        both = machines.Display.BOTH
+        self.assertTrue(machines.workbench_on_rtg(rtg, prefer_rtg=False),
+                        "with no native output there is nowhere else to go")
+        self.assertFalse(machines.workbench_on_rtg(native, prefer_rtg=True),
+                         "with no RTG there is nowhere else to go")
+        self.assertTrue(machines.workbench_on_rtg(both, prefer_rtg=True))
+        self.assertFalse(machines.workbench_on_rtg(both, prefer_rtg=False))
+
+    def test_hdmi_is_still_configured_for_both(self):
+        machine = machines.MACHINES_BY_KEY["a500"]
+        options = machines.boot_options(machine, machines.Display.BOTH,
+                                        hdmi=(1, 16))
+        self.assertEqual((options.hdmi_group, options.hdmi_mode), (1, 16))
+        self.assertEqual(options.vc4_mem, 64)
+        self.assertFalse(options.unicam,
+                         "unicam is the Framethrower's capture, not this")
+
+    def test_a_build_carries_both_outputs(self):
+        machine = machines.MACHINES_BY_KEY["a500"]
+        config = presets.machine_setup(
+            machine, machines.Display.BOTH, "/tmp/card.img", False,
+            32 * GIB, presets.Detected(), system_source="none",
+            prefer_rtg_screen=False)
+        self.assertTrue(config.rtg_display)
+        self.assertTrue(config.native_display)
+        self.assertFalse(config.workbench_on_rtg)
+        text = presets.describe_machine_setup(config, machine,
+                                              machines.Display.BOTH,
+                                              presets.Detected())
+        self.assertIn("Workbench opens on", text)
