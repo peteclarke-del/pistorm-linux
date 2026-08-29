@@ -45,6 +45,12 @@ STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
 SCREENMODE_PREFS = ["prefs/env-archive/sys/screenmode.prefs",
                     "devs/env-archive/sys/screenmode.prefs"]
 
+#  Monitor drivers for the Amiga's own chipset, best first.  AmigaOS ships
+#  these in STORAGE:Monitors uninstalled; a system built for an emulator's RTG
+#  board often has none of them in DEVS:Monitors, which leaves Prefs offering
+#  no native screen mode at all on a machine whose video port is in use.
+NATIVE_MONITORS = ["pal", "ntsc"]
+
 
 @dataclasses.dataclass
 class Fix:
@@ -80,7 +86,8 @@ class Compatibility:
     """Decides what to skip, rewrite and add while filling a volume."""
 
     def __init__(self, progress: Progress, enabled: bool = True,
-                 rtg: bool = True):
+                 rtg: bool = True, native: bool = False,
+                 workbench_on_rtg: bool = True):
         self._pending_data: bytes = b""
         self.progress = progress
         self.enabled = enabled
@@ -88,6 +95,13 @@ class Compatibility:
         #  no RTG there is nothing to substitute the driver *for*, and the
         #  emulator's graphics setup has to come out rather than be replaced.
         self.rtg = rtg
+        #  Whether the Amiga's own video output is also being watched.  Both
+        #  can be true at once - RTG on the Pi's HDMI and native screens on a
+        #  monitor plugged into the Amiga - and that is not the same as either
+        #  one alone.
+        self.native = native
+        #  Which of the two Workbench itself should open on.
+        self.workbench_on_rtg = rtg and (workbench_on_rtg or not native)
         self.fixes: list[Fix] = []
         #  Known-good copies of files, indexed by lower-case name, used when the
         #  source cannot be read.  A drive image served over a loop mount or a
@@ -98,6 +112,11 @@ class Compatibility:
         self.monitor_file: bytes | None = None
         self.monitor_icon: bytes | None = None
         self._seen_picasso = False
+        #  Monitor drivers already installed in DEVS:Monitors, and the spare
+        #  native ones sitting in STORAGE:Monitors, so a native driver can be
+        #  installed if the target needs one and the source has none.
+        self._installed_monitors: set[str] = set()
+        self._stored_monitors: dict[str, bytes] = {}
 
     def add_spares(self, folder: str | Path) -> int:
         """Index replacement files that can stand in for unreadable sources."""
@@ -143,9 +162,12 @@ class Compatibility:
             if self.rtg:
                 self.monitor_icon = self._pending_data
             return True
-        if not self.rtg and relative.replace("\\", "/").lower() in SCREENMODE_PREFS:
-            self.note("removed", f"{relative} (a saved RTG screen mode would "
-                                 f"open Workbench where you cannot see it)")
+        if not self.workbench_on_rtg \
+                and relative.replace("\\", "/").lower() in SCREENMODE_PREFS:
+            why = ("a saved RTG screen mode would open Workbench where you "
+                   "cannot see it" if not self.rtg else
+                   "Workbench is to open on the Amiga's own video output")
+            self.note("removed", f"{relative} ({why})")
             return True
         return False
 
@@ -154,6 +176,15 @@ class Compatibility:
         self._pending_data = data
         if not self.enabled:
             return data
+        parts = relative.replace("\\", "/").lower().split("/")
+        if len(parts) >= 2 and parts[-2] == "monitors":
+            name = parts[-1]
+            if len(parts) >= 3 and parts[-3] == "devs" \
+                    and not name.endswith(".info"):
+                self._installed_monitors.add(name)
+            elif len(parts) >= 3 and parts[-3] == "storage" \
+                    and name.removesuffix(".info") in NATIVE_MONITORS:
+                self._stored_monitors[name] = data
         if Path(relative).parent.name.lower() == "picasso96":
             self._seen_picasso = True
         posix = relative.replace("\\", "/")
@@ -184,7 +215,41 @@ class Compatibility:
     # ----------------------------------------------------------- extra files
 
     def finish(self, target, progress: Progress) -> None:
-        """Add the Emu68 RTG driver and its monitor icon to a filled volume."""
+        """Add whatever drivers the target's displays need to a filled volume."""
+        if self.enabled and self.native:
+            self._install_native_monitor(target)
+        self._finish_rtg(target, progress)
+
+    def _install_native_monitor(self, target) -> None:
+        """Make sure native screen modes can be chosen at all.
+
+        A system built around an emulator's RTG board frequently has nothing in
+        DEVS:Monitors but that board.  On a machine whose own video output is
+        being watched that leaves Prefs with no native mode to offer, so the
+        uninstalled copy AmigaOS ships in STORAGE:Monitors is installed.
+        """
+        if any(name in NATIVE_MONITORS for name in self._installed_monitors):
+            return
+        pick = next((n for n in NATIVE_MONITORS if n in self._stored_monitors),
+                    None)
+        if pick is None:
+            if self._stored_monitors or self._installed_monitors:
+                self.note("note", "no native monitor driver was available to "
+                                  "install; Workbench will use the default "
+                                  "screen mode only")
+            return
+        monitors = target.makedirs("Devs/Monitors")
+        proper = pick.upper() if pick in ("pal", "ntsc") else pick.capitalize()
+        target.write_file(monitors, proper, self._stored_monitors[pick],
+                          check_existing=False)
+        icon = self._stored_monitors.get(pick + ".info")
+        if icon is not None:
+            target.write_file(monitors, proper + ".info", icon,
+                              check_existing=False)
+        self.note("added", f"Devs/Monitors/{proper} (from Storage, so native "
+                           f"screen modes can be chosen)")
+
+    def _finish_rtg(self, target, progress: Progress) -> None:
         if not self.enabled or not self._seen_picasso:
             if self.enabled and not self._seen_picasso:
                 progress.log("  compatibility - no Picasso96 install found; "

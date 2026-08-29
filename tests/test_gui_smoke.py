@@ -283,6 +283,39 @@ def on_activate(app: ImagerApplication) -> None:
               and extra.spec().content_folder == "",
               "a partition filled from an image replaces its folder source")
 
+        #  The display choice lives on the Quick setup page but decides what
+        #  happens to a copied system's graphics setup.  gather() is what a
+        #  build actually reads, so it has to carry it: without this, applying
+        #  a quick setup and pressing Write removed the emulator's RTG driver
+        #  instead of replacing it, however the display was set.
+        from pistorm_imager.core import machines  # noqa: PLC0415
+        displays = list(machines.Display)
+        window.quick_display.set_selected(displays.index(machines.Display.RTG_HDMI))
+        window._sync_visibility()
+        check(window.gather().rtg_display,
+              "an RTG display reaches the build")
+        check(not window.quick_workbench_screen.get_visible(),
+              "one output leaves no screen to choose between")
+        window.quick_display.set_selected(displays.index(machines.Display.BOTH))
+        window._sync_visibility()
+        check(window.quick_workbench_screen.get_visible(),
+              "two outputs offer a choice of where Workbench opens")
+        both = window.gather()
+        check(both.rtg_display and both.native_display,
+              "both outputs reach the build")
+        check(both.workbench_on_rtg, "Workbench defaults to the RTG screen")
+        window.quick_workbench_screen.set_selected(1)
+        check(not window.gather().workbench_on_rtg,
+              "choosing the Amiga's own output reaches the build")
+        state = window.interface_state()
+        check(state["workbench_screen"] == "native",
+              "where Workbench opens is saved with the session")
+        window.quick_display.set_selected(displays.index(machines.Display.NATIVE))
+        window._sync_visibility()
+        check(not window.gather().rtg_display
+              and not window.gather().workbench_on_rtg,
+              "a native-only display cannot put Workbench on RTG")
+
         #  Every menu item must be reachable as an action, or choosing it does
         #  nothing and the menu stays open.
         for name in ("save-settings", "load-settings", "forget-session",

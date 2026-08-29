@@ -371,7 +371,8 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
                   hdf_source: str = "",
                   work_partition: bool = True,
                   package_donor: str = "",
-                  package_keys: list[str] | None = None) -> builder.BuildConfig:
+                  package_keys: list[str] | None = None,
+                  prefer_rtg_screen: bool = True) -> builder.BuildConfig:
     """A complete card for one machine.
 
     The content is the same on every model - Workbench, WHDLoad, the games and
@@ -395,6 +396,8 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
     config.boot_options = machines.boot_options(machine, display, hdmi,
                                                 trapdoor_to_chip)
     config.rtg_display = display.uses_rtg
+    config.native_display = display.uses_native
+    config.workbench_on_rtg = machines.workbench_on_rtg(display, prefer_rtg_screen)
 
     #  Prefer a Kickstart that suits this machine.
     if detected.kickstart is not None:
@@ -496,6 +499,11 @@ def describe_machine_setup(config: builder.BuildConfig,
     lines = [f"{machine.label} with {machine.board_label}",
              f"Display: {display.label}",
              f"System: {SYSTEM_SOURCE_LABELS.get(source, source)}"]
+    if display.has_choice_of_screen:
+        lines.append("Workbench opens on: "
+                     + ("the RTG screen, leaving the Amiga's own output for "
+                        "games and demos" if config.workbench_on_rtg else
+                        "a native screen on the Amiga's own video output"))
     lines.append("")
     lines.append(describe(config, detected))
     cmdline = config.boot_options.cmdline()
