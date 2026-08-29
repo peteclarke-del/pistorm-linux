@@ -378,28 +378,45 @@ def plan_names(names: list[str], limit: int = amigafs.MAX_NAME) -> dict[str, str
     independent: an icon has to end up named after whatever its file was called,
     and two entries must not be shortened onto the same name.
 
+    Matching is case-insensitive, as AmigaDOS is.  A collection copied off a
+    case-sensitive host is full of icons whose case differs from their file -
+    "Eagleplayer" alongside "EaglePlayer.info" - and treating those as two
+    different names invents a clash that does not exist and renames a file that
+    was perfectly good.
+
     ``limit`` comes from the target volume.  FFS allows 30 characters; PFS3
     reads its own limit from the volume and can take far more, which matters
     because renaming a file breaks the WHDLoad slave or tool type that names it.
     """
-    icon_bases = {n[:-len(ICON_SUFFIX)] for n in names
-                  if n.lower().endswith(ICON_SUFFIX)}
-    plain = [n for n in names if not n.lower().endswith(ICON_SUFFIX)]
+    #  A file called exactly ".info" is an ordinary name, not an icon.
+    icons = [n for n in names
+             if n.lower().endswith(ICON_SUFFIX) and n.lower() != ICON_SUFFIX]
+    plain = [n for n in names if n not in set(icons)]
+
+    by_lower = {n.lower(): n for n in plain}
+    owner_of = {icon: by_lower.get(icon[:-len(ICON_SUFFIX)].lower(),
+                                   icon[:-len(ICON_SUFFIX)])
+                for icon in icons}
+    owners_with_icons = set(owner_of.values())
+    orphans = [o for o in owners_with_icons if o.lower() not in by_lower]
 
     mapping: dict[str, str] = {}
     taken: set[str] = set()
     #  Decide the files first; the icons then follow their files.
-    for original in sorted(set(plain) | icon_bases):
-        room = limit - len(ICON_SUFFIX) if original in icon_bases else limit
+    for original in sorted(set(plain) | set(orphans)):
+        room = limit - len(ICON_SUFFIX) if original in owners_with_icons else limit
         chosen = _fit(original, max(1, room), taken)
         taken.add(chosen.lower())
         mapping[original] = chosen
 
-    for original in names:
-        if original.lower().endswith(ICON_SUFFIX):
-            base = original[:-len(ICON_SUFFIX)]
-            mapping[original] = mapping[base] + ICON_SUFFIX
-            taken.add(mapping[original].lower())
+    for icon, owner in owner_of.items():
+        if mapping.get(owner) == owner and len(icon) <= limit:
+            #  Nothing had to change, so leave the icon's own spelling alone.
+            mapping[icon] = icon
+        else:
+            mapping[icon] = mapping[owner] + ICON_SUFFIX
+        taken.add(mapping[icon].lower())
+
     #  An icon's base name is worked out even when no such file is present;
     #  return a mapping for exactly the entries that were asked about.
     return {name: mapping[name] for name in names}
