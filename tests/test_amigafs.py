@@ -303,6 +303,39 @@ class TestNamePlanning(unittest.TestCase):
         self.assertEqual(plan, {n: n for n in self.LONG},
                          "a name that fits must not be touched")
 
+    def test_icons_match_their_file_whatever_the_case(self):
+        """AmigaDOS is case-insensitive, and real collections rely on it.
+
+        A tree copied off a case-sensitive host is full of icons spelt
+        differently from their file. Comparing case-sensitively invents a clash
+        and renames a file that was perfectly good.
+        """
+        entries = ["Eagleplayer", "EaglePlayer.info",
+                   "Eagleplayer.readme", "Eagleplayer.ReadMe.info",
+                   "Sounddrivers", "SoundDrivers.info",
+                   "milkytracker.68k", "MilkyTracker.68k.info"]
+        plan = amigaos.plan_names(entries, limit=106)
+        self.assertEqual(plan, {n: n for n in entries},
+                         "nothing here needed renaming")
+
+    def test_a_file_called_dot_info_is_left_alone(self):
+        """That is an ordinary name, not an icon belonging to nothing."""
+        plan = amigaos.plan_names([".info", "Disk.info", "Disk"], limit=106)
+        self.assertEqual(plan[".info"], ".info")
+
+    def test_a_genuine_case_clash_is_still_separated(self):
+        """Two files differing only in case cannot both exist on the Amiga."""
+        plan = amigaos.plan_names(["Readme", "README"], limit=106)
+        self.assertNotEqual(plan["Readme"].lower(), plan["README"].lower())
+
+    def test_icons_stay_paired_when_a_name_must_be_shortened(self):
+        entries = ["Eagleplayer-with-a-very-long-name-indeed.exe",
+                   "EAGLEPLAYER-with-a-very-long-name-indeed.exe.info"]
+        plan = amigaos.plan_names(entries, limit=30)
+        self.assertEqual(plan[entries[1]].lower(),
+                         plan[entries[0]].lower() + ".info")
+        self.assertTrue(all(len(v) <= 30 for v in plan.values()))
+
     def test_a_generous_limit_avoids_renaming_entirely(self):
         short = ["Disk.info", "C", "S", "Startup-Sequence"]
         self.assertEqual(amigaos.plan_names(short, limit=30),
