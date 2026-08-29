@@ -23,6 +23,11 @@ from .widgets import FileRow, SaveRow, combo, show_full_value  # noqa: E402
 
 SELECT_CARD = "Select a card…"
 
+#  Where the operating system comes from, in the order the combo lists them.
+#  Saved sessions record the name rather than the position: inserting an option
+#  would otherwise silently change what an old session had chosen.
+SYSTEM_SOURCES = ["auto", "pimiga", "image", "adf", "none"]
+
 MODES = [
     ("Build a new card", builder.BuildMode.FRESH,
      "Partition the card, install Emu68 and create an empty Amiga drive "
@@ -299,7 +304,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                         "Collections that need a chipset your machine does not "
                         "have are left out.")
         self.quick_pimiga = FileRow("PiMiga folder (optional)", folder=True,
-                                    on_change=lambda _p: self._quick_preview())
+                                    on_change=lambda _p: self._on_source_changed())
         group.add(self.quick_pimiga)
         self.quick_pimiga_info = Adw.ActionRow(title="Content",
                                                subtitle="No folder selected")
@@ -323,7 +328,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                          "Install Workbench from my floppy images",
                          "Don't install one - partition only"]))
         self.quick_system_source.connect("notify::selected",
-                                         lambda *_a: self._quick_preview())
+                                         lambda *_a: self._on_source_changed())
         group.add(self.quick_system_source)
         hint = Adw.ActionRow(
             title="",
@@ -408,6 +413,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         path = self.quick_hdf.path
         if not path:
             self.quick_hdf_info.set_subtitle("No image selected")
+            self._relayout_partitions()
             self._quick_preview()
             return
         scheme = presets.describe_image_scheme(path)
@@ -417,12 +423,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             text += ("  -  choose \u201cinstall Workbench from my floppy "
                      "images\u201d as well, or the card will not boot.")
         self.quick_hdf_info.set_subtitle(text)
+        self._relayout_partitions()
         self._quick_preview()
 
     def _system_source(self) -> str:
         """The operating system source, with "choose for me" resolved."""
-        requested = ["auto", "pimiga", "image", "adf", "none"][
-            self.quick_system_source.get_selected()]
+        requested = SYSTEM_SOURCES[self.quick_system_source.get_selected()]
         if requested == "image":
             return "image" if self.quick_hdf.path else "adf"
         disks = (presets.pimiga_disks(self.quick_pimiga.path)
@@ -474,6 +480,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             if variant.key == machine.board:
                 self.variant_row.set_selected(index)
         self.quick_trapdoor.set_visible(machine.trapdoor_ram)
+        self._relayout_partitions()
         self._quick_preview()
 
     def _detect_material(self) -> None:
@@ -542,9 +549,41 @@ class ImagerWindow(Adw.ApplicationWindow):
             pimiga_folder=self.quick_pimiga.path,
             hdmi=(hdmi_choice[1], hdmi_choice[2]),
             system_size=system, trapdoor_to_chip=self.quick_trapdoor.get_active(),
-            system_source=["auto", "pimiga", "image", "adf", "none"][
-                self.quick_system_source.get_selected()],
+            system_source=SYSTEM_SOURCES[self.quick_system_source.get_selected()],
             hdf_source=self.quick_hdf.path)
+
+    def _on_source_changed(self) -> None:
+        """A source defines the partition layout, so changing it redraws it.
+
+        The rows are what a build actually reads, so leaving them behind after
+        the source is cleared would copy from a place the user had just removed.
+        """
+        self._update_pimiga_info()
+        self._relayout_partitions()
+        self._quick_preview()
+
+    def _relayout_partitions(self) -> None:
+        """Replace the partition rows with the layout the choices imply."""
+        if not self._ready or getattr(self, "_relaying_out", False):
+            return
+        try:
+            config = self._quick_config()
+        except Exception:  # noqa: BLE001 - no target yet; nothing to lay out
+            return
+        current = [row.spec() for row in self.partition_rows]
+        if current == config.amiga_partitions:
+            return
+        self._relaying_out = True
+        try:
+            for row in list(self.partition_rows):
+                self.partition_group.remove(row)
+            self.partition_rows.clear()
+            for spec in config.amiga_partitions:
+                self._add_partition(spec)
+            if not self.partition_rows:
+                self._add_partition()
+        finally:
+            self._relaying_out = False
 
     def _update_pimiga_info(self) -> None:
         """Describe the chosen PiMiga folder, whatever else is still missing."""
@@ -1485,7 +1524,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         return {
             "machine": self._machine().key,
             "display": self._display().name,
-            "system_source": self.quick_system_source.get_selected(),
+            "system_source": SYSTEM_SOURCES[
+                self.quick_system_source.get_selected()],
             "pimiga_folder": self.quick_pimiga.path,
             "hdf_source": self.quick_hdf.path,
             "pfs3_handler": self.quick_donor.path,
@@ -1511,8 +1551,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             for index, display in enumerate(machines.Display):
                 if display.name == state.get("display"):
                     self.quick_display.set_selected(index)
-            self.quick_system_source.set_selected(
-                int(state.get("system_source", 0)))
+            #  Older sessions stored the combo position, which no longer means
+            #  the same thing; only a recognised name is honoured.
+            saved_source = state.get("system_source")
+            if saved_source in SYSTEM_SOURCES:
+                self.quick_system_source.set_selected(
+                    SYSTEM_SOURCES.index(saved_source))
             self.quick_pimiga.set_path(state.get("pimiga_folder", ""))
             self.quick_hdf.set_path(state.get("hdf_source", ""))
             self.quick_donor.set_path(state.get("pfs3_handler", ""))
@@ -1680,8 +1724,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.rom_key_row.set_path(config.kickstart_key)
         self.volume_row.set_text(config.amiga_volume_name)
         self.adf_row.set_path(config.adf_folder)
-        #  The operating system combo is the only place this is recorded now.
-        self.quick_system_source.set_selected(3 if config.install_amigaos else 4)
+        #  The operating system combo is the only place this is recorded now,
+        #  and it drives the partition layout, so it has to say where the system
+        #  actually came from - not merely whether floppies were involved.
+        source = getattr(config, "system_source", "")
+        self.quick_system_source.set_selected(
+            SYSTEM_SOURCES.index(source) if source in SYSTEM_SOURCES
+            else (3 if config.install_amigaos else 4))
         if config.adf_version:
             self._pending_adf_version = config.adf_version
         self.ssid_row.set_text(config.wifi_ssid)
