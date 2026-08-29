@@ -50,6 +50,29 @@ class TestSizes(_Scratch):
         self.assertEqual(parse_size("2048"), 2048 * MIB)  # bare numbers are MiB
         self.assertEqual(parse_size("512K"), 512 * 1024)
 
+    def test_decimal_and_binary_units_differ(self):
+        """A card sold as 32 GB is not 32 GiB, and the gap is over 2 GB."""
+        self.assertEqual(parse_size("32GB"), 32 * 1000 ** 3)
+        self.assertEqual(parse_size("32GiB"), 32 * GIB)
+        self.assertEqual(parse_size("32G"), 32 * GIB)
+        self.assertGreater(parse_size("32GiB") - parse_size("32GB"), 2 * 10 ** 9)
+
+    def test_an_image_sized_in_gb_fits_the_card_it_names(self):
+        from pistorm_imager.core.util import fits_card
+        self.assertTrue(fits_card(parse_size("32GB"), 32))
+        self.assertFalse(fits_card(parse_size("32GiB"), 32),
+                         "a 32 GiB image is too big for a 32 GB card")
+
+    def test_gb_is_not_silently_misread(self):
+        """It used to raise, and the caller fell back to a default size."""
+        for text in ("64GB", "1.5GB", "512MB", "2TB"):
+            self.assertGreater(parse_size(text), 0, text)
+
+    def test_nonsense_is_refused_rather_than_guessed(self):
+        for text in ("", "banana", "12X", "-5G"):
+            with self.assertRaises(ValueError, msg=text):
+                parse_size(text)
+
 
 class TestFat32(_Scratch):
     def setUp(self):
