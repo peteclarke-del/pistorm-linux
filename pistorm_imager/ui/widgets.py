@@ -109,13 +109,6 @@ def combo(items: list[str], selected: int = 0) -> Gtk.StringList:
     return model
 
 
-def info_label(text: str = "") -> Gtk.Label:
-    label = Gtk.Label(label=text, wrap=True, xalign=0.0,
-                      margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
-    label.add_css_class("dim-label")
-    return label
-
-
 def _full_text_factory() -> Gtk.SignalListItemFactory:
     """A list factory whose labels are never shortened."""
     factory = Gtk.SignalListItemFactory()

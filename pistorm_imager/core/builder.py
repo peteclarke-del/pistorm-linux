@@ -551,7 +551,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             f"a smaller system partition is safer."
         )
 
-    offset = amiga.start_bytes + partition.start_block(table.geometry) * rdb.BLOCK
+    offset = partition.byte_offset(table.geometry, amiga.start_bytes)
     dostype = partition.dostype
     if not amigafs.is_ffs(dostype) and dostype not in (rdb.DOSTYPE_PFS3,
                                                        rdb.DOSTYPE_PDS3):
@@ -568,11 +568,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     spec = next((s for s in config.amiga_partitions
                  if s.name.upper() == partition.drive_name.upper()), None)
     if spec is not None and spec.overlays:
-        fixer = compat.Compatibility(progress, enabled=config.fix_compatibility,
-                                     rtg=config.rtg_display)
-        if config.spare_files_folder:
-            fixer.add_spares(config.spare_files_folder)
-        _apply_overlays(volume, spec, fixer, progress)
+        _apply_overlays(volume, spec, _make_fixer(config, progress), progress)
     progress.step("Finalising the Amiga file system")
     volume.close()
 
@@ -597,6 +593,18 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
             progress.log(f"  overlay: {source.name} -> {destination or ':'}")
 
 
+def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibility":
+    """The compatibility pass, set up the same way wherever it is used."""
+    fixer = compat.Compatibility(progress, enabled=config.fix_compatibility,
+                                 rtg=config.rtg_display)
+    if config.spare_files_folder:
+        found = fixer.add_spares(config.spare_files_folder)
+        if found:
+            progress.log(f"{found} replacement file(s) available from "
+                         f"{config.spare_files_folder}")
+    return fixer
+
+
 def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      table: rdb.Rdb, progress: Progress) -> None:
     """Fill partitions that were given a host directory or overlays."""
@@ -609,14 +617,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             progress.log(f"No partition called {spec.name}; skipping its content")
             continue
         capacity = partition.size_bytes(table.geometry)
-        offset = amiga.start_bytes + partition.start_block(table.geometry) * rdb.BLOCK
-        fixer = compat.Compatibility(progress, enabled=config.fix_compatibility,
-                                     rtg=config.rtg_display)
-        if config.spare_files_folder:
-            found = fixer.add_spares(config.spare_files_folder)
-            if found:
-                progress.log(f"{found} replacement file(s) available from "
-                             f"{config.spare_files_folder}")
+        offset = partition.byte_offset(table.geometry, amiga.start_bytes)
+        fixer = _make_fixer(config, progress)
 
         if spec.content_hdf:
             reader, label = amigaos.open_amiga_volume(spec.content_hdf,
@@ -626,7 +628,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                          partition.blocks(table.geometry),
                                          spec.volume_name or partition.drive_name,
                                          partition.dostype)
-            copied, skipped = amigaos._copy_volume(
+            copied, skipped = amigaos.copy_volume(
                 reader, volume, "", progress, skip_existing=False,
                 compat=fixer, exclude=spec.exclude)
             try:

@@ -724,9 +724,6 @@ class Pfs3Writer:
             raise Pfs3Error(f"directory entry for {name!r} is too long")
         return bytes(body)
 
-    def _dirblocks_of(self, anodenr: int) -> list[int]:
-        return [node.blocknr for node in self._chain(anodenr) if node.blocknr]
-
     def _chain(self, anodenr: int) -> list[Anode]:
         out: list[Anode] = []
         number = anodenr

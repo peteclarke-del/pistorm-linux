@@ -368,7 +368,8 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
                   boot_size: int = DEFAULT_BOOT_SIZE,
                   trapdoor_to_chip: bool = False,
                   system_source: str = "auto",
-                  hdf_source: str = "") -> builder.BuildConfig:
+                  hdf_source: str = "",
+                  work_partition: bool = True) -> builder.BuildConfig:
     """A complete card for one machine.
 
     The content is the same on every model - Workbench, WHDLoad, the games and
@@ -386,7 +387,9 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
                           board=machine.board, system_size=system_size,
                           boot_size=boot_size,
                           install_os=source == "adf",
-                          work_partition=not pimiga_folder)
+                          #  A source brings its own drives; otherwise the
+                          #  caller decides whether a work drive is wanted.
+                          work_partition=work_partition and not pimiga_folder)
     config.boot_options = machines.boot_options(machine, display, hdmi,
                                                 trapdoor_to_chip)
     config.rtg_display = display.uses_rtg

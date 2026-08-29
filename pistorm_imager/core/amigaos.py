@@ -248,7 +248,7 @@ def open_amiga_volume(path: str | Path, partition: str = ""):
         candidates = [p for p in candidates
                       if p.drive_name.upper() == partition.upper()] or candidates
     chosen = next((p for p in candidates if p.bootable), None) or candidates[0]
-    offset = base + chosen.start_block(table.geometry) * rdb.BLOCK
+    offset = chosen.byte_offset(table.geometry, base)
     blocks = chosen.blocks(table.geometry)
     label = f"{path.name} partition {chosen.drive_name} " \
             f"({rdb.dostype_name(chosen.dostype)})"
@@ -257,7 +257,7 @@ def open_amiga_volume(path: str | Path, partition: str = ""):
     return Volume(handle, offset, blocks), label
 
 
-def _copy_volume(source, target, destination: str, progress: Progress,
+def copy_volume(source, target, destination: str, progress: Progress,
                  skip_existing: bool = True, compat=None,
                  exclude: list[str] | None = None) -> tuple[int, int]:
     """Copy an entire source volume into ``destination`` on the target.
@@ -361,12 +361,6 @@ def _fit(name: str, limit: int, taken: set[str]) -> str:
         if candidate.lower() not in taken:
             return candidate
     raise RuntimeError(f"cannot find a free name for {name!r}")
-
-
-def amiga_name(name: str, limit: int = amigafs.MAX_NAME) -> tuple[str, bool]:
-    """Convert one host file name to a legal Amiga one."""
-    fitted = _fit(name, limit, set())
-    return fitted, fitted != name
 
 
 def name_limit(target) -> int:
@@ -579,7 +573,7 @@ def install(handle, offset: int, total_blocks: int, chosen: dict[str, DiskMatch]
         progress.log(f'{match.path.name}  (volume "{match.volume_name}")')
         with open(match.path, "rb") as source_handle:
             source = Volume(source_handle)
-            copied, skipped = _copy_volume(source, target,
+            copied, skipped = copy_volume(source, target,
                                            match.role.destination, progress)
         total_copied += copied
         progress.log(f"  {copied} files copied"

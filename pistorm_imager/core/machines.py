@@ -136,11 +136,6 @@ def boot_options(machine: Machine, display: Display,
     return options
 
 
-def wants_rtg_drivers(machine: Machine, display: Display) -> bool:
-    """Whether an RTG driver should be installed for this combination."""
-    return display.uses_rtg
-
-
 def advice(machine: Machine, display: Display) -> list[str]:
     """Plain warnings and reminders for this combination."""
     out = [machine.notes] if machine.notes else []
@@ -171,7 +166,3 @@ def advice(machine: Machine, display: Display) -> list[str]:
             "With no Amiga attached there is no native video at all - use the "
             "Pi's HDMI.")
     return out
-
-
-def kickstart_preference(machine: Machine) -> tuple[tuple[int, int], ...]:
-    return machine.kickstarts
