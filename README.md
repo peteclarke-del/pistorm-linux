@@ -158,9 +158,17 @@ original floppy images (643 files, verified in `xdftool`), a 106 GiB HstWB
 ClassicWB `System_P96.hdf` (wrapped in a generated RDB), and a collection of
 about 100 Kickstart ROMs including Cloanto-encrypted ones.
 
-**Not yet verified:** none of this has been booted on real PiStorm hardware.
-Every structure is checked against the format specifications and against
-independent tools, but that is not the same as an Amiga booting from it.
+**Verified on hardware:** a basic Workbench-only card, built here from the
+original floppy images, has been written and booted on a real PiStorm. That
+covers the parts every build shares — the MBR, the FAT32 boot partition, the
+Emu68 and firmware payload, `config.txt` and `cmdline.txt`, the `0x76`
+partition, the Rigid Disk Block inside it and the AmigaOS install on top.
+
+**Not yet tried on hardware:** everything past that. Importing PiMiga or an
+`.hdf`; the RTG and dual-output display handling, including the switcher
+scripts; optional software copied from a donor system; multi-partition layouts.
+Those are checked against the format specifications and against independent
+tools, which is not the same as an Amiga booting from them.
 
 ## One primary source, not several
 
