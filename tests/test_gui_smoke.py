@@ -236,6 +236,53 @@ def on_activate(app: ImagerApplication) -> None:
               "the quick setup uses it too, rather than its own default")
         window.boot_size_row.set_text("256M")
 
+        #  The primary source is one choice of three, and the two it is not
+        #  must not be left holding paths that would still reach the build.
+        window.apply_interface_state({"system_source": "adf",
+                                      "pimiga_folder": "", "hdf_source": ""})
+        check(window._primary() == "default" and window._system_source() == "adf",
+              "Default installs Workbench from floppies")
+        check(not window.quick_pimiga.get_visible()
+              and not window.quick_hdf.get_visible(),
+              "Default shows neither source chooser")
+        window.quick_primary.set_selected(1)
+        check(window.quick_pimiga.get_visible()
+              and not window.quick_system_source.get_visible(),
+              "PiMiga replaces the operating system question")
+        check(window._system_source() == "none",
+              "PiMiga with no folder yet installs nothing")
+        window.quick_pimiga.set_path(str(SCRATCH / "pimiga"))
+        check(window._system_source() == "pimiga", "a PiMiga folder is the system")
+        window.quick_primary.set_selected(2)
+        check(window.quick_pimiga.path == "" and window.quick_hdf.get_visible(),
+              "choosing an image drops the PiMiga folder")
+        window.quick_hdf.set_path(str(HDF_IMAGE))
+        window.quick_primary.set_selected(0)
+        check(window.quick_hdf.path == "" and window.quick_pimiga.path == "",
+              "going back to Default drops both")
+        state = window.interface_state()
+        check(state["primary_source"] == "default",
+              "the primary source is saved with the session")
+        window.apply_interface_state({"system_source": "image",
+                                      "hdf_source": str(HDF_IMAGE)})
+        check(window._primary() == "image",
+              "a session saved before the split still picks the right source")
+
+        #  A partition can take its contents from an image of its own, so a
+        #  drive out of an .hdf can be added to a PiMiga card rather than
+        #  replacing it.
+        from pistorm_imager.ui.window import PartitionRow  # noqa: PLC0415
+        extra = PartitionRow(
+            builder.AmigaPartitionSpec("DH4", None, "PFS\\3",
+                                       content_folder="/somewhere/Games"),
+            on_remove=lambda _r: None, on_change=None)
+        extra.hdf_row.set_path(str(HDF_IMAGE))
+        extra.hdf_part_row.set_text("dh1")
+        check(extra.spec().content_hdf == str(HDF_IMAGE)
+              and extra.spec().content_hdf_partition == "DH1"
+              and extra.spec().content_folder == "",
+              "a partition filled from an image replaces its folder source")
+
         #  Every menu item must be reachable as an action, or choosing it does
         #  nothing and the menu stays open.
         for name in ("save-settings", "load-settings", "forget-session",

@@ -29,6 +29,18 @@ SELECT_CARD = "Select a card…"
 #  would otherwise silently change what an old session had chosen.
 SYSTEM_SOURCES = ["auto", "pimiga", "image", "adf", "none"]
 
+#  What the card is built around.  These are alternatives, not additions: a
+#  drive taken from a hard disk image is not also a PiMiga installation, and
+#  offering both at once only ever produced setups that contradicted themselves.
+PRIMARY_SOURCES = ["default", "pimiga", "image"]
+PRIMARY_LABELS = [
+    "Default - build a new drive",
+    "PiMiga installation",
+    "Amiga hard disk image",
+]
+#  What "Default" can then put on that drive.
+FRESH_SOURCES = ["adf", "none"]
+
 MODES = [
     ("Build a new card", builder.BuildMode.FRESH,
      "Partition the card, install Emu68 and create an empty Amiga drive "
@@ -85,9 +97,23 @@ class PartitionRow(Adw.ExpanderRow):
         self.priority_row.set_value(spec.boot_priority)
         self.content_row = Adw.ActionRow(title="Contents")
         self.content_row.set_sensitive(False)
+        #  A partition can be filled from an image of its own, so a drive out
+        #  of an .hdf can be added alongside another source rather than
+        #  replacing it.
+        self.hdf_row = FileRow(
+            "Fill from a hard disk image",
+            "Copies one drive out of an .hdf into this partition",
+            filters=HDF_FILTERS, on_change=lambda _p: self._refresh())
+        self.hdf_part_row = Adw.EntryRow(
+            title="Which drive in that image (DH0, DH1, ... ; blank for the first)")
+        #  Filling these in fires the callbacks, so both rows exist first.
+        self.hdf_row.set_path(spec.content_hdf or "")
+        self.hdf_part_row.set_text(spec.content_hdf_partition or "")
+        self.hdf_part_row.connect("changed", lambda _r: self._refresh())
 
         for row in (self.name_row, self.volume_row, self.size_row, self.fs_row,
-                    self.boot_row, self.priority_row, self.content_row):
+                    self.boot_row, self.priority_row, self.content_row,
+                    self.hdf_row, self.hdf_part_row):
             self.add_row(row)
         for row in (self.name_row, self.volume_row, self.size_row):
             row.connect("changed", lambda _r: self._refresh())
@@ -130,6 +156,7 @@ class PartitionRow(Adw.ExpanderRow):
                              if spec.bootable else ""))
         self.content_row.set_subtitle(self._describe_contents(spec))
         self.priority_row.set_visible(spec.bootable)
+        self.hdf_part_row.set_visible(bool(self.hdf_row.path))
         if self._on_change:
             self._on_change()
 
@@ -151,6 +178,15 @@ class PartitionRow(Adw.ExpanderRow):
             dostype=FILESYSTEMS[self.fs_row.get_selected()],
             bootable=self.boot_row.get_active(),
             boot_priority=int(self.priority_row.get_value()),
+            #  An image chosen here replaces whatever the partition was going
+            #  to be filled with, rather than fighting with it.
+            content_hdf=self.hdf_row.path or (
+                "" if self._source.content_folder else self._source.content_hdf),
+            content_hdf_partition=(self.hdf_part_row.get_text().strip().upper()
+                                   if self.hdf_row.path
+                                   else self._source.content_hdf_partition),
+            content_folder=("" if self.hdf_row.path
+                            else self._source.content_folder),
         )
 
 
@@ -180,6 +216,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         show_full_value(
             self.mode_row, self.variant_row, self.release_row,
             self.quick_machine, self.quick_display, self.quick_system_source,
+            self.quick_primary,
             self.quick_target, self.quick_device, self.hdmi_row,
             self.overclock_row, self.antenna_row, self.target_row,
             self.device_row, self.os_version_row,
@@ -302,20 +339,29 @@ class ImagerWindow(Adw.ApplicationWindow):
         page.add(group)
 
         group = Adw.PreferencesGroup(
-            title="Games, demos and WHDLoad",
-            description="Point at a PiMiga installation to fill the card with "
-                        "its games and demos, and to take WHDLoad from it. "
-                        "Collections that need a chipset your machine does not "
-                        "have are left out.")
-        self.quick_pimiga = FileRow("PiMiga folder (optional)", folder=True,
-                                    on_change=lambda _p: self._on_source_changed())
+            title="Primary installation",
+            description="Where the Amiga system and everything on the card "
+                        "comes from.  These are alternatives: a drive taken "
+                        "from a hard disk image is not also a PiMiga "
+                        "installation.")
+        self.quick_primary = Adw.ComboRow(title="Build the card around",
+                                          model=combo(PRIMARY_LABELS))
+        self.quick_primary.connect("notify::selected",
+                                   lambda *_a: self._on_primary_changed())
+        group.add(self.quick_primary)
+        self.quick_pimiga = FileRow(
+            "PiMiga folder",
+            "Its drives, games and demos are copied over, and its graphics "
+            "driver replaced.  Collections needing a chipset this machine "
+            "does not have are left out.",
+            folder=True, on_change=lambda _p: self._on_source_changed())
         group.add(self.quick_pimiga)
         self.quick_pimiga_info = Adw.ActionRow(title="Content",
                                                subtitle="No folder selected")
         self.quick_pimiga_info.set_sensitive(False)
         group.add(self.quick_pimiga_info)
         self.quick_hdf = FileRow(
-            "Amiga hard disk image (optional)",
+            "Amiga hard disk image",
             "Its partition scheme is copied onto the card, and its graphics "
             "driver adapted", filters=HDF_FILTERS,
             on_change=lambda _p: self._on_quick_hdf())
@@ -326,21 +372,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.quick_hdf_info)
         self.quick_system_source = Adw.ComboRow(
             title="Operating system",
-            model=combo(["Choose for me",
-                         "PiMiga's ready-made system",
-                         "The hard disk image's own system",
-                         "Install Workbench from my floppy images",
+            model=combo(["Install Workbench from my floppy images",
                          "Don't install one - partition only"]))
         self.quick_system_source.connect("notify::selected",
                                          lambda *_a: self._on_source_changed())
         group.add(self.quick_system_source)
-        hint = Adw.ActionRow(
+        self.quick_os_hint = Adw.ActionRow(
             title="",
-            subtitle="PiMiga's system is ready made but built around RTG; a "
-                     "Workbench installed from floppies is small and uses "
-                     "native screen modes.")
-        hint.set_sensitive(False)
-        group.add(hint)
+            subtitle="A Workbench installed from floppies is small and uses "
+                     "native screen modes; PiMiga's system is ready made but "
+                     "built around RTG.")
+        self.quick_os_hint.set_sensitive(False)
+        group.add(self.quick_os_hint)
         page.add(group)
 
         group = Adw.PreferencesGroup(title="Choices")
@@ -435,19 +478,33 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._relayout_partitions()
         self._quick_preview()
 
+    def _primary(self) -> str:
+        """What the card is being built around."""
+        return PRIMARY_SOURCES[self.quick_primary.get_selected()]
+
     def _system_source(self) -> str:
-        """The operating system source, with "choose for me" resolved."""
-        requested = SYSTEM_SOURCES[self.quick_system_source.get_selected()]
-        if requested == "image":
-            return "image" if self.quick_hdf.path else "adf"
-        disks = (presets.pimiga_disks(self.quick_pimiga.path)
-                 if self.quick_pimiga.path else None)
-        try:
-            size = parse_size(self.quick_card_size.get_text())
-        except ValueError:
-            size = 64 * GIB
-        return presets.choose_system_source(self._display(), disks, size,
-                                            requested)
+        """Where the operating system comes from, given the primary choice."""
+        primary = self._primary()
+        if primary == "pimiga":
+            return "pimiga" if self.quick_pimiga.path else "none"
+        if primary == "image":
+            return "image" if self.quick_hdf.path else "none"
+        return FRESH_SOURCES[self.quick_system_source.get_selected()]
+
+    def _on_primary_changed(self) -> None:
+        """Switching sources drops the one being left behind.
+
+        Leaving a stale path behind would carry it into the build - a PiMiga
+        folder still filling the card after a hard disk image was chosen to
+        replace it - so whichever source is no longer primary is cleared.
+        """
+        primary = self._primary()
+        if primary != "pimiga":
+            self.quick_pimiga.set_path("")
+        if primary != "image":
+            self.quick_hdf.set_path("")
+        self._sync_visibility()
+        self._on_quick_hdf()
 
     def _mirror_target(self) -> None:
         """Copy the Quick setup target onto the Target page, which is canonical.
@@ -586,7 +643,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             hdmi=(hdmi_choice[1], hdmi_choice[2]),
             system_size=system, boot_size=self._boot_size(),
             trapdoor_to_chip=self.quick_trapdoor.get_active(),
-            system_source=SYSTEM_SOURCES[self.quick_system_source.get_selected()],
+            system_source=self._system_source(),
             hdf_source=self.quick_hdf.path,
             work_partition=self.quick_work.get_active(),
             package_donor=self._package_donor(),
@@ -1050,6 +1107,13 @@ class ImagerWindow(Adw.ApplicationWindow):
             return
         mode = self._mode()
         making_hdf = self._making_hdf()
+        primary = self._primary()
+        for row in (self.quick_pimiga, self.quick_pimiga_info):
+            row.set_visible(primary == "pimiga")
+        for row in (self.quick_hdf, self.quick_hdf_info):
+            row.set_visible(primary == "image")
+        for row in (self.quick_system_source, self.quick_os_hint):
+            row.set_visible(primary == "default")
         self.mode_hint.set_subtitle(MODES[self.mode_row.get_selected()][2])
         self.image_group.set_visible(mode is builder.BuildMode.IMAGE)
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
@@ -1639,8 +1703,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         return {
             "machine": self._machine().key,
             "display": self._display().name,
-            "system_source": SYSTEM_SOURCES[
-                self.quick_system_source.get_selected()],
+            "primary_source": self._primary(),
+            "system_source": self._system_source(),
             "pimiga_folder": self.quick_pimiga.path,
             "hdf_source": self.quick_hdf.path,
             "pfs3_handler": self.quick_donor.path,
@@ -1669,9 +1733,18 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  Older sessions stored the combo position, which no longer means
             #  the same thing; only a recognised name is honoured.
             saved_source = state.get("system_source")
-            if saved_source in SYSTEM_SOURCES:
-                self.quick_system_source.set_selected(
-                    SYSTEM_SOURCES.index(saved_source))
+            saved_primary = state.get("primary_source")
+            if saved_primary not in PRIMARY_SOURCES:
+                #  Sessions saved before the two were separated recorded only
+                #  the system source, which still says which one was primary.
+                saved_primary = (saved_source
+                                 if saved_source in PRIMARY_SOURCES
+                                 else "default")
+            self.quick_primary.set_selected(
+                PRIMARY_SOURCES.index(saved_primary))
+            self.quick_system_source.set_selected(
+                FRESH_SOURCES.index(saved_source)
+                if saved_source in FRESH_SOURCES else 0)
             self.quick_pimiga.set_path(state.get("pimiga_folder", ""))
             self.quick_hdf.set_path(state.get("hdf_source", ""))
             self.quick_donor.set_path(state.get("pfs3_handler", ""))
@@ -1843,9 +1916,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  and it drives the partition layout, so it has to say where the system
         #  actually came from - not merely whether floppies were involved.
         source = getattr(config, "system_source", "")
+        if source not in SYSTEM_SOURCES or source == "auto":
+            source = "adf" if config.install_amigaos else "none"
+        self.quick_primary.set_selected(
+            PRIMARY_SOURCES.index(source) if source in PRIMARY_SOURCES else 0)
         self.quick_system_source.set_selected(
-            SYSTEM_SOURCES.index(source) if source in SYSTEM_SOURCES
-            else (3 if config.install_amigaos else 4))
+            FRESH_SOURCES.index(source) if source in FRESH_SOURCES else 0)
         if config.adf_version:
             self._pending_adf_version = config.adf_version
         self.ssid_row.set_text(config.wifi_ssid)
