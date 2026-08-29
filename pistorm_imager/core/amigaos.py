@@ -335,13 +335,16 @@ def _fit(name: str, limit: int, taken: set[str]) -> str:
     """Shorten ``name`` to ``limit`` characters, keeping it unique."""
     cleaned = _clean(name)
     if len(cleaned) > limit:
+        #  Only a truncated name needs tidying.  A trailing dot is perfectly
+        #  legal on AmigaDOS - only ":" and "/" are reserved - so "MOD.doober."
+        #  must be left exactly as it is rather than quietly renamed.
         stem, dot, ext = cleaned.rpartition(".")
         if dot and 0 < len(ext) <= 6 and len(ext) + 1 < limit:
             stem = stem[:limit - len(ext) - 1].rstrip(".")
-            cleaned = f"{stem}.{ext}"
+            cleaned = f"{stem}.{ext}" if stem else ext[:limit]
         else:
-            cleaned = cleaned[:limit]
-    cleaned = cleaned.rstrip(".") or "_"
+            cleaned = cleaned[:limit].rstrip(".")
+        cleaned = cleaned or "_"
 
     if cleaned.lower() not in taken:
         return cleaned

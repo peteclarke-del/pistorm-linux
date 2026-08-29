@@ -318,6 +318,19 @@ class TestNamePlanning(unittest.TestCase):
         self.assertEqual(plan, {n: n for n in entries},
                          "nothing here needed renaming")
 
+    def test_trailing_dots_are_kept(self):
+        """Only ":" and "/" are reserved on AmigaDOS; a trailing dot is fine."""
+        entries = ["MOD.doober.", "MOD.e.c.t.", "MOD.fast speed inc.", "..."]
+        for limit in (30, 106):
+            self.assertEqual(amigaos.plan_names(entries, limit=limit),
+                             {n: n for n in entries}, f"at limit {limit}")
+
+    def test_truncation_does_not_end_on_a_dot(self):
+        long_name = "MOD." + "a very long module name that will not fit" + "."
+        chosen = amigaos.plan_names([long_name], limit=30)[long_name]
+        self.assertLessEqual(len(chosen), 30)
+        self.assertFalse(chosen.endswith("."), chosen)
+
     def test_a_file_called_dot_info_is_left_alone(self):
         """That is an ordinary name, not an icon belonging to nothing."""
         plan = amigaos.plan_names([".info", "Disk.info", "Disk"], limit=106)
