@@ -171,10 +171,29 @@ def on_activate(app: ImagerApplication) -> None:
         with_source = window.gather().amiga_partitions
         check(len(with_source) == 4 and all(p.content_folder for p in with_source[1:]),
               f"a PiMiga source lays out its drives ({[p.name for p in with_source]})")
+        #  Every choice that shapes the layout must redraw it, or the page and
+        #  the build disagree about what is being made.
+        window.quick_card_size.set_text("16GB")
+        smaller = window.gather().amiga_partitions
+        check(sum(p.size or 0 for p in smaller) < sum(p.size or 0 for p in with_source),
+              "changing the card size resizes the partitions")
+
+        window.quick_work.set_active(False)
         window.quick_pimiga.set_path("")
         without = window.gather().amiga_partitions
         check(not any(p.content_folder for p in without),
               "clearing the source clears the partitions that came from it")
+        check(len(without) == 1,
+              f"turning off the work drive leaves one partition ({len(without)})")
+        window.quick_work.set_active(True)
+        check(len(window.gather().amiga_partitions) == 2,
+              "turning it back on restores it")
+
+        #  A layout the user has edited by hand must survive the next change.
+        window.partition_rows[0].name_row.set_text("DX0")
+        window.quick_card_size.set_text("8GB")
+        kept = [p.name for p in window.gather().amiga_partitions]
+        check("DX0" in kept, f"a hand-edited partition is not overwritten ({kept})")
 
         #  Editing a partition must not discard what the editor does not show:
         #  a drive whose contents come from PiMiga would otherwise be built

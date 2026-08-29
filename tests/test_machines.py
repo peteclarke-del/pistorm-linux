@@ -339,6 +339,27 @@ class TestMachineSetup(unittest.TestCase):
         self.assertIn("C", destinations)
         self.assertIn("Expansion/WHDLoad", destinations)
 
+    def test_the_work_drive_switch_is_honoured(self):
+        """It was passed nowhere, so turning it off changed nothing."""
+        with_work = presets.machine_setup(
+            machines.MACHINES_BY_KEY["a500"], Display.NATIVE,
+            str(self.folder / "c.img"), False, 64 * GIB, self.detected(),
+            work_partition=True)
+        without = presets.machine_setup(
+            machines.MACHINES_BY_KEY["a500"], Display.NATIVE,
+            str(self.folder / "c.img"), False, 64 * GIB, self.detected(),
+            work_partition=False)
+        self.assertEqual(len(with_work.amiga_partitions), 2)
+        self.assertEqual(len(without.amiga_partitions), 1)
+
+    def test_a_source_still_brings_its_own_drives(self):
+        """The switch is about a drive we would add, not the source's own."""
+        config = presets.machine_setup(
+            machines.MACHINES_BY_KEY["a500"], Display.NATIVE,
+            str(self.folder / "c.img"), False, 64 * GIB, self.detected(),
+            pimiga_folder=str(self.pimiga), work_partition=False)
+        self.assertEqual(len(config.amiga_partitions), 4)
+
     def test_the_board_follows_the_model(self):
         self.assertEqual(self.setup_for("a500").variant, "pistorm")
         self.assertEqual(self.setup_for("a1200").variant, "pistorm32lite")

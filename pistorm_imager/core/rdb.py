@@ -156,6 +156,14 @@ class Partition:
     def start_block(self, geom: Geometry) -> int:
         return self.low_cyl * geom.cyl_blocks
 
+    def byte_offset(self, geom: Geometry, base: int = 0) -> int:
+        """Where this partition's data begins, in bytes from ``base``.
+
+        ``base`` is where the RDB itself sits - the start of the 0x76 partition
+        for a card, or zero for a bare hard disk image.
+        """
+        return base + self.start_block(geom) * BLOCK
+
     @property
     def dostype_name(self) -> str:
         return dostype_name(self.dostype)
@@ -426,15 +434,6 @@ class Rdb:
     def write(self, handle: BinaryIO, base_offset: int = 0) -> None:
         handle.seek(base_offset)
         handle.write(self.to_bytes())
-
-
-def make_seglist(binary: bytes) -> bytes:
-    """Wrap a plain filesystem binary in the LoadSeg format the RDB expects.
-
-    An LSEG chain holds the file system handler exactly as ``LoadSeg`` would
-    have produced it, i.e. the hunk-format executable file's own bytes.
-    """
-    return binary
 
 
 def layout(geom: Geometry, total_blocks: int, specs: Iterable[tuple[str, int | None, int]],

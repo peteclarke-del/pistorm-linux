@@ -290,7 +290,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="How you look at it",
             model=combo([d.label for d in machines.Display]))
         self.quick_display.connect("notify::selected",
-                                   lambda *_a: self._quick_preview())
+                                   lambda *_a: self._on_layout_changed())
         group.add(self.quick_display)
         self.quick_trapdoor = Adw.SwitchRow(
             title="Trapdoor 512K fitted, use it as chip RAM",
@@ -343,14 +343,15 @@ class ImagerWindow(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup(title="Choices")
         self.quick_system = Adw.EntryRow(title="System drive size")
         self.quick_system.set_text("1G")
-        self.quick_system.connect("changed", lambda _r: self._quick_preview())
+        self.quick_system.connect("changed", lambda _r: self._on_layout_changed())
         group.add(self.quick_system)
         self.quick_work = Adw.SwitchRow(
             title="Add a PFS3 work drive",
             subtitle="Takes the rest of the card; format it on the Amiga. Not "
                      "used when the layout comes from PiMiga or an image.")
         self.quick_work.set_active(True)
-        self.quick_work.connect("notify::active", lambda *_a: self._quick_preview())
+        self.quick_work.connect("notify::active",
+                                lambda *_a: self._on_layout_changed())
         group.add(self.quick_work)
         self.quick_donor = FileRow(
             "PFS3 handler",
@@ -467,6 +468,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         finally:
             self._mirroring = False
         self._sync_visibility()
+        self._relayout_partitions()
 
     def _show_size(self) -> None:
         """Spell out the size, because "32 GB" has two different meanings.
@@ -574,20 +576,29 @@ class ImagerWindow(Adw.ApplicationWindow):
             hdmi=(hdmi_choice[1], hdmi_choice[2]),
             system_size=system, trapdoor_to_chip=self.quick_trapdoor.get_active(),
             system_source=SYSTEM_SOURCES[self.quick_system_source.get_selected()],
-            hdf_source=self.quick_hdf.path)
+            hdf_source=self.quick_hdf.path,
+            work_partition=self.quick_work.get_active())
 
-    def _on_source_changed(self) -> None:
-        """A source defines the partition layout, so changing it redraws it.
+    def _on_layout_changed(self) -> None:
+        """Something that shapes the partition layout has changed.
 
-        The rows are what a build actually reads, so leaving them behind after
-        the source is cleared would copy from a place the user had just removed.
+        Every choice that feeds the layout comes through here, because the rows
+        are what a build actually reads: a size or a source that changed without
+        redrawing them would build something other than what the page shows.
         """
         self._update_pimiga_info()
         self._relayout_partitions()
         self._quick_preview()
 
+    #  Kept for the source rows, which also refresh their own descriptions.
+    _on_source_changed = _on_layout_changed
+
     def _relayout_partitions(self) -> None:
-        """Replace the partition rows with the layout the choices imply."""
+        """Replace the partition rows with the layout the choices imply.
+
+        Rows the user has edited by hand are left alone: they are only replaced
+        while they still match what was last derived for them.
+        """
         if not self._ready or getattr(self, "_relaying_out", False):
             return
         try:
@@ -596,6 +607,10 @@ class ImagerWindow(Adw.ApplicationWindow):
             return
         current = [row.spec() for row in self.partition_rows]
         if current == config.amiga_partitions:
+            return
+        derived = getattr(self, "_derived_partitions", None)
+        if derived is not None and current != derived:
+            #  Hand-edited; redrawing would throw the user's work away.
             return
         self._relaying_out = True
         try:
@@ -608,6 +623,10 @@ class ImagerWindow(Adw.ApplicationWindow):
                 self._add_partition()
         finally:
             self._relaying_out = False
+        #  Record what the rows now say, not what was asked for: a size shown
+        #  as "10.55 GiB" does not read back as the exact byte count it came
+        #  from, so comparing the two would call every layout hand-edited.
+        self._derived_partitions = [row.spec() for row in self.partition_rows]
 
     def _update_pimiga_info(self) -> None:
         """Describe the chosen PiMiga folder, whatever else is still missing."""
@@ -1772,6 +1791,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._add_partition(spec)
         if not self.partition_rows:
             self._add_partition()
+        self._derived_partitions = [row.spec() for row in self.partition_rows]
 
         options = config.boot_options
         for index, (_label, group, mode_id) in enumerate(bootcfg.HDMI_MODES):
