@@ -176,6 +176,42 @@ Put your own Workbench disks and Kickstart in `samples/` and they are found
 automatically - see `samples/README.md`. None of that material is kept in this
 repository, and the tests that use it skip when it is absent.
 
+## Checking an image against the machine
+
+Plenty of ready-made drives are built for an A1200 and say so only by the
+display modes they install. The monitor drivers in `DEVS:Monitors` are checked
+against the target's chipset, so importing an AGA-built system onto an A500
+says:
+
+> installs display modes this machine cannot produce: AGA (needs AGA),
+> Multiscan (needs ECS). Workbench may open on a screen the OCS chipset cannot
+> show.
+
+`STORAGE:Monitors` is deliberately ignored - AmigaOS ships the whole set there
+uninstalled, so its contents say nothing about what a system expects.
+
+Chipset-specific game collections are handled separately: on a machine without
+AGA, the `WHDLOAD/AGA` and `WHDLOAD/CD32` categories are simply not copied.
+
+## Software to add to a floppy install
+
+A Workbench built from the original disks is exactly what shipped in 1994: no
+archiver, no installer, and no idea what WHDLoad is. The pieces almost everyone
+adds next can be ticked on:
+
+| | |
+| --- | --- |
+| **WHDLoad** | Runs floppy games and demos from the hard drive |
+| **LhA** | The archiver Amiga software is distributed in |
+| **Installer** | Commodore's installer, which most install scripts expect |
+| **iGame** | A launcher listing WHDLoad games with screenshots |
+| **Picasso96** | The RTG subsystem; only offered where there is an RTG display |
+
+None of it is shipped with this project - it belongs to its authors - so each is
+copied out of a system you already have. Point at a PiMiga folder or any
+Workbench System drive and whatever is present there becomes available; the
+rest is greyed out with the reason.
+
 ## Checking and repairing an imported drive
 
 Most `.hdf` files were built for WinUAE, which is forgiving about things real

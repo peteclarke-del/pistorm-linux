@@ -101,6 +101,43 @@ MACHINES: list[Machine] = [
 MACHINES_BY_KEY = {m.key: m for m in MACHINES}
 
 
+#  What each Workbench monitor driver needs of the chipset.  These are the
+#  files in DEVS:Monitors - the ones actually installed, as opposed to the
+#  copies sitting unused in STORAGE:Monitors.
+MONITOR_NEEDS = {
+    "pal": Chipset.OCS,
+    "ntsc": Chipset.OCS,
+    "a2024": Chipset.ECS,
+    "dblpal": Chipset.ECS,
+    "dblntsc": Chipset.ECS,
+    "multiscan": Chipset.ECS,
+    "euro36": Chipset.ECS,
+    "euro72": Chipset.ECS,
+    "super72": Chipset.ECS,
+    "vgaonly": Chipset.ECS,
+    "aga": Chipset.AGA,
+}
+
+CHIPSET_ORDER = [Chipset.OCS, Chipset.ECS, Chipset.AGA]
+
+
+def chipset_provides(machine: Machine, needed: Chipset) -> bool:
+    """Whether this machine's chipset is at least ``needed``."""
+    if machine.chipset is Chipset.NONE:
+        return False
+    return CHIPSET_ORDER.index(machine.chipset) >= CHIPSET_ORDER.index(needed)
+
+
+def monitors_beyond(machine: Machine, monitors: list[str]) -> list[tuple[str, Chipset]]:
+    """Installed monitor drivers this machine's chipset cannot drive."""
+    out = []
+    for name in monitors:
+        needed = MONITOR_NEEDS.get(name.lower())
+        if needed is not None and not chipset_provides(machine, needed):
+            out.append((name, needed))
+    return out
+
+
 def boot_options(machine: Machine, display: Display,
                  hdmi: tuple[int | None, int | None] = (None, None),
                  trapdoor_to_chip: bool = False) -> bootcfg.BootOptions:

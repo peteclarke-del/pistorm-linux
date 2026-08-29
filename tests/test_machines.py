@@ -276,7 +276,9 @@ class TestMachineSetup(unittest.TestCase):
         for drive in ("System", "Games", "Demos", "Work"):
             (disks / drive).mkdir(parents=True)
         (disks / "System" / "C").mkdir()
+        (disks / "System" / "S").mkdir()
         (disks / "System" / "C" / "WHDLoad").write_bytes(b"whdload")
+        (disks / "System" / "C" / "lha").write_bytes(b"lha")
         (disks / "System" / "Expansion" / "WHDLoad").mkdir(parents=True)
         (disks / "Games" / "WHDLOAD" / "AGA").mkdir(parents=True)
         (disks / "Games" / "WHDLOAD" / "OCS").mkdir(parents=True)
@@ -442,3 +444,77 @@ class TestMachineSetup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOptionalSoftware(unittest.TestCase):
+    """A Workbench from floppies has no archiver, installer or WHDLoad.
+
+    None of that is shipped here, so it is copied out of a system the user
+    already has - and only what that system actually holds is offered.
+    """
+
+    def scratch(self) -> Path:
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-pkg-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        return folder
+
+    def donor(self, *present: str) -> Path:
+        system = self.scratch() / "System"
+        (system / "C").mkdir(parents=True)
+        (system / "S").mkdir()
+        for item in present:
+            path = system / item
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+        return system
+
+    def test_only_what_the_donor_has_is_offered(self):
+        from pistorm_imager.core import packages
+        system = self.donor("C/WHDLoad", "C/lha")
+        found = packages.available(system)
+        self.assertIn("whdload", found)
+        self.assertIn("lha", found)
+        self.assertNotIn("igame", found)
+
+    def test_nothing_is_offered_without_a_donor(self):
+        from pistorm_imager.core import packages
+        self.assertEqual(packages.available(None), {})
+        self.assertEqual(packages.available(self.scratch()), {})
+
+    def test_chosen_packages_become_overlays(self):
+        from pistorm_imager.core import packages
+        system = self.donor("C/WHDLoad", "C/lha", "C/Installer")
+        overlays = packages.overlays_for(system, ["whdload", "lha"], rtg=False)
+        destinations = sorted(dest for _src, dest in overlays)
+        self.assertEqual(destinations, ["C", "C"])
+        self.assertNotIn("Installer", " ".join(s for s, _d in overlays))
+
+    def test_rtg_only_software_is_withheld_without_rtg(self):
+        from pistorm_imager.core import packages
+        system = self.donor("Libs/Picasso96/rtg.library")
+        self.assertEqual(packages.overlays_for(system, ["picasso96"], rtg=False), [])
+        self.assertTrue(packages.overlays_for(system, ["picasso96"], rtg=True))
+
+    def test_a_pimiga_folder_works_as_a_donor(self):
+        from pistorm_imager.core import packages
+        root = self.scratch()
+        system = root / "disks" / "System"
+        (system / "C").mkdir(parents=True)
+        (system / "S").mkdir()
+        (system / "C" / "lha").write_bytes(b"x")
+        self.assertEqual(packages.donor_system(root), system)
+
+    def test_the_setup_adds_them_to_a_floppy_install(self):
+        system = self.donor("C/WHDLoad", "C/lha")
+        folder = self.scratch()
+        (folder / "adfs").mkdir()
+        config = presets.machine_setup(
+            machines.MACHINES_BY_KEY["a500"], Display.NATIVE,
+            str(folder / "c.img"), False, 32 * 10 ** 9,
+            presets.Detected(adf_folder=str(folder / "adfs"), adf_version="3.1",
+                             adf_complete=True),
+            system_source="adf", package_donor=str(system),
+            package_keys=["whdload", "lha"])
+        overlays = config.amiga_partitions[0].overlays
+        self.assertTrue(overlays)
+        self.assertTrue(any("WHDLoad" in src for src, _d in overlays))
