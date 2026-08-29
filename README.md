@@ -10,7 +10,7 @@ top of it.
 
 ## What it does
 
-Three tasks, all ending with the same boot-partition customisation pass:
+Four tasks, all ending with the same boot-partition customisation pass:
 
 | Task | What happens |
 | --- | --- |
@@ -18,9 +18,10 @@ Three tasks, all ending with the same boot-partition customisation pass:
 | **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
 | **Import an Amiga hard disk image** | Takes a WinUAE/FS-UAE/HstWB `.hdf` — the Amiga drive on its own, with no partition table — and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
 
+| **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
+
 It can also produce a bare **Amiga hard disk image** instead of a card, which
 works here and in WinUAE or FS-UAE.
-| **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
 
 Along the way it will:
 
@@ -111,6 +112,12 @@ pistorm_imager/
     pfs3.py      PFS3: reads real volumes, creates and fills new ones
     compat.py    automatic emulator-to-PiStorm fixes (RTG driver, startup)
     amigainfo.py Workbench .info icons, enough to retarget tool types
+    machines.py  target machine profiles: chipset, board, Kickstart, display
+    presets.py   turns a machine and a source into a complete build
+    packages.py  optional software taken from a system you already have
+    devices.py   finding and describing removable drives
+    prepare.py   partitioning and formatting the target
+    util.py      sizes, progress reporting, stream copying
     builder.py   the orchestrator
     jobs.py      job serialisation across the privilege boundary
   ui/            the GTK4 interface
@@ -121,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 92 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 184 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -141,7 +148,9 @@ a reader and writer that share a mistake agree with each other perfectly.
 Working and tested end to end: partitioning, FAT32 creation and population,
 Emu68 installation, Kickstart handling, `config.txt`/`cmdline.txt`, RDB
 creation, image writing (including compressed sources), and expansion into
-unused space.
+unused space. On top of that: PFS3 and FFS volumes created and filled, PiMiga
+and `.hdf` drives imported and adapted, per-machine presets, the display
+handling described above, and optional software copied from a donor system.
 
 Validated against real material: a full Workbench 3.1 install built from the
 original floppy images (643 files, verified in `xdftool`), a 106 GiB HstWB
@@ -149,9 +158,17 @@ original floppy images (643 files, verified in `xdftool`), a 106 GiB HstWB
 ClassicWB `System_P96.hdf` (wrapped in a generated RDB), and a collection of
 about 100 Kickstart ROMs including Cloanto-encrypted ones.
 
-**Not yet verified:** none of this has been booted on real PiStorm hardware.
-Every structure is checked against the format specifications and against
-independent tools, but that is not the same as an Amiga booting from it.
+**Verified on hardware:** a basic Workbench-only card, built here from the
+original floppy images, has been written and booted on a real PiStorm. That
+covers the parts every build shares — the MBR, the FAT32 boot partition, the
+Emu68 and firmware payload, `config.txt` and `cmdline.txt`, the `0x76`
+partition, the Rigid Disk Block inside it and the AmigaOS install on top.
+
+**Not yet tried on hardware:** everything past that. Importing PiMiga or an
+`.hdf`; the RTG and dual-output display handling, including the switcher
+scripts; optional software copied from a donor system; multi-partition layouts.
+Those are checked against the format specifications and against independent
+tools, which is not the same as an Amiga booting from them.
 
 ## One primary source, not several
 
