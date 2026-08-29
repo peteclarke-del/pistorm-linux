@@ -153,6 +153,27 @@ about 100 Kickstart ROMs including Cloanto-encrypted ones.
 Every structure is checked against the format specifications and against
 independent tools, but that is not the same as an Amiga booting from it.
 
+## One primary source, not several
+
+Quick setup asks a single question about where the card's contents come from,
+because the answers are alternatives rather than additions:
+
+- **Default** - a new drive, which can then have Workbench installed onto it
+  from your floppy images, or be left as bare formatted partitions.
+- **PiMiga installation** - its drives, games and demos wholesale, with the
+  graphics driver replaced for the target machine.
+- **Amiga hard disk image** - the partition scheme and contents of an existing
+  `.hdf`, again with the graphics driver adapted.
+
+Choosing one drops the source it replaces. A PiMiga folder left behind after an
+image was chosen instead used to be carried into the build, producing a card
+that was neither one thing nor the other.
+
+Adding to a source rather than replacing it is a per-partition matter: any
+partition on the **Amiga partitions** page can be filled from a drive inside an
+`.hdf`, so an image can be added as a fourth drive beside PiMiga's System,
+Games and Work rather than displacing them.
+
 ## Installing AmigaOS from floppy images
 
 Point the tool at a folder of ADFs and it identifies them by volume name -
