@@ -49,8 +49,8 @@ class Display(enum.Enum):
         return {
             Display.NATIVE: "The Amiga's own video output",
             Display.RTG_HDMI: "The Pi's HDMI output (RTG)",
-            Display.BOTH: "Both - RTG on the Pi's HDMI and the Amiga's own "
-                          "video output",
+            Display.BOTH: "Both are wired - HDMI and the Amiga's own video, "
+                          "switchable on the Amiga",
             Display.FRAMETHROWER: "Framethrower - Amiga video and RTG on HDMI",
         }[self]
 
@@ -234,6 +234,12 @@ def advice(machine: Machine, display: Display) -> list[str]:
         out.append(
             "A native monitor driver is installed so native screen modes can "
             "be chosen in Prefs; without one only the default mode is offered.")
+    if display.has_choice_of_screen:
+        out.append(
+            "Which monitor is actually switched on varies, so this is only the "
+            "starting point: run Execute S:PiStorm-Use-HDMI or Execute "
+            "S:PiStorm-Use-Amiga-Video on the Amiga and reboot to move "
+            "Workbench between them. Nothing has to be rebuilt.")
     if display is Display.FRAMETHROWER:
         out.append(
             "Framethrower captures the Amiga's own video into the Pi so native "

@@ -242,7 +242,8 @@ class TestBothDisplays(unittest.TestCase):
         fixer.offer("Storage/Monitors/PAL", b"spare copy")
         volume = FakeVolume()
         fixer.finish(volume, QUIET)
-        self.assertEqual(volume.written, [])
+        self.assertNotIn(("Devs/Monitors", "PAL"), volume.written,
+                         "a driver already in place is not written over")
 
     def test_nothing_native_is_installed_for_an_rtg_only_display(self):
         fixer = compat.Compatibility(QUIET, enabled=True, rtg=True,
@@ -252,6 +253,51 @@ class TestBothDisplays(unittest.TestCase):
         fixer.finish(volume, QUIET)
         self.assertEqual(volume.written, [],
                          "nobody is looking at the Amiga's video port")
+
+    def test_the_display_can_be_switched_on_the_amiga(self):
+        """Which monitor is on today is not a property of the card."""
+        fixer = self.both(on_rtg=True)
+        fixer.offer("Devs/Monitors/PAL", b"native")
+        volume = FakeVolume()
+        fixer.finish(volume, QUIET)
+        self.assertIn(("S", "PiStorm-Use-HDMI"), volume.written)
+        self.assertIn(("S", "PiStorm-Use-Amiga-Video"), volume.written)
+
+    def test_a_dropped_rtg_screen_mode_is_kept_for_switching_back(self):
+        fixer = self.both(on_rtg=False)
+        path = "Prefs/Env-Archive/Sys/ScreenMode.prefs"
+        fixer.offer(path, b"the saved RTG mode")
+        self.assertTrue(fixer.skip(path))
+        volume = FakeVolume()
+        fixer.finish(volume, QUIET)
+        self.assertIn((compat.SWITCH_STORE, compat.SWITCH_PREFS),
+                      volume.written,
+                      "the mode is stashed, not thrown away, so switching "
+                      "back needs no rebuild")
+
+    def test_no_switcher_where_there_is_only_one_output(self):
+        for fixer in (compat.Compatibility(QUIET, rtg=True, native=False),
+                      compat.Compatibility(QUIET, rtg=False, native=True)):
+            volume = FakeVolume()
+            fixer.finish(volume, QUIET)
+            self.assertNotIn(("S", "PiStorm-Use-HDMI"), volume.written)
+
+    def test_the_scripts_guard_every_step(self):
+        """A bare failing command stops an AmigaDOS script at FAILAT 10."""
+        for text in (compat.USE_HDMI_SCRIPT, compat.USE_NATIVE_SCRIPT):
+            body = text.format(store=compat.SWITCH_STORE,
+                               prefs=compat.SWITCH_PREFS)
+            lines = [line.strip() for line in body.splitlines()
+                     if line.strip() and not line.strip().startswith(";")]
+            for line in lines:
+                if line.split()[0].lower() in ("delete", "makedir", "copy"):
+                    self.assertTrue(
+                        any(l.lower().startswith("if ") for l in lines),
+                        f"{line} is not guarded")
+            self.assertEqual(
+                sum(1 for l in lines if l.lower().startswith("if ")),
+                sum(1 for l in lines if l.lower() == "endif"),
+                f"unbalanced IF/ENDIF in:\n{body}")
 
     def test_one_output_ignores_a_stale_preference(self):
         #  Asking for Workbench on the Amiga's output when there is no RTG at
