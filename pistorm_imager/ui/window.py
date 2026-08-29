@@ -18,7 +18,8 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from ..core import (amigaos, bootcfg, builder, devices, emu68, hdfcheck, jobs,  # noqa: E402
                     kickstart, machines, prepare, presets, rdb)
-from ..core.util import GIB, MIB, Progress, human_size, parse_size  # noqa: E402
+from ..core.util import (GIB, MIB, Progress, describe_size, human_size,  # noqa: E402
+                         parse_size)
 from .widgets import FileRow, SaveRow, combo, show_full_value  # noqa: E402
 
 SELECT_CARD = "Select a card…"
@@ -381,10 +382,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_file = SaveRow("Save image as", filters=IMAGE_FILTERS,
                                   on_change=lambda _p: self._mirror_target())
         group.add(self.quick_file)
-        self.quick_card_size = Adw.EntryRow(title="Card or image size")
-        self.quick_card_size.set_text("64G")
+        self.quick_card_size = Adw.EntryRow(
+            title="Card or image size - 32GB as cards are sold, 32GiB binary")
+        self.quick_card_size.set_text("32GB")
         self.quick_card_size.connect("changed", lambda _r: self._mirror_target())
         group.add(self.quick_card_size)
+        self.quick_size_info = Adw.ActionRow(title="Size", subtitle="")
+        self.quick_size_info.set_sensitive(False)
+        group.add(self.quick_size_info)
         page.add(group)
 
         group = Adw.PreferencesGroup(
@@ -458,9 +463,28 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.file_size_row.set_text(self.quick_card_size.get_text())
             self.quick_device.set_visible(self.quick_target.get_selected() == 0)
             self.quick_file.set_visible(self.quick_target.get_selected() == 1)
+            self._show_size()
         finally:
             self._mirroring = False
         self._sync_visibility()
+
+    def _show_size(self) -> None:
+        """Spell out the size, because "32 GB" has two different meanings.
+
+        A card sold as 32 GB holds 29.8 GiB, so an image built as 32 GiB is
+        over two gigabytes too big for it.
+        """
+        text = self.quick_card_size.get_text()
+        try:
+            size = parse_size(text)
+        except ValueError as error:
+            self.quick_size_info.set_subtitle(str(error))
+            return
+        note = describe_size(size)
+        card = size / 1000 ** 3
+        if self.quick_target.get_selected() == 1:
+            note += f" - needs a card of at least {card:.0f} GB"
+        self.quick_size_info.set_subtitle(note)
 
     def _machine(self) -> machines.Machine:
         return machines.MACHINES[self.quick_machine.get_selected()]
@@ -893,8 +917,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.file_row = SaveRow("Save image as", filters=IMAGE_FILTERS,
                                 on_change=lambda _p: self._update_summary())
         self.file_group.add(self.file_row)
-        self.file_size_row = Adw.EntryRow(title="Image size (e.g. 8G)")
-        self.file_size_row.set_text("8G")
+        self.file_size_row = Adw.EntryRow(
+            title="Image size - 32GB as cards are sold, 32GiB binary")
+        self.file_size_row.set_text("32GB")
         self.file_size_row.connect("changed", lambda _r: self._update_summary())
         self.file_group.add(self.file_size_row)
         page.add(self.file_group)
@@ -998,8 +1023,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                  "an emulator.")
         partitions_ours = mode in (builder.BuildMode.FRESH, builder.BuildMode.HDF)
         self.file_size_row.set_visible(not self._writing_to_device() and partitions_ours)
-        self.file_size_row.set_title("Drive size (e.g. 2G)" if making_hdf
-                                     else "Image size (e.g. 8G)")
+        self.file_size_row.set_title(
+            "Drive size" if making_hdf
+            else "Image size - 32GB as cards are sold, 32GiB binary")
         self.boot_group.set_visible(partitions_ours and not making_hdf)
         self._update_summary()
 

@@ -23,15 +23,49 @@ def human_size(n: int) -> str:
 
 
 def parse_size(text: str) -> int:
-    """Parse '512M', '1.5G', '2048' (MiB assumed for bare numbers) into bytes."""
-    text = text.strip().upper().replace("IB", "").replace(" ", "")
+    """Parse a size, distinguishing the two meanings of "GB".
+
+    This matters more than it looks. A card sold as 32 GB holds 32 thousand
+    million bytes, which is 29.8 GiB - so an image built as "32 GiB" is over
+    two gigabytes too big to fit the card it was meant for.
+
+    ``32GB`` is decimal (10^9), ``32GiB`` binary (2^30), and a bare ``32G`` is
+    binary by the usual convention. A number on its own is MiB.
+    """
+    text = text.strip().upper().replace(" ", "")
     if not text:
         raise ValueError("empty size")
-    mult = MIB
-    if text[-1] in "BKMGT":
-        mult = {"B": 1, "K": KIB, "M": MIB, "G": GIB, "T": GIB * 1024}[text[-1]]
-        text = text[:-1]
-    return int(float(text) * mult)
+
+    binary = {"K": KIB, "M": MIB, "G": GIB, "T": GIB * 1024}
+    decimal = {"K": 1000, "M": 1000 ** 2, "G": 1000 ** 3, "T": 1000 ** 4}
+
+    unit, table = "M", binary
+    if text.endswith("IB") and len(text) > 3 and text[-3] in binary:
+        unit, text = text[-3], text[:-3]
+    elif text.endswith("B") and len(text) > 2 and text[-2] in decimal:
+        unit, table, text = text[-2], decimal, text[:-2]
+    elif text[-1] in binary:
+        unit, text = text[-1], text[:-1]
+    elif text.endswith("B"):
+        unit, table, text = "B", {"B": 1}, text[:-1]
+
+    try:
+        value = float(text)
+    except ValueError:
+        raise ValueError(f"cannot make sense of the size {text!r}") from None
+    if value < 0:
+        raise ValueError("a size cannot be negative")
+    return int(value * table.get(unit, MIB))
+
+
+def describe_size(count: int) -> str:
+    """Both readings of a size, so neither can be mistaken for the other."""
+    return f"{human_size(count)} ({count / 1000 ** 3:.2f} GB as cards are sold)"
+
+
+def fits_card(image_bytes: int, card_gb: float) -> bool:
+    """Whether an image fits a card of the advertised capacity."""
+    return image_bytes <= card_gb * 1000 ** 3
 
 
 def align_up(value: int, alignment: int) -> int:
