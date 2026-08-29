@@ -316,6 +316,36 @@ With one output there is nothing to decide, so the question is not asked, and a
 preference left over from a two-output setup is ignored rather than obeyed —
 honouring it would open Workbench on a screen nobody is looking at.
 
+### Switching without rebuilding
+
+Which monitor is actually switched on is not a property of the card. Some days
+it is the HDMI panel, some days the Amiga's monitor, some days both — so with
+two outputs wired the answer is *not* settled when the card is written. Two
+scripts are installed:
+
+```
+Execute S:PiStorm-Use-HDMI          ; Workbench on the RTG screen
+Execute S:PiStorm-Use-Amiga-Video   ; Workbench on the Amiga's own output
+```
+
+Reboot and Workbench opens where you asked. This works because AmigaOS decides
+that one way: if there is a saved screen mode in `ENVARC:Sys`, Workbench opens
+on the RTG board it names; if there is none, it falls back to a native mode. The
+scripts move that one file in and out, stashing it in `SYS:Storage/PiStorm/`, so
+nothing is lost either way and either direction can be taken as often as you
+like.
+
+The stash is filled from whatever the system already had. Nothing is fabricated:
+writing a screen mode from scratch would mean guessing a Picasso96 display ID,
+and a wrong guess opens Workbench on a screen that does not exist. If a card was
+built with no RTG mode saved anywhere, `PiStorm-Use-HDMI` says so and tells you
+to set one in Prefs/ScreenMode first — after which switching works in both
+directions for good.
+
+Every step in both scripts is guarded with `IF EXISTS`. In an AmigaDOS script a
+command that fails — deleting a file that is not there, making a drawer that
+already exists — stops the whole script at the default `FAILAT` of 10.
+
 ## Bringing an emulator installation to real hardware
 
 A system built for Amiberry or WinUAE is ordinary Amiga software — AmigaOS 3.9,

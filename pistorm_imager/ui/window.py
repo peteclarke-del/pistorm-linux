@@ -335,7 +335,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  Only a setup with both outputs has anything to decide here; with one
         #  output the answer is forced and the row is hidden.
         self.quick_workbench_screen = Adw.ComboRow(
-            title="Workbench opens on",
+            title="Workbench opens on, to start with",
+            subtitle="Both drivers are installed either way. Switch on the "
+                     "Amiga with Execute S:PiStorm-Use-HDMI or Execute "
+                     "S:PiStorm-Use-Amiga-Video, then reboot.",
             model=combo(["The RTG screen on the Pi's HDMI",
                          "A native screen on the Amiga's own video output"]))
         self.quick_workbench_screen.connect(

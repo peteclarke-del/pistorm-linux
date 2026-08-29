@@ -51,6 +51,64 @@ SCREENMODE_PREFS = ["prefs/env-archive/sys/screenmode.prefs",
 #  no native screen mode at all on a machine whose video port is in use.
 NATIVE_MONITORS = ["pal", "ntsc"]
 
+#  Which output Workbench opens on comes down to one thing: whether AmigaOS
+#  finds a saved screen mode in ENVARC:Sys.  With one there, Workbench opens on
+#  the RTG board that mode names; with none, it falls back to a native mode.
+#  That makes the choice a matter of moving one file, so it does not have to be
+#  settled when the card is written - which matters, because whether the HDMI
+#  monitor or the Amiga's own is switched on that day is not a property of the
+#  card at all.
+#
+#  Nothing here is fabricated: the saved mode is whatever the system already
+#  had, or whatever the user later saves in Prefs/ScreenMode.  Writing a screen
+#  mode from scratch would mean guessing a Picasso96 display ID, and a wrong
+#  guess opens Workbench on a screen that does not exist.
+SWITCH_STORE = "Storage/PiStorm"
+SWITCH_PREFS = "ScreenMode-RTG.prefs"
+FIBF_SCRIPT = 0x40          # the "this is a script" protection bit
+
+USE_HDMI_SCRIPT = """\
+; Open Workbench on the RTG screen (the Pi's HDMI) from the next boot.
+; Written by the PiStorm Imager.  Run it with:
+;
+;     Execute S:PiStorm-Use-HDMI
+;
+IF EXISTS SYS:{store}/{prefs}
+  Copy >NIL: SYS:{store}/{prefs} TO ENVARC:Sys/screenmode.prefs
+  Copy >NIL: SYS:{store}/{prefs} TO ENV:Sys/screenmode.prefs
+  Echo "Workbench will open on the RTG screen after a reboot."
+  Echo "Make sure the Pi's HDMI output has a monitor on it."
+ELSE
+  Echo "No RTG screen mode has been saved yet."
+  Echo "Open Prefs/ScreenMode, pick a VideoCore mode and choose Save, then"
+  Echo "run Execute S:PiStorm-Use-Amiga-Video to stash it."
+ENDIF
+"""
+
+USE_NATIVE_SCRIPT = """\
+; Open Workbench on the Amiga's own video output from the next boot.
+; Written by the PiStorm Imager.  Run it with:
+;
+;     Execute S:PiStorm-Use-Amiga-Video
+;
+; The RTG screen mode is kept, so switching back to it loses nothing.
+;
+; Every step is guarded: in an AmigaDOS script a command that fails - deleting
+; a file that is not there, making a drawer that already exists - stops the
+; whole script at the default FAILAT of 10.
+IF EXISTS ENVARC:Sys/screenmode.prefs
+  IF NOT EXISTS SYS:{store}
+    MakeDir SYS:{store}
+  ENDIF
+  Copy >NIL: ENVARC:Sys/screenmode.prefs TO SYS:{store}/{prefs}
+  Delete >NIL: ENVARC:Sys/screenmode.prefs
+ENDIF
+IF EXISTS ENV:Sys/screenmode.prefs
+  Delete >NIL: ENV:Sys/screenmode.prefs
+ENDIF
+Echo "Workbench will open on the Amiga's own video output after a reboot."
+"""
+
 
 @dataclasses.dataclass
 class Fix:
@@ -117,6 +175,9 @@ class Compatibility:
         #  installed if the target needs one and the source has none.
         self._installed_monitors: set[str] = set()
         self._stored_monitors: dict[str, bytes] = {}
+        #  A saved RTG screen mode that is being taken out of the way rather
+        #  than thrown out, so switching back to it needs no rebuild.
+        self._rtg_screenmode: bytes | None = None
 
     def add_spares(self, folder: str | Path) -> int:
         """Index replacement files that can stand in for unreadable sources."""
@@ -164,10 +225,17 @@ class Compatibility:
             return True
         if not self.workbench_on_rtg \
                 and relative.replace("\\", "/").lower() in SCREENMODE_PREFS:
-            why = ("a saved RTG screen mode would open Workbench where you "
-                   "cannot see it" if not self.rtg else
-                   "Workbench is to open on the Amiga's own video output")
-            self.note("removed", f"{relative} ({why})")
+            if self.rtg:
+                #  RTG is still in use, so this mode is worth keeping: it is
+                #  stashed rather than dropped, and the switcher puts it back.
+                self._rtg_screenmode = self._pending_data
+                self.note("moved", f"{relative} -> {SWITCH_STORE}/"
+                                   f"{SWITCH_PREFS} (Workbench is to open on "
+                                   f"the Amiga's own video output)")
+            else:
+                self.note("removed", f"{relative} (a saved RTG screen mode "
+                                     f"would open Workbench where you cannot "
+                                     f"see it)")
             return True
         return False
 
@@ -218,7 +286,33 @@ class Compatibility:
         """Add whatever drivers the target's displays need to a filled volume."""
         if self.enabled and self.native:
             self._install_native_monitor(target)
+        if self.enabled and self.rtg and self.native:
+            self._install_display_switch(target)
         self._finish_rtg(target, progress)
+
+    def _install_display_switch(self, target) -> None:
+        """Let the display be changed on the Amiga, without rebuilding the card.
+
+        Which monitor is switched on today is not something the card can know,
+        so with both outputs wired the answer is not fixed at build time: two
+        scripts move the saved screen mode in and out of ENVARC:Sys, which is
+        the whole of what decides where Workbench opens.
+        """
+        if self._rtg_screenmode is not None:
+            store = target.makedirs(SWITCH_STORE)
+            target.write_file(store, SWITCH_PREFS, self._rtg_screenmode,
+                              check_existing=False)
+            self.note("added", f"{SWITCH_STORE}/{SWITCH_PREFS} (the RTG screen "
+                               f"mode, kept so it can be switched back on)")
+        scripts = target.makedirs("S")
+        for name, text in (("PiStorm-Use-HDMI", USE_HDMI_SCRIPT),
+                           ("PiStorm-Use-Amiga-Video", USE_NATIVE_SCRIPT)):
+            body = text.format(store=SWITCH_STORE, prefs=SWITCH_PREFS)
+            target.write_file(scripts, name, body.encode("latin-1"),
+                              protect=FIBF_SCRIPT, check_existing=True)
+        self.note("added", "S/PiStorm-Use-HDMI and S/PiStorm-Use-Amiga-Video "
+                           "(move Workbench between the two outputs, then "
+                           "reboot)")
 
     def _install_native_monitor(self, target) -> None:
         """Make sure native screen modes can be chosen at all.
