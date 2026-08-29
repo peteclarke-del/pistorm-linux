@@ -312,26 +312,97 @@ def _copy_volume(source, target, destination: str, progress: Progress,
 ILLEGAL_AMIGA_CHARS = set(':/')
 
 
-def amiga_name(name: str) -> tuple[str, bool]:
-    """Convert a host file name to a legal Amiga one.
+#  An icon is always "<name>.info", and AmigaDOS allows 30 characters, so a
+#  file that has an icon can only use 25 of them.  Truncating the two
+#  independently is what orphans an icon from its file - and a WHDLoad game is
+#  launched from the tool types in its icon, so an orphaned icon is a game that
+#  no longer starts.
+ICON_SUFFIX = ".info"
+MAX_WITH_ICON = amigafs.MAX_NAME - len(ICON_SUFFIX)
 
-    Returns the name and whether it had to be changed, so the caller can say so
-    rather than quietly renaming somebody's files.
-    """
+
+def _clean(name: str) -> str:
     cleaned = "".join("_" if c in ILLEGAL_AMIGA_CHARS or ord(c) < 32 else c
                       for c in name)
     try:
         cleaned.encode("latin-1")
     except UnicodeEncodeError:
         cleaned = cleaned.encode("latin-1", errors="replace").decode("latin-1")
-    if len(cleaned) > amigafs.MAX_NAME:
+    return cleaned
+
+
+def _fit(name: str, limit: int, taken: set[str]) -> str:
+    """Shorten ``name`` to ``limit`` characters, keeping it unique."""
+    cleaned = _clean(name)
+    if len(cleaned) > limit:
         stem, dot, ext = cleaned.rpartition(".")
-        if dot and len(ext) <= 6:
-            keep = amigafs.MAX_NAME - len(ext) - 1
-            cleaned = stem[:keep] + "." + ext
+        if dot and 0 < len(ext) <= 6 and len(ext) + 1 < limit:
+            stem = stem[:limit - len(ext) - 1].rstrip(".")
+            cleaned = f"{stem}.{ext}"
         else:
-            cleaned = cleaned[:amigafs.MAX_NAME]
-    return cleaned, cleaned != name
+            cleaned = cleaned[:limit]
+    cleaned = cleaned.rstrip(".") or "_"
+
+    if cleaned.lower() not in taken:
+        return cleaned
+    #  Make room for a counter rather than silently colliding: two entries with
+    #  the same name in one directory means only the first is ever found.
+    for index in range(2, 1000):
+        suffix = f"_{index}"
+        stem, dot, ext = cleaned.rpartition(".")
+        if dot and 0 < len(ext) <= 6:
+            base = stem[:max(1, limit - len(ext) - 1 - len(suffix))].rstrip(".")
+            candidate = f"{base}{suffix}.{ext}"
+        else:
+            candidate = cleaned[:max(1, limit - len(suffix))] + suffix
+        if candidate.lower() not in taken:
+            return candidate
+    raise RuntimeError(f"cannot find a free name for {name!r}")
+
+
+def amiga_name(name: str, limit: int = amigafs.MAX_NAME) -> tuple[str, bool]:
+    """Convert one host file name to a legal Amiga one."""
+    fitted = _fit(name, limit, set())
+    return fitted, fitted != name
+
+
+def name_limit(target) -> int:
+    """How long a file name the target volume will accept."""
+    return getattr(target, "max_name_length", amigafs.MAX_NAME)
+
+
+def plan_names(names: list[str], limit: int = amigafs.MAX_NAME) -> dict[str, str]:
+    """Choose Amiga names for one directory's entries, keeping icons paired.
+
+    Names are decided for a whole directory at once because the choices are not
+    independent: an icon has to end up named after whatever its file was called,
+    and two entries must not be shortened onto the same name.
+
+    ``limit`` comes from the target volume.  FFS allows 30 characters; PFS3
+    reads its own limit from the volume and can take far more, which matters
+    because renaming a file breaks the WHDLoad slave or tool type that names it.
+    """
+    icon_bases = {n[:-len(ICON_SUFFIX)] for n in names
+                  if n.lower().endswith(ICON_SUFFIX)}
+    plain = [n for n in names if not n.lower().endswith(ICON_SUFFIX)]
+
+    mapping: dict[str, str] = {}
+    taken: set[str] = set()
+    #  Decide the files first; the icons then follow their files.
+    for original in sorted(set(plain) | icon_bases):
+        room = limit - len(ICON_SUFFIX) if original in icon_bases else limit
+        chosen = _fit(original, max(1, room), taken)
+        taken.add(chosen.lower())
+        mapping[original] = chosen
+
+    for original in names:
+        if original.lower().endswith(ICON_SUFFIX):
+            base = original[:-len(ICON_SUFFIX)]
+            mapping[original] = mapping[base] + ICON_SUFFIX
+            taken.add(mapping[original].lower())
+    #  An icon's base name is worked out even when no such file is present;
+    #  return a mapping for exactly the entries that were asked about.
+    return {name: mapping[name] for name in names}
 
 
 def _read_source(path: Path, relative: str, compat, progress: Progress,
@@ -400,16 +471,27 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
     base = target.makedirs(destination) if destination else target.root
     dir_blocks: dict[str, int] = {"": base}
     copied = renamed = 0
+
+    #  Decide names a directory at a time, so an icon keeps the name of the
+    #  file it belongs to and nothing collides.
+    limit = name_limit(target)
+    by_parent: dict[str, list[str]] = {}
+    for _path, relative, _is_dir in entries:
+        parent, _, name = relative.rpartition("/")
+        by_parent.setdefault(parent, []).append(name)
+    plans = {parent: plan_names(names, limit)
+             for parent, names in by_parent.items()}
+
     for index, (path, relative, is_dir) in enumerate(entries, start=1):
         progress.check_cancelled()
         parent_path, _, raw_name = relative.rpartition("/")
         parent = dir_blocks.get(parent_path)
         if parent is None:
             continue                      # parent was skipped; skip its contents
-        name, changed = amiga_name(raw_name)
-        renamed += 1 if changed else 0
-        if changed:
-            progress.log(f"  renamed {raw_name!r} -> {name!r}")
+        name = plans[parent_path][raw_name]
+        if name != raw_name:
+            renamed += 1
+            progress.log(f"  {relative} -> {name}")
         try:
             if is_dir:
                 #  Nothing can already exist on a freshly formatted volume, and
@@ -428,6 +510,11 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
             progress.log(f"  skipped {relative}: {error}")
         if index % 200 == 0 or index == len(entries):
             progress.fraction(index / len(entries))
+    if renamed:
+        progress.log(f"WARNING: {renamed} name(s) had to be shortened to fit "
+                     f"{limit} characters. Software that refers to a file by "
+                     f"name - a WHDLoad slave, an icon's tool types - may no "
+                     f"longer find it. A PFS3 partition avoids this.")
     if compat is not None:
         compat.finish(target, progress)
     return copied, renamed

@@ -158,6 +158,7 @@ class Pfs3Volume:
         (self.blocksfree, self.alwaysfree, self.roving_ptr, self.deldir,
          self.disksize, self.extension) = struct.unpack_from(">IIIIII", root, 68)
 
+        self.fnsize = 32
         self.split_anodes = bool(self.options & MODE_SPLITTED_ANODES)
         self.superindex = bool(self.options & MODE_SUPERINDEX)
         self.dir_extension = bool(self.options & MODE_DIR_EXTENSION)
@@ -170,15 +171,26 @@ class Pfs3Volume:
         #  so the union starts at 96 - reading it at 92 yields a spurious
         #  leading zero and every lookup then misses by one slot.
         idx = 96
+        #  The extension block carries the filename limit for every volume, not
+        #  only the ones large enough to need a super index.
+        extension_block = None
+        if self.extension:
+            try:
+                candidate = self._sectors(self.extension, self.rescluster)
+                if candidate[0:2] == ID_EXTENSION:
+                    extension_block = candidate
+                    self.fnsize = struct.unpack_from(">H", candidate, 56)[0] or 32
+            except Pfs3Error:
+                extension_block = None
+
         if self.superindex:
             self.bitmap_index = list(struct.unpack_from(">104I", root, idx))
             self.index_blocks: list[int] = []
             self.super_index: list[int] = []
-            if self.extension:
-                ext = self._sectors(self.extension, self.rescluster)
-                if ext[0:2] == ID_EXTENSION:
-                    #  superindex[16] follows the three not_used_2 words, at 64.
-                    self.super_index = list(struct.unpack_from(">16I", ext, 64))
+            if extension_block is not None:
+                #  superindex[16] follows the three not_used_2 words, at 64.
+                self.super_index = list(
+                    struct.unpack_from(">16I", extension_block, 64))
         else:
             self.bitmap_index = list(struct.unpack_from(">5I", root, idx))
             self.index_blocks = list(struct.unpack_from(">99I", root, idx + 20))
@@ -320,6 +332,10 @@ class Pfs3Volume:
             current = entry.anode
         return entry
 
+    @property
+    def max_name_length(self) -> int:
+        return max(1, self.fnsize - 1)
+
     def describe(self) -> str:
         from .util import human_size
         return (f'"{self.name}" PFS3, {human_size(self.disksize * SECTOR)}, '
@@ -331,6 +347,12 @@ class Pfs3Volume:
 # ---------------------------------------------------------------- writing
 
 VERNUM, REVNUM = 19, 2              # the handler version we claim compatibility with
+#  PFS3 reads its filename limit from the volume itself (rootblock extension
+#  "fnsize"); the handler is built for FNSIZE 108.  pfs3aio's own formatter
+#  writes a conservative 32, which would force names to be shortened - and a
+#  renamed file breaks the WHDLoad slave or tool type that refers to it.
+MAX_FNSIZE = 107
+DEFAULT_FNSIZE = MAX_FNSIZE
 MAXSMALLBITMAPINDEX = 4
 MAXBITMAPINDEX = 103
 MAXNUMRESERVED = 4096 + 255 * 1024 * 8
@@ -376,13 +398,15 @@ class Pfs3Writer:
     """
 
     def __init__(self, handle: BinaryIO, offset: int, total_sectors: int,
-                 name: str, reserved_blksize: int = 1024):
+                 name: str, reserved_blksize: int = 1024,
+                 fnsize: int = DEFAULT_FNSIZE):
         if total_sectors < 1024:
             raise Pfs3Error("volume is too small for PFS3")
         self.f = handle
         self.base = offset
         self.total_sectors = total_sectors
         self.name = name[:DNSIZE - 2]
+        self.fnsize = max(32, min(int(fnsize), MAX_FNSIZE))
 
         self.reserved_blksize = reserved_blksize
         self.rescluster = reserved_blksize // SECTOR
@@ -453,6 +477,11 @@ class Pfs3Writer:
     @property
     def free_bytes(self) -> int:
         return (self.data_blocks - self._data_used) * SECTOR
+
+    @property
+    def max_name_length(self) -> int:
+        """Longest file name this volume accepts."""
+        return self.fnsize - 1
 
     def _new_reserved_block(self, block_id: bytes, seqnr: int = 0) -> tuple[int, bytearray]:
         sector = self.alloc_reserved()
@@ -614,7 +643,7 @@ class Pfs3Writer:
         block[0:2] = ID_EXTENSION
         struct.pack_into(">I", block, 8, 1)             # datestamp
         struct.pack_into(">I", block, 12, (VERNUM << 16) + REVNUM)
-        struct.pack_into(">H", block, 56, 32)           # fnsize
+        struct.pack_into(">H", block, 56, self.fnsize)
         if self.superindex:
             for index, sector in enumerate(self.super_blocks[:16]):
                 struct.pack_into(">I", block, 64 + index * 4, sector)
@@ -678,7 +707,7 @@ class Pfs3Writer:
     def _direntry(self, name: str, anodenr: int, is_dir: bool, size: int,
                   protection: int = 0, comment: str = "",
                   days: int = 0, mins: int = 0, ticks: int = 0) -> bytes:
-        raw = name.encode("latin-1", errors="replace")[:30]
+        raw = name.encode("latin-1", errors="replace")[:self.max_name_length]
         note = comment.encode("latin-1", errors="replace")[:79]
         body = bytearray(18)
         struct.pack_into(">b", body, 1, ST_USERDIR if is_dir else ST_FILE)

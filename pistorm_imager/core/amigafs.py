@@ -423,6 +423,11 @@ class VolumeWriter(Volume):
     def free_bytes(self) -> int:
         return self.free_blocks * BLOCK
 
+    @property
+    def max_name_length(self) -> int:
+        """FFS has a hard 30-character limit; PFS3 does not."""
+        return MAX_NAME
+
     def _write_bitmap_pointers(self) -> None:
         root = bytearray(self.read_block(self.root))
         in_root = self._bitmap_blocks[:ROOT_BM_PAGES]

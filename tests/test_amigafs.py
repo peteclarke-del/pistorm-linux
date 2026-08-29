@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pistorm_imager.core import amigafs, amigaos  # noqa: E402
+from pistorm_imager.core import amigafs, amigaos, pfs3  # noqa: E402
 from pistorm_imager.core.amigafs import Volume, VolumeWriter  # noqa: E402
 from pistorm_imager.core.util import MIB, Progress  # noqa: E402
 
@@ -252,3 +252,87 @@ class TestRealWorkbenchDisks(_Scratch):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestNamePlanning(unittest.TestCase):
+    """Renaming a file breaks whatever refers to it by name.
+
+    A WHDLoad slave and an icon's tool types both name files, so shortening one
+    silently stops a game working.  Where a name must be shortened it has to be
+    done consistently, and where it need not be it must be left alone.
+    """
+
+    LONG = [
+        "backslide-cosmicorbs-hdd.exe", "backslide-cosmicorbs-hdd.exe.info",
+        "1%25AiDS 68060 experimental.exe",
+        "1%25AiDS 68060 experimental.exe.info",
+        "test_engine_perlintunel2.vars.info",
+        "BOOM!PARTY_2025_Invitation4.nfo",
+        "BOOM!PARTY_2025_Invitation4.nfo.info",
+    ]
+
+    def test_icons_keep_the_name_of_their_file(self):
+        plan = amigaos.plan_names(self.LONG, limit=30)
+        for original in self.LONG:
+            if not original.endswith(".info"):
+                continue
+            base = original[:-len(".info")]
+            if base in plan:
+                self.assertEqual(plan[original], plan[base] + ".info",
+                                 f"{original} was orphaned from its file")
+
+    def test_nothing_exceeds_the_limit(self):
+        for limit in (30, 40, 106):
+            plan = amigaos.plan_names(self.LONG, limit=limit)
+            for original, chosen in plan.items():
+                self.assertLessEqual(len(chosen), limit, f"{original} -> {chosen}")
+
+    def test_no_two_entries_collide(self):
+        plan = amigaos.plan_names(self.LONG, limit=30)
+        lowered = [n.lower() for n in plan.values()]
+        self.assertEqual(len(set(lowered)), len(lowered),
+                         "two entries shortened onto the same name")
+
+    def test_truncation_never_leaves_a_double_dot(self):
+        plan = amigaos.plan_names(self.LONG, limit=30)
+        for chosen in plan.values():
+            self.assertNotIn("..", chosen)
+
+    def test_names_that_fit_are_left_alone(self):
+        plan = amigaos.plan_names(self.LONG, limit=106)
+        self.assertEqual(plan, {n: n for n in self.LONG},
+                         "a name that fits must not be touched")
+
+    def test_a_generous_limit_avoids_renaming_entirely(self):
+        short = ["Disk.info", "C", "S", "Startup-Sequence"]
+        self.assertEqual(amigaos.plan_names(short, limit=30),
+                         {n: n for n in short})
+
+
+class TestNameLimits(_Scratch):
+    def test_ffs_reports_thirty(self):
+        volume, handle, _path = new_volume(self.scratch(), 8000)
+        self.assertEqual(amigaos.name_limit(volume), 30)
+        volume.close()
+        handle.close()
+
+    def test_pfs3_reports_its_own_and_keeps_long_names(self):
+        folder = self.scratch()
+        path = folder / "vol.hdf"
+        blocks = 60000
+        handle = open(path, "w+b")
+        self.addCleanup(handle.close)
+        handle.truncate(blocks * amigafs.BLOCK)
+        volume = pfs3.Pfs3Writer(handle, 0, blocks, "Games")
+        volume.format()
+        self.assertGreater(amigaos.name_limit(volume), 30)
+
+        long_name = "1%25AiDS 68060 experimental.exe.info"
+        volume.write_file(volume.root, long_name, b"x" * 64)
+        volume.close()
+        handle.flush()
+
+        reader = pfs3.Pfs3Volume(open(path, "rb"))
+        self.addCleanup(reader.f.close)
+        self.assertGreater(reader.fnsize, 32, "the volume records its own limit")
+        self.assertIn(long_name, [e.name for e in reader.listdir()])
