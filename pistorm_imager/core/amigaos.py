@@ -598,6 +598,34 @@ def _keep_first(group: list[str], used: set[str]) -> list[str]:
     return named + [name for name in group if name != named[0]]
 
 
+def _encoding_of(name: str) -> str:
+    """Which encoding the host used to store this name."""
+    try:
+        os.fsencode(name).decode("utf-8")
+    except UnicodeDecodeError:
+        return "ISO-8859-1"
+    return "UTF-8"
+
+
+def _describe_left_out(relative: str, kept: str) -> str:
+    """Say why a file could not be copied, in terms of the names involved.
+
+    Usually the two names differ in case.  Sometimes they are the *same* name
+    stored two ways - "espa\xf1a.country" as an Amiga writes it, and the same
+    text as UTF-8 - and then both print identically, so reporting that one
+    cannot be told from the other reads as nonsense unless the encodings are
+    named.  PiMiga's Locale drawer has several of these.
+    """
+    shown, kept_shown = _printable(relative), _printable(kept)
+    if shown.rpartition("/")[2] != kept_shown:
+        return (f"{shown} left out: AmigaDOS cannot tell it from {kept_shown}, "
+                f"which is the copy that is kept")
+    keeps = _encoding_of(kept)
+    return (f"{shown} left out: the source stores this name twice, as "
+            f"{_encoding_of(relative.rpartition('/')[2])} and as {keeps}; "
+            f"AmigaDOS has one name for both, so the {keeps} copy is kept")
+
+
 def _identical(first: Path, second: Path) -> bool:
     """Whether two host files hold exactly the same bytes."""
     try:
@@ -760,9 +788,7 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
         if placed.reason == "unreachable":
             #  Worth naming one by one: unlike an identical copy, this file
             #  held something of its own, and the card will not have it.
-            progress.log(f"  {_printable(relative)} left out: AmigaDOS cannot "
-                         f"tell it from {_printable(placed.instead)}, which is "
-                         f"the copy that is kept")
+            progress.log("  " + _describe_left_out(relative, placed.instead))
             continue
         if placed.reason in ("charset", "shortened", "clash"):
             progress.log(f"  {_printable(relative)} -> {_printable(placed.name)}")
@@ -793,10 +819,17 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
     shortened = changes.get("shortened", 0)
     renamed = shortened + changes.get("clash", 0) + changes.get("charset", 0)
     if shortened:
+        #  Only worth suggesting where there is somewhere to go: PFS3 already
+        #  gives far more than FFS's thirty, and telling someone to switch to
+        #  the file system they are already using is no help at all.
+        advice = (" A PFS3 partition avoids this."
+                  if limit <= amigafs.MAX_NAME else
+                  " These names are simply longer than any Amiga file system "
+                  "will hold.")
         progress.log(f"WARNING: {shortened} name(s) had to be shortened to fit "
                      f"{limit} characters. Software that refers to a file by "
                      f"name - a WHDLoad slave, an icon's tool types - may no "
-                     f"longer find it. A PFS3 partition avoids this.")
+                     f"longer find it.{advice}")
     if changes.get("clash"):
         progress.log(f"  {changes['clash']} name(s) differed from another in "
                      f"the same drawer only in case but held different "

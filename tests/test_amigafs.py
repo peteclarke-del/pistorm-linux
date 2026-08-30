@@ -423,10 +423,17 @@ class TestInstallingAHostTree(_Scratch):
     leaves a game looking for half of its files.
     """
 
-    def install(self, build, blocks: int = 20000):
+    def install(self, build, blocks: int = 20000, pfs3_volume: bool = False):
         source = self.scratch()
         build(source)
-        volume, handle, path = new_volume(self.scratch(), blocks)
+        if pfs3_volume:
+            path = self.scratch() / "vol.hdf"
+            handle = open(path, "w+b")
+            handle.truncate(blocks * amigafs.BLOCK)
+            volume = pfs3.Pfs3Writer(handle, 0, blocks, "Test")
+            volume.format()
+        else:
+            volume, handle, path = new_volume(self.scratch(), blocks)
         log: list[str] = []
         copied, renamed = amigaos.install_tree(
             volume, source, "", Progress(on_log=log.append))
@@ -434,7 +441,7 @@ class TestInstallingAHostTree(_Scratch):
         handle.close()
         back = open(path, "rb")
         self.addCleanup(back.close)
-        self.reader = Volume(back)
+        self.reader = (pfs3.Pfs3Volume(back, 0) if pfs3_volume else Volume(back))
         listing = {p: e for p, e in self.reader.walk()}
         return listing, copied, renamed, log
 
@@ -526,7 +533,39 @@ class TestInstallingAHostTree(_Scratch):
             (source / ("a-very-long-name-that-ffs-cannot-hold" * 2)).write_bytes(b"a")
         _listing, _copied, renamed, log = self.install(build)
         self.assertEqual(renamed, 1)
-        self.assertTrue([line for line in log if "shortened to fit 30" in line], log)
+        warning = "".join(line for line in log if "shortened to fit 30" in line)
+        self.assertTrue(warning, log)
+        self.assertIn("PFS3 partition avoids this", warning,
+                      "on FFS there is somewhere better to go")
+
+    def test_pfs3_is_not_told_to_switch_to_pfs3(self):
+        """Advice to use the file system already in use is no advice at all."""
+        def build(source: Path):
+            (source / ("a-name-far-longer-than-even-pfs3-will-hold" * 4)
+             ).write_bytes(b"a")
+        _listing, _copied, renamed, log = self.install(build, blocks=60000,
+                                                       pfs3_volume=True)
+        self.assertEqual(renamed, 1)
+        warning = "".join(line for line in log if "shortened to fit" in line)
+        self.assertTrue(warning, log)
+        self.assertNotIn("PFS3 partition avoids this", warning)
+
+    def test_the_same_name_stored_two_ways_is_explained_as_such(self):
+        """Both spellings print identically, so the message has to say more.
+
+        PiMiga's Locale drawer holds "espa\xf1a.country" twice: once with the
+        bytes an Amiga writes, once as UTF-8. Reporting that one cannot be told
+        from the other reads as nonsense when the two are shown the same way.
+        """
+        def build(source: Path):
+            (source / os.fsdecode(b"espa\xf1a.country")).write_bytes(b"the 2018 one")
+            (source / "espa\u00f1a.country").write_bytes(b"the 2021 one")
+        listing, _copied, _renamed, log = self.install(build)
+        self.assertEqual(list(listing), ["espa\u00f1a.country"], listing)
+        message = "".join(line for line in log if "left out" in line)
+        self.assertIn("stores this name twice", message)
+        self.assertIn("ISO-8859-1", message)
+        self.assertIn("UTF-8", message)
 
     def test_an_iso_8859_1_name_reaches_the_volume_unchanged(self):
         def build(source: Path):
