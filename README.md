@@ -191,6 +191,22 @@ partition on the **Amiga partitions** page can be filled from a drive inside an
 `.hdf`, so an image can be added as a fourth drive beside PiMiga's System,
 Games and Work rather than displacing them.
 
+### What Quick setup decides, and what it leaves alone
+
+Applying a quick setup rebuilds the whole layout from the machine, the card and
+the source — that is what the page is for. It has no opinion about the settings
+made elsewhere, so those are carried through untouched: the WiFi network, the
+volume name, the Emu68 release and any local archive, a Cloanto Kickstart key,
+the source image and `.hdf` on the Source page, and the boot switches only a
+person can decide (overclock, CM4 antenna, swapping `DF0:` with `DF1:`, letting
+the Amiga write to the whole card). Applying used to return every one of them to
+its default and then save the session in that state, so they could not be kept
+at all.
+
+The one field the two share is **Additional cmdline.txt options**: the trapdoor
+switch puts `move_slow_to_chip` there and anything else in the box was typed by
+hand. Both survive, and turning the switch off removes only its own option.
+
 ## Installing AmigaOS from floppy images
 
 Point the tool at a folder of ADFs and it identifies them by volume name -
