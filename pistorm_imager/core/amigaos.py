@@ -536,13 +536,17 @@ class _Placement:
                               # "merged" or "duplicate"
 
 
-def _printable(text: str) -> str:
-    """A host name that is safe to write to a log.
+def _printable(path: str) -> str:
+    """A host path in a form that can be read, and written to a log.
 
     Names Linux could not decode arrive as surrogate escapes, which no stream
-    can encode; showing the escape is better than crashing the copy.
+    can encode and nobody can read: a log line about
+    "Locale/Countries/espa\udcf1a.country" names no file the user recognises.
+    Each part is shown as what it says, which is also what it will be called on
+    the Amiga.  Parts are taken one at a time because a single tree can hold
+    both spellings, and reading the whole path in either would garble the other.
     """
-    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+    return "/".join(_host_text(part) for part in path.split("/"))
 
 
 def _identical(first: Path, second: Path) -> bool:
