@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 194 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 197 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -399,9 +399,14 @@ differences have to be settled on the way in:
 * **Case.** AmigaDOS cannot tell `Bombuzal.slave` from `Bombuzal.Slave`, and a
   collection built on Linux is full of such pairs. Where the two files hold
   identical bytes — nearly always — the second is left out; where they genuinely
-  differ, one is renamed, because only one of the two can exist. Two drawers of
-  the same name are **merged into one** rather than one of them renamed, which
-  would leave a game looking for half of its files.
+  differ, one is renamed, because only one of the two can exist. Which one gives
+  way is decided by the drawer's icon: a WHDLoad icon names its slave in a
+  `SLAVE=` tool type, and an emulator mounting the host directory opens that
+  exact spelling, so keeping the other one would start a *different build* of
+  the game here than the same collection runs there. On PiMiga's Games drive
+  that is 12 of the 40 pairs. Two drawers of the same name are **merged into
+  one** rather than one of them renamed, which would leave a game looking for
+  half of its files.
 * **Length.** FFS allows 30 characters, PFS3 far more. Only a name that really
   had to be cut short is reported as shortened, and that is the warning worth
   acting on: a WHDLoad slave and an icon's tool types both name files, so a
