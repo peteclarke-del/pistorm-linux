@@ -170,6 +170,13 @@ def workbench_on_rtg(display: Display, prefer_rtg: bool = True) -> bool:
     return prefer_rtg
 
 
+#  Options this module may put into cmdline.txt.  They share the one
+#  "additional options" field with whatever a person typed there by hand, so
+#  anything that puts the two together has to know which words are ours - to
+#  add them, and to take them away again when the choice behind them changes.
+CMDLINE_OPTIONS = ("move_slow_to_chip",)
+
+
 def boot_options(machine: Machine, display: Display,
                  hdmi: tuple[int | None, int | None] = (None, None),
                  trapdoor_to_chip: bool = False) -> bootcfg.BootOptions:
@@ -185,7 +192,7 @@ def boot_options(machine: Machine, display: Display,
     options.vbr_move = False
 
     if machine.trapdoor_ram and trapdoor_to_chip:
-        options.extra_cmdline = "move_slow_to_chip"
+        options.extra_cmdline = "move_slow_to_chip"       # in CMDLINE_OPTIONS
     if machine.chipset in (Chipset.OCS, Chipset.ECS):
         options.enable_slow_ram = True
 
