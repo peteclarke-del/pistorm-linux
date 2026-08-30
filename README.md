@@ -397,23 +397,33 @@ differences have to be settled on the way in:
   form (`čeština` → `cestina`) rather than replaced with `?`, which AmigaDOS
   reads as a pattern wildcard.
 * **Case.** AmigaDOS cannot tell `Bombuzal.slave` from `Bombuzal.Slave`, and a
-  collection built on Linux is full of such pairs. Where the two files hold
-  identical bytes — nearly always — the second is left out; where they genuinely
-  differ, one is renamed, because only one of the two can exist. Which one gives
-  way is decided by the drawer's icon: a WHDLoad icon names its slave in a
-  `SLAVE=` tool type, and an emulator mounting the host directory opens that
-  exact spelling, so keeping the other one would start a *different build* of
-  the game here than the same collection runs there. On PiMiga's Games drive
-  that is 12 of the 40 pairs. Two drawers of the same name are **merged into
-  one** rather than one of them renamed, which would leave a game looking for
-  half of its files.
+  collection built on Linux is full of such pairs — on PiMiga's Games drive,
+  289 of them. Only one of each can exist here, and, which is what decides the
+  matter, only one can be *reached*: every spelling of a name finds the same
+  entry, so a second copy kept as `Bombuzal_2.slave` is a file nothing would
+  ever ask for. The second copy is therefore left out, and the card holds what
+  the drawer always looked like to the Amiga.
+
+  Which one stays is decided by the drawer's icon. A WHDLoad icon names its
+  slave in a `SLAVE=` tool type, and an emulator mounting the host directory
+  opens that exact spelling; keeping the other would run a *different build* of
+  the game here than the same collection runs there. That is not a matter of
+  taking the newest file — in seven of PiMiga's pairs the icon names a slave
+  years older than the one beside it, and reproducing what it does means
+  keeping the old one. Every file left out is named in the log.
+
+  Two drawers of the same name are **merged into one** rather than either being
+  renamed, which would leave a game looking for half of its files.
 * **Length.** FFS allows 30 characters, PFS3 far more. Only a name that really
   had to be cut short is reported as shortened, and that is the warning worth
   acting on: a WHDLoad slave and an icon's tool types both name files, so a
   shortened name can stop a game starting. A PFS3 partition avoids it.
 
 Across PiMiga 5's System, Demos and Games drives this brings the names that have
-to change down from 309 to 48, and leaves every accented locale name alone.
+to change down from 309 to 3 — all three of them names that were already
+corrupt in the source — and leaves every accented locale name alone. Nothing is
+renamed to make room for something else any more, so no `_2` names appear on the
+card at all.
 
 ## Hard disk images: two shapes
 

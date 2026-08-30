@@ -542,7 +542,8 @@ class _Placement:
     parent: str               # Amiga path of the drawer holding it
     path: str                 # Amiga path of the entry itself
     reason: str = ""          # "", "charset", "shortened", "clash",
-                              # "merged" or "duplicate"
+                              # "merged", "duplicate" or "unreachable"
+    instead: str = ""         # the entry that took its name, when left out
 
 
 def _printable(path: str) -> str:
@@ -616,12 +617,15 @@ def _place_entries(entries: list[tuple[Path, str, bool]],
     and the same thing here.
 
     Collections assembled on Linux are full of those: "Bombuzal.slave" beside
-    an identical "Bombuzal.Slave", "data" beside "Data".  Inventing
-    "Bombuzal_2.slave" for the second copy wastes space and says a name had to
-    change when nothing was wrong with it, and renaming one of the two drawers
-    leaves a game looking for half of its files.  So an exact duplicate is left
-    out, two drawers of the same name are merged into one, and only entries
-    that genuinely differ are still renamed.
+    an identical "Bombuzal.Slave", "data" beside "Data".  Only one of each pair
+    can exist here, and - this is the part that decides what to do with the
+    other - only one of them can be *reached*: every spelling of a name finds
+    the same entry, so a second copy kept under an invented name like
+    "Bombuzal_2.slave" is a file nothing will ever open.  It is left out
+    instead, whether or not it holds the same bytes.  Two drawers of the same
+    name are merged into one rather than one of them renamed, which would leave
+    a game looking for half of its files.  A name is only really renamed where
+    a file clashes with a drawer, which cannot be resolved either way.
     """
     by_parent: dict[str, list[tuple[Path, str, bool]]] = {}
     for path, relative, is_dir in entries:
@@ -651,7 +655,8 @@ def _place_entries(entries: list[tuple[Path, str, bool]],
         survivors: list[str] = []
         preferred: set[str] = set()       # the spelling that keeps its name
         joins: dict[str, str] = {}        # merged drawer -> the one it joins
-        duplicates: set[str] = set()
+        duplicates: set[str] = set()      # an identical copy of another
+        unreachable: dict[str, str] = {}  # differs, but shares another's name
         for group in same_name.values():
             if len(group) > 1:
                 group = _keep_first(group, used)
@@ -663,10 +668,15 @@ def _place_entries(entries: list[tuple[Path, str, bool]],
                 other_path, other_is_dir, _ = members[other]
                 if keep_is_dir and other_is_dir:
                     joins[other] = keep
-                elif not keep_is_dir and not other_is_dir \
-                        and _identical(keep_path, other_path):
-                    duplicates.add(other)
+                elif not keep_is_dir and not other_is_dir:
+                    #  Same bytes or not, nothing on the Amiga could open it.
+                    if _identical(keep_path, other_path):
+                        duplicates.add(other)
+                    else:
+                        unreachable[other] = keep
                 else:
+                    #  A file and a drawer of the same name: neither can give
+                    #  way to the other, so one has to be renamed after all.
                     survivors.append(other)
 
         chosen = _plan_names(sorted(survivors), limit, frozenset(preferred))
@@ -676,6 +686,11 @@ def _place_entries(entries: list[tuple[Path, str, bool]],
             if name in duplicates:
                 placements[relative] = _Placement("", amiga_parent, "",
                                                   "duplicate")
+                continue
+            if name in unreachable:
+                placements[relative] = _Placement("", amiga_parent, "",
+                                                  "unreachable",
+                                                  unreachable[name])
                 continue
             amiga_name, reason = chosen[joins.get(name, name)]
             if name in joins:
@@ -742,6 +757,13 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
             changes[placed.reason] = changes.get(placed.reason, 0) + 1
         if placed.reason == "duplicate":
             continue
+        if placed.reason == "unreachable":
+            #  Worth naming one by one: unlike an identical copy, this file
+            #  held something of its own, and the card will not have it.
+            progress.log(f"  {_printable(relative)} left out: AmigaDOS cannot "
+                         f"tell it from {_printable(placed.instead)}, which is "
+                         f"the copy that is kept")
+            continue
         if placed.reason in ("charset", "shortened", "clash"):
             progress.log(f"  {_printable(relative)} -> {_printable(placed.name)}")
         try:
@@ -786,6 +808,11 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
     if changes.get("duplicate"):
         progress.log(f"  {changes['duplicate']} file(s) differing from another "
                      f"only in case, with identical contents, were left out")
+    if changes.get("unreachable"):
+        progress.log(f"  {changes['unreachable']} file(s) differed from "
+                     f"another only in case but held different contents; "
+                     f"AmigaDOS can reach only one of each, so the copy "
+                     f"nothing refers to was left out")
     if changes.get("merged"):
         progress.log(f"  {changes['merged']} drawer(s) differing from another "
                      f"only in case were merged into one")

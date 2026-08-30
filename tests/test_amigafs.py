@@ -449,14 +449,23 @@ class TestInstallingAHostTree(_Scratch):
         self.assertNotIn("_2", "".join(listing))
         self.assertTrue(any("left out" in line for line in log), log)
 
-    def test_two_files_that_only_look_alike_are_still_separated(self):
+    def test_the_copy_nothing_could_open_is_left_out_too(self):
+        """Two files of the same name, differing - and only one is reachable.
+
+        Every spelling of a name finds the same entry on an Amiga volume, so a
+        second copy kept as "Driller_2.slave" is a file nothing would ever ask
+        for.  Leaving it out is what the drawer looked like to the Amiga all
+        along; keeping it only fills the card with names that were never there.
+        """
         def build(source: Path):
             (source / "Driller.slave").write_bytes(b"one version")
             (source / "Driller.Slave").write_bytes(b"a different version")
-        listing, _copied, renamed, _log = self.install(build)
-        self.assertEqual(len(listing), 2, listing)
-        self.assertEqual(renamed, 1)
-        self.assertEqual(len({p.lower() for p in listing}), 2)
+        listing, copied, renamed, log = self.install(build)
+        self.assertEqual(len(listing), 1, listing)
+        self.assertEqual(copied, 1)
+        self.assertEqual(renamed, 0, "nothing was renamed; one was left out")
+        self.assertNotIn("_2", "".join(listing))
+        self.assertTrue([line for line in log if "left out" in line], log)
 
     def test_two_drawers_of_the_same_name_become_one(self):
         def build(source: Path):
@@ -486,10 +495,9 @@ class TestInstallingAHostTree(_Scratch):
             (source / "Driller.slave").write_bytes(b"the build the icon names")
             (source / "Driller.info").write_bytes(
                 make_icon(["WHDLoad", "SLAVE=Driller.slave", "PRELOAD"]))
-        listing, _copied, renamed, _log = self.install(build)
-        self.assertEqual(renamed, 1, "one of the two still has to give")
-        self.assertIn("Driller.slave", listing,
-                      f"the icon's slave was renamed away ({sorted(listing)})")
+        listing, _copied, _renamed, _log = self.install(build)
+        self.assertEqual(sorted(listing), ["Driller.info", "Driller.slave"],
+                         f"the wrong build survived ({sorted(listing)})")
         self.assertEqual(self.reader.read_file(listing["Driller.slave"]),
                          b"the build the icon names")
 
@@ -500,7 +508,8 @@ class TestInstallingAHostTree(_Scratch):
             (source / "Driller.slave").write_bytes(b"another build")
         first, _copied, renamed, _log = self.install(build)
         second, _copied, _renamed, _log = self.install(build)
-        self.assertEqual(renamed, 1)
+        self.assertEqual(renamed, 0)
+        self.assertEqual(len(first), 1, first)
         self.assertEqual(sorted(first), sorted(second),
                          "the same tree must plan the same way twice")
 
