@@ -21,7 +21,7 @@ import time
 import unicodedata
 from pathlib import Path
 
-from . import amigafs, compat as compat_module, pfs3, rdb
+from . import amigafs, amigainfo, compat as compat_module, pfs3, rdb
 from .amigafs import Volume, VolumeWriter
 from .util import Progress, human_size
 
@@ -432,17 +432,19 @@ def name_limit(target) -> int:
     return getattr(target, "max_name_length", amigafs.MAX_NAME)
 
 
-def plan_names(names: list[str], limit: int = amigafs.MAX_NAME) -> dict[str, str]:
+def plan_names(names: list[str], limit: int = amigafs.MAX_NAME,
+               preferred: frozenset[str] = frozenset()) -> dict[str, str]:
     """Choose Amiga names for one directory's entries, keeping icons paired.
 
     See ``_plan_names``, of which this is the answer without the reasons.
     """
     return {name: chosen for name, (chosen, _why) in
-            _plan_names(names, limit).items()}
+            _plan_names(names, limit, preferred).items()}
 
 
-def _plan_names(names: list[str],
-                limit: int = amigafs.MAX_NAME) -> dict[str, tuple[str, str]]:
+def _plan_names(names: list[str], limit: int = amigafs.MAX_NAME,
+                preferred: frozenset[str] = frozenset()
+                ) -> dict[str, tuple[str, str]]:
     """Choose Amiga names for one directory's entries, keeping icons paired.
 
     Names are decided for a whole directory at once because the choices are not
@@ -458,6 +460,12 @@ def _plan_names(names: list[str],
     ``limit`` comes from the target volume.  FFS allows 30 characters; PFS3
     reads its own limit from the volume and can take far more, which matters
     because renaming a file breaks the WHDLoad slave or tool type that names it.
+
+    Names are settled in a fixed order so that the answer does not depend on
+    what order the file system listed them in, and ``preferred`` goes to the
+    front of it.  Where two entries cannot both keep their name, the first one
+    considered is the one that keeps it, so this is how the caller says which
+    of them matters.
     """
     #  A file called exactly ".info" is an ordinary name, not an icon.
     icons = [n for n in names
@@ -474,7 +482,8 @@ def _plan_names(names: list[str],
     mapping: dict[str, tuple[str, str]] = {}
     taken: set[str] = set()
     #  Decide the files first; the icons then follow their files.
-    for original in sorted(set(plain) | set(orphans)):
+    for original in sorted(set(plain) | set(orphans),
+                           key=lambda name: (name not in preferred, name)):
         room = limit - len(ICON_SUFFIX) if original in owners_with_icons else limit
         chosen, reason = _fit(original, max(1, room), taken)
         taken.add(chosen.lower())
@@ -549,6 +558,45 @@ def _printable(path: str) -> str:
     return "/".join(_host_text(part) for part in path.split("/"))
 
 
+def _names_used_by_icons(members: dict[str, tuple[Path, bool, str]]) -> set[str]:
+    """Every file name the icons in one drawer refer to by name.
+
+    A WHDLoad drawer's icon names its slave in a ``SLAVE=`` tool type, and an
+    icon can name a default tool the same way.  That is a reference to one
+    exact spelling, which matters when two spellings have to become one.
+    """
+    used: set[str] = set()
+    for name, (path, is_dir, _relative) in members.items():
+        if is_dir or not name.lower().endswith(ICON_SUFFIX):
+            continue
+        try:
+            entries = amigainfo.read_tooltypes(path.read_bytes())
+        except (OSError, amigainfo.InfoError):
+            continue                      # an icon we cannot read names nothing
+        for entry in entries:
+            _key, _sep, value = entry.partition("=")
+            if value:
+                used.add(value)
+    return used
+
+
+def _keep_first(group: list[str], used: set[str]) -> list[str]:
+    """Order a clash so that the spelling something refers to comes first.
+
+    Two names that differ only in case are one name on the Amiga, so one of
+    them has to give - and which one is not arbitrary.  A collection built for
+    an emulator that mounts the host directory keeps both, and the emulator
+    opens whichever the icon names exactly; keeping the other would launch a
+    different build of the game than the same collection runs under the
+    emulator it came from.  Where the references are ambiguous, or name
+    neither spelling, the order it was already in stands.
+    """
+    named = [name for name in group if name in used]
+    if len(named) != 1:
+        return group
+    return named + [name for name in group if name != named[0]]
+
+
 def _identical(first: Path, second: Path) -> bool:
     """Whether two host files hold exactly the same bytes."""
     try:
@@ -596,10 +644,18 @@ def _place_entries(entries: list[tuple[Path, str, bool]],
         for name in sorted(members):
             same_name.setdefault(_clean(name).lower(), []).append(name)
 
+        #  Only a drawer that has a clash to settle needs its icons read.
+        used = (_names_used_by_icons(members)
+                if any(len(g) > 1 for g in same_name.values()) else set())
+
         survivors: list[str] = []
+        preferred: set[str] = set()       # the spelling that keeps its name
         joins: dict[str, str] = {}        # merged drawer -> the one it joins
         duplicates: set[str] = set()
         for group in same_name.values():
+            if len(group) > 1:
+                group = _keep_first(group, used)
+                preferred.add(group[0])
             keep = group[0]
             survivors.append(keep)
             keep_path, keep_is_dir, _ = members[keep]
@@ -613,7 +669,7 @@ def _place_entries(entries: list[tuple[Path, str, bool]],
                 else:
                     survivors.append(other)
 
-        chosen = _plan_names(sorted(survivors), limit)
+        chosen = _plan_names(sorted(survivors), limit, frozenset(preferred))
         children: dict[str, list[str]] = {}
         for name in sorted(members):
             _path, is_dir, relative = members[name]

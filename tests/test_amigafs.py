@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pistorm_imager.core import amigafs, amigaos, pfs3  # noqa: E402
+from pistorm_imager.core import amigafs, amigainfo, amigaos, pfs3  # noqa: E402
 from pistorm_imager.core.amigafs import Volume, VolumeWriter  # noqa: E402
 from pistorm_imager.core.util import MIB, Progress  # noqa: E402
 
@@ -35,6 +35,22 @@ class _Scratch(unittest.TestCase):
 
 SAMPLE_ADFS = ROOT / "samples" / "workbench"
 HAVE_SAMPLES = SAMPLE_ADFS.is_dir() and any(SAMPLE_ADFS.glob("*.adf"))
+
+
+def make_icon(tooltypes: list[str]) -> bytes:
+    """A minimal but structurally valid .info file carrying tool types.
+
+    The same helper as in ``test_compat``; kept here so each test file stands
+    on its own.
+    """
+    data = bytearray(78)
+    struct.pack_into(">HH", data, 0, amigainfo.MAGIC, 1)
+    struct.pack_into(">I", data, 54, 1)          # do_ToolTypes present
+    block = bytearray(struct.pack(">I", (len(tooltypes) + 1) * 4))
+    for entry in tooltypes:
+        raw = entry.encode("latin-1") + b"\0"
+        block += struct.pack(">I", len(raw)) + raw
+    return bytes(data + block)
 
 
 def new_volume(folder: Path, blocks: int, name: str = "Test",
@@ -349,6 +365,17 @@ class TestNamePlanning(unittest.TestCase):
                          plan[entries[0]].lower() + ".info")
         self.assertTrue(all(len(v) <= 30 for v in plan.values()))
 
+    def test_a_preferred_spelling_is_the_one_that_keeps_its_name(self):
+        """The caller decides which of two indistinguishable names matters."""
+        entries = ["Driller.Slave", "Driller.slave"]
+        plan = amigaos.plan_names(entries, limit=106,
+                                  preferred=frozenset({"Driller.slave"}))
+        self.assertEqual(plan["Driller.slave"], "Driller.slave")
+        self.assertNotEqual(plan["Driller.Slave"].lower(), "driller.slave")
+        #  Without a preference the order is settled, but by the names alone.
+        plain = amigaos.plan_names(entries, limit=106)
+        self.assertEqual(plain["Driller.Slave"], "Driller.Slave")
+
     def test_a_generous_limit_avoids_renaming_entirely(self):
         short = ["Disk.info", "C", "S", "Startup-Sequence"]
         self.assertEqual(amigaos.plan_names(short, limit=30),
@@ -407,7 +434,8 @@ class TestInstallingAHostTree(_Scratch):
         handle.close()
         back = open(path, "rb")
         self.addCleanup(back.close)
-        listing = {p: e for p, e in Volume(back).walk()}
+        self.reader = Volume(back)
+        listing = {p: e for p, e in self.reader.walk()}
         return listing, copied, renamed, log
 
     def test_an_identical_copy_differing_only_in_case_is_left_out(self):
@@ -444,6 +472,37 @@ class TestInstallingAHostTree(_Scratch):
                          sorted([drawer, f"{drawer}/one.dat", f"{drawer}/two.dat"]))
         self.assertEqual(copied, 2)
         self.assertEqual(renamed, 0)
+
+    def test_the_slave_an_icon_names_is_the_one_that_keeps_its_name(self):
+        """Which of two spellings gives way is not arbitrary.
+
+        A collection built for an emulator that mounts the host directory keeps
+        both builds of a slave, and the emulator opens the exact spelling the
+        icon names.  Keeping the other one would start a different build of the
+        game here than the same collection runs there.
+        """
+        def build(source: Path):
+            (source / "Driller.Slave").write_bytes(b"an older build")
+            (source / "Driller.slave").write_bytes(b"the build the icon names")
+            (source / "Driller.info").write_bytes(
+                make_icon(["WHDLoad", "SLAVE=Driller.slave", "PRELOAD"]))
+        listing, _copied, renamed, _log = self.install(build)
+        self.assertEqual(renamed, 1, "one of the two still has to give")
+        self.assertIn("Driller.slave", listing,
+                      f"the icon's slave was renamed away ({sorted(listing)})")
+        self.assertEqual(self.reader.read_file(listing["Driller.slave"]),
+                         b"the build the icon names")
+
+    def test_without_an_icon_to_go_on_the_choice_is_still_settled(self):
+        """Nothing names either spelling, so it only has to be repeatable."""
+        def build(source: Path):
+            (source / "Driller.Slave").write_bytes(b"an older build")
+            (source / "Driller.slave").write_bytes(b"another build")
+        first, _copied, renamed, _log = self.install(build)
+        second, _copied, _renamed, _log = self.install(build)
+        self.assertEqual(renamed, 1)
+        self.assertEqual(sorted(first), sorted(second),
+                         "the same tree must plan the same way twice")
 
     def test_the_log_only_warns_about_length_when_a_name_was_shortened(self):
         def build(source: Path):
