@@ -14,9 +14,11 @@ overwrite the full versions from the Workbench disk.
 from __future__ import annotations
 
 import dataclasses
+import filecmp
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 
 from . import amigafs, compat as compat_module, pfs3, rdb
@@ -321,20 +323,82 @@ ICON_SUFFIX = ".info"
 MAX_WITH_ICON = amigafs.MAX_NAME - len(ICON_SUFFIX)
 
 
-def _clean(name: str) -> str:
-    cleaned = "".join("_" if c in ILLEGAL_AMIGA_CHARS or ord(c) < 32 else c
-                      for c in name)
+def _fold(char: str) -> str:
+    """One character in a form ISO-8859-1 - the Amiga's character set - holds."""
     try:
-        cleaned.encode("latin-1")
+        char.encode("latin-1")
+        return char
     except UnicodeEncodeError:
-        cleaned = cleaned.encode("latin-1", errors="replace").decode("latin-1")
-    return cleaned
+        pass
+    stripped = "".join(c for c in unicodedata.normalize("NFKD", char)
+                       if not unicodedata.combining(c))
+    try:
+        stripped.encode("latin-1")
+    except UnicodeEncodeError:
+        return "_"
+    return stripped or "_"
 
 
-def _fit(name: str, limit: int, taken: set[str]) -> str:
-    """Shorten ``name`` to ``limit`` characters, keeping it unique."""
+def _host_text(name: str) -> str:
+    """What a host file's name says, whichever encoding it was stored in.
+
+    Linux keeps file names as bytes.  Python decodes them as UTF-8 and hands
+    back surrogate escapes for the bytes that are not, so a name has to be read
+    from the bytes to be read at all.
+    """
+    raw = os.fsencode(name)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        #  Not UTF-8, so these bytes are already an Amiga (ISO-8859-1) name.
+        return raw.decode("latin-1")
+
+
+def _amiga_spelling(name: str) -> str:
+    """How a host file's name should be spelt on the Amiga.
+
+    A tree that came off an Amiga carries ISO-8859-1 names - "fran\xe7ais",
+    "portugu\xeas", "\xf6sterreich.country" - and Linux stores those bytes
+    exactly as they are.  Python cannot decode them as UTF-8, so it hands them
+    back as surrogate escapes; spelling such a name for the Amiga means giving
+    the original bytes back, not replacing the byte Python could not read.
+    Writing "portugu?s.language" instead leaves a locale AmigaOS will never
+    find again - and "?" is a pattern wildcard to AmigaDOS at that.
+
+    A name that really is UTF-8 text may still use characters ISO-8859-1 has no
+    room for.  Those are folded to their unaccented form ("\u010de\u0161tina"
+    -> "cestina"), which at least remains a name a person can type.
+    """
+    text = _host_text(name)
+    try:
+        text.encode("latin-1")
+    except UnicodeEncodeError:
+        text = "".join(_fold(c) for c in text)
+    return text
+
+
+def _clean(name: str) -> str:
+    return "".join("_" if c in ILLEGAL_AMIGA_CHARS or ord(c) < 32 else c
+                   for c in _amiga_spelling(name))
+
+
+def _fit(name: str, limit: int, taken: set[str]) -> tuple[str, str]:
+    """Shorten ``name`` to ``limit`` characters, keeping it unique.
+
+    Returns the name to use and why it differs from the one asked for, so that
+    the log can say what actually happened: ``""`` when nothing changed,
+    ``"charset"`` when a character had to be rewritten, ``"shortened"`` when the
+    name did not fit, and ``"clash"`` when another entry already had it.
+    """
     cleaned = _clean(name)
+    #  Compare against what the host name *says*, not the Python string holding
+    #  it.  A name Linux could not decode is a string of surrogate escapes that
+    #  never equals the name it stands for, and one stored as UTF-8 is a
+    #  different string from the same name stored as ISO-8859-1 - reporting
+    #  either as rewritten would claim a rename where the Amiga sees none.
+    reason = "" if cleaned == _host_text(name) else "charset"
     if len(cleaned) > limit:
+        reason = "shortened"
         #  Only a truncated name needs tidying.  A trailing dot is perfectly
         #  legal on AmigaDOS - only ":" and "/" are reserved - so "MOD.doober."
         #  must be left exactly as it is rather than quietly renamed.
@@ -347,7 +411,7 @@ def _fit(name: str, limit: int, taken: set[str]) -> str:
         cleaned = cleaned or "_"
 
     if cleaned.lower() not in taken:
-        return cleaned
+        return cleaned, reason
     #  Make room for a counter rather than silently colliding: two entries with
     #  the same name in one directory means only the first is ever found.
     for index in range(2, 1000):
@@ -359,7 +423,7 @@ def _fit(name: str, limit: int, taken: set[str]) -> str:
         else:
             candidate = cleaned[:max(1, limit - len(suffix))] + suffix
         if candidate.lower() not in taken:
-            return candidate
+            return candidate, reason or "clash"
     raise RuntimeError(f"cannot find a free name for {name!r}")
 
 
@@ -369,6 +433,16 @@ def name_limit(target) -> int:
 
 
 def plan_names(names: list[str], limit: int = amigafs.MAX_NAME) -> dict[str, str]:
+    """Choose Amiga names for one directory's entries, keeping icons paired.
+
+    See ``_plan_names``, of which this is the answer without the reasons.
+    """
+    return {name: chosen for name, (chosen, _why) in
+            _plan_names(names, limit).items()}
+
+
+def _plan_names(names: list[str],
+                limit: int = amigafs.MAX_NAME) -> dict[str, tuple[str, str]]:
     """Choose Amiga names for one directory's entries, keeping icons paired.
 
     Names are decided for a whole directory at once because the choices are not
@@ -397,22 +471,23 @@ def plan_names(names: list[str], limit: int = amigafs.MAX_NAME) -> dict[str, str
     owners_with_icons = set(owner_of.values())
     orphans = [o for o in owners_with_icons if o.lower() not in by_lower]
 
-    mapping: dict[str, str] = {}
+    mapping: dict[str, tuple[str, str]] = {}
     taken: set[str] = set()
     #  Decide the files first; the icons then follow their files.
     for original in sorted(set(plain) | set(orphans)):
         room = limit - len(ICON_SUFFIX) if original in owners_with_icons else limit
-        chosen = _fit(original, max(1, room), taken)
+        chosen, reason = _fit(original, max(1, room), taken)
         taken.add(chosen.lower())
-        mapping[original] = chosen
+        mapping[original] = (chosen, reason)
 
     for icon, owner in owner_of.items():
-        if mapping.get(owner) == owner and len(icon) <= limit:
+        if mapping.get(owner, ("", ""))[0] == owner and len(icon) <= limit:
             #  Nothing had to change, so leave the icon's own spelling alone.
-            mapping[icon] = icon
+            mapping[icon] = (icon, "")
         else:
-            mapping[icon] = mapping[owner] + ICON_SUFFIX
-        taken.add(mapping[icon].lower())
+            chosen = mapping[owner][0] + ICON_SUFFIX
+            mapping[icon] = (chosen, mapping[owner][1] if chosen != icon else "")
+        taken.add(mapping[icon][0].lower())
 
     #  An icon's base name is worked out even when no such file is present;
     #  return a mapping for exactly the entries that were asked about.
@@ -441,14 +516,119 @@ def _read_source(path: Path, relative: str, compat, progress: Progress,
         except OSError:
             data = None
         if data is not None:
-            progress.log(f"  {relative} could not be read ({last}); using the "
-                         f"known-good copy from {spare}")
+            progress.log(f"  {_printable(relative)} could not be read "
+                         f"({last}); using the known-good copy from {spare}")
             return data
     raise RuntimeError(
-        f"Could not read {relative} from the source ({last}). The copy would be "
-        f"incomplete, so it has been stopped. Check the source is fully "
-        f"readable, or supply a replacement copy of the file."
+        f"Could not read {_printable(relative)} from the source ({last}). The "
+        f"copy would be incomplete, so it has been stopped. Check the source "
+        f"is fully readable, or supply a replacement copy of the file."
     )
+
+
+@dataclasses.dataclass(frozen=True)
+class _Placement:
+    """Where one host entry ends up on the Amiga, and why it moved."""
+    name: str                 # its Amiga name; "" when it is left out
+    parent: str               # Amiga path of the drawer holding it
+    path: str                 # Amiga path of the entry itself
+    reason: str = ""          # "", "charset", "shortened", "clash",
+                              # "merged" or "duplicate"
+
+
+def _printable(text: str) -> str:
+    """A host name that is safe to write to a log.
+
+    Names Linux could not decode arrive as surrogate escapes, which no stream
+    can encode; showing the escape is better than crashing the copy.
+    """
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _identical(first: Path, second: Path) -> bool:
+    """Whether two host files hold exactly the same bytes."""
+    try:
+        return filecmp.cmp(first, second, shallow=False)
+    except OSError:
+        return False
+
+
+def _place_entries(entries: list[tuple[Path, str, bool]],
+                   limit: int) -> dict[str, _Placement]:
+    """Decide where every entry of a host tree lands on the Amiga.
+
+    Names cannot be decided one at a time.  An icon has to keep the name of the
+    file it belongs to, two entries must not land on the same name, and - the
+    reason this walks the tree rather than each directory alone - AmigaDOS is
+    case-insensitive, so entries a Linux tree keeps apart only by case are one
+    and the same thing here.
+
+    Collections assembled on Linux are full of those: "Bombuzal.slave" beside
+    an identical "Bombuzal.Slave", "data" beside "Data".  Inventing
+    "Bombuzal_2.slave" for the second copy wastes space and says a name had to
+    change when nothing was wrong with it, and renaming one of the two drawers
+    leaves a game looking for half of its files.  So an exact duplicate is left
+    out, two drawers of the same name are merged into one, and only entries
+    that genuinely differ are still renamed.
+    """
+    by_parent: dict[str, list[tuple[Path, str, bool]]] = {}
+    for path, relative, is_dir in entries:
+        parent, _, name = relative.rpartition("/")
+        by_parent.setdefault(parent, []).append((path, name, is_dir))
+
+    placements: dict[str, _Placement] = {}
+    #  Each item is one Amiga drawer and the host directories feeding it - more
+    #  than one where their names differed only in case.
+    queue: list[tuple[str, list[str]]] = [("", [""])]
+    while queue:
+        amiga_parent, hosts = queue.pop(0)
+        members: dict[str, tuple[Path, bool, str]] = {}
+        for host in hosts:
+            for path, name, is_dir in by_parent.get(host, []):
+                members[name] = (path, is_dir,
+                                 f"{host}/{name}" if host else name)
+
+        same_name: dict[str, list[str]] = {}
+        for name in sorted(members):
+            same_name.setdefault(_clean(name).lower(), []).append(name)
+
+        survivors: list[str] = []
+        joins: dict[str, str] = {}        # merged drawer -> the one it joins
+        duplicates: set[str] = set()
+        for group in same_name.values():
+            keep = group[0]
+            survivors.append(keep)
+            keep_path, keep_is_dir, _ = members[keep]
+            for other in group[1:]:
+                other_path, other_is_dir, _ = members[other]
+                if keep_is_dir and other_is_dir:
+                    joins[other] = keep
+                elif not keep_is_dir and not other_is_dir \
+                        and _identical(keep_path, other_path):
+                    duplicates.add(other)
+                else:
+                    survivors.append(other)
+
+        chosen = _plan_names(sorted(survivors), limit)
+        children: dict[str, list[str]] = {}
+        for name in sorted(members):
+            _path, is_dir, relative = members[name]
+            if name in duplicates:
+                placements[relative] = _Placement("", amiga_parent, "",
+                                                  "duplicate")
+                continue
+            amiga_name, reason = chosen[joins.get(name, name)]
+            if name in joins:
+                reason = "merged"
+            amiga_path = (f"{amiga_parent}/{amiga_name}" if amiga_parent
+                          else amiga_name)
+            placements[relative] = _Placement(amiga_name, amiga_parent,
+                                              amiga_path, reason)
+            if is_dir:
+                children.setdefault(amiga_path, []).append(relative)
+        for amiga_path in sorted(children):
+            queue.append((amiga_path, children[amiga_path]))
+    return placements
 
 
 def install_tree(target: VolumeWriter, source: str | Path, destination: str,
@@ -482,53 +662,73 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
         progress.log(f"  left out {skipped_paths} item(s) not suited to this "
                      f"machine")
 
-    base = target.makedirs(destination) if destination else target.root
-    dir_blocks: dict[str, int] = {"": base}
-    copied = renamed = 0
-
-    #  Decide names a directory at a time, so an icon keeps the name of the
+    #  Decide names for the whole tree first, so an icon keeps the name of the
     #  file it belongs to and nothing collides.
     limit = name_limit(target)
-    by_parent: dict[str, list[str]] = {}
-    for _path, relative, _is_dir in entries:
-        parent, _, name = relative.rpartition("/")
-        by_parent.setdefault(parent, []).append(name)
-    plans = {parent: plan_names(names, limit)
-             for parent, names in by_parent.items()}
+    placements = _place_entries(entries, limit)
+
+    base = target.makedirs(destination) if destination else target.root
+    dir_blocks: dict[str, int] = {"": base}
+    copied = 0
+    changes: dict[str, int] = {}
 
     for index, (path, relative, is_dir) in enumerate(entries, start=1):
         progress.check_cancelled()
-        parent_path, _, raw_name = relative.rpartition("/")
-        parent = dir_blocks.get(parent_path)
+        placed = placements.get(relative)
+        parent = None if placed is None else dir_blocks.get(placed.parent)
         if parent is None:
-            continue                      # parent was skipped; skip its contents
-        name = plans[parent_path][raw_name]
-        if name != raw_name:
-            renamed += 1
-            progress.log(f"  {relative} -> {name}")
+            continue                      # its drawer was skipped, so is it
+        if placed.reason:
+            changes[placed.reason] = changes.get(placed.reason, 0) + 1
+        if placed.reason == "duplicate":
+            continue
+        if placed.reason in ("charset", "shortened", "clash"):
+            progress.log(f"  {_printable(relative)} -> {_printable(placed.name)}")
         try:
             if is_dir:
-                #  Nothing can already exist on a freshly formatted volume, and
-                #  checking would mean walking the directory once per entry.
-                dir_blocks[relative] = target.mkdir(parent, name,
-                                                    check_existing=False)
+                #  A drawer merged into one already made keeps that one; other
+                #  than that nothing can exist on a freshly formatted volume,
+                #  and checking would mean walking the directory per entry.
+                block = dir_blocks.get(placed.path)
+                if block is None:
+                    block = target.mkdir(parent, placed.name,
+                                         check_existing=False)
+                dir_blocks[placed.path] = block
             else:
                 data = _read_source(path, relative, compat, progress)
                 if compat is not None:
                     data = compat.offer(relative, data)
                     if compat.skip(relative):
                         continue
-                target.write_file(parent, name, data, check_existing=False)
+                target.write_file(parent, placed.name, data,
+                                  check_existing=False)
                 copied += 1
         except amigafs.AmigaFsError as error:
-            progress.log(f"  skipped {relative}: {error}")
+            progress.log(f"  skipped {_printable(relative)}: {error}")
         if index % 200 == 0 or index == len(entries):
             progress.fraction(index / len(entries))
-    if renamed:
-        progress.log(f"WARNING: {renamed} name(s) had to be shortened to fit "
+
+    shortened = changes.get("shortened", 0)
+    renamed = shortened + changes.get("clash", 0) + changes.get("charset", 0)
+    if shortened:
+        progress.log(f"WARNING: {shortened} name(s) had to be shortened to fit "
                      f"{limit} characters. Software that refers to a file by "
                      f"name - a WHDLoad slave, an icon's tool types - may no "
                      f"longer find it. A PFS3 partition avoids this.")
+    if changes.get("clash"):
+        progress.log(f"  {changes['clash']} name(s) differed from another in "
+                     f"the same drawer only in case but held different "
+                     f"contents, so one of each was renamed - AmigaDOS cannot "
+                     f"tell such names apart")
+    if changes.get("charset"):
+        progress.log(f"  {changes['charset']} name(s) used characters AmigaOS "
+                     f"cannot store and were rewritten")
+    if changes.get("duplicate"):
+        progress.log(f"  {changes['duplicate']} file(s) differing from another "
+                     f"only in case, with identical contents, were left out")
+    if changes.get("merged"):
+        progress.log(f"  {changes['merged']} drawer(s) differing from another "
+                     f"only in case were merged into one")
     if compat is not None:
         compat.finish(target, progress)
     return copied, renamed

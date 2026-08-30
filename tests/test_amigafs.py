@@ -355,6 +355,120 @@ class TestNamePlanning(unittest.TestCase):
                          {n: n for n in short})
 
 
+class TestHostNamesInAmigaSpelling(unittest.TestCase):
+    """Amiga names are ISO-8859-1 bytes, and Linux keeps file names as bytes.
+
+    A tree lifted off an Amiga therefore arrives with names Python cannot
+    decode as UTF-8. Rewriting the byte it could not read replaces a name that
+    was already perfectly good: "portugu?s.language" is a locale AmigaOS will
+    never find, and "?" is a pattern wildcard to AmigaDOS at that.
+    """
+
+    def test_a_name_stored_as_amiga_bytes_is_kept_exactly(self):
+        raw = os.fsdecode(b"portugu\xeas.language")
+        chosen = amigaos.plan_names([raw], limit=106)[raw]
+        self.assertEqual(chosen, "portugu\u00eas.language")
+        self.assertEqual(chosen.encode("latin-1"), b"portugu\xeas.language")
+
+    def test_a_utf8_name_iso_8859_1_can_hold_keeps_its_letters(self):
+        name = "t\u00fcrk\u00e7e"
+        self.assertEqual(amigaos.plan_names([name], limit=106)[name], name)
+
+    def test_a_letter_iso_8859_1_lacks_is_folded_rather_than_lost(self):
+        name = "\u010de\u0161tina"          # Czech, which ISO-8859-1 has no room for
+        self.assertEqual(amigaos.plan_names([name], limit=106)[name], "cestina")
+
+    def test_the_two_spellings_of_one_name_are_seen_as_one(self):
+        """PiMiga's Locale drawer holds both, and the Amiga has only one name."""
+        latin1 = os.fsdecode(b"espa\xf1a.country")
+        utf8 = "espa\u00f1a.country"
+        plan = amigaos.plan_names([latin1, utf8], limit=106)
+        self.assertNotEqual(plan[latin1].lower(), plan[utf8].lower())
+
+
+class TestInstallingAHostTree(_Scratch):
+    """Copying a Linux directory tree - PiMiga's drives - onto a volume.
+
+    Such a tree was assembled where case matters and the Amiga's does not, so
+    it is full of pairs the Amiga cannot keep apart: "Bombuzal.slave" beside an
+    identical "Bombuzal.Slave", "data" beside "Data". Renaming one of each pair
+    wastes space, reports a change nothing asked for, and - for a drawer -
+    leaves a game looking for half of its files.
+    """
+
+    def install(self, build, blocks: int = 20000):
+        source = self.scratch()
+        build(source)
+        volume, handle, path = new_volume(self.scratch(), blocks)
+        log: list[str] = []
+        copied, renamed = amigaos.install_tree(
+            volume, source, "", Progress(on_log=log.append))
+        volume.close()
+        handle.close()
+        back = open(path, "rb")
+        self.addCleanup(back.close)
+        listing = {p: e for p, e in Volume(back).walk()}
+        return listing, copied, renamed, log
+
+    def test_an_identical_copy_differing_only_in_case_is_left_out(self):
+        def build(source: Path):
+            (source / "Bombuzal.slave").write_bytes(b"slave")
+            (source / "Bombuzal.Slave").write_bytes(b"slave")
+        listing, copied, renamed, log = self.install(build)
+        self.assertEqual(len(listing), 1, listing)
+        self.assertEqual(copied, 1)
+        self.assertEqual(renamed, 0, "nothing here needed a new name")
+        self.assertNotIn("_2", "".join(listing))
+        self.assertTrue(any("left out" in line for line in log), log)
+
+    def test_two_files_that_only_look_alike_are_still_separated(self):
+        def build(source: Path):
+            (source / "Driller.slave").write_bytes(b"one version")
+            (source / "Driller.Slave").write_bytes(b"a different version")
+        listing, _copied, renamed, _log = self.install(build)
+        self.assertEqual(len(listing), 2, listing)
+        self.assertEqual(renamed, 1)
+        self.assertEqual(len({p.lower() for p in listing}), 2)
+
+    def test_two_drawers_of_the_same_name_become_one(self):
+        def build(source: Path):
+            (source / "data").mkdir()
+            (source / "data" / "one.dat").write_bytes(b"1")
+            (source / "Data").mkdir()
+            (source / "Data" / "two.dat").write_bytes(b"2")
+        listing, copied, renamed, _log = self.install(build)
+        drawers = [p for p, e in listing.items() if e.is_dir]
+        self.assertEqual(len(drawers), 1, listing)
+        drawer = drawers[0]
+        self.assertEqual(sorted(listing) ,
+                         sorted([drawer, f"{drawer}/one.dat", f"{drawer}/two.dat"]))
+        self.assertEqual(copied, 2)
+        self.assertEqual(renamed, 0)
+
+    def test_the_log_only_warns_about_length_when_a_name_was_shortened(self):
+        def build(source: Path):
+            (source / "Readme").write_bytes(b"a")
+            (source / "ReadMe").write_bytes(b"a")
+        _listing, _copied, _renamed, log = self.install(build)
+        self.assertFalse([line for line in log if "shortened to fit" in line],
+                         "nothing was shortened, so nothing may say it was")
+
+    def test_a_name_too_long_for_the_volume_still_says_so(self):
+        def build(source: Path):
+            (source / ("a-very-long-name-that-ffs-cannot-hold" * 2)).write_bytes(b"a")
+        _listing, _copied, renamed, log = self.install(build)
+        self.assertEqual(renamed, 1)
+        self.assertTrue([line for line in log if "shortened to fit 30" in line], log)
+
+    def test_an_iso_8859_1_name_reaches_the_volume_unchanged(self):
+        def build(source: Path):
+            (source / os.fsdecode(b"fran\xe7ais")).write_bytes(b"a")
+        listing, _copied, renamed, log = self.install(build)
+        self.assertEqual(list(listing), ["fran\u00e7ais"])
+        self.assertEqual(renamed, 0)
+        self.assertFalse([line for line in log if "->" in line], log)
+
+
 class TestNameLimits(_Scratch):
     def test_ffs_reports_thirty(self):
         volume, handle, _path = new_volume(self.scratch(), 8000)
