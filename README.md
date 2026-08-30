@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 184 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 194 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -383,6 +383,32 @@ with these fixes applied automatically:
 
 Every change is reported in the log, and none of them touch your files. Turn the
 whole thing off with `fix_compatibility=False` if you would rather do it by hand.
+
+### Linux file names, Amiga file names
+
+Such a drive was assembled under rules that are not the Amiga's, and the
+differences have to be settled on the way in:
+
+* **Character set.** Amiga names are ISO-8859-1 bytes, and Linux stores file
+  names as bytes too, so `português.language` already carries exactly the bytes
+  AmigaOS wants — even though Python cannot read them as UTF-8. Those names are
+  passed through untouched. A name genuinely stored as UTF-8 is converted, and
+  the occasional letter ISO-8859-1 has no room for is folded to its unaccented
+  form (`čeština` → `cestina`) rather than replaced with `?`, which AmigaDOS
+  reads as a pattern wildcard.
+* **Case.** AmigaDOS cannot tell `Bombuzal.slave` from `Bombuzal.Slave`, and a
+  collection built on Linux is full of such pairs. Where the two files hold
+  identical bytes — nearly always — the second is left out; where they genuinely
+  differ, one is renamed, because only one of the two can exist. Two drawers of
+  the same name are **merged into one** rather than one of them renamed, which
+  would leave a game looking for half of its files.
+* **Length.** FFS allows 30 characters, PFS3 far more. Only a name that really
+  had to be cut short is reported as shortened, and that is the warning worth
+  acting on: a WHDLoad slave and an icon's tool types both name files, so a
+  shortened name can stop a game starting. A PFS3 partition avoids it.
+
+Across PiMiga 5's System, Demos and Games drives this brings the names that have
+to change down from 309 to 48, and leaves every accented locale name alone.
 
 ## Hard disk images: two shapes
 
