@@ -1974,7 +1974,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             application_name="PiStorm Imager",
             application_icon="drive-removable-media",
             developer_name="PiStorm Imager for Linux",
-            version="0.1.0",
+            version="0.2.0",
             comments=("Prepare an SD card for PiStorm and Emu68 on Linux: build a "
                       "new card, write a pre-built image such as PiMiga, or refresh "
                       "the boot partition of a card you already have."),
