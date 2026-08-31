@@ -169,6 +169,30 @@ class TestListDrives(_Scratch):
         self.assertEqual(len(drives), 1)
         self.assertEqual(drives[0].volume, "")
 
+    def test_an_ffs_drive_inside_an_image_reports_its_label(self):
+        """FFS keeps its root block in the middle of the partition.
+
+        Sizing that from the file rather than the partition lands on the wrong
+        block, and a perfectly good Workbench reads back as an empty volume.
+        """
+        from pistorm_imager.core import amigaos, amigafs      # noqa: PLC0415
+        path = self.scratch() / "card.hdf"
+        table = make_hdf(path, 40 * MIB, [
+            rdb.Partition("DH0", 1, 10, rdb.DOSTYPE_FFS_INTL, bootable=True),
+            rdb.Partition("DH1", 11, 30, rdb.DOSTYPE_FFS_INTL, bootable=False),
+        ])
+        with open(path, "r+b") as handle:
+            for part, label in ((table.partitions[0], "Workbench"),
+                                (table.partitions[1], "Extras")):
+                volume = amigaos.make_volume(
+                    handle, part.byte_offset(table.geometry),
+                    part.blocks(table.geometry), label,
+                    amigafs.DOSTYPE_FFS_INTL)
+                volume.close()
+        drives = builder.list_drives(path)
+        self.assertEqual([d.volume for d in drives], ["Workbench", "Extras"])
+        self.assertIn('"Workbench"', drives[0].label)
+
     def test_a_bare_file_system_is_offered_as_the_whole_image(self):
         """ClassicWB and plenty of older .hdf files have no partition table.
 
