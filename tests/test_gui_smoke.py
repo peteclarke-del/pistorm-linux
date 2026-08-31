@@ -4,10 +4,17 @@ This runs a genuine GTK application (it needs a display), builds every page,
 flips through the task modes and checks that a configuration survives being
 written into the widgets and read back out.
 """
+import os
 import sys
+import tempfile as _tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+#  Applying a quick setup saves the session, and the real one belongs to
+#  whoever is running the test.  Point the config directory somewhere of our
+#  own before anything can read it.
+os.environ["XDG_CONFIG_HOME"] = _tempfile.mkdtemp(prefix="pistorm-gui-config-")
 
 from pistorm_imager.app import ImagerApplication  # noqa: E402  (also scrubs snap GTK env)
 
@@ -316,6 +323,67 @@ def on_activate(app: ImagerApplication) -> None:
               and not window.gather().workbench_on_rtg,
               "a native-only display cannot put Workbench on RTG")
 
+        #  The Quick setup page builds a whole configuration from the machine
+        #  and the card.  Everything chosen on another page - the WiFi network,
+        #  the volume name, the boot switches - used to come back at its
+        #  default the moment Apply was pressed, and the session was then saved
+        #  in that state, so those settings could not be kept at all.
+        window.mode_row.set_selected(0)
+        window._sync_visibility()
+        window.quick_primary.set_selected(0)
+        window.target_row.set_selected(1)
+        window.quick_target.set_selected(1)
+        window.quick_file.set_path(str(SCRATCH / "quick.img"))
+        window.file_row.set_path(str(SCRATCH / "quick.img"))
+        window.quick_card_size.set_text("8G")
+        window.ssid_row.set_text("Amiga")
+        window.psk_row.set_text("hunter2")
+        window.country_row.set_text("IE")
+        window.volume_row.set_text("PiMiga")
+        window.overclock_row.set_selected(1)
+        window.swapdf_row.set_active(True)
+        window.unit0_row.set_active(True)
+        window.extra_row.set_text("sd.verbose=1")
+        window.install_emu_row.set_active(False)
+
+        quick = window._quick_config()
+        check(quick.wifi_ssid == "Amiga" and quick.wifi_password == "hunter2"
+              and quick.wifi_country == "IE",
+              f"the quick setup keeps the WiFi settings ({quick.wifi_ssid!r})")
+        check(quick.amiga_volume_name == "PiMiga",
+              f"it keeps the volume name ({quick.amiga_volume_name!r})")
+        check(quick.boot_options.overclock is True
+              and quick.boot_options.swap_df0_with_df1
+              and quick.boot_options.sd_unit0_rw,
+              "it keeps the boot switches only a person can set")
+        check(not quick.install_emu68, "it keeps Emu68 installation turned off")
+
+        window._on_apply_quick(None)
+        after = window.gather()
+        check(after.wifi_ssid == "Amiga" and after.wifi_password == "hunter2"
+              and after.wifi_country == "IE",
+              f"applying it leaves the WiFi settings on the page ({after.wifi_ssid!r})")
+        check(after.amiga_volume_name == "PiMiga",
+              f"applying it leaves the volume name ({after.amiga_volume_name!r})")
+        check(after.boot_options.swap_df0_with_df1 and after.boot_options.sd_unit0_rw,
+              "applying it leaves the boot switches alone")
+        check(not after.install_emu68,
+              "applying it does not switch Emu68 installation back on")
+
+        #  The machine's own cmdline options share one field with whatever was
+        #  typed there, so neither may swallow the other - and the machine's
+        #  have to go away again when the switch behind them does.
+        a500 = next(i for i, m in enumerate(machines.MACHINES) if m.key == "a500")
+        window.quick_machine.set_selected(a500)
+        window.quick_trapdoor.set_active(True)
+        words = window._quick_config().boot_options.extra_cmdline.split()
+        check("move_slow_to_chip" in words and "sd.verbose=1" in words,
+              f"both sets of cmdline options survive ({words})")
+        window.quick_trapdoor.set_active(False)
+        words = window._quick_config().boot_options.extra_cmdline.split()
+        check("move_slow_to_chip" not in words and "sd.verbose=1" in words,
+              f"turning the switch off removes only its own option ({words})")
+
         #  Every menu item must be reachable as an action, or choosing it does
         #  nothing and the menu stays open.
         for name in ("save-settings", "load-settings", "forget-session",
@@ -330,7 +398,8 @@ def on_activate(app: ImagerApplication) -> None:
         check(window.hdf_group.get_visible(), "HDF mode reveals the hard disk chooser")
         check(not window.partition_group.get_visible(),
               "HDF mode hides the partition editor (the RDB comes from the image)")
-        check(window.gather().validate() == [], "HDF mode config is valid")
+        problems = window.gather().validate()
+        check(problems == [], f"HDF mode config is valid ({problems})")
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()

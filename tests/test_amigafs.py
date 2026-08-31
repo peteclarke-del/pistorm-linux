@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pistorm_imager.core import amigafs, amigaos, pfs3  # noqa: E402
+from pistorm_imager.core import amigafs, amigainfo, amigaos, pfs3  # noqa: E402
 from pistorm_imager.core.amigafs import Volume, VolumeWriter  # noqa: E402
 from pistorm_imager.core.util import MIB, Progress  # noqa: E402
 
@@ -35,6 +35,22 @@ class _Scratch(unittest.TestCase):
 
 SAMPLE_ADFS = ROOT / "samples" / "workbench"
 HAVE_SAMPLES = SAMPLE_ADFS.is_dir() and any(SAMPLE_ADFS.glob("*.adf"))
+
+
+def make_icon(tooltypes: list[str]) -> bytes:
+    """A minimal but structurally valid .info file carrying tool types.
+
+    The same helper as in ``test_compat``; kept here so each test file stands
+    on its own.
+    """
+    data = bytearray(78)
+    struct.pack_into(">HH", data, 0, amigainfo.MAGIC, 1)
+    struct.pack_into(">I", data, 54, 1)          # do_ToolTypes present
+    block = bytearray(struct.pack(">I", (len(tooltypes) + 1) * 4))
+    for entry in tooltypes:
+        raw = entry.encode("latin-1") + b"\0"
+        block += struct.pack(">I", len(raw)) + raw
+    return bytes(data + block)
 
 
 def new_volume(folder: Path, blocks: int, name: str = "Test",
@@ -349,10 +365,259 @@ class TestNamePlanning(unittest.TestCase):
                          plan[entries[0]].lower() + ".info")
         self.assertTrue(all(len(v) <= 30 for v in plan.values()))
 
+    def test_a_preferred_spelling_is_the_one_that_keeps_its_name(self):
+        """The caller decides which of two indistinguishable names matters."""
+        entries = ["Driller.Slave", "Driller.slave"]
+        plan = amigaos.plan_names(entries, limit=106,
+                                  preferred=frozenset({"Driller.slave"}))
+        self.assertEqual(plan["Driller.slave"], "Driller.slave")
+        self.assertNotEqual(plan["Driller.Slave"].lower(), "driller.slave")
+        #  Without a preference the order is settled, but by the names alone.
+        plain = amigaos.plan_names(entries, limit=106)
+        self.assertEqual(plain["Driller.Slave"], "Driller.Slave")
+
     def test_a_generous_limit_avoids_renaming_entirely(self):
         short = ["Disk.info", "C", "S", "Startup-Sequence"]
         self.assertEqual(amigaos.plan_names(short, limit=30),
                          {n: n for n in short})
+
+
+class TestHostNamesInAmigaSpelling(unittest.TestCase):
+    """Amiga names are ISO-8859-1 bytes, and Linux keeps file names as bytes.
+
+    A tree lifted off an Amiga therefore arrives with names Python cannot
+    decode as UTF-8. Rewriting the byte it could not read replaces a name that
+    was already perfectly good: "portugu?s.language" is a locale AmigaOS will
+    never find, and "?" is a pattern wildcard to AmigaDOS at that.
+    """
+
+    def test_a_name_stored_as_amiga_bytes_is_kept_exactly(self):
+        raw = os.fsdecode(b"portugu\xeas.language")
+        chosen = amigaos.plan_names([raw], limit=106)[raw]
+        self.assertEqual(chosen, "portugu\u00eas.language")
+        self.assertEqual(chosen.encode("latin-1"), b"portugu\xeas.language")
+
+    def test_a_utf8_name_iso_8859_1_can_hold_keeps_its_letters(self):
+        name = "t\u00fcrk\u00e7e"
+        self.assertEqual(amigaos.plan_names([name], limit=106)[name], name)
+
+    def test_a_letter_iso_8859_1_lacks_is_folded_rather_than_lost(self):
+        name = "\u010de\u0161tina"          # Czech, which ISO-8859-1 has no room for
+        self.assertEqual(amigaos.plan_names([name], limit=106)[name], "cestina")
+
+    def test_the_two_spellings_of_one_name_are_seen_as_one(self):
+        """PiMiga's Locale drawer holds both, and the Amiga has only one name."""
+        latin1 = os.fsdecode(b"espa\xf1a.country")
+        utf8 = "espa\u00f1a.country"
+        plan = amigaos.plan_names([latin1, utf8], limit=106)
+        self.assertNotEqual(plan[latin1].lower(), plan[utf8].lower())
+
+
+class TestInstallingAHostTree(_Scratch):
+    """Copying a Linux directory tree - PiMiga's drives - onto a volume.
+
+    Such a tree was assembled where case matters and the Amiga's does not, so
+    it is full of pairs the Amiga cannot keep apart: "Bombuzal.slave" beside an
+    identical "Bombuzal.Slave", "data" beside "Data". Renaming one of each pair
+    wastes space, reports a change nothing asked for, and - for a drawer -
+    leaves a game looking for half of its files.
+    """
+
+    def install(self, build, blocks: int = 20000, pfs3_volume: bool = False):
+        source = self.scratch()
+        build(source)
+        if pfs3_volume:
+            path = self.scratch() / "vol.hdf"
+            handle = open(path, "w+b")
+            handle.truncate(blocks * amigafs.BLOCK)
+            volume = pfs3.Pfs3Writer(handle, 0, blocks, "Test")
+            volume.format()
+        else:
+            volume, handle, path = new_volume(self.scratch(), blocks)
+        log: list[str] = []
+        copied, renamed = amigaos.install_tree(
+            volume, source, "", Progress(on_log=log.append))
+        volume.close()
+        handle.close()
+        back = open(path, "rb")
+        self.addCleanup(back.close)
+        self.reader = (pfs3.Pfs3Volume(back, 0) if pfs3_volume else Volume(back))
+        listing = {p: e for p, e in self.reader.walk()}
+        return listing, copied, renamed, log
+
+    def test_an_identical_copy_differing_only_in_case_is_left_out(self):
+        def build(source: Path):
+            (source / "Bombuzal.slave").write_bytes(b"slave")
+            (source / "Bombuzal.Slave").write_bytes(b"slave")
+        listing, copied, renamed, log = self.install(build)
+        self.assertEqual(len(listing), 1, listing)
+        self.assertEqual(copied, 1)
+        self.assertEqual(renamed, 0, "nothing here needed a new name")
+        self.assertNotIn("_2", "".join(listing))
+        self.assertTrue(any("left out" in line for line in log), log)
+
+    def test_the_copy_nothing_could_open_is_left_out_too(self):
+        """Two files of the same name, differing - and only one is reachable.
+
+        Every spelling of a name finds the same entry on an Amiga volume, so a
+        second copy kept as "Driller_2.slave" is a file nothing would ever ask
+        for.  Leaving it out is what the drawer looked like to the Amiga all
+        along; keeping it only fills the card with names that were never there.
+        """
+        def build(source: Path):
+            (source / "Driller.slave").write_bytes(b"one version")
+            (source / "Driller.Slave").write_bytes(b"a different version")
+        listing, copied, renamed, log = self.install(build)
+        self.assertEqual(len(listing), 1, listing)
+        self.assertEqual(copied, 1)
+        self.assertEqual(renamed, 0, "nothing was renamed; one was left out")
+        self.assertNotIn("_2", "".join(listing))
+        self.assertTrue([line for line in log if "left out" in line], log)
+
+    def test_two_drawers_of_the_same_name_become_one(self):
+        def build(source: Path):
+            (source / "data").mkdir()
+            (source / "data" / "one.dat").write_bytes(b"1")
+            (source / "Data").mkdir()
+            (source / "Data" / "two.dat").write_bytes(b"2")
+        listing, copied, renamed, _log = self.install(build)
+        drawers = [p for p, e in listing.items() if e.is_dir]
+        self.assertEqual(len(drawers), 1, listing)
+        drawer = drawers[0]
+        self.assertEqual(sorted(listing) ,
+                         sorted([drawer, f"{drawer}/one.dat", f"{drawer}/two.dat"]))
+        self.assertEqual(copied, 2)
+        self.assertEqual(renamed, 0)
+
+    def test_the_slave_an_icon_names_is_the_one_that_keeps_its_name(self):
+        """Which of two spellings gives way is not arbitrary.
+
+        A collection built for an emulator that mounts the host directory keeps
+        both builds of a slave, and the emulator opens the exact spelling the
+        icon names.  Keeping the other one would start a different build of the
+        game here than the same collection runs there.
+        """
+        def build(source: Path):
+            (source / "Driller.Slave").write_bytes(b"an older build")
+            (source / "Driller.slave").write_bytes(b"the build the icon names")
+            (source / "Driller.info").write_bytes(
+                make_icon(["WHDLoad", "SLAVE=Driller.slave", "PRELOAD"]))
+        listing, _copied, _renamed, _log = self.install(build)
+        self.assertEqual(sorted(listing), ["Driller.info", "Driller.slave"],
+                         f"the wrong build survived ({sorted(listing)})")
+        self.assertEqual(self.reader.read_file(listing["Driller.slave"]),
+                         b"the build the icon names")
+
+    def test_without_an_icon_to_go_on_the_choice_is_still_settled(self):
+        """Nothing names either spelling, so it only has to be repeatable."""
+        def build(source: Path):
+            (source / "Driller.Slave").write_bytes(b"an older build")
+            (source / "Driller.slave").write_bytes(b"another build")
+        first, _copied, renamed, _log = self.install(build)
+        second, _copied, _renamed, _log = self.install(build)
+        self.assertEqual(renamed, 0)
+        self.assertEqual(len(first), 1, first)
+        self.assertEqual(sorted(first), sorted(second),
+                         "the same tree must plan the same way twice")
+
+    def test_an_icon_is_repointed_at_the_file_it_names(self):
+        """Shortening a file and leaving its icon alone breaks the icon.
+
+        An icon's tool types are how a WHDLoad game names its slave, which is
+        exactly what the length warning is about; where the new name is known,
+        the reference can simply be corrected.
+        """
+        long_name = "Ambermoon-with-a-name-far-too-long-for-ffs.slave"
+        def build(source: Path):
+            (source / long_name).write_bytes(b"the slave")
+            (source / "Ambermoon.info").write_bytes(
+                make_icon(["WHDLoad", f"SLAVE={long_name}", "PRELOAD"]))
+        listing, _copied, _renamed, log = self.install(build)
+        shortened = next(n for n in listing if n.lower().endswith(".slave"))
+        self.assertLessEqual(len(shortened), 30)
+        icon = self.reader.read_file(listing["Ambermoon.info"])
+        self.assertEqual(amigainfo.read_tooltypes(icon),
+                         ["WHDLoad", f"SLAVE={shortened}", "PRELOAD"])
+        self.assertTrue([line for line in log if "had to be renamed" in line], log)
+
+    def test_a_reference_spelt_in_another_case_is_repointed_too(self):
+        """AmigaDOS matches without regard to case, so the icon may not match."""
+        long_name = "Ambermoon-with-a-name-far-too-long-for-ffs.slave"
+        def build(source: Path):
+            (source / long_name).write_bytes(b"the slave")
+            (source / "Ambermoon.info").write_bytes(
+                make_icon([f"(SLAVE={long_name.upper()})"]))
+        listing, _copied, _renamed, _log = self.install(build)
+        shortened = next(n for n in listing if n.lower().endswith(".slave"))
+        icon = self.reader.read_file(listing["Ambermoon.info"])
+        self.assertEqual(amigainfo.read_tooltypes(icon),
+                         [f"(SLAVE={shortened})"],
+                         "a disabled tool type must keep its brackets")
+
+    def test_an_icon_naming_nothing_that_moved_is_left_exactly_as_it_was(self):
+        original = make_icon(["BOARDTYPE=VideoCore", "SLAVE=Elsewhere.slave"])
+        def build(source: Path):
+            (source / "Ambermoon.slave").write_bytes(b"the slave")
+            (source / "Ambermoon.info").write_bytes(original)
+        listing, _copied, renamed, _log = self.install(build)
+        self.assertEqual(renamed, 0)
+        self.assertEqual(self.reader.read_file(listing["Ambermoon.info"]),
+                         original, "an icon with nothing to fix must not be touched")
+
+    def test_the_log_only_warns_about_length_when_a_name_was_shortened(self):
+        def build(source: Path):
+            (source / "Readme").write_bytes(b"a")
+            (source / "ReadMe").write_bytes(b"a")
+        _listing, _copied, _renamed, log = self.install(build)
+        self.assertFalse([line for line in log if "shortened to fit" in line],
+                         "nothing was shortened, so nothing may say it was")
+
+    def test_a_name_too_long_for_the_volume_still_says_so(self):
+        def build(source: Path):
+            (source / ("a-very-long-name-that-ffs-cannot-hold" * 2)).write_bytes(b"a")
+        _listing, _copied, renamed, log = self.install(build)
+        self.assertEqual(renamed, 1)
+        warning = "".join(line for line in log if "shortened to fit 30" in line)
+        self.assertTrue(warning, log)
+        self.assertIn("PFS3 partition avoids this", warning,
+                      "on FFS there is somewhere better to go")
+
+    def test_pfs3_is_not_told_to_switch_to_pfs3(self):
+        """Advice to use the file system already in use is no advice at all."""
+        def build(source: Path):
+            (source / ("a-name-far-longer-than-even-pfs3-will-hold" * 4)
+             ).write_bytes(b"a")
+        _listing, _copied, renamed, log = self.install(build, blocks=60000,
+                                                       pfs3_volume=True)
+        self.assertEqual(renamed, 1)
+        warning = "".join(line for line in log if "shortened to fit" in line)
+        self.assertTrue(warning, log)
+        self.assertNotIn("PFS3 partition avoids this", warning)
+
+    def test_the_same_name_stored_two_ways_is_explained_as_such(self):
+        """Both spellings print identically, so the message has to say more.
+
+        PiMiga's Locale drawer holds "espa\xf1a.country" twice: once with the
+        bytes an Amiga writes, once as UTF-8. Reporting that one cannot be told
+        from the other reads as nonsense when the two are shown the same way.
+        """
+        def build(source: Path):
+            (source / os.fsdecode(b"espa\xf1a.country")).write_bytes(b"the 2018 one")
+            (source / "espa\u00f1a.country").write_bytes(b"the 2021 one")
+        listing, _copied, _renamed, log = self.install(build)
+        self.assertEqual(list(listing), ["espa\u00f1a.country"], listing)
+        message = "".join(line for line in log if "left out" in line)
+        self.assertIn("stores this name twice", message)
+        self.assertIn("ISO-8859-1", message)
+        self.assertIn("UTF-8", message)
+
+    def test_an_iso_8859_1_name_reaches_the_volume_unchanged(self):
+        def build(source: Path):
+            (source / os.fsdecode(b"fran\xe7ais")).write_bytes(b"a")
+        listing, _copied, renamed, log = self.install(build)
+        self.assertEqual(list(listing), ["fran\u00e7ais"])
+        self.assertEqual(renamed, 0)
+        self.assertFalse([line for line in log if "->" in line], log)
 
 
 class TestNameLimits(_Scratch):
