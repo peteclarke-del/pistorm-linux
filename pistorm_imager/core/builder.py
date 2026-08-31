@@ -681,6 +681,54 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
     return fixer
 
 
+def _format_empty_partitions(config: BuildConfig, handle,
+                             amiga: mbr.MbrPartition, table: rdb.Rdb,
+                             progress: Progress) -> None:
+    """Format the partitions nothing else is going to.
+
+    A partition with no content was left as raw sectors, and AmigaOS shows
+    that as NDOS: you ask for a drive called Work, and get an icon that has to
+    be formatted by hand before it can be used.  There is no sense in that for
+    a file system this tool creates anyway - and on a PFS3 drive it is worse
+    than an inconvenience, because the Amiga's own Format has no idea what
+    PFS3 is unless the handler is already running.
+
+    Anything already carrying a file system is left alone, so this cannot
+    touch a drive imported from somewhere else.
+    """
+    by_name = {p.drive_name.upper(): p for p in table.partitions}
+    filled = {spec.name.upper() for spec in config.amiga_partitions
+              if spec.content_folder or spec.content_hdf}
+    boot = next((p for p in table.partitions if p.bootable), None)
+    for spec in config.amiga_partitions:
+        name = spec.name.upper()
+        partition = by_name.get(name)
+        if partition is None or name in filled:
+            continue
+        #  The boot drive belongs to the AmigaOS install, which formats it
+        #  itself and would have its work thrown away here.
+        if (config.install_amigaos and boot is not None
+                and name == boot.drive_name.upper()):
+            continue
+        dostype = partition.dostype
+        if not amigafs.is_ffs(dostype) and dostype not in (rdb.DOSTYPE_PFS3,
+                                                           rdb.DOSTYPE_PDS3):
+            continue
+        offset = partition.byte_offset(table.geometry, amiga.start_bytes)
+        handle.seek(offset)
+        signature = handle.read(4)
+        if signature[:3] == b"DOS" or signature == b"PFS\x01":
+            continue
+        label = spec.volume_name or partition.drive_name
+        progress.step(f"Formatting {partition.drive_name}")
+        volume = amigaos.make_volume(handle, offset,
+                                     partition.blocks(table.geometry),
+                                     label, dostype)
+        volume.close()
+        progress.log(f'{partition.drive_name} formatted as '
+                     f'{rdb.dostype_name(dostype)}, named "{label}"')
+
+
 def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      table: rdb.Rdb, progress: Progress) -> None:
     """Fill partitions that were given a host directory or overlays."""
@@ -1156,6 +1204,7 @@ def _build_hdf_output(config: BuildConfig, handle, size: int,
     if any(p.content_folder or p.content_hdf
                            for p in config.amiga_partitions):
         _install_content(config, handle, amiga, table, progress)
+    _format_empty_partitions(config, handle, amiga, table, progress)
     check_and_repair(handle, 0, size, config, progress)
 
 
@@ -1393,6 +1442,8 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
                     if any(p.content_folder or p.content_hdf
                            for p in config.amiga_partitions):
                         _install_content(config, handle, amiga_part, table, progress)
+                    _format_empty_partitions(config, handle, amiga_part, table,
+                                             progress)
             else:
                 parts = mbr.read_table(handle)
                 boot_part = _find_boot_partition(parts)
