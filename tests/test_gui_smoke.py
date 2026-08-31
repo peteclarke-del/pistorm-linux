@@ -38,6 +38,9 @@ SOURCE_IMAGE.write_bytes(b"\0" * 4096)
 #  something to list.  An empty file would leave it with nothing to offer and
 #  the check below would prove nothing.
 HDF_IMAGE = SCRATCH / "disk.hdf"
+#  The real Workbench disks, so the ADF-install path is exercised as
+#  the user actually drives it.
+ADF_FOLDER = Path(__file__).resolve().parent.parent / "samples" / "workbench"
 
 
 def _make_test_hdf() -> None:
@@ -296,6 +299,23 @@ def on_activate(app: ImagerApplication) -> None:
                                       "hdf_source": str(HDF_IMAGE)})
         check(window._primary() == "image",
               "a session saved before the split still picks the right source")
+
+        #  Software ticked on the Amiga page has to reach the build.  It used
+        #  to be carried only by the quick setup, so ticking a package and
+        #  pressing Write from the pages themselves built a card without it.
+        window.mode_row.set_selected(0)                   # a fresh card
+        window.quick_system_source.set_selected(0)        # from floppies
+        window.adf_row.set_path(str(ADF_FOLDER))
+        window._refresh_packages()
+        for key in ("whdload", "fblit"):
+            if key in window.package_rows:
+                window.package_rows[key].set_active(True)
+        chosen = window._chosen_packages()
+        config = window.gather()
+        check(set(config.package_keys) == set(chosen) and bool(chosen),
+              f"chosen software reaches the build ({chosen})")
+        check(config.package_chipset and config.package_display,
+              "the machine and display travel with it")
 
         #  A folder is genuinely hard to pick in the GTK dialog - you have to
         #  highlight it from its parent, and once inside it nothing is

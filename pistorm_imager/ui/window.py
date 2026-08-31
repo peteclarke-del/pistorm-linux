@@ -1743,6 +1743,13 @@ class ImagerWindow(Adw.ApplicationWindow):
             adf_folder=self.adf_row.path,
             adf_version=self._selected_adf_version(),
             amiga_volume_name=self.volume_row.get_text().strip() or "Workbench",
+            #  The software chosen on the Amiga page.  These only used to be
+            #  set by the quick setup, so ticking a package and pressing Write
+            #  from the pages themselves quietly built a card without it.
+            package_donor=self._package_donor(),
+            package_keys=self._chosen_packages(),
+            package_chipset=self._machine().chipset.value,
+            package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
             #  what happens to a copied system's graphics setup, so it has to
             #  reach every build - not only one started from that page.
