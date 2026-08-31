@@ -147,9 +147,11 @@ class PartitionRow(Adw.ExpanderRow):
         #  of an .hdf can be added alongside another source rather than
         #  replacing it.
         self.hdf_row = FileRow(
-            "Fill from a hard disk image",
-            "Copies one drive out of an .hdf into this partition",
-            filters=HDF_FILTERS, on_change=lambda _p: self._on_hdf_chosen())
+            "Fill this partition from",
+            "A hard disk image to take a drive out of, or a folder of files "
+            "to copy in - PiMiga's Games and Demos drives are folders",
+            both=True, filters=HDF_FILTERS,
+            on_change=lambda _p: self._on_hdf_chosen())
         #  Which drive to take is a choice between the ones the image actually
         #  holds, named as Workbench names them - not a device name typed from
         #  memory and silently wrong.
@@ -218,9 +220,13 @@ class PartitionRow(Adw.ExpanderRow):
     def _reload_drives(self, keep: str = "") -> None:
         """List the drives in the chosen image, so one can be picked by name."""
         path = self.hdf_row.path
-        drives = builder.list_drives(path) if path else []
+        folder = bool(path) and Path(path).is_dir()
+        drives = builder.list_drives(path) if path and not folder else []
         self._drive_keys = [""]
-        if not path:
+        if folder:
+            #  A folder is copied in whole; there are no drives to choose.
+            labels = [f"Everything in {Path(path).name}"]
+        elif not path:
             labels = [NO_IMAGE]
         elif not drives:
             labels = [NO_DRIVES]
@@ -236,8 +242,10 @@ class PartitionRow(Adw.ExpanderRow):
         self.hdf_part_row.set_model(combo(labels))
         self.hdf_part_row.set_sensitive(len(labels) > 1)
         if not path:
-            self.hdf_part_row.set_subtitle("Pick a hard disk image above")
+            self.hdf_part_row.set_subtitle("Choose a file or folder above")
         elif drives:
+            self.hdf_part_row.set_subtitle("")
+        elif folder:
             self.hdf_part_row.set_subtitle("")
         else:
             #  Say what the file actually is.  "No Amiga drive found" is true
@@ -275,6 +283,8 @@ class PartitionRow(Adw.ExpanderRow):
             except ValueError:
                 size = None
         #  Override only what this editor shows; keep the rest of the spec.
+        chosen = self.hdf_row.path
+        is_folder = bool(chosen) and Path(chosen).is_dir()
         return dataclasses.replace(
             self._source,
             name=self.name_row.get_text().strip().upper() or "DH0",
@@ -285,12 +295,14 @@ class PartitionRow(Adw.ExpanderRow):
             boot_priority=int(self.priority_row.get_value()),
             #  An image chosen here replaces whatever the partition was going
             #  to be filled with, rather than fighting with it.
-            content_hdf=self.hdf_row.path or (
-                "" if self._source.content_folder else self._source.content_hdf),
-            content_hdf_partition=(self._chosen_drive()
-                                   if self.hdf_row.path
+            content_hdf=(chosen if chosen and not is_folder
+                         else "" if chosen
+                         else self._source.content_hdf),
+            content_hdf_partition=(self._chosen_drive() if chosen and not is_folder
+                                   else "" if chosen
                                    else self._source.content_hdf_partition),
-            content_folder=("" if self.hdf_row.path
+            content_folder=(chosen if chosen and is_folder
+                            else "" if chosen
                             else self._source.content_folder),
         )
 

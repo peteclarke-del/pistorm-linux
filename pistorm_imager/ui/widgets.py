@@ -22,17 +22,28 @@ class FileRow(Adw.EntryRow):
     """
 
     def __init__(self, title: str, subtitle: str = "", *, folder: bool = False,
+                 both: bool = False,
                  filters: list[tuple[str, list[str]]] | None = None,
                  on_change: Callable[[str], None] | None = None):
         super().__init__(title=title)
         self._placeholder = subtitle or "None selected"
         self._folder = folder
+        self._both = both
         self._filters = filters or []
         self._on_change = on_change
         self.path: str = ""
         self._echo = False               # guard against our own edits
 
-        self._button = Gtk.Button(label="Choose…", valign=Gtk.Align.CENTER)
+        #  Where either a file or a folder is a valid answer there have to be
+        #  two buttons: one GTK dialog cannot offer both, and a file chooser
+        #  simply opens into any folder you click rather than selecting it.
+        if both:
+            self._folder_button = Gtk.Button(label="Folder…",
+                                             valign=Gtk.Align.CENTER)
+            self._folder_button.connect("clicked", self._on_clicked_folder)
+            self.add_suffix(self._folder_button)
+        self._button = Gtk.Button(label="File…" if both else "Choose…",
+                                  valign=Gtk.Align.CENTER)
         self._button.connect("clicked", self._on_clicked)
         self._clear = Gtk.Button(icon_name="edit-clear-symbolic",
                                  valign=Gtk.Align.CENTER, tooltip_text="Clear")
@@ -101,9 +112,27 @@ class FileRow(Adw.EntryRow):
         else:
             dialog.open(window, None, self._finish)
 
+    def _on_clicked_folder(self, _button) -> None:
+        dialog = Gtk.FileDialog(title=self.get_title())
+        if self.path:
+            existing = Path(self.path)
+            parent = existing if existing.is_dir() else existing.parent
+            if parent.exists():
+                dialog.set_initial_folder(Gio.File.new_for_path(str(parent)))
+        dialog.select_folder(self.get_root(), None, self._finish_folder)
+
+    def _finish_folder(self, dialog, result) -> None:
+        try:
+            file = dialog.select_folder_finish(result)
+        except Exception:  # noqa: BLE001 - the user cancelled
+            return
+        if file is not None:
+            self.set_path(file.get_path())
+
     def _finish(self, dialog, result) -> None:
         try:
-            file = (dialog.select_folder_finish(result) if self._folder
+            file = (dialog.select_folder_finish(result)
+                    if self._folder and not self._both
                     else dialog.open_finish(result))
         except Exception:  # noqa: BLE001 - the user cancelled
             return
