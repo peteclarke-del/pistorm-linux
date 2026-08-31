@@ -106,7 +106,10 @@ def merge_cmdline(from_machine: str, typed: str) -> str:
 
 
 FIRST_DRIVE = "The first bootable drive"
-NO_DRIVES = "Choose an image first"
+NO_IMAGE = "Choose an image first"
+#  An image can be chosen and still have nothing to offer.  Saying "choose an
+#  image first" then reads as if the choice had not registered at all.
+NO_DRIVES = "No Amiga drive could be read from this image"
 
 
 class PartitionRow(Adw.ExpanderRow):
@@ -216,13 +219,24 @@ class PartitionRow(Adw.ExpanderRow):
         """List the drives in the chosen image, so one can be picked by name."""
         path = self.hdf_row.path
         drives = builder.list_drives(path) if path else []
-        labels = [FIRST_DRIVE if drives else NO_DRIVES]
         self._drive_keys = [""]
-        for drive in drives:
-            labels.append(drive.label)
-            self._drive_keys.append(drive.name)
+        if not path:
+            labels = [NO_IMAGE]
+        elif not drives:
+            labels = [NO_DRIVES]
+        elif len(drives) == 1 and drives[0].whole_image:
+            #  A bare file system with no partition table: there is nothing to
+            #  choose between, so say what it is rather than offer a choice.
+            labels = [drives[0].label]
+        else:
+            labels = [FIRST_DRIVE]
+            for drive in drives:
+                labels.append(drive.label)
+                self._drive_keys.append(drive.name)
         self.hdf_part_row.set_model(combo(labels))
-        self.hdf_part_row.set_sensitive(bool(drives))
+        self.hdf_part_row.set_sensitive(len(labels) > 1)
+        self.hdf_part_row.set_subtitle(
+            "" if path else "Pick a hard disk image above")
         wanted = (keep or "").strip().upper()
         if wanted in [k.upper() for k in self._drive_keys[1:]]:
             self.hdf_part_row.set_selected(
