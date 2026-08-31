@@ -1069,6 +1069,17 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Chip RAM slowdown",
             subtitle="Improves compatibility with software that busy-waits")
         group.add(self.slowdown_row)
+        self.dbf_row = Adw.SwitchRow(
+            title="DBF loop slowdown",
+            subtitle="For OCS-era software that times itself with a delay "
+                     "loop and runs far too fast on a PiStorm")
+        group.add(self.dbf_row)
+        self.blitwait_row = Adw.SwitchRow(
+            title="Wait for the blitter",
+            subtitle="For software that starts a blit and reads the result "
+                     "without waiting, which only worked because the real "
+                     "chipset was slower")
+        group.add(self.blitwait_row)
         self.swapdf_row = Adw.SwitchRow(title="Swap DF0: with DF1:")
         group.add(self.swapdf_row)
         self.unit0_row = Adw.SwitchRow(
@@ -1593,6 +1604,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             vc4_mem=vc4 or None,
             vbr_move=self.vbr_row.get_active(),
             chip_slowdown=self.slowdown_row.get_active(),
+            dbf_slowdown=self.dbf_row.get_active(),
+            blitwait=self.blitwait_row.get_active(),
             swap_df0_with_df1=self.swapdf_row.get_active(),
             sd_unit0_rw=self.unit0_row.get_active(),
             extra_cmdline=self.extra_row.get_text().strip(),
@@ -2086,6 +2099,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.vc4_row.set_value(options.vc4_mem or 0)
         self.vbr_row.set_active(options.vbr_move)
         self.slowdown_row.set_active(options.chip_slowdown)
+        self.dbf_row.set_active(options.dbf_slowdown)
+        self.blitwait_row.set_active(options.blitwait)
         self.swapdf_row.set_active(options.swap_df0_with_df1)
         self.unit0_row.set_active(options.sd_unit0_rw)
         self.extra_row.set_text(options.extra_cmdline)
