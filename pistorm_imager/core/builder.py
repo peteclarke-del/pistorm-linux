@@ -873,6 +873,46 @@ def list_drives(path: str | Path) -> list[Drive]:
         return drives
 
 
+#  MBR partition types worth naming when an image holds no Amiga drive.
+LINUX_PARTITION = 0x83
+LINUX_SWAP = 0x82
+
+
+def why_no_drives(path: str | Path) -> str:
+    """Explain an image that offers no Amiga drive, for the drive chooser.
+
+    "No Amiga drive found" is true of a PiMiga download and thoroughly
+    unhelpful: it is the file everyone reaches for first, and the reason it
+    holds no Amiga drive - its drives are folders inside a Linux root
+    partition - is the one thing the user needs told.
+    """
+    try:
+        handle = open(path, "rb")
+    except OSError as error:
+        return f"Cannot read this file: {error}"
+    with handle:
+        if find_rdb(handle) is not None:
+            return ""
+        try:
+            parts = [p for p in mbr.read_table(handle) if not p.empty]
+        except (ValueError, OSError):
+            parts = []
+        if any(p.type_id == mbr.TYPE_AMIGA for p in parts):
+            return ("This card image has an Amiga partition, but no Rigid "
+                    "Disk Block could be read inside it.")
+        if any(p.type_id in (LINUX_PARTITION, LINUX_SWAP) for p in parts):
+            return ("This is a Linux system image, not an Amiga drive. A "
+                    "PiMiga download is a Raspberry Pi system that runs an "
+                    "emulator, and its Amiga drives are ordinary folders "
+                    "inside its Linux root partition - mount that partition "
+                    "and point the PiMiga folder source at disks/ instead.")
+        if parts:
+            return ("This image has a partition table, but none of it is an "
+                    "Amiga drive.")
+        return ("No partition table and no Amiga file system: this file "
+                "cannot be used as an Amiga drive.")
+
+
 def find_rdb(handle) -> tuple[int, "rdb.Rdb"] | None:
     """Locate a Rigid Disk Block in an open image.
 
