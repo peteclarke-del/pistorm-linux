@@ -134,7 +134,10 @@ CATALOGUE: list[Package] = [
         "whdload", "WHDLoad",
         "Runs floppy games and demos from the hard drive. Almost every game "
         "collection is built around it.",
-        items=(("C/WHDLoad", "C"), ("Expansion/WHDLoad", "Expansion/WHDLoad")),
+        items=(("C/WHDLoad", "C"), ("Expansion/WHDLoad", "Expansion/WHDLoad"),
+               #  Its settings live here, not in the command: the quit key,
+               #  whether it forces PAL, and the hooks it runs around a game.
+               ("S/WHDLoad.prefs", "S")),
         download=Download("dev/misc/WHDLoad_usr.lha",
                           (("WHDLoad/C/WHDLoad", "C"),
                            ("WHDLoad/C/WHDLoadCD32", "C"),

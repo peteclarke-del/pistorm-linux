@@ -39,6 +39,13 @@ EMULATOR_COMMANDS = [
 
 STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
 
+#  WHDLoad runs ExecuteStartup before every game and ExecuteCleanup after it.
+#  An emulator installation puts its own tuning there - PiMiga sets the JIT
+#  cache and CPU speed through uae-configuration - and on a PiStorm that
+#  command does not exist, so every launch runs something that is not there.
+WHDLOAD_PREFS = ["S/WHDLoad.prefs"]
+WHDLOAD_HOOKS = ("executestartup", "executecleanup")
+
 #  A saved screen mode points at a specific display board.  Carried over to a
 #  machine with no RTG, it opens Workbench on a screen that does not exist;
 #  dropping it makes Workbench fall back to a native mode.
@@ -258,7 +265,34 @@ class Compatibility:
         posix = relative.replace("\\", "/")
         if any(posix.lower() == f.lower() for f in STARTUP_FILES):
             return self._clean_startup(posix, data)
+        if any(posix.lower() == f.lower() for f in WHDLOAD_PREFS):
+            return self._clean_whdload_prefs(posix, data)
         return data
+
+    def _clean_whdload_prefs(self, relative: str, data: bytes) -> bytes:
+        """Disarm WHDLoad hooks that call an emulator's own control program.
+
+        The rest of the file is worth keeping - the quit key, the splash
+        delay, whether it forces PAL - so only the two hooks that shell out
+        are commented, and only when what they run is an emulator command.
+        """
+        out: list[str] = []
+        changed = 0
+        for line in data.decode("latin-1").splitlines(keepends=True):
+            stripped = line.strip().lower()
+            key, _, value = stripped.partition("=")
+            if (not stripped.startswith(";") and key.strip() in WHDLOAD_HOOKS
+                    and any(name in value for name in EMULATOR_COMMANDS)):
+                out.append(";" + line)
+                changed += 1
+            else:
+                out.append(line)
+        if changed:
+            self.note("edited",
+                      f"{relative}: commented out {changed} WHDLoad hook"
+                      f"{'s' if changed != 1 else ''} that call an emulator's "
+                      f"control program, which a PiStorm has not got")
+        return "".join(out).encode("latin-1")
 
     def _clean_startup(self, relative: str, data: bytes) -> bytes:
         text = data.decode("latin-1")
