@@ -57,6 +57,10 @@ ANODE_EOF = 0
 ANODE_BADBLOCKS = 4
 ANODE_ROOTDIR = 5
 ANODE_USERFIRST = 6
+#  What a real volume stores in the reserved anodes 0..4 to mark them taken.
+#  A free anode is one whose blocknr is zero, so leaving them cleared would
+#  offer the handler ANODE_BADBLOCKS and friends as spare anodes.
+ANODE_RESERVED_BLOCKNR = 0xFFFFFFFF
 
 BOOT_BLOCK = 0
 ROOT_BLOCK = 2                      # sector number of the root block
@@ -502,18 +506,49 @@ class Pfs3Writer:
         self._anode_blocks[seqnr] = sector
         #  Record it in the index so the handler can find it again.
         index_nr, offset = divmod(seqnr, self.index_per_block)
-        while len(self.index_blocks) <= index_nr:
-            self.index_blocks.append(0)
-        if not self.index_blocks[index_nr]:
-            index_sector, index_block = self._new_reserved_block(ID_INDEXBLOCK,
-                                                                 index_nr)
-            self._write_sectors(index_sector, bytes(index_block))
-            self.index_blocks[index_nr] = index_sector
-        index_sector = self.index_blocks[index_nr]
+        index_sector = self._index_block_for(index_nr)
         block = bytearray(self._read_reserved(index_sector))
         struct.pack_into(">I", block, SIZEOF_INDEXBLOCK_HEADER + offset * 4, sector)
         self._write_sectors(index_sector, bytes(block))
         return sector
+
+    def _index_block_for(self, index_nr: int) -> int:
+        """Sector of anode index block ``index_nr``, creating it if needed.
+
+        A small volume lists its index blocks directly in the root block.  Past
+        :func:`max_small_disk` the root block's index array is given over to
+        the bitmap instead, and the handler reaches the anode index through a
+        level of 'SB' super blocks named by the root block extension.  A large
+        volume whose super blocks are left unwritten therefore has an anode
+        index the handler cannot see at all: it refuses to mount, reporting
+        "Anode index invalid" and then "Disk update failed".
+        """
+        while len(self.index_blocks) <= index_nr:
+            self.index_blocks.append(0)
+        if not self.index_blocks[index_nr]:
+            sector, block = self._new_reserved_block(ID_INDEXBLOCK, index_nr)
+            self._write_sectors(sector, bytes(block))
+            self.index_blocks[index_nr] = sector
+            if self.superindex:
+                super_nr, offset = divmod(index_nr, self.index_per_block)
+                super_sector = self._super_block_for(super_nr)
+                super_block = bytearray(self._read_reserved(super_sector))
+                struct.pack_into(">I", super_block,
+                                 SIZEOF_INDEXBLOCK_HEADER + offset * 4, sector)
+                self._write_sectors(super_sector, bytes(super_block))
+        return self.index_blocks[index_nr]
+
+    def _super_block_for(self, super_nr: int) -> int:
+        """Sector of super block ``super_nr``, creating it if needed."""
+        if super_nr >= 16:
+            raise Pfs3Error("volume needs more super blocks than PFS3 allows")
+        while len(self.super_blocks) <= super_nr:
+            self.super_blocks.append(0)
+        if not self.super_blocks[super_nr]:
+            sector, block = self._new_reserved_block(ID_SUPERBLOCK, super_nr)
+            self._write_sectors(sector, bytes(block))
+            self.super_blocks[super_nr] = sector
+        return self.super_blocks[super_nr]
 
     def _read_reserved(self, sector: int) -> bytes:
         self.f.seek(self.base + sector * SECTOR)
@@ -622,7 +657,7 @@ class Pfs3Writer:
 
         #  Anodes 0..4 are reserved; the root directory is always anode 5.
         for _ in range(ANODE_ROOTDIR):
-            self.alloc_anode()
+            self.set_anode(self.alloc_anode(), 0, ANODE_RESERVED_BLOCKNR)
         self.root_anode = self.alloc_anode()
         root_dir_sector = self.alloc_reserved()
         self._write_dirblock(root_dir_sector, self.root_anode, parent=0)
@@ -699,6 +734,9 @@ class Pfs3Writer:
 
     def close(self) -> None:
         self._fill_data_bitmap()
+        #  Super blocks can be added long after ``format`` wrote the extension
+        #  block, so the extension is written again from what actually exists.
+        self._write_extension()
         self._write_root()
         self.f.flush()
 
