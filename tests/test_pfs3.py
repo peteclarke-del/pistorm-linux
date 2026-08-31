@@ -116,6 +116,44 @@ class TestVolumeCreation(_Scratch):
         self.addCleanup(volume.f.close)
         self.assertEqual(volume.read_file(volume.find("empty")), b"")
 
+    def test_reserved_anodes_are_marked_taken(self):
+        """Anodes 0..4 carry blocknr 0xFFFFFFFF on a real volume."""
+        writer, handle, path = self.new_volume()
+        writer.close()
+        handle.flush()
+        volume = pfs3.Pfs3Volume(open(path, "rb"))
+        self.addCleanup(volume.f.close)
+        for number in range(pfs3.ANODE_ROOTDIR):
+            self.assertEqual(volume.anode(number).blocknr,
+                             pfs3.ANODE_RESERVED_BLOCKNR)
+
+    def test_a_volume_past_the_small_disk_limit_round_trips(self):
+        """Above max_small_disk the anode index moves behind super blocks.
+
+        5 GiB is the smallest size that turns SUPERINDEX on.  The file is
+        sparse, so only the metadata actually written costs anything - and
+        without this the whole large-volume path went untested, which is how
+        every partition of an SD-card build came out unmountable.
+        """
+        size = 5 * 1024 * MIB
+        self.assertGreater(size // pfs3.SECTOR, pfs3.max_small_disk(1024))
+        writer, handle, path = self.new_volume(size, name="Big")
+        payload = os.urandom(200_000)
+        writer.write_file(writer.makedirs("Libs"), "big.library", payload)
+        writer.write_file(writer.root_anode, "Startup-Sequence", b"echo hi\n")
+        writer.close()
+        handle.flush()
+
+        volume = pfs3.Pfs3Volume(open(path, "rb"))
+        self.addCleanup(volume.f.close)
+        self.assertTrue(volume.superindex)
+        self.assertEqual(volume.options, 0x7FF)
+        self.assertTrue(any(volume.super_index))
+        self.assertEqual(volume.read_file(volume.find("Libs/big.library")),
+                         payload)
+        self.assertEqual(volume.read_file(volume.find("Startup-Sequence")),
+                         b"echo hi\n")
+
     def test_free_space_shrinks_as_files_are_written(self):
         writer, handle, _path = self.new_volume()
         before = writer.free_bytes

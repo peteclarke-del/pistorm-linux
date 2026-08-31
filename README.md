@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 205 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 207 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -317,6 +317,17 @@ small-index and SUPERINDEX layouts), and volumes written here against
 [`metaneutrons/pfs3`](https://github.com/metaneutrons/pfs3), an independent
 Rust implementation, which reports them clean and extracts their files
 byte-identically.
+
+Past about 4.9 GiB a volume switches to the **SUPERINDEX** layout, and that
+changes where the anode index lives: the root block's index array is given over
+to the bitmap, and the handler instead reaches the index blocks through a level
+of `'SB'` super blocks named by the root block extension. Getting this wrong is
+silent at build time and fatal at boot — the volume looks complete, every file
+is written and every index block is in place, but the handler cannot reach any
+of it and refuses to mount with *Anode index invalid* followed by *Disk update
+failed*. Both layouts are now created and read back in the tests; the large one
+uses a sparse 5 GiB volume, which is the smallest size that turns SUPERINDEX
+on.
 
 ## Two outputs at once
 
