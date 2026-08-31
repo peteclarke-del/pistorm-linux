@@ -782,13 +782,21 @@ def _place_entries(entries: list[tuple[Path, str, bool]],
 def install_tree(target: VolumeWriter, source: str | Path, destination: str,
                  progress: Progress,
                  compat: "compat_module.Compatibility | None" = None,
-                 exclude: list[str] | None = None) -> tuple[int, int]:
+                 exclude: list[str] | None = None,
+                 merge: bool = False) -> tuple[int, int]:
     """Copy a host directory tree into an Amiga volume.
 
     This is how a directory-based drive from an emulator - PiMiga's
     ``disks/System`` and friends, which Amiberry mounts straight off the Linux
     file system - becomes a real Amiga partition that AmigaOS can boot from on
     bare metal.
+
+    ``merge`` is for a tree laid on top of a volume that already has files in
+    it - an overlay.  Without it a drawer the volume already has is created a
+    second time rather than added to, and AmigaDOS only ever finds the first
+    of the two: everything the overlay put in its own ``Libs`` or ``S`` is
+    invisible.  It costs a directory scan per drawer, so filling a freshly
+    formatted volume leaves it off.
     """
     source = Path(source)
     if not source.is_dir():
@@ -854,7 +862,7 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
                 block = dir_blocks.get(placed.path)
                 if block is None:
                     block = target.mkdir(parent, placed.name,
-                                         check_existing=False)
+                                         check_existing=merge)
                 dir_blocks[placed.path] = block
             else:
                 data = _read_source(path, relative, compat, progress)
@@ -870,9 +878,9 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
                         progress.log(f"  {_printable(relative)}: {was} -> {now} "
                                      f"(the file it names had to be renamed)")
                 target.write_file(parent, placed.name, data,
-                                  check_existing=False)
+                                  check_existing=merge)
                 copied += 1
-        except amigafs.AmigaFsError as error:
+        except (amigafs.AmigaFsError, pfs3.Pfs3Error) as error:
             progress.log(f"  skipped {_printable(relative)}: {error}")
         if index % 200 == 0 or index == len(entries):
             progress.fraction(index / len(entries))
