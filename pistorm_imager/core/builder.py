@@ -35,7 +35,7 @@ import tempfile
 from pathlib import Path
 
 from . import (amigafs, amigaos, bootcfg, compat, devices, emu68, hdfcheck,
-               imgsrc, kickstart, mbr, packages, rdb)
+               imgsrc, kickstart, mbr, packages, pfs3, rdb)
 from .fat32 import Fat32
 from .util import (MIB, Cancelled, Progress, align_up, copy_stream, human_size,
                    require_tool, run)
@@ -796,6 +796,62 @@ BARE_SIGNATURES = {
     b"PFS\x03": rdb.DOSTYPE_PFS3, b"PDS\x03": rdb.DOSTYPE_PDS3,
     b"SFS\x00": rdb.DOSTYPE_SFS0,
 }
+
+
+@dataclasses.dataclass(frozen=True)
+class Drive:
+    """One Amiga drive inside an image, described well enough to choose it."""
+
+    name: str                       # the device name, DH0 and so on
+    volume: str                     # the label Workbench shows, if readable
+    size: int                       # bytes
+    filesystem: str                 # PFS3, FFS-INTL, ...
+    bootable: bool
+
+    @property
+    def label(self) -> str:
+        """What to show in a list: the drive, its volume and how big it is."""
+        parts = [self.name]
+        if self.volume and self.volume.upper() != self.name.upper():
+            parts.append(f'"{self.volume}"')
+        parts.append(human_size(self.size))
+        parts.append(self.filesystem)
+        if self.bootable:
+            parts.append("bootable")
+        return "  -  ".join((parts[0], ", ".join(parts[1:])))
+
+
+def list_drives(path: str | Path) -> list[Drive]:
+    """The Amiga drives an image holds, for picking one to import.
+
+    Reading the volume label means opening each file system, which can fail on
+    a drive that was never formatted; that is reported as a drive with no
+    label rather than losing the whole list.
+    """
+    try:
+        handle = open(path, "rb")
+    except OSError:
+        return []
+    with handle:
+        located = find_rdb(handle)
+        if located is None:
+            return []
+        base, table = located
+        drives: list[Drive] = []
+        for part in table.partitions:
+            volume = ""
+            try:
+                offset = part.byte_offset(table.geometry, base)
+                if part.dostype in (rdb.DOSTYPE_PFS3, rdb.DOSTYPE_PDS3):
+                    volume = pfs3.Pfs3Volume(handle, offset).name
+                else:
+                    volume = amigafs.Volume(handle, offset).name
+            except Exception:                     # noqa: BLE001 - best effort
+                volume = ""
+            drives.append(Drive(part.drive_name, volume,
+                                part.size_bytes(table.geometry),
+                                part.dostype_name, part.bootable))
+        return drives
 
 
 def find_rdb(handle) -> tuple[int, "rdb.Rdb"] | None:

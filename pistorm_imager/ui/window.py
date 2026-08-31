@@ -105,6 +105,10 @@ def merge_cmdline(from_machine: str, typed: str) -> str:
     return " ".join(words)
 
 
+FIRST_DRIVE = "The first bootable drive"
+NO_DRIVES = "Choose an image first"
+
+
 class PartitionRow(Adw.ExpanderRow):
     """Editor for one Amiga partition inside the RDB."""
 
@@ -142,13 +146,17 @@ class PartitionRow(Adw.ExpanderRow):
         self.hdf_row = FileRow(
             "Fill from a hard disk image",
             "Copies one drive out of an .hdf into this partition",
-            filters=HDF_FILTERS, on_change=lambda _p: self._refresh())
-        self.hdf_part_row = Adw.EntryRow(
-            title="Which drive in that image (DH0, DH1, ... ; blank for the first)")
+            filters=HDF_FILTERS, on_change=lambda _p: self._on_hdf_chosen())
+        #  Which drive to take is a choice between the ones the image actually
+        #  holds, named as Workbench names them - not a device name typed from
+        #  memory and silently wrong.
+        self.hdf_part_row = Adw.ComboRow(title="Which drive to import",
+                                         model=combo([FIRST_DRIVE]))
+        self._drive_keys: list[str] = [""]
         #  Filling these in fires the callbacks, so both rows exist first.
         self.hdf_row.set_path(spec.content_hdf or "")
-        self.hdf_part_row.set_text(spec.content_hdf_partition or "")
-        self.hdf_part_row.connect("changed", lambda _r: self._refresh())
+        self._reload_drives(spec.content_hdf_partition or "")
+        self.hdf_part_row.connect("notify::selected", lambda *_a: self._refresh())
 
         for row in (self.name_row, self.volume_row, self.size_row, self.fs_row,
                     self.boot_row, self.priority_row, self.content_row,
@@ -183,6 +191,44 @@ class PartitionRow(Adw.ExpanderRow):
         if spec.overlays:
             text += f"; plus {len(spec.overlays)} extra item(s)"
         return text
+
+    def _on_hdf_chosen(self) -> None:
+        self._reload_drives(self._source.content_hdf_partition)
+        self._refresh()
+
+    def choose_drive(self, name: str) -> bool:
+        """Select a drive by device name; False if the image has no such drive."""
+        wanted = (name or "").strip().upper()
+        keys = [k.upper() for k in self._drive_keys]
+        if wanted and wanted in keys:
+            self.hdf_part_row.set_selected(keys.index(wanted))
+            return True
+        self.hdf_part_row.set_selected(0)
+        return not wanted
+
+    def _chosen_drive(self) -> str:
+        index = self.hdf_part_row.get_selected()
+        if 0 <= index < len(self._drive_keys):
+            return self._drive_keys[index]
+        return ""
+
+    def _reload_drives(self, keep: str = "") -> None:
+        """List the drives in the chosen image, so one can be picked by name."""
+        path = self.hdf_row.path
+        drives = builder.list_drives(path) if path else []
+        labels = [FIRST_DRIVE if drives else NO_DRIVES]
+        self._drive_keys = [""]
+        for drive in drives:
+            labels.append(drive.label)
+            self._drive_keys.append(drive.name)
+        self.hdf_part_row.set_model(combo(labels))
+        self.hdf_part_row.set_sensitive(bool(drives))
+        wanted = (keep or "").strip().upper()
+        if wanted in [k.upper() for k in self._drive_keys[1:]]:
+            self.hdf_part_row.set_selected(
+                [k.upper() for k in self._drive_keys].index(wanted))
+        else:
+            self.hdf_part_row.set_selected(0)
 
     def _refresh(self) -> None:
         spec = self.spec()
@@ -221,7 +267,7 @@ class PartitionRow(Adw.ExpanderRow):
             #  to be filled with, rather than fighting with it.
             content_hdf=self.hdf_row.path or (
                 "" if self._source.content_folder else self._source.content_hdf),
-            content_hdf_partition=(self.hdf_part_row.get_text().strip().upper()
+            content_hdf_partition=(self._chosen_drive()
                                    if self.hdf_row.path
                                    else self._source.content_hdf_partition),
             content_folder=("" if self.hdf_row.path
@@ -305,8 +351,11 @@ class ImagerWindow(Adw.ApplicationWindow):
                                         "starred-symbolic")
         self.stack.add_titled_with_icon(self._page_source(), "source", "Source",
                                         "folder-download-symbolic")
-        self.stack.add_titled_with_icon(self._page_amiga(), "amiga", "Amiga",
+        amiga_page = self._page_amiga()
+        self.stack.add_titled_with_icon(self._page_storage(), "storage", "Storage",
                                         "drive-harddisk-symbolic")
+        self.stack.add_titled_with_icon(amiga_page, "amiga", "Amiga",
+                                        "applications-system-symbolic")
         self.stack.add_titled_with_icon(self._page_options(), "options", "Options",
                                         "preferences-system-symbolic")
         self.stack.add_titled_with_icon(self._page_target(), "target", "Target",
@@ -928,19 +977,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.rom_info)
         page.add(group)
 
-        self.partition_group = Adw.PreferencesGroup(
-            title="Amiga partitions",
-            description="Written as a Rigid Disk Block inside the 0x76 partition. "
-                        "Format them from HDToolBox on the Amiga.")
-        add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER,
-                         tooltip_text="Add a partition")
-        add.add_css_class("flat")
-        add.connect("clicked", lambda _b: self._add_partition())
-        self.partition_group.set_header_suffix(add)
-        page.add(self.partition_group)
-        self.partition_rows: list[PartitionRow] = []
-        self._add_partition(builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0))
-
         self.os_group = Adw.PreferencesGroup(
             title="Workbench floppy images",
             description="Used when the operating system is set to \u201cinstall "
@@ -1005,6 +1041,32 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.package_groups.append(group)
             page.add(group)
 
+
+        return page
+
+    def _page_storage(self) -> Adw.PreferencesPage:
+        """How the card is divided up.
+
+        Kept apart from the Amiga page deliberately: how big the drives are and
+        what file system they carry is a different question from what gets
+        written into them, and mixing the two made a long page where neither
+        was easy to find.
+        """
+        page = Adw.PreferencesPage()
+
+        self.partition_group = Adw.PreferencesGroup(
+            title="Amiga partitions",
+            description="Written as a Rigid Disk Block inside the 0x76 partition. "
+                        "Each one can be filled from the Amiga page, or left "
+                        "empty to format from HDToolBox on the Amiga.")
+        add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER,
+                         tooltip_text="Add a partition")
+        add.add_css_class("flat")
+        add.connect("clicked", lambda _b: self._add_partition())
+        self.partition_group.set_header_suffix(add)
+        page.add(self.partition_group)
+        self.partition_rows: list[PartitionRow] = []
+        self._add_partition(builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0))
 
         self.expand_group = Adw.PreferencesGroup(
             title="Unused space",
