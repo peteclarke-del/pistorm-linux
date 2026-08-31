@@ -966,22 +966,44 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Software to add",
             description="A Workbench built from the original disks is exactly "
                         "what shipped in 1994: no archiver, no installer, no "
-                        "WHDLoad. None of this is included here - it belongs to "
-                        "its authors - so it is copied out of a system you "
+                        "WHDLoad. Freely distributable pieces are fetched from "
+                        "Aminet and cached; anything that is not - IBrowse and "
+                        "the like - is only ever copied out of a system you "
                         "already have, such as a PiMiga installation.")
         self.package_donor = FileRow(
             "Take it from", "A Workbench System drive, or a PiMiga folder",
             folder=True, on_change=lambda _p: self._refresh_packages())
         self.packages_group.add(self.package_donor)
-        self.package_rows: dict[str, Adw.SwitchRow] = {}
-        for package in packages.CATALOGUE:
-            row = Adw.SwitchRow(title=package.label,
-                                subtitle=package.description)
-            row.set_active(package.default)
-            row.connect("notify::active", lambda *_a: self._on_layout_changed())
-            self.package_rows[package.key] = row
-            self.packages_group.add(row)
+        suggest = Adw.ActionRow(
+            title="Suggested load",
+            subtitle="Tick what suits this machine, chipset and display")
+        button = Gtk.Button(label="Apply")
+        button.set_valign(Gtk.Align.CENTER)
+        button.add_css_class("suggested-action")
+        button.connect("clicked", lambda *_a: self._apply_suggested_packages())
+        suggest.add_suffix(button)
+        suggest.set_activatable_widget(button)
+        self.packages_group.add(suggest)
         page.add(self.packages_group)
+
+        #  One group per category, so a long list reads as a few short ones.
+        self.package_rows: dict[str, Adw.SwitchRow] = {}
+        self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
+        for category in packages.Category:
+            members = packages.in_category(category)
+            if not members:
+                continue
+            group = Adw.PreferencesGroup(title=category.value)
+            for package in members:
+                row = Adw.SwitchRow(title=package.label,
+                                    subtitle=package.description)
+                row.set_active(package.default)
+                row.connect("notify::active",
+                            lambda *_a: self._on_layout_changed())
+                self.package_rows[package.key] = row
+                group.add(row)
+            self.package_groups.append(group)
+            page.add(group)
 
 
         self.expand_group = Adw.PreferencesGroup(
@@ -1199,8 +1221,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
         self.os_group.set_visible(mode is builder.BuildMode.FRESH)
         #  Only a Workbench built from floppies needs anything added to it.
-        self.packages_group.set_visible(mode is builder.BuildMode.FRESH
-                                        and self._system_source() == "adf")
+        show_packages = (mode is builder.BuildMode.FRESH
+                         and self._system_source() == "adf")
+        for group in self.package_groups:
+            group.set_visible(show_packages)
         installing = (not self.quick_hdf.path
                       and self._system_source() == "adf")
         for row in (self.adf_row, self.os_version_row, self.volume_row, self.os_disks):
@@ -1321,28 +1345,49 @@ class ImagerWindow(Adw.ApplicationWindow):
         """Where optional software is copied from."""
         return self.package_donor.path or self.quick_pimiga.path
 
+    def _apply_suggested_packages(self) -> None:
+        """Tick the set that suits the machine and screen that are chosen."""
+        wanted = set(packages.suggested(
+            self._machine(), self._display(),
+            donor=self._package_donor() or None,
+            networking=bool(self.wifi_ssid.get_text().strip())))
+        for key, row in self.package_rows.items():
+            if row.get_sensitive():
+                row.set_active(key in wanted)
+        self._refresh_packages()
+
     def _refresh_packages(self) -> None:
-        """Offer only the software the chosen donor can actually supply."""
+        """Offer only the software that can actually be obtained and used."""
         if not self._ready:
             return
         donor = self._package_donor()
         found = packages.available(donor) if donor else {}
-        rtg = self._display().uses_rtg
+        display = self._display()
+        chipset = self._machine().chipset
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
-            usable = key in found and (rtg or not package.rtg_only)
+            fits = package.suits(chipset, display)
+            downloadable = package.download is not None
+            usable = fits and (key in found or downloadable)
             row.set_sensitive(usable)
-            if not donor:
-                row.set_subtitle(package.description
-                                 + "  -  choose where to take it from first.")
-            elif key not in found:
-                row.set_subtitle(package.description
-                                 + "  -  not present in that system.")
-            elif package.rtg_only and not rtg:
-                row.set_subtitle(package.description
-                                 + "  -  only useful with an RTG display.")
+            note = package.description
+            if not fits and package.rtg_only:
+                note += "  -  only useful with an RTG display."
+            elif not fits and package.native_only:
+                note += "  -  only useful on the Amiga's own screen."
+            elif not fits:
+                note += "  -  not a fit for this chipset."
+            elif key in found:
+                note += "  -  from your donor system."
+            elif downloadable:
+                note += ("  -  will be fetched from Aminet."
+                         if not package.manual else
+                         f"  -  fetched from Aminet; {package.note}")
             else:
-                row.set_subtitle(package.description)
+                note += ("  -  needs a donor system that has it."
+                         if donor else
+                         "  -  choose where to take it from first.")
+            row.set_subtitle(note)
             if not usable:
                 row.set_active(False)
         self._on_layout_changed()

@@ -35,7 +35,7 @@ import tempfile
 from pathlib import Path
 
 from . import (amigafs, amigaos, bootcfg, compat, devices, emu68, hdfcheck,
-               imgsrc, kickstart, mbr, rdb)
+               imgsrc, kickstart, mbr, packages, rdb)
 from .fat32 import Fat32
 from .util import (MIB, Cancelled, Progress, align_up, copy_stream, human_size,
                    require_tool, run)
@@ -108,6 +108,13 @@ class BuildConfig:
     amiga_partitions: list[AmigaPartitionSpec] = dataclasses.field(
         default_factory=lambda: [AmigaPartitionSpec("DH0", None, "PFS3", True, 0)])
     pfs3_binary: str = ""              # optional pfs3aio to embed in the RDB
+    #  Optional software for a Workbench installed from floppies.  Anything a
+    #  donor system can supply is already resolved into the partition's
+    #  overlays; these are kept so the build can fetch what only Aminet has.
+    package_donor: str = ""
+    package_keys: list[str] = dataclasses.field(default_factory=list)
+    package_chipset: str = ""          # a machines.Chipset value
+    package_display: str = ""          # a machines.Display value
 
     #  Installing AmigaOS from Workbench floppy images
     install_amigaos: bool = False
@@ -572,10 +579,69 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     #  reopening a finished volume would mean rebuilding its allocation state.
     spec = next((s for s in config.amiga_partitions
                  if s.name.upper() == partition.drive_name.upper()), None)
-    if spec is not None and spec.overlays:
-        _apply_overlays(volume, spec, _make_fixer(config, progress), progress)
+    if spec is not None:
+        extra = _downloaded_packages(config, progress)
+        if spec.overlays or extra:
+            spec = dataclasses.replace(spec,
+                                       overlays=list(spec.overlays) + extra)
+            _apply_overlays(volume, spec, _make_fixer(config, progress),
+                            progress)
+    _write_user_startup(volume, config, progress)
     progress.step("Finalising the Amiga file system")
     volume.close()
+
+
+def _write_user_startup(volume, config: "BuildConfig",
+                        progress: Progress) -> None:
+    """Add the lines the chosen packages need to S:User-Startup.
+
+    Workbench 3.1 runs this from its own Startup-Sequence if it is there, so
+    it is where a package that has to be started, or soft-kicked over a ROM
+    module, gets its chance.  Copying the file into LIBS: alone would leave
+    the ROM version in use and the whole package inert.
+    """
+    lines: list[str] = []
+    for key in config.package_keys:
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is not None and package.startup:
+            lines += list(package.startup)
+    if not lines:
+        return
+    folder = volume.makedirs("S")
+    if volume.find_entry(folder, "User-Startup") is not None:
+        progress.log("  S:User-Startup already exists; left alone")
+        return
+    body = ("; Written by the PiStorm imager for the software you chose.\n"
+            + "\n".join(lines) + "\n")
+    volume.write_file(folder, "User-Startup", body.encode("latin-1"),
+                      check_existing=False)
+    progress.log(f"  S:User-Startup written ({len(lines)} lines)")
+
+
+def _downloaded_packages(config: "BuildConfig",
+                         progress: Progress) -> list[tuple[str, str]]:
+    """Fetch the chosen packages that no donor here can supply.
+
+    A donor is always preferred, so anything already resolved into the
+    partition's overlays is left alone; what is left is the freely
+    distributable software on Aminet, cached between builds.
+    """
+    if not config.package_keys:
+        return []
+    from . import machines
+    chipset = (machines.Chipset(config.package_chipset)
+               if config.package_chipset else machines.Chipset.AGA)
+    display = (machines.Display(config.package_display)
+               if config.package_display else machines.Display.NATIVE)
+    donor = config.package_donor or None
+    supplied = set(packages.available(donor))
+    wanted = [key for key in config.package_keys if key not in supplied]
+    if not wanted:
+        return []
+    progress.step("Fetching optional software")
+    return packages.overlays_for(donor, wanted, chipset=chipset,
+                                 display=display, progress=progress,
+                                 allow_download=True)
 
 
 def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,

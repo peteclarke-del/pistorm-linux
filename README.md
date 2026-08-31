@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 212 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 222 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -361,6 +361,40 @@ agree with perfectly:
   zero there reads as the root. A file in the tenth block of `LIBS:` then
   resolves to `SYS:` + its own name, which does not exist, so it can be found
   and never opened.
+
+## Software to add
+
+A Workbench installed from the original floppies is exactly what shipped in
+1994: no archiver, no installer, and no idea what WHDLoad is. The pieces most
+people add next are offered as a catalogue, grouped as System, Look and feel,
+Speed and Networking.
+
+Each one arrives by whichever route it can. Freely distributable software is
+**fetched from Aminet and cached** under `~/.cache/pistorm-imager/packages`, so
+a second card costs no download. Anything that is not freely distributable —
+IBrowse and MiamiDx among them — is only ever **copied out of a donor system
+you already have**, which is what pointing at a PiMiga installation is for. A
+donor is always preferred over a download.
+
+Not everything can be installed by copying files. VisualPrefs, MCP, NewIcons,
+MagicWB and Picasso96 patch the system or run their own script; those are
+unpacked into `Storage/Install` on the card, ready to be installed on the Amiga
+itself, and say so. Where a package needs a line to take effect — PeterK's
+`icon.library` has to be soft-kicked over the one in ROM, FBlit has to be
+started — the build writes `S:User-Startup` to do it.
+
+**Suggested load** picks a set from the machine and the display, because the
+right answer genuinely differs:
+
+| | OCS/ECS on the Amiga's own video | AGA, or Workbench on the Pi's HDMI |
+|---|---|---|
+| Drawing | FBlit and FText move Workbench's drawing off the blitter and into fast RAM, which is where a PiStorm's speed is | no blitter in the way; Picasso96 is the point of it |
+| Palette | FullPalette locks the desktop colours so a program cannot scramble them | a deep display has colours to spare |
+| Icons | MagicWB's eight colours suit a limited palette | a heavier desktop such as Scalos becomes affordable |
+
+Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
+VisualPrefs. Networking — the PiStorm's `vlink.device`, a TCP/IP stack, AmiSSL
+and NetSurf — is suggested when a WiFi network has been configured.
 
 ## Two outputs at once
 

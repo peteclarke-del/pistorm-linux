@@ -520,6 +520,93 @@ class TestOptionalSoftware(unittest.TestCase):
         self.assertTrue(any("WHDLoad" in src for src, _d in overlays))
 
 
+class TestPackageFit(unittest.TestCase):
+    """Which optional software suits which machine and screen."""
+
+    def setUp(self):
+        from pistorm_imager.core import packages
+        self.packages = packages
+        self.a500 = machines.MACHINES_BY_KEY["a500"]
+        self.a1200 = next(m for m in machines.MACHINES if m.aga)
+
+    def donor(self, *present: str) -> Path:
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-donor-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        system = folder / "System"
+        (system / "C").mkdir(parents=True)
+        for item in present:
+            path = system / item
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+        return system
+
+    def test_every_entry_is_obtainable_somehow(self):
+        """A package nobody can supply would only ever be a dead switch."""
+        for package in self.packages.CATALOGUE:
+            self.assertTrue(package.items or package.download, package.key)
+
+    def test_a_self_installing_download_says_where_it_lands(self):
+        for package in self.packages.CATALOGUE:
+            download = package.download
+            if download is not None and not download.items:
+                self.assertTrue(download.stage, package.key)
+                self.assertTrue(package.note, package.key)
+
+    def test_fblit_is_for_the_amigas_own_screen(self):
+        fblit = self.packages.CATALOGUE_BY_KEY["fblit"]
+        self.assertTrue(fblit.suits(machines.Chipset.OCS, Display.NATIVE))
+        self.assertTrue(fblit.suits(machines.Chipset.OCS, Display.BOTH))
+        self.assertFalse(fblit.suits(machines.Chipset.AGA, Display.RTG_HDMI))
+
+    def test_picasso96_is_for_an_rtg_screen(self):
+        p96 = self.packages.CATALOGUE_BY_KEY["picasso96"]
+        self.assertFalse(p96.suits(machines.Chipset.AGA, Display.NATIVE))
+        self.assertTrue(p96.suits(machines.Chipset.OCS, Display.RTG_HDMI))
+
+    def test_scalos_wants_aga_or_an_rtg_screen(self):
+        scalos = self.packages.CATALOGUE_BY_KEY["scalos"]
+        self.assertFalse(scalos.suits(machines.Chipset.OCS, Display.NATIVE))
+        self.assertTrue(scalos.suits(machines.Chipset.AGA, Display.NATIVE))
+        self.assertTrue(scalos.suits(machines.Chipset.OCS, Display.RTG_HDMI))
+
+    def test_the_suggestion_for_an_ocs_a500_on_its_own_screen(self):
+        chosen = self.packages.suggested(self.a500, Display.NATIVE)
+        for key in ("whdload", "lha", "installer", "iconlib",
+                    "fblit", "ftext", "fullpalette", "magicwb"):
+            self.assertIn(key, chosen)
+        self.assertNotIn("picasso96", chosen)
+        self.assertNotIn("scalos", chosen)
+
+    def test_the_suggestion_for_an_aga_machine_on_hdmi(self):
+        chosen = self.packages.suggested(self.a1200, Display.RTG_HDMI)
+        self.assertIn("picasso96", chosen)
+        #  Nothing that only helps the Amiga's own chipset draw a screen.
+        self.assertNotIn("fblit", chosen)
+
+    def test_a_suggestion_only_names_software_that_can_be_had(self):
+        """Scalos has no free download, so it needs a donor to be suggested."""
+        chosen = self.packages.suggested(self.a1200, Display.RTG_HDMI)
+        self.assertNotIn("scalos", chosen)
+        system = self.donor("C/WHDLoad", "System/Scalos/Scalos")
+        with_donor = self.packages.suggested(self.a1200, Display.RTG_HDMI,
+                                             donor=str(system))
+        self.assertIn("scalos", with_donor)
+
+    def test_networking_is_only_suggested_when_it_is_wanted(self):
+        without = self.packages.suggested(self.a500, Display.NATIVE)
+        self.assertNotIn("netsurf", without)
+        with_net = self.packages.suggested(self.a500, Display.NATIVE,
+                                           networking=True)
+        self.assertIn("netsurf", with_net)
+
+    def test_every_suggestion_is_a_real_key(self):
+        for machine in machines.MACHINES:
+            for display in Display:
+                for key in self.packages.suggested(machine, display,
+                                                   networking=True):
+                    self.assertIn(key, self.packages.CATALOGUE_BY_KEY)
+
+
 class TestBothOutputs(unittest.TestCase):
     """A PiStorm target can use HDMI RTG and the Amiga's own video at once."""
 
