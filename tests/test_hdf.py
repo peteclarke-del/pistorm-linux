@@ -141,6 +141,39 @@ class TestCompatibilityChecks(_Scratch):
         self.assertTrue(hdfcheck.unresolved(findings))
 
 
+class TestEmptyPartitionsAreFormatted(_Scratch):
+    """A drive with nothing to put in it should still mount."""
+
+    def build(self, partitions):
+        out = self.scratch() / "card.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            image_size=300 * MIB, install_emu68=False,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            amiga_partitions=partitions), QUIET)
+        return out
+
+    def test_an_empty_drive_is_formatted_and_named(self):
+        """Left raw, AmigaOS shows it as NDOS and it has to be formatted by
+        hand - which for PFS3 means the handler has to be running first."""
+        out = self.build([
+            builder.AmigaPartitionSpec("DH0", 100 * MIB, "FFS-INTL", True, 0,
+                                       volume_name="Boot"),
+            builder.AmigaPartitionSpec("DH1", 80 * MIB, "PFS3", False, -128,
+                                       volume_name="Apps"),
+            builder.AmigaPartitionSpec("DH2", None, "PFS3", False, -128,
+                                       volume_name="Work"),
+        ])
+        drives = builder.list_drives(out)
+        self.assertEqual([d.volume for d in drives], ["Boot", "Apps", "Work"])
+
+    def test_a_drive_falls_back_to_its_device_name(self):
+        out = self.build([
+            builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0),
+        ])
+        self.assertEqual(builder.list_drives(out)[0].volume, "DH0")
+
+
 class TestListDrives(_Scratch):
     """What a partition's drive chooser is offered."""
 
