@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pistorm-imager"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Prepare PiStorm/Emu68 SD cards on Linux, including PiMiga images"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,3 +22,8 @@ pistorm-imager = "pistorm_imager.app:main"
 
 [tool.setuptools]
 packages = ["pistorm_imager", "pistorm_imager.core", "pistorm_imager.ui"]
+
+#  One statement of the version, in the package itself, so that the packaging
+#  and the About dialog cannot disagree about which release this is.
+[tool.setuptools.dynamic]
+version = { attr = "pistorm_imager.__version__" }
