@@ -141,6 +141,41 @@ class TestCompatibilityChecks(_Scratch):
         self.assertTrue(hdfcheck.unresolved(findings))
 
 
+class TestListDrives(_Scratch):
+    """What a partition's drive chooser is offered."""
+
+    def test_lists_every_drive_with_its_name_and_size(self):
+        path = self.scratch() / "two.hdf"
+        make_hdf(path, 100 * MIB, [
+            rdb.Partition("DH0", 1, 40, rdb.DOSTYPE_FFS_INTL, bootable=True),
+            rdb.Partition("DH1", 41, 80, rdb.DOSTYPE_PFS3, bootable=False),
+        ])
+        drives = builder.list_drives(path)
+        self.assertEqual([d.name for d in drives], ["DH0", "DH1"])
+        self.assertTrue(drives[0].bootable)
+        self.assertFalse(drives[1].bootable)
+        self.assertEqual(drives[1].filesystem, "PFS3")
+        self.assertGreater(drives[0].size, 0)
+        #  The label is what the chooser shows, so it has to name the drive.
+        self.assertIn("DH0", drives[0].label)
+        self.assertIn("FFS", drives[0].label)
+
+    def test_an_unformatted_drive_still_appears(self):
+        """A drive with no file system on it is still a drive you can pick."""
+        path = self.scratch() / "raw.hdf"
+        make_hdf(path, 100 * MIB,
+                 [rdb.Partition("DH0", 1, 80, rdb.DOSTYPE_FFS_INTL)])
+        drives = builder.list_drives(path)
+        self.assertEqual(len(drives), 1)
+        self.assertEqual(drives[0].volume, "")
+
+    def test_nothing_to_list_without_an_rdb(self):
+        path = self.scratch() / "empty.hdf"
+        path.write_bytes(b"\0" * 8192)
+        self.assertEqual(builder.list_drives(path), [])
+        self.assertEqual(builder.list_drives(self.scratch() / "missing.hdf"), [])
+
+
 class TestFindRdb(_Scratch):
     def test_finds_an_rdb_in_a_bare_hdf(self):
         folder = self.scratch()
