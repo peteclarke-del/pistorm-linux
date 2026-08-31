@@ -598,6 +598,51 @@ def _keep_first(group: list[str], used: set[str]) -> list[str]:
     return named + [name for name in group if name != named[0]]
 
 
+#  Reasons a name is genuinely different from the one that was asked for.  A
+#  name that changed only in case is not among them: AmigaDOS finds it anyway.
+RENAMED_REASONS = ("shortened", "charset", "clash")
+
+
+def _repoint_icon(data: bytes,
+                  renames: dict[str, str]) -> tuple[bytes, list[tuple[str, str]]]:
+    """Point an icon's tool types at files whose names had to change.
+
+    Tool types are how an icon names a file - a WHDLoad game's ``SLAVE=`` above
+    all - so shortening a file and leaving its icon alone is exactly the case
+    the length warning is about.  Where the name changed for a reason AmigaDOS
+    cannot see through, the reference is rewritten to match.
+
+    Only a value that is the whole name of an entry in the same drawer is
+    touched.  A value naming a path leads somewhere this drawer's renames say
+    nothing about, and rewriting it on a matching last component would be a
+    guess.
+    """
+    if not renames:
+        return data, []
+    try:
+        entries = amigainfo.read_tooltypes(data)
+    except amigainfo.InfoError:
+        return data, []                   # not an icon we can read; leave it be
+
+    changed: list[tuple[str, str]] = []
+    out: list[str] = []
+    for entry in entries:
+        #  A tool type in parentheses is one Workbench shows but ignores.
+        opener, closer, body = "", "", entry
+        if body.startswith("(") and body.endswith(")"):
+            opener, closer, body = "(", ")", body[1:-1]
+        key, sep, value = body.partition("=")
+        chosen = renames.get(_clean(value).lower()) if sep and value else None
+        if chosen is None or chosen == value:
+            out.append(entry)
+            continue
+        out.append(f"{opener}{key}={chosen}{closer}")
+        changed.append((value, chosen))
+    if not changed:
+        return data, []
+    return amigainfo.write_tooltypes(data, out), changed
+
+
 def _encoding_of(name: str) -> str:
     """Which encoding the host used to store this name."""
     try:
@@ -770,6 +815,15 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
     limit = name_limit(target)
     placements = _place_entries(entries, limit)
 
+    #  What each drawer's icons may still be naming.  Keyed on the cleaned,
+    #  lower-cased old name, because AmigaDOS matches without regard to case
+    #  and a tool type may not spell it as the file system did.
+    renames: dict[str, dict[str, str]] = {}
+    for relative, placed in placements.items():
+        if placed.reason in RENAMED_REASONS:
+            old = relative.rpartition("/")[2]
+            renames.setdefault(placed.parent, {})[_clean(old).lower()] = placed.name
+
     base = target.makedirs(destination) if destination else target.root
     dir_blocks: dict[str, int] = {"": base}
     copied = 0
@@ -808,6 +862,13 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
                     data = compat.offer(relative, data)
                     if compat.skip(relative):
                         continue
+                if placed.name.lower().endswith(ICON_SUFFIX):
+                    data, repointed = _repoint_icon(
+                        data, renames.get(placed.parent, {}))
+                    for was, now in repointed:
+                        changes["repointed"] = changes.get("repointed", 0) + 1
+                        progress.log(f"  {_printable(relative)}: {was} -> {now} "
+                                     f"(the file it names had to be renamed)")
                 target.write_file(parent, placed.name, data,
                                   check_existing=False)
                 copied += 1
@@ -846,6 +907,9 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
                      f"another only in case but held different contents; "
                      f"AmigaDOS can reach only one of each, so the copy "
                      f"nothing refers to was left out")
+    if changes.get("repointed"):
+        progress.log(f"  {changes['repointed']} icon reference(s) were "
+                     f"rewritten to match a file that had to be renamed")
     if changes.get("merged"):
         progress.log(f"  {changes['merged']} drawer(s) differing from another "
                      f"only in case were merged into one")

@@ -520,6 +520,50 @@ class TestInstallingAHostTree(_Scratch):
         self.assertEqual(sorted(first), sorted(second),
                          "the same tree must plan the same way twice")
 
+    def test_an_icon_is_repointed_at_the_file_it_names(self):
+        """Shortening a file and leaving its icon alone breaks the icon.
+
+        An icon's tool types are how a WHDLoad game names its slave, which is
+        exactly what the length warning is about; where the new name is known,
+        the reference can simply be corrected.
+        """
+        long_name = "Ambermoon-with-a-name-far-too-long-for-ffs.slave"
+        def build(source: Path):
+            (source / long_name).write_bytes(b"the slave")
+            (source / "Ambermoon.info").write_bytes(
+                make_icon(["WHDLoad", f"SLAVE={long_name}", "PRELOAD"]))
+        listing, _copied, _renamed, log = self.install(build)
+        shortened = next(n for n in listing if n.lower().endswith(".slave"))
+        self.assertLessEqual(len(shortened), 30)
+        icon = self.reader.read_file(listing["Ambermoon.info"])
+        self.assertEqual(amigainfo.read_tooltypes(icon),
+                         ["WHDLoad", f"SLAVE={shortened}", "PRELOAD"])
+        self.assertTrue([line for line in log if "had to be renamed" in line], log)
+
+    def test_a_reference_spelt_in_another_case_is_repointed_too(self):
+        """AmigaDOS matches without regard to case, so the icon may not match."""
+        long_name = "Ambermoon-with-a-name-far-too-long-for-ffs.slave"
+        def build(source: Path):
+            (source / long_name).write_bytes(b"the slave")
+            (source / "Ambermoon.info").write_bytes(
+                make_icon([f"(SLAVE={long_name.upper()})"]))
+        listing, _copied, _renamed, _log = self.install(build)
+        shortened = next(n for n in listing if n.lower().endswith(".slave"))
+        icon = self.reader.read_file(listing["Ambermoon.info"])
+        self.assertEqual(amigainfo.read_tooltypes(icon),
+                         [f"(SLAVE={shortened})"],
+                         "a disabled tool type must keep its brackets")
+
+    def test_an_icon_naming_nothing_that_moved_is_left_exactly_as_it_was(self):
+        original = make_icon(["BOARDTYPE=VideoCore", "SLAVE=Elsewhere.slave"])
+        def build(source: Path):
+            (source / "Ambermoon.slave").write_bytes(b"the slave")
+            (source / "Ambermoon.info").write_bytes(original)
+        listing, _copied, renamed, _log = self.install(build)
+        self.assertEqual(renamed, 0)
+        self.assertEqual(self.reader.read_file(listing["Ambermoon.info"]),
+                         original, "an icon with nothing to fix must not be touched")
+
     def test_the_log_only_warns_about_length_when_a_name_was_shortened(self):
         def build(source: Path):
             (source / "Readme").write_bytes(b"a")
