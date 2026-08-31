@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 199 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 202 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -416,8 +416,13 @@ differences have to be settled on the way in:
   renamed, which would leave a game looking for half of its files.
 * **Length.** FFS allows 30 characters, PFS3 far more. Only a name that really
   had to be cut short is reported as shortened, and that is the warning worth
-  acting on: a WHDLoad slave and an icon's tool types both name files, so a
-  shortened name can stop a game starting. A PFS3 partition avoids it.
+  acting on: a shortened name can stop a game starting, because a WHDLoad slave
+  and an icon's tool types both name files. Where the reference is one this tool
+  can see — a tool type naming a file in the same drawer — it is **rewritten to
+  match**, so the icon still launches its slave. A name buried inside a binary
+  cannot be reached that way, which is why the warning still exists. Choosing
+  PFS3 sidesteps the question almost entirely: 3 names across PiMiga's four
+  drives are too long for it, against 1,597 on the Work drive alone under FFS.
 
 Across PiMiga 5's System, Demos and Games drives this brings the names that have
 to change down from 309 to 3 — all three of them names that were already
