@@ -262,6 +262,25 @@ class TestBootConfig(_Scratch):
         live = [l for l in config.text().splitlines() if l.startswith("initramfs")]
         self.assertEqual(live, [])
 
+    def test_the_ocs_timing_brakes_are_emitted(self):
+        """Emu68's own parser takes chip_slowdown, dbf_slowdown and blitwait.
+
+        A PiStorm runs the 68k far faster than any real Amiga, so OCS-era
+        software that times itself against the hardware breaks on speed alone.
+        These are the three brakes Emu68 offers for it.
+        """
+        options = bootcfg.BootOptions(chip_slowdown=True, dbf_slowdown=True,
+                                      blitwait=True)
+        parts = options.cmdline().split()
+        self.assertIn("chip_slowdown", parts)
+        self.assertIn("dbf_slowdown", parts)
+        self.assertIn("blitwait", parts)
+
+    def test_the_timing_brakes_are_off_unless_asked_for(self):
+        parts = bootcfg.BootOptions().cmdline().split()
+        for token in ("chip_slowdown", "dbf_slowdown", "blitwait"):
+            self.assertNotIn(token, parts)
+
     def test_cmdline_generation(self):
         options = bootcfg.BootOptions(vc4_mem=64, vbr_move=True, sd_unit0_rw=True,
                                       extra_cmdline="sd.verbose=1")
