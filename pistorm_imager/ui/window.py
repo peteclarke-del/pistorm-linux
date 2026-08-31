@@ -156,6 +156,9 @@ class PartitionRow(Adw.ExpanderRow):
         #  Which drive to take is a choice between the ones the image actually
         #  holds, named as Workbench names them - not a device name typed from
         #  memory and silently wrong.
+        self.exclude_row = Adw.EntryRow(
+            title="Leave out (comma separated, e.g. WHDLOAD/AGA)")
+        self.exclude_row.set_text(", ".join(spec.exclude or ()))
         self.hdf_part_row = Adw.ComboRow(title="Which drive to import",
                                          model=combo([FIRST_DRIVE]))
         self._drive_keys: list[str] = [""]
@@ -166,8 +169,9 @@ class PartitionRow(Adw.ExpanderRow):
 
         for row in (self.name_row, self.volume_row, self.size_row, self.fs_row,
                     self.boot_row, self.priority_row, self.content_row,
-                    self.hdf_row, self.hdf_part_row):
+                    self.hdf_row, self.hdf_part_row, self.exclude_row):
             self.add_row(row)
+        self.exclude_row.connect("changed", lambda _r: self._refresh())
         for row in (self.name_row, self.volume_row, self.size_row):
             row.connect("changed", lambda _r: self._refresh())
         self.fs_row.connect("notify::selected", lambda *_a: self._refresh())
@@ -305,6 +309,8 @@ class PartitionRow(Adw.ExpanderRow):
             content_folder=(chosen if chosen and is_folder
                             else "" if chosen
                             else self._source.content_folder),
+            exclude=[part.strip() for part
+                     in self.exclude_row.get_text().split(",") if part.strip()],
         )
 
 
@@ -905,12 +911,35 @@ class ImagerWindow(Adw.ApplicationWindow):
         except Exception as error:  # noqa: BLE001
             self._toast(str(error))
             return
+        #  The layout is redrawn from the quick settings as they change, but
+        #  only while nobody has touched it: once the partitions have been
+        #  edited by hand, that stops.  Applying used to ignore the same rule
+        #  and throw the edits away, so a carefully arranged set of drives
+        #  reverted the moment the button was pressed.
+        kept = self._hand_edited_partitions()
+        if kept is not None:
+            config = dataclasses.replace(config, amiga_partitions=kept)
         self.apply(config)
+        if kept is not None:
+            self._toast("Quick setup applied; your own partitions were kept")
+        else:
+            self._toast("Quick setup applied and remembered for next time")
         #  Remember it now, not only on a clean exit: this is the point at
         #  which the setup is worth keeping.
         self._remember_session()
         self.stack.set_visible_child_name("target")
-        self._toast("Quick setup applied and remembered for next time")
+
+    def _hand_edited_partitions(self):
+        """The partitions if they have been edited, else None.
+
+        Compared against what was last derived from the quick settings, which
+        is what the automatic relayout records for exactly this purpose.
+        """
+        derived = getattr(self, "_derived_partitions", None)
+        if derived is None:
+            return None
+        current = [row.spec() for row in self.partition_rows]
+        return current if current != derived else None
 
     def _page_source(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
