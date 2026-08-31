@@ -319,6 +319,16 @@ def on_activate(app: ImagerApplication) -> None:
             builder.AmigaPartitionSpec("DH4", None, "PFS\\3",
                                        content_folder="/somewhere/Games"),
             on_remove=lambda _r: None, on_change=None)
+        #  Either a folder or an image is a valid answer for a partition's
+        #  contents - PiMiga's Games and Demos drives are folders - so the row
+        #  offers both and works out which was chosen.
+        folder = SCRATCH / "GamesTree"
+        folder.mkdir(exist_ok=True)
+        extra.hdf_row.set_path(str(folder))
+        spec = extra.spec()
+        check(spec.content_folder == str(folder) and spec.content_hdf == "",
+              "a folder fills the partition from a tree of files")
+
         extra.hdf_row.set_path(str(HDF_IMAGE))
         listed = [extra.hdf_part_row.get_model().get_string(i)
                   for i in range(extra.hdf_part_row.get_model().get_n_items())]
@@ -329,7 +339,7 @@ def on_activate(app: ImagerApplication) -> None:
         check(extra.spec().content_hdf == str(HDF_IMAGE)
               and extra.spec().content_hdf_partition == "DH1"
               and extra.spec().content_folder == "",
-              "a partition filled from an image replaces its folder source")
+              "an image replaces the folder source rather than joining it")
 
         #  The display choice lives on the Quick setup page but decides what
         #  happens to a copied system's graphics setup.  gather() is what a
