@@ -613,7 +613,10 @@ def _write_user_startup(volume, config: "BuildConfig",
     if not lines:
         return
     folder = volume.makedirs("S")
-    if volume.find_entry(folder, "User-Startup") is not None:
+    #  _entry_exists is the lookup both writers share.  find_entry is the PFS3
+    #  writer's own, and reaching for it worked on a PFS3 system drive and
+    #  crashed the build at the last step on an FFS one.
+    if volume._entry_exists(folder, "User-Startup") is not None:
         progress.log("  S:User-Startup already exists; left alone")
         return
     body = ("; Written by the PiStorm imager for the software you chose.\n"
@@ -678,6 +681,13 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
                                  rtg=config.rtg_display,
                                  native=config.native_display,
                                  workbench_on_rtg=config.workbench_on_rtg)
+    #  What each volume will be filled from, so a games list can be checked
+    #  against what is actually going onto the card.
+    for spec in config.amiga_partitions:
+        if spec.content_folder:
+            name = (spec.volume_name or spec.name).strip().upper()
+            fixer.content[name] = (Path(spec.content_folder),
+                                   tuple(spec.exclude or ()))
     if config.spare_files_folder:
         found = fixer.add_spares(config.spare_files_folder)
         if found:
