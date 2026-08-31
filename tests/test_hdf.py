@@ -189,6 +189,30 @@ class TestListDrives(_Scratch):
         self.assertEqual(drives[0].volume, "Bare")
         self.assertIn("whole image", drives[0].label)
 
+    def test_a_pimiga_download_is_named_for_what_it_is(self):
+        """The file everyone reaches for first holds no Amiga drive at all.
+
+        PiMiga is a Raspberry Pi system running an emulator; its Amiga drives
+        are folders inside its Linux root.  Saying only "no Amiga drive found"
+        left the user with nothing to act on.
+        """
+        path = self.scratch() / "pimiga.img"
+        with open(path, "w+b") as handle:
+            handle.truncate(8 * MIB)
+            table = [mbr.MbrPartition(0, 0, 0x0c, 8192, 2048),
+                     mbr.MbrPartition(1, 0, 0x83, 10240, 4096)]
+            mbr.write_table(handle, table)
+        self.assertEqual(builder.list_drives(path), [])
+        why = builder.why_no_drives(path)
+        self.assertIn("Linux", why)
+        self.assertIn("folders", why)
+
+    def test_an_amiga_image_needs_no_explanation(self):
+        path = self.scratch() / "ok.hdf"
+        make_hdf(path, 100 * MIB,
+                 [rdb.Partition("DH0", 1, 80, rdb.DOSTYPE_FFS_INTL)])
+        self.assertEqual(builder.why_no_drives(path), "")
+
     def test_nothing_to_list_without_an_amiga_file_system(self):
         path = self.scratch() / "empty.hdf"
         path.write_bytes(b"\0" * 8192)

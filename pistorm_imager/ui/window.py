@@ -235,8 +235,14 @@ class PartitionRow(Adw.ExpanderRow):
                 self._drive_keys.append(drive.name)
         self.hdf_part_row.set_model(combo(labels))
         self.hdf_part_row.set_sensitive(len(labels) > 1)
-        self.hdf_part_row.set_subtitle(
-            "" if path else "Pick a hard disk image above")
+        if not path:
+            self.hdf_part_row.set_subtitle("Pick a hard disk image above")
+        elif drives:
+            self.hdf_part_row.set_subtitle("")
+        else:
+            #  Say what the file actually is.  "No Amiga drive found" is true
+            #  of a PiMiga download and tells the user nothing they can act on.
+            self.hdf_part_row.set_subtitle(builder.why_no_drives(path))
         wanted = (keep or "").strip().upper()
         if wanted in [k.upper() for k in self._drive_keys[1:]]:
             self.hdf_part_row.set_selected(
