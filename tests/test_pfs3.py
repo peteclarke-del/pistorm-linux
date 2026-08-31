@@ -230,6 +230,38 @@ class TestVolumeCreation(_Scratch):
         self.assertFalse(free(volume.lastreserved), "reserved blocks are not free")
         self.assertTrue(free(volume.disksize - 1), "the last block is free")
 
+    def test_every_block_of_a_directory_names_the_same_parent(self):
+        """A directory that outgrows one block is a chain of them.
+
+        Each block carries the anode of its directory and of that directory's
+        parent.  Filling the parent in on the first block only is invisible to
+        a name lookup, which walks the chain comparing names, but anything
+        that has to resolve an object's path asks the block the entry sits in
+        who its parent is - and a zero there reads as the root.  A file in the
+        tenth block of LIBS: then resolves to SYS:<name>, which does not
+        exist.
+        """
+        writer, handle, path = self.new_volume()
+        folder = writer.makedirs("Libs")
+        for index in range(200):
+            writer.write_file(folder, f"padding{index:04}.library", b"x")
+        writer.write_file(folder, "workbench.library", b"payload")
+        writer.close()
+        handle.flush()
+
+        volume = pfs3.Pfs3Volume(open(path, "rb"))
+        self.addCleanup(volume.f.close)
+        entry = volume.find("Libs")
+        chain = list(volume.anode_chain(entry.anode))
+        self.assertGreater(len(chain), 1, "the directory should have chained")
+        for index, node in enumerate(chain):
+            block = volume._reserved(node.blocknr)
+            anodenr, parent = struct.unpack_from(">II", block, 12)
+            self.assertEqual(anodenr, entry.anode, f"block {index} anode")
+            self.assertEqual(parent, pfs3.ANODE_ROOTDIR, f"block {index} parent")
+        self.assertEqual(
+            volume.read_file(volume.find("Libs/workbench.library")), b"payload")
+
     def test_free_space_shrinks_as_files_are_written(self):
         writer, handle, _path = self.new_volume()
         before = writer.free_bytes
