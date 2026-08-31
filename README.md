@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 207 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 211 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -136,6 +136,13 @@ The core suite builds real images in a temporary directory and reads them back,
 validates the FAT32 output with `fsck.vfat`, and audits the FFS bitmap to prove
 no block that is in use is ever marked free. The file system tests run against
 the real Workbench 3.1 disks in `samples/` when they are present.
+
+PFS3 volumes are also booted in **FS-UAE**, which runs the real PFS3 19.2
+handler out of the RDB rather than this project's reader: a small image with
+Workbench 3.1 installed from the disks in `samples/`, booted to a
+`S:User-Startup` that writes what it can see back onto the volume. That is the
+only check that distinguishes a volume which is genuinely correct from one this
+code merely agrees with itself about.
 
 Both the ADF reader and the FFS writer were cross-checked against
 [amitools](https://github.com/cnvogelg/amitools): every one of the 153 files on
@@ -328,6 +335,23 @@ of it and refuses to mount with *Anode index invalid* followed by *Disk update
 failed*. Both layouts are now created and read back in the tests; the large one
 uses a sparse 5 GiB volume, which is the smallest size that turns SUPERINDEX
 on.
+
+Two more details only show up when a written volume is measured against a real
+one, and both are the kind that a reader written alongside the writer will
+agree with perfectly:
+
+* **The block bitmap covers the whole partition, not the data area.** Bit *n*
+  is block *n* counted from the start of the volume, so the boot block and the
+  entire reserved area sit at the bottom of it, marked as taken. The handler
+  works the number of bitmap blocks out from `disksize`; size the bitmap from
+  the data area instead and it comes out short by however many blocks the
+  reserved area occupies, which on a small volume rounds to the same number and
+  on a large one does not.
+* **Every directory entry ends with a two-byte "extra fields" bitmask**, because
+  these volumes carry `MODE_DIR_EXTENSION`. The handler reads it by stepping
+  back from the end of the entry. Leave it out and the last two bytes of the
+  name are read as that bitmask instead — zero, and so harmless, for an
+  even-length name, but not for an odd one.
 
 ## Two outputs at once
 
