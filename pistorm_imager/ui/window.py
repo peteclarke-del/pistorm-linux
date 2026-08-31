@@ -105,6 +105,13 @@ def merge_cmdline(from_machine: str, typed: str) -> str:
     return " ".join(words)
 
 
+FIRST_DRIVE = "The first bootable drive"
+NO_IMAGE = "Choose an image first"
+#  An image can be chosen and still have nothing to offer.  Saying "choose an
+#  image first" then reads as if the choice had not registered at all.
+NO_DRIVES = "No Amiga drive could be read from this image"
+
+
 class PartitionRow(Adw.ExpanderRow):
     """Editor for one Amiga partition inside the RDB."""
 
@@ -140,15 +147,21 @@ class PartitionRow(Adw.ExpanderRow):
         #  of an .hdf can be added alongside another source rather than
         #  replacing it.
         self.hdf_row = FileRow(
-            "Fill from a hard disk image",
-            "Copies one drive out of an .hdf into this partition",
-            filters=HDF_FILTERS, on_change=lambda _p: self._refresh())
-        self.hdf_part_row = Adw.EntryRow(
-            title="Which drive in that image (DH0, DH1, ... ; blank for the first)")
+            "Fill this partition from",
+            "A hard disk image to take a drive out of, or a folder of files "
+            "to copy in - PiMiga's Games and Demos drives are folders",
+            both=True, filters=HDF_FILTERS,
+            on_change=lambda _p: self._on_hdf_chosen())
+        #  Which drive to take is a choice between the ones the image actually
+        #  holds, named as Workbench names them - not a device name typed from
+        #  memory and silently wrong.
+        self.hdf_part_row = Adw.ComboRow(title="Which drive to import",
+                                         model=combo([FIRST_DRIVE]))
+        self._drive_keys: list[str] = [""]
         #  Filling these in fires the callbacks, so both rows exist first.
         self.hdf_row.set_path(spec.content_hdf or "")
-        self.hdf_part_row.set_text(spec.content_hdf_partition or "")
-        self.hdf_part_row.connect("changed", lambda _r: self._refresh())
+        self._reload_drives(spec.content_hdf_partition or "")
+        self.hdf_part_row.connect("notify::selected", lambda *_a: self._refresh())
 
         for row in (self.name_row, self.volume_row, self.size_row, self.fs_row,
                     self.boot_row, self.priority_row, self.content_row,
@@ -184,6 +197,67 @@ class PartitionRow(Adw.ExpanderRow):
             text += f"; plus {len(spec.overlays)} extra item(s)"
         return text
 
+    def _on_hdf_chosen(self) -> None:
+        self._reload_drives(self._source.content_hdf_partition)
+        self._refresh()
+
+    def choose_drive(self, name: str) -> bool:
+        """Select a drive by device name; False if the image has no such drive."""
+        wanted = (name or "").strip().upper()
+        keys = [k.upper() for k in self._drive_keys]
+        if wanted and wanted in keys:
+            self.hdf_part_row.set_selected(keys.index(wanted))
+            return True
+        self.hdf_part_row.set_selected(0)
+        return not wanted
+
+    def _chosen_drive(self) -> str:
+        index = self.hdf_part_row.get_selected()
+        if 0 <= index < len(self._drive_keys):
+            return self._drive_keys[index]
+        return ""
+
+    def _reload_drives(self, keep: str = "") -> None:
+        """List the drives in the chosen image, so one can be picked by name."""
+        path = self.hdf_row.path
+        folder = bool(path) and Path(path).is_dir()
+        drives = builder.list_drives(path) if path and not folder else []
+        self._drive_keys = [""]
+        if folder:
+            #  A folder is copied in whole; there are no drives to choose.
+            labels = [f"Everything in {Path(path).name}"]
+        elif not path:
+            labels = [NO_IMAGE]
+        elif not drives:
+            labels = [NO_DRIVES]
+        elif len(drives) == 1 and drives[0].whole_image:
+            #  A bare file system with no partition table: there is nothing to
+            #  choose between, so say what it is rather than offer a choice.
+            labels = [drives[0].label]
+        else:
+            labels = [FIRST_DRIVE]
+            for drive in drives:
+                labels.append(drive.label)
+                self._drive_keys.append(drive.name)
+        self.hdf_part_row.set_model(combo(labels))
+        self.hdf_part_row.set_sensitive(len(labels) > 1)
+        if not path:
+            self.hdf_part_row.set_subtitle("Choose a file or folder above")
+        elif drives:
+            self.hdf_part_row.set_subtitle("")
+        elif folder:
+            self.hdf_part_row.set_subtitle("")
+        else:
+            #  Say what the file actually is.  "No Amiga drive found" is true
+            #  of a PiMiga download and tells the user nothing they can act on.
+            self.hdf_part_row.set_subtitle(builder.why_no_drives(path))
+        wanted = (keep or "").strip().upper()
+        if wanted in [k.upper() for k in self._drive_keys[1:]]:
+            self.hdf_part_row.set_selected(
+                [k.upper() for k in self._drive_keys].index(wanted))
+        else:
+            self.hdf_part_row.set_selected(0)
+
     def _refresh(self) -> None:
         spec = self.spec()
         size = "remaining space" if spec.size is None else human_size(spec.size)
@@ -209,6 +283,8 @@ class PartitionRow(Adw.ExpanderRow):
             except ValueError:
                 size = None
         #  Override only what this editor shows; keep the rest of the spec.
+        chosen = self.hdf_row.path
+        is_folder = bool(chosen) and Path(chosen).is_dir()
         return dataclasses.replace(
             self._source,
             name=self.name_row.get_text().strip().upper() or "DH0",
@@ -219,12 +295,14 @@ class PartitionRow(Adw.ExpanderRow):
             boot_priority=int(self.priority_row.get_value()),
             #  An image chosen here replaces whatever the partition was going
             #  to be filled with, rather than fighting with it.
-            content_hdf=self.hdf_row.path or (
-                "" if self._source.content_folder else self._source.content_hdf),
-            content_hdf_partition=(self.hdf_part_row.get_text().strip().upper()
-                                   if self.hdf_row.path
+            content_hdf=(chosen if chosen and not is_folder
+                         else "" if chosen
+                         else self._source.content_hdf),
+            content_hdf_partition=(self._chosen_drive() if chosen and not is_folder
+                                   else "" if chosen
                                    else self._source.content_hdf_partition),
-            content_folder=("" if self.hdf_row.path
+            content_folder=(chosen if chosen and is_folder
+                            else "" if chosen
                             else self._source.content_folder),
         )
 
@@ -305,8 +383,11 @@ class ImagerWindow(Adw.ApplicationWindow):
                                         "starred-symbolic")
         self.stack.add_titled_with_icon(self._page_source(), "source", "Source",
                                         "folder-download-symbolic")
-        self.stack.add_titled_with_icon(self._page_amiga(), "amiga", "Amiga",
+        amiga_page = self._page_amiga()
+        self.stack.add_titled_with_icon(self._page_storage(), "storage", "Storage",
                                         "drive-harddisk-symbolic")
+        self.stack.add_titled_with_icon(amiga_page, "amiga", "Amiga",
+                                        "applications-system-symbolic")
         self.stack.add_titled_with_icon(self._page_options(), "options", "Options",
                                         "preferences-system-symbolic")
         self.stack.add_titled_with_icon(self._page_target(), "target", "Target",
@@ -928,19 +1009,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.rom_info)
         page.add(group)
 
-        self.partition_group = Adw.PreferencesGroup(
-            title="Amiga partitions",
-            description="Written as a Rigid Disk Block inside the 0x76 partition. "
-                        "Format them from HDToolBox on the Amiga.")
-        add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER,
-                         tooltip_text="Add a partition")
-        add.add_css_class("flat")
-        add.connect("clicked", lambda _b: self._add_partition())
-        self.partition_group.set_header_suffix(add)
-        page.add(self.partition_group)
-        self.partition_rows: list[PartitionRow] = []
-        self._add_partition(builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0))
-
         self.os_group = Adw.PreferencesGroup(
             title="Workbench floppy images",
             description="Used when the operating system is set to \u201cinstall "
@@ -966,23 +1034,71 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Software to add",
             description="A Workbench built from the original disks is exactly "
                         "what shipped in 1994: no archiver, no installer, no "
-                        "WHDLoad. None of this is included here - it belongs to "
-                        "its authors - so it is copied out of a system you "
+                        "WHDLoad. Freely distributable pieces are fetched from "
+                        "Aminet and cached; anything that is not - IBrowse and "
+                        "the like - is only ever copied out of a system you "
                         "already have, such as a PiMiga installation.")
         self.package_donor = FileRow(
             "Take it from", "A Workbench System drive, or a PiMiga folder",
             folder=True, on_change=lambda _p: self._refresh_packages())
         self.packages_group.add(self.package_donor)
-        self.package_rows: dict[str, Adw.SwitchRow] = {}
-        for package in packages.CATALOGUE:
-            row = Adw.SwitchRow(title=package.label,
-                                subtitle=package.description)
-            row.set_active(package.default)
-            row.connect("notify::active", lambda *_a: self._on_layout_changed())
-            self.package_rows[package.key] = row
-            self.packages_group.add(row)
+        suggest = Adw.ActionRow(
+            title="Suggested load",
+            subtitle="Tick what suits this machine, chipset and display")
+        button = Gtk.Button(label="Apply")
+        button.set_valign(Gtk.Align.CENTER)
+        button.add_css_class("suggested-action")
+        button.connect("clicked", lambda *_a: self._apply_suggested_packages())
+        suggest.add_suffix(button)
+        suggest.set_activatable_widget(button)
+        self.packages_group.add(suggest)
         page.add(self.packages_group)
 
+        #  One group per category, so a long list reads as a few short ones.
+        self.package_rows: dict[str, Adw.SwitchRow] = {}
+        self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
+        for category in packages.Category:
+            members = packages.in_category(category)
+            if not members:
+                continue
+            group = Adw.PreferencesGroup(title=category.value)
+            for package in members:
+                row = Adw.SwitchRow(title=package.label,
+                                    subtitle=package.description)
+                row.set_active(package.default)
+                row.connect("notify::active",
+                            lambda *_a: self._on_layout_changed())
+                self.package_rows[package.key] = row
+                group.add(row)
+            self.package_groups.append(group)
+            page.add(group)
+
+
+        return page
+
+    def _page_storage(self) -> Adw.PreferencesPage:
+        """How the card is divided up.
+
+        Kept apart from the Amiga page deliberately: how big the drives are and
+        what file system they carry is a different question from what gets
+        written into them, and mixing the two made a long page where neither
+        was easy to find.
+        """
+        page = Adw.PreferencesPage()
+
+        self.partition_group = Adw.PreferencesGroup(
+            title="Amiga partitions",
+            description="Written as a Rigid Disk Block inside the 0x76 partition. "
+                        "Each one can be filled from the Amiga page, or left "
+                        "empty to format from HDToolBox on the Amiga.")
+        add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER,
+                         tooltip_text="Add a partition")
+        add.add_css_class("flat")
+        add.connect("clicked", lambda _b: self._add_partition())
+        self.partition_group.set_header_suffix(add)
+        page.add(self.partition_group)
+        self.partition_rows: list[PartitionRow] = []
+        self._add_partition(builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0))
 
         self.expand_group = Adw.PreferencesGroup(
             title="Unused space",
@@ -1047,6 +1163,17 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Chip RAM slowdown",
             subtitle="Improves compatibility with software that busy-waits")
         group.add(self.slowdown_row)
+        self.dbf_row = Adw.SwitchRow(
+            title="DBF loop slowdown",
+            subtitle="For OCS-era software that times itself with a delay "
+                     "loop and runs far too fast on a PiStorm")
+        group.add(self.dbf_row)
+        self.blitwait_row = Adw.SwitchRow(
+            title="Wait for the blitter",
+            subtitle="For software that starts a blit and reads the result "
+                     "without waiting, which only worked because the real "
+                     "chipset was slower")
+        group.add(self.blitwait_row)
         self.swapdf_row = Adw.SwitchRow(title="Swap DF0: with DF1:")
         group.add(self.swapdf_row)
         self.unit0_row = Adw.SwitchRow(
@@ -1199,8 +1326,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
         self.os_group.set_visible(mode is builder.BuildMode.FRESH)
         #  Only a Workbench built from floppies needs anything added to it.
-        self.packages_group.set_visible(mode is builder.BuildMode.FRESH
-                                        and self._system_source() == "adf")
+        show_packages = (mode is builder.BuildMode.FRESH
+                         and self._system_source() == "adf")
+        for group in self.package_groups:
+            group.set_visible(show_packages)
         installing = (not self.quick_hdf.path
                       and self._system_source() == "adf")
         for row in (self.adf_row, self.os_version_row, self.volume_row, self.os_disks):
@@ -1321,28 +1450,49 @@ class ImagerWindow(Adw.ApplicationWindow):
         """Where optional software is copied from."""
         return self.package_donor.path or self.quick_pimiga.path
 
+    def _apply_suggested_packages(self) -> None:
+        """Tick the set that suits the machine and screen that are chosen."""
+        wanted = set(packages.suggested(
+            self._machine(), self._display(),
+            donor=self._package_donor() or None,
+            networking=bool(self.wifi_ssid.get_text().strip())))
+        for key, row in self.package_rows.items():
+            if row.get_sensitive():
+                row.set_active(key in wanted)
+        self._refresh_packages()
+
     def _refresh_packages(self) -> None:
-        """Offer only the software the chosen donor can actually supply."""
+        """Offer only the software that can actually be obtained and used."""
         if not self._ready:
             return
         donor = self._package_donor()
         found = packages.available(donor) if donor else {}
-        rtg = self._display().uses_rtg
+        display = self._display()
+        chipset = self._machine().chipset
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
-            usable = key in found and (rtg or not package.rtg_only)
+            fits = package.suits(chipset, display)
+            downloadable = package.download is not None
+            usable = fits and (key in found or downloadable)
             row.set_sensitive(usable)
-            if not donor:
-                row.set_subtitle(package.description
-                                 + "  -  choose where to take it from first.")
-            elif key not in found:
-                row.set_subtitle(package.description
-                                 + "  -  not present in that system.")
-            elif package.rtg_only and not rtg:
-                row.set_subtitle(package.description
-                                 + "  -  only useful with an RTG display.")
+            note = package.description
+            if not fits and package.rtg_only:
+                note += "  -  only useful with an RTG display."
+            elif not fits and package.native_only:
+                note += "  -  only useful on the Amiga's own screen."
+            elif not fits:
+                note += "  -  not a fit for this chipset."
+            elif key in found:
+                note += "  -  from your donor system."
+            elif downloadable:
+                note += ("  -  will be fetched from Aminet."
+                         if not package.manual else
+                         f"  -  fetched from Aminet; {package.note}")
             else:
-                row.set_subtitle(package.description)
+                note += ("  -  needs a donor system that has it."
+                         if donor else
+                         "  -  choose where to take it from first.")
+            row.set_subtitle(note)
             if not usable:
                 row.set_active(False)
         self._on_layout_changed()
@@ -1548,6 +1698,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             vc4_mem=vc4 or None,
             vbr_move=self.vbr_row.get_active(),
             chip_slowdown=self.slowdown_row.get_active(),
+            dbf_slowdown=self.dbf_row.get_active(),
+            blitwait=self.blitwait_row.get_active(),
             swap_df0_with_df1=self.swapdf_row.get_active(),
             sd_unit0_rw=self.unit0_row.get_active(),
             extra_cmdline=self.extra_row.get_text().strip(),
@@ -2041,6 +2193,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.vc4_row.set_value(options.vc4_mem or 0)
         self.vbr_row.set_active(options.vbr_move)
         self.slowdown_row.set_active(options.chip_slowdown)
+        self.dbf_row.set_active(options.dbf_slowdown)
+        self.blitwait_row.set_active(options.blitwait)
         self.swapdf_row.set_active(options.swap_df0_with_df1)
         self.unit0_row.set_active(options.sd_unit0_rw)
         self.extra_row.set_text(options.extra_cmdline)

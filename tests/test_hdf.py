@@ -141,6 +141,85 @@ class TestCompatibilityChecks(_Scratch):
         self.assertTrue(hdfcheck.unresolved(findings))
 
 
+class TestListDrives(_Scratch):
+    """What a partition's drive chooser is offered."""
+
+    def test_lists_every_drive_with_its_name_and_size(self):
+        path = self.scratch() / "two.hdf"
+        make_hdf(path, 100 * MIB, [
+            rdb.Partition("DH0", 1, 40, rdb.DOSTYPE_FFS_INTL, bootable=True),
+            rdb.Partition("DH1", 41, 80, rdb.DOSTYPE_PFS3, bootable=False),
+        ])
+        drives = builder.list_drives(path)
+        self.assertEqual([d.name for d in drives], ["DH0", "DH1"])
+        self.assertTrue(drives[0].bootable)
+        self.assertFalse(drives[1].bootable)
+        self.assertEqual(drives[1].filesystem, "PFS3")
+        self.assertGreater(drives[0].size, 0)
+        #  The label is what the chooser shows, so it has to name the drive.
+        self.assertIn("DH0", drives[0].label)
+        self.assertIn("FFS", drives[0].label)
+
+    def test_an_unformatted_drive_still_appears(self):
+        """A drive with no file system on it is still a drive you can pick."""
+        path = self.scratch() / "raw.hdf"
+        make_hdf(path, 100 * MIB,
+                 [rdb.Partition("DH0", 1, 80, rdb.DOSTYPE_FFS_INTL)])
+        drives = builder.list_drives(path)
+        self.assertEqual(len(drives), 1)
+        self.assertEqual(drives[0].volume, "")
+
+    def test_a_bare_file_system_is_offered_as_the_whole_image(self):
+        """ClassicWB and plenty of older .hdf files have no partition table.
+
+        Answering "nothing here" for those read, in the chooser, as though no
+        image had been selected at all.
+        """
+        from pistorm_imager.core import amigaos, amigafs      # noqa: PLC0415
+        path = self.scratch() / "bare.hdf"
+        with open(path, "w+b") as handle:
+            handle.truncate(4 * MIB)
+            volume = amigaos.make_volume(handle, 0, (4 * MIB) // amigafs.BLOCK,
+                                         "Bare", amigafs.DOSTYPE_FFS_INTL)
+            volume.close()
+        drives = builder.list_drives(path)
+        self.assertEqual(len(drives), 1)
+        self.assertTrue(drives[0].whole_image)
+        self.assertEqual(drives[0].name, "")
+        self.assertEqual(drives[0].volume, "Bare")
+        self.assertIn("whole image", drives[0].label)
+
+    def test_a_pimiga_download_is_named_for_what_it_is(self):
+        """The file everyone reaches for first holds no Amiga drive at all.
+
+        PiMiga is a Raspberry Pi system running an emulator; its Amiga drives
+        are folders inside its Linux root.  Saying only "no Amiga drive found"
+        left the user with nothing to act on.
+        """
+        path = self.scratch() / "pimiga.img"
+        with open(path, "w+b") as handle:
+            handle.truncate(8 * MIB)
+            table = [mbr.MbrPartition(0, 0, 0x0c, 8192, 2048),
+                     mbr.MbrPartition(1, 0, 0x83, 10240, 4096)]
+            mbr.write_table(handle, table)
+        self.assertEqual(builder.list_drives(path), [])
+        why = builder.why_no_drives(path)
+        self.assertIn("Linux", why)
+        self.assertIn("folders", why)
+
+    def test_an_amiga_image_needs_no_explanation(self):
+        path = self.scratch() / "ok.hdf"
+        make_hdf(path, 100 * MIB,
+                 [rdb.Partition("DH0", 1, 80, rdb.DOSTYPE_FFS_INTL)])
+        self.assertEqual(builder.why_no_drives(path), "")
+
+    def test_nothing_to_list_without_an_amiga_file_system(self):
+        path = self.scratch() / "empty.hdf"
+        path.write_bytes(b"\0" * 8192)
+        self.assertEqual(builder.list_drives(path), [])
+        self.assertEqual(builder.list_drives(self.scratch() / "missing.hdf"), [])
+
+
 class TestFindRdb(_Scratch):
     def test_finds_an_rdb_in_a_bare_hdf(self):
         folder = self.scratch()

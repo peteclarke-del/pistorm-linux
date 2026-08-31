@@ -57,6 +57,10 @@ ANODE_EOF = 0
 ANODE_BADBLOCKS = 4
 ANODE_ROOTDIR = 5
 ANODE_USERFIRST = 6
+#  What a real volume stores in the reserved anodes 0..4 to mark them taken.
+#  A free anode is one whose blocknr is zero, so leaving them cleared would
+#  offer the handler ANODE_BADBLOCKS and friends as spare anodes.
+ANODE_RESERVED_BLOCKNR = 0xFFFFFFFF
 
 BOOT_BLOCK = 0
 ROOT_BLOCK = 2                      # sector number of the root block
@@ -502,18 +506,49 @@ class Pfs3Writer:
         self._anode_blocks[seqnr] = sector
         #  Record it in the index so the handler can find it again.
         index_nr, offset = divmod(seqnr, self.index_per_block)
-        while len(self.index_blocks) <= index_nr:
-            self.index_blocks.append(0)
-        if not self.index_blocks[index_nr]:
-            index_sector, index_block = self._new_reserved_block(ID_INDEXBLOCK,
-                                                                 index_nr)
-            self._write_sectors(index_sector, bytes(index_block))
-            self.index_blocks[index_nr] = index_sector
-        index_sector = self.index_blocks[index_nr]
+        index_sector = self._index_block_for(index_nr)
         block = bytearray(self._read_reserved(index_sector))
         struct.pack_into(">I", block, SIZEOF_INDEXBLOCK_HEADER + offset * 4, sector)
         self._write_sectors(index_sector, bytes(block))
         return sector
+
+    def _index_block_for(self, index_nr: int) -> int:
+        """Sector of anode index block ``index_nr``, creating it if needed.
+
+        A small volume lists its index blocks directly in the root block.  Past
+        :func:`max_small_disk` the root block's index array is given over to
+        the bitmap instead, and the handler reaches the anode index through a
+        level of 'SB' super blocks named by the root block extension.  A large
+        volume whose super blocks are left unwritten therefore has an anode
+        index the handler cannot see at all: it refuses to mount, reporting
+        "Anode index invalid" and then "Disk update failed".
+        """
+        while len(self.index_blocks) <= index_nr:
+            self.index_blocks.append(0)
+        if not self.index_blocks[index_nr]:
+            sector, block = self._new_reserved_block(ID_INDEXBLOCK, index_nr)
+            self._write_sectors(sector, bytes(block))
+            self.index_blocks[index_nr] = sector
+            if self.superindex:
+                super_nr, offset = divmod(index_nr, self.index_per_block)
+                super_sector = self._super_block_for(super_nr)
+                super_block = bytearray(self._read_reserved(super_sector))
+                struct.pack_into(">I", super_block,
+                                 SIZEOF_INDEXBLOCK_HEADER + offset * 4, sector)
+                self._write_sectors(super_sector, bytes(super_block))
+        return self.index_blocks[index_nr]
+
+    def _super_block_for(self, super_nr: int) -> int:
+        """Sector of super block ``super_nr``, creating it if needed."""
+        if super_nr >= 16:
+            raise Pfs3Error("volume needs more super blocks than PFS3 allows")
+        while len(self.super_blocks) <= super_nr:
+            self.super_blocks.append(0)
+        if not self.super_blocks[super_nr]:
+            sector, block = self._new_reserved_block(ID_SUPERBLOCK, super_nr)
+            self._write_sectors(sector, bytes(block))
+            self.super_blocks[super_nr] = sector
+        return self.super_blocks[super_nr]
 
     def _read_reserved(self, sector: int) -> bytes:
         self.f.seek(self.base + sector * SECTOR)
@@ -539,7 +574,18 @@ class Pfs3Writer:
     # ---------------------------------------------------------------- bitmap
 
     def _data_bitmap_blocks(self) -> int:
-        longs = (self.data_blocks + 31) // 32
+        """Bitmap blocks the volume needs.
+
+        The bitmap covers the whole partition, not just the data area: bit
+        ``n`` is block ``n`` counted from the start of the volume, so the
+        reserved blocks occupy the first bits and are simply marked as used.
+        Sizing it from the data area instead leaves it short by however many
+        blocks the reserved area takes, and the handler - which works out the
+        count from ``disksize`` - then follows a null pointer for the last
+        stretch of the disk.  It is only harmless on a volume small enough for
+        the two counts to round to the same number.
+        """
+        longs = (self.total_sectors + 31) // 32
         return (longs + self.longs_per_bmb - 1) // self.longs_per_bmb
 
     def _allocate_data_bitmap(self) -> None:
@@ -575,20 +621,31 @@ class Pfs3Writer:
         """Write the bits, now that allocation has finished.
 
         A set bit means *free*, and bit 0 of each long is the most significant
-        bit - the opposite convention to FFS.
+        bit - the opposite convention to FFS.  Bit ``n`` is block ``n`` of the
+        partition, so everything below the first unallocated data block is
+        marked used: the boot block, the whole reserved area, and every block
+        handed out to a file.
         """
+        payload = self.longs_per_bmb * 4
+        first_free = self.bitmap_start + self._data_used
+        bits = bytearray(len(self.bitmap_blocks) * payload)
+        #  One contiguous run of free blocks, so set it a byte at a time
+        #  rather than a bit at a time - a big volume has tens of millions.
+        for index in range(first_free, min(first_free + (-first_free) % 8,
+                                           self.total_sectors)):
+            bits[index // 8] |= 0x80 >> (index % 8)
+        start_byte = (first_free + 7) // 8
+        end_byte = self.total_sectors // 8
+        if end_byte > start_byte:
+            bits[start_byte:end_byte] = b"\xff" * (end_byte - start_byte)
+        for index in range(max(first_free, end_byte * 8), self.total_sectors):
+            bits[index // 8] |= 0x80 >> (index % 8)
+
         for seqnr, sector in enumerate(self.bitmap_blocks):
             block = bytearray(self._read_reserved(sector))
-            first_long = seqnr * self.longs_per_bmb
-            for offset in range(self.longs_per_bmb):
-                value = 0
-                base = (first_long + offset) * 32
-                for bit in range(32):
-                    index = base + bit
-                    if self._data_used <= index < self.data_blocks:
-                        value |= 0x80000000 >> bit
-                struct.pack_into(">I", block,
-                                 SIZEOF_INDEXBLOCK_HEADER + offset * 4, value)
+            chunk = bits[seqnr * payload:(seqnr + 1) * payload]
+            block[SIZEOF_INDEXBLOCK_HEADER:
+                  SIZEOF_INDEXBLOCK_HEADER + payload] = chunk
             self._write_sectors(sector, bytes(block))
 
     # ------------------------------------------------------------ formatting
@@ -622,7 +679,7 @@ class Pfs3Writer:
 
         #  Anodes 0..4 are reserved; the root directory is always anode 5.
         for _ in range(ANODE_ROOTDIR):
-            self.alloc_anode()
+            self.set_anode(self.alloc_anode(), 0, ANODE_RESERVED_BLOCKNR)
         self.root_anode = self.alloc_anode()
         root_dir_sector = self.alloc_reserved()
         self._write_dirblock(root_dir_sector, self.root_anode, parent=0)
@@ -699,6 +756,9 @@ class Pfs3Writer:
 
     def close(self) -> None:
         self._fill_data_bitmap()
+        #  Super blocks can be added long after ``format`` wrote the extension
+        #  block, so the extension is written again from what actually exists.
+        self._write_extension()
         self._write_root()
         self.f.flush()
 
@@ -718,7 +778,15 @@ class Pfs3Writer:
         body += raw
         body += bytes([len(note)]) + note
         if len(body) % 2:
-            body += b"\0"                 # entries are word aligned
+            body += b"\0"                 # the comment area is word aligned
+        #  MODE_DIR_EXTENSION puts an "extra fields" bitmask in the last two
+        #  bytes of every entry, and the handler reads it by stepping back from
+        #  the end of the entry.  Omit it and the last two bytes of the name
+        #  are read as that bitmask instead - harmless for an even-length name,
+        #  where those bytes are the zero comment length and its padding, but
+        #  an odd-length name puts its final character in the high byte and the
+        #  handler then reconstructs fields nobody wrote.
+        body += b"\0\0"
         body[0] = len(body)
         if len(body) > 255:
             raise Pfs3Error(f"directory entry for {name!r} is too long")
@@ -763,7 +831,9 @@ class Pfs3Writer:
         #  Directory is full: chain another block onto it.
         new_sector = self.alloc_reserved()
         new_anode = self.alloc_anode()
-        self._write_dirblock(new_sector, dir_anode, parent=0)
+        first = self._read_reserved(self._read_anode(dir_anode).blocknr)
+        parent = struct.unpack_from(">I", first, 16)[0]
+        self._write_dirblock(new_sector, dir_anode, parent=parent)
         self.set_anode(new_anode, 1, new_sector)
         current = self._read_anode(number)
         self.set_anode(number, current.clustersize, current.blocknr, new_anode)
@@ -811,7 +881,7 @@ class Pfs3Writer:
 
     def mkdir(self, parent_anode: int, name: str, *, protect: int = 0,
               comment: str = "", days: int = 0, mins: int = 0,
-              ticks: int = 0, check_existing: bool = False) -> int:
+              ticks: int = 0, check_existing: bool = True) -> int:
         protection = protect
         if check_existing:
             found = self.find_entry(parent_anode, name)
@@ -838,9 +908,11 @@ class Pfs3Writer:
     def write_file(self, parent_anode: int, name: str, data: bytes, *,
                    protect: int = 0, comment: str = "", days: int = 0,
                    mins: int = 0, ticks: int = 0,
-                   check_existing: bool = False) -> int:
+                   check_existing: bool = True) -> int:
         """Write a file as a single extent - PFS3 anodes describe runs."""
         protection = protect
+        if check_existing and self.find_entry(parent_anode, name) is not None:
+            raise Pfs3Error(f"{name} already exists")
         anodenr = self.alloc_anode()
         blocks = (len(data) + SECTOR - 1) // SECTOR
         if blocks:
@@ -867,7 +939,3 @@ class Pfs3Writer:
         ``write_file`` and ``makedirs`` with the same signatures.
         """
         return self.root_anode
-
-    def _entry_exists(self, parent: int, name: str):
-        #  Create-and-fill only: nothing can already be present.
-        return None

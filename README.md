@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 205 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 230 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -136,6 +136,13 @@ The core suite builds real images in a temporary directory and reads them back,
 validates the FAT32 output with `fsck.vfat`, and audits the FFS bitmap to prove
 no block that is in use is ever marked free. The file system tests run against
 the real Workbench 3.1 disks in `samples/` when they are present.
+
+PFS3 volumes are also booted in **FS-UAE**, which runs the real PFS3 19.2
+handler out of the RDB rather than this project's reader: a small image with
+Workbench 3.1 installed from the disks in `samples/`, booted to a
+`S:User-Startup` that writes what it can see back onto the volume. That is the
+only check that distinguishes a volume which is genuinely correct from one this
+code merely agrees with itself about.
 
 Both the ADF reader and the FFS writer were cross-checked against
 [amitools](https://github.com/cnvogelg/amitools): every one of the 153 files on
@@ -317,6 +324,77 @@ small-index and SUPERINDEX layouts), and volumes written here against
 [`metaneutrons/pfs3`](https://github.com/metaneutrons/pfs3), an independent
 Rust implementation, which reports them clean and extracts their files
 byte-identically.
+
+Past about 4.9 GiB a volume switches to the **SUPERINDEX** layout, and that
+changes where the anode index lives: the root block's index array is given over
+to the bitmap, and the handler instead reaches the index blocks through a level
+of `'SB'` super blocks named by the root block extension. Getting this wrong is
+silent at build time and fatal at boot — the volume looks complete, every file
+is written and every index block is in place, but the handler cannot reach any
+of it and refuses to mount with *Anode index invalid* followed by *Disk update
+failed*. Both layouts are now created and read back in the tests; the large one
+uses a sparse 5 GiB volume, which is the smallest size that turns SUPERINDEX
+on.
+
+Two more details only show up when a written volume is measured against a real
+one, and both are the kind that a reader written alongside the writer will
+agree with perfectly:
+
+* **The block bitmap covers the whole partition, not the data area.** Bit *n*
+  is block *n* counted from the start of the volume, so the boot block and the
+  entire reserved area sit at the bottom of it, marked as taken. The handler
+  works the number of bitmap blocks out from `disksize`; size the bitmap from
+  the data area instead and it comes out short by however many blocks the
+  reserved area occupies, which on a small volume rounds to the same number and
+  on a large one does not.
+* **Every directory entry ends with a two-byte "extra fields" bitmask**, because
+  these volumes carry `MODE_DIR_EXTENSION`. The handler reads it by stepping
+  back from the end of the entry. Leave it out and the last two bytes of the
+  name are read as that bitmask instead — zero, and so harmless, for an
+  even-length name, but not for an odd one.
+* **Every block of a directory names that directory's parent**, not just the
+  first. A directory that outgrows one block becomes a chain of them, and each
+  block carries the anode of its own directory and of that directory's parent.
+  Filling the parent in on the first block only is invisible to a name lookup,
+  which walks the chain comparing names — but anything that has to resolve an
+  object's *path* asks the block the entry sits in who its parent is, and a
+  zero there reads as the root. A file in the tenth block of `LIBS:` then
+  resolves to `SYS:` + its own name, which does not exist, so it can be found
+  and never opened.
+
+## Software to add
+
+A Workbench installed from the original floppies is exactly what shipped in
+1994: no archiver, no installer, and no idea what WHDLoad is. The pieces most
+people add next are offered as a catalogue, grouped as System, Look and feel,
+Speed and Networking.
+
+Each one arrives by whichever route it can. Freely distributable software is
+**fetched from Aminet and cached** under `~/.cache/pistorm-imager/packages`, so
+a second card costs no download. Anything that is not freely distributable —
+IBrowse and MiamiDx among them — is only ever **copied out of a donor system
+you already have**, which is what pointing at a PiMiga installation is for. A
+donor is always preferred over a download.
+
+Not everything can be installed by copying files. VisualPrefs, MCP, NewIcons,
+MagicWB and Picasso96 patch the system or run their own script; those are
+unpacked into `Storage/Install` on the card, ready to be installed on the Amiga
+itself, and say so. Where a package needs a line to take effect — PeterK's
+`icon.library` has to be soft-kicked over the one in ROM, FBlit has to be
+started — the build writes `S:User-Startup` to do it.
+
+**Suggested load** picks a set from the machine and the display, because the
+right answer genuinely differs:
+
+| | OCS/ECS on the Amiga's own video | AGA, or Workbench on the Pi's HDMI |
+|---|---|---|
+| Drawing | FBlit and FText move Workbench's drawing off the blitter and into fast RAM, which is where a PiStorm's speed is | no blitter in the way; Picasso96 is the point of it |
+| Palette | FullPalette locks the desktop colours so a program cannot scramble them | a deep display has colours to spare |
+| Icons | MagicWB's eight colours suit a limited palette | a heavier desktop such as Scalos becomes affordable |
+
+Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
+VisualPrefs. Networking — the PiStorm's `vlink.device`, a TCP/IP stack, AmiSSL
+and NetSurf — is suggested when a WiFi network has been configured.
 
 ## Two outputs at once
 

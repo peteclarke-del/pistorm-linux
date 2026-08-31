@@ -149,6 +149,13 @@ class BootOptions:
     z2_ram_size: int | None = None
     swap_df0_with_df1: bool = False
     chip_slowdown: bool = False
+    #  Emu68's other two timing brakes.  A PiStorm runs the 68k far faster than
+    #  any real Amiga, and OCS-era software that times itself against the
+    #  hardware - a DBF delay loop, a blitter it never waits for - breaks on
+    #  speed alone.  Emu68 accepts "dbf_slowdown" (DBF) and "blitwait" (BW)
+    #  for exactly that, alongside "chip_slowdown" (SC).
+    dbf_slowdown: bool = False
+    blitwait: bool = False
     enable_slow_ram: bool = False
     sd_unit0_rw: bool = False
     unicam: bool = False
@@ -204,6 +211,10 @@ class BootOptions:
             parts.append("swap_df0_with_df1")
         if self.chip_slowdown:
             parts.append("chip_slowdown")
+        if self.dbf_slowdown:
+            parts.append("dbf_slowdown")
+        if self.blitwait:
+            parts.append("blitwait")
         if self.enable_slow_ram:
             parts += ["enable_c0_slow", "enable_c8_slow", "enable_d0_slow"]
         if self.sd_unit0_rw:

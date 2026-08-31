@@ -35,7 +35,7 @@ import tempfile
 from pathlib import Path
 
 from . import (amigafs, amigaos, bootcfg, compat, devices, emu68, hdfcheck,
-               imgsrc, kickstart, mbr, rdb)
+               imgsrc, kickstart, mbr, packages, pfs3, rdb)
 from .fat32 import Fat32
 from .util import (MIB, Cancelled, Progress, align_up, copy_stream, human_size,
                    require_tool, run)
@@ -108,6 +108,13 @@ class BuildConfig:
     amiga_partitions: list[AmigaPartitionSpec] = dataclasses.field(
         default_factory=lambda: [AmigaPartitionSpec("DH0", None, "PFS3", True, 0)])
     pfs3_binary: str = ""              # optional pfs3aio to embed in the RDB
+    #  Optional software for a Workbench installed from floppies.  Anything a
+    #  donor system can supply is already resolved into the partition's
+    #  overlays; these are kept so the build can fetch what only Aminet has.
+    package_donor: str = ""
+    package_keys: list[str] = dataclasses.field(default_factory=list)
+    package_chipset: str = ""          # a machines.Chipset value
+    package_display: str = ""          # a machines.Display value
 
     #  Installing AmigaOS from Workbench floppy images
     install_amigaos: bool = False
@@ -572,10 +579,69 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     #  reopening a finished volume would mean rebuilding its allocation state.
     spec = next((s for s in config.amiga_partitions
                  if s.name.upper() == partition.drive_name.upper()), None)
-    if spec is not None and spec.overlays:
-        _apply_overlays(volume, spec, _make_fixer(config, progress), progress)
+    if spec is not None:
+        extra = _downloaded_packages(config, progress)
+        if spec.overlays or extra:
+            spec = dataclasses.replace(spec,
+                                       overlays=list(spec.overlays) + extra)
+            _apply_overlays(volume, spec, _make_fixer(config, progress),
+                            progress)
+    _write_user_startup(volume, config, progress)
     progress.step("Finalising the Amiga file system")
     volume.close()
+
+
+def _write_user_startup(volume, config: "BuildConfig",
+                        progress: Progress) -> None:
+    """Add the lines the chosen packages need to S:User-Startup.
+
+    Workbench 3.1 runs this from its own Startup-Sequence if it is there, so
+    it is where a package that has to be started, or soft-kicked over a ROM
+    module, gets its chance.  Copying the file into LIBS: alone would leave
+    the ROM version in use and the whole package inert.
+    """
+    lines: list[str] = []
+    for key in config.package_keys:
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is not None and package.startup:
+            lines += list(package.startup)
+    if not lines:
+        return
+    folder = volume.makedirs("S")
+    if volume.find_entry(folder, "User-Startup") is not None:
+        progress.log("  S:User-Startup already exists; left alone")
+        return
+    body = ("; Written by the PiStorm imager for the software you chose.\n"
+            + "\n".join(lines) + "\n")
+    volume.write_file(folder, "User-Startup", body.encode("latin-1"),
+                      check_existing=False)
+    progress.log(f"  S:User-Startup written ({len(lines)} lines)")
+
+
+def _downloaded_packages(config: "BuildConfig",
+                         progress: Progress) -> list[tuple[str, str]]:
+    """Fetch the chosen packages that no donor here can supply.
+
+    A donor is always preferred, so anything already resolved into the
+    partition's overlays is left alone; what is left is the freely
+    distributable software on Aminet, cached between builds.
+    """
+    if not config.package_keys:
+        return []
+    from . import machines
+    chipset = (machines.Chipset(config.package_chipset)
+               if config.package_chipset else machines.Chipset.AGA)
+    display = (machines.Display(config.package_display)
+               if config.package_display else machines.Display.NATIVE)
+    donor = config.package_donor or None
+    supplied = set(packages.available(donor))
+    wanted = [key for key in config.package_keys if key not in supplied]
+    if not wanted:
+        return []
+    progress.step("Fetching optional software")
+    return packages.overlays_for(donor, wanted, chipset=chipset,
+                                 display=display, progress=progress,
+                                 allow_download=True)
 
 
 def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
@@ -588,7 +654,8 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
             continue
         if source.is_dir():
             copied, _renamed = amigaos.install_tree(volume, source, destination,
-                                                    progress, compat=fixer)
+                                                    progress, compat=fixer,
+                                                    merge=True)
             progress.log(f"  overlay: {source.name}/ -> {destination or ':'} "
                          f"({copied} files)")
         else:
@@ -729,6 +796,121 @@ BARE_SIGNATURES = {
     b"PFS\x03": rdb.DOSTYPE_PFS3, b"PDS\x03": rdb.DOSTYPE_PDS3,
     b"SFS\x00": rdb.DOSTYPE_SFS0,
 }
+
+
+@dataclasses.dataclass(frozen=True)
+class Drive:
+    """One Amiga drive inside an image, described well enough to choose it."""
+
+    name: str                       # the device name, DH0 and so on
+    volume: str                     # the label Workbench shows, if readable
+    size: int                       # bytes
+    filesystem: str                 # PFS3, FFS-INTL, ...
+    bootable: bool
+
+    @property
+    def whole_image(self) -> bool:
+        """A bare file system with no partition table: the file is the drive."""
+        return not self.name
+
+    @property
+    def label(self) -> str:
+        """What to show in a list: the drive, its volume and how big it is."""
+        parts = [self.name or "The whole image"]
+        if self.volume and self.volume.upper() != self.name.upper():
+            parts.append(f'"{self.volume}"')
+        parts.append(human_size(self.size))
+        parts.append(self.filesystem)
+        if self.bootable:
+            parts.append("bootable")
+        return "  -  ".join((parts[0], ", ".join(parts[1:])))
+
+
+def list_drives(path: str | Path) -> list[Drive]:
+    """The Amiga drives an image holds, for picking one to import.
+
+    Reading the volume label means opening each file system, which can fail on
+    a drive that was never formatted; that is reported as a drive with no
+    label rather than losing the whole list.
+    """
+    try:
+        handle = open(path, "rb")
+    except OSError:
+        return []
+    with handle:
+        located = find_rdb(handle)
+        if located is None:
+            #  No partition table.  A bare file system is still one drive -
+            #  ClassicWB and plenty of older .hdf files are exactly this - and
+            #  answering "nothing here" would leave the caller thinking no
+            #  image had been chosen at all.
+            try:
+                volume, _label = amigaos.open_amiga_volume(path)
+            except Exception:                     # noqa: BLE001 - best effort
+                return []
+            dostype = ("PFS3" if isinstance(volume, pfs3.Pfs3Volume)
+                       else "FFS/OFS")
+            try:
+                size = Path(path).stat().st_size
+            except OSError:
+                size = 0
+            return [Drive("", getattr(volume, "name", ""), size, dostype, False)]
+        base, table = located
+        drives: list[Drive] = []
+        for part in table.partitions:
+            volume = ""
+            try:
+                offset = part.byte_offset(table.geometry, base)
+                if part.dostype in (rdb.DOSTYPE_PFS3, rdb.DOSTYPE_PDS3):
+                    volume = pfs3.Pfs3Volume(handle, offset).name
+                else:
+                    volume = amigafs.Volume(handle, offset).name
+            except Exception:                     # noqa: BLE001 - best effort
+                volume = ""
+            drives.append(Drive(part.drive_name, volume,
+                                part.size_bytes(table.geometry),
+                                part.dostype_name, part.bootable))
+        return drives
+
+
+#  MBR partition types worth naming when an image holds no Amiga drive.
+LINUX_PARTITION = 0x83
+LINUX_SWAP = 0x82
+
+
+def why_no_drives(path: str | Path) -> str:
+    """Explain an image that offers no Amiga drive, for the drive chooser.
+
+    "No Amiga drive found" is true of a PiMiga download and thoroughly
+    unhelpful: it is the file everyone reaches for first, and the reason it
+    holds no Amiga drive - its drives are folders inside a Linux root
+    partition - is the one thing the user needs told.
+    """
+    try:
+        handle = open(path, "rb")
+    except OSError as error:
+        return f"Cannot read this file: {error}"
+    with handle:
+        if find_rdb(handle) is not None:
+            return ""
+        try:
+            parts = [p for p in mbr.read_table(handle) if not p.empty]
+        except (ValueError, OSError):
+            parts = []
+        if any(p.type_id == mbr.TYPE_AMIGA for p in parts):
+            return ("This card image has an Amiga partition, but no Rigid "
+                    "Disk Block could be read inside it.")
+        if any(p.type_id in (LINUX_PARTITION, LINUX_SWAP) for p in parts):
+            return ("This is a Linux system image, not an Amiga drive. A "
+                    "PiMiga download is a Raspberry Pi system that runs an "
+                    "emulator, and its Amiga drives are ordinary folders "
+                    "inside its Linux root partition - mount that partition "
+                    "and point the PiMiga folder source at disks/ instead.")
+        if parts:
+            return ("This image has a partition table, but none of it is an "
+                    "Amiga drive.")
+        return ("No partition table and no Amiga file system: this file "
+                "cannot be used as an Amiga drive.")
 
 
 def find_rdb(handle) -> tuple[int, "rdb.Rdb"] | None:
