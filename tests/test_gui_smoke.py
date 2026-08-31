@@ -300,6 +300,34 @@ def on_activate(app: ImagerApplication) -> None:
         check(window._primary() == "image",
               "a session saved before the split still picks the right source")
 
+        #  A tree can hold more than this machine can run - the AGA games on
+        #  an OCS A500 - so what to leave out is editable per partition.
+        from pistorm_imager.ui.window import PartitionRow as _PR  # noqa: PLC0415
+        row = _PR(builder.AmigaPartitionSpec("DH1", None, "PFS3",
+                                             volume_name="Games"),
+                  on_remove=lambda _r: None, on_change=None)
+        check(row.exclude_row.get_text() == "",
+              "a partition starts with nothing left out")
+        row.exclude_row.set_text("WHDLOAD/AGA, WHDLOAD/CD32")
+        check(row.spec().exclude == ["WHDLOAD/AGA", "WHDLOAD/CD32"],
+              f"exclusions are editable and split ({row.spec().exclude})")
+        kept = _PR(builder.AmigaPartitionSpec("DH2", None, "PFS3",
+                                              exclude=["WHDLOAD/CDTV"]),
+                   on_remove=lambda _r: None, on_change=None)
+        check(kept.exclude_row.get_text() == "WHDLOAD/CDTV"
+              and kept.spec().exclude == ["WHDLOAD/CDTV"],
+              "an existing exclusion is shown and survives a round trip")
+
+        #  Applying the quick setup must not throw away partitions that have
+        #  been arranged by hand.
+        window._derived_partitions = [r.spec() for r in window.partition_rows]
+        check(window._hand_edited_partitions() is None,
+              "an untouched layout is not treated as hand-edited")
+        window.partition_rows[0].volume_row.set_text("MyOwnName")
+        edited = window._hand_edited_partitions()
+        check(edited is not None and edited[0].volume_name == "MyOwnName",
+              "an edited layout is noticed and would be kept")
+
         #  Software ticked on the Amiga page has to reach the build.  It used
         #  to be carried only by the quick setup, so ticking a package and
         #  pressing Write from the pages themselves built a card without it.
