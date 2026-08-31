@@ -17,8 +17,9 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from .. import __version__  # noqa: E402
-from ..core import (amigaos, bootcfg, builder, devices, emu68, hdfcheck, jobs,  # noqa: E402
-                    kickstart, machines, packages, prepare, presets, rdb)
+from ..core import (amigaos, bootcfg, builder, devices, distributions,  # noqa: E402
+                    emu68, hdfcheck, jobs, kickstart, machines, packages,
+                    prepare, presets, rdb)
 from ..core.util import (GIB, MIB, Progress, describe_size, human_size,  # noqa: E402
                          parse_size)
 from .widgets import FileRow, SaveRow, combo, show_full_value  # noqa: E402
@@ -926,9 +927,13 @@ class ImagerWindow(Adw.ApplicationWindow):
 
         self.image_group = Adw.PreferencesGroup(
             title="Pre-built image",
-            description="PiMiga, Emu68 Hatcher, or any .img backup. Compressed "
-                        "images (.xz, .gz, .zip, .7z) are streamed straight to the "
-                        "card, so no scratch space is needed.")
+            description="A finished system such as CaffeineOS, an Emu68 "
+                        "Hatcher image, or any .img backup of a card. "
+                        "Download it from its author and point at the file; a "
+                        "system this tool recognises is named, along with what "
+                        "it expects of the machine. Compressed images (.xz, "
+                        ".gz, .zip, .7z) are streamed straight to the card, so "
+                        "no scratch space is needed.")
         self.image_row = FileRow("Image file", filters=IMAGE_FILTERS,
                                  on_change=lambda _p: self._on_image_chosen())
         self.image_group.add(self.image_row)
@@ -1523,6 +1528,13 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.quick_device.set_selected(0)
         self._update_summary()
 
+    def _known_card_size(self) -> int:
+        """The card size if one has been said, for a "is it big enough" check."""
+        try:
+            return parse_size(self.quick_card_size.get_text())
+        except Exception:                        # noqa: BLE001 - not set yet
+            return 0
+
     def _on_image_chosen(self) -> None:
         from ..core import imgsrc
         if not self.image_row.path:
@@ -1531,9 +1543,22 @@ class ImagerWindow(Adw.ApplicationWindow):
             return
         try:
             source = imgsrc.inspect(self.image_row.path)
-            self.image_info.set_subtitle(source.description)
+            description = source.description
         except Exception as error:  # noqa: BLE001
             self.image_info.set_subtitle(f"Cannot read this file: {error}")
+            self._update_summary()
+            return
+        #  Naming the system, and saying what it expects, is worth more than
+        #  the file's dimensions: a card gets committed to one of these.
+        found = distributions.identify(self.image_row.path)
+        if found is not None:
+            notes = distributions.describe(found, self._known_card_size())
+            if found.rtg_only and not self._display().uses_rtg:
+                notes.append("The display is set to the Amiga's own video "
+                             "output, where this system shows nothing.")
+            description = f"{found.label} - " + description + "\n" + "\n".join(
+                "- " + line for line in notes)
+        self.image_info.set_subtitle(description)
         self._update_summary()
 
     def _scan_adfs(self) -> None:
