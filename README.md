@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 211 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 212 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -352,6 +352,15 @@ agree with perfectly:
   back from the end of the entry. Leave it out and the last two bytes of the
   name are read as that bitmask instead — zero, and so harmless, for an
   even-length name, but not for an odd one.
+* **Every block of a directory names that directory's parent**, not just the
+  first. A directory that outgrows one block becomes a chain of them, and each
+  block carries the anode of its own directory and of that directory's parent.
+  Filling the parent in on the first block only is invisible to a name lookup,
+  which walks the chain comparing names — but anything that has to resolve an
+  object's *path* asks the block the entry sits in who its parent is, and a
+  zero there reads as the root. A file in the tenth block of `LIBS:` then
+  resolves to `SYS:` + its own name, which does not exist, so it can be found
+  and never opened.
 
 ## Two outputs at once
 
