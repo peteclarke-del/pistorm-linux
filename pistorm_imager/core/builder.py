@@ -580,7 +580,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     spec = next((s for s in config.amiga_partitions
                  if s.name.upper() == partition.drive_name.upper()), None)
     if spec is not None:
-        extra = _downloaded_packages(config, progress)
+        extra = _package_overlays(config, list(spec.overlays), progress)
         if spec.overlays or extra:
             spec = dataclasses.replace(spec,
                                        overlays=list(spec.overlays) + extra)
@@ -618,13 +618,12 @@ def _write_user_startup(volume, config: "BuildConfig",
     progress.log(f"  S:User-Startup written ({len(lines)} lines)")
 
 
-def _downloaded_packages(config: "BuildConfig",
-                         progress: Progress) -> list[tuple[str, str]]:
-    """Fetch the chosen packages that no donor here can supply.
+def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
+                      progress: Progress) -> list[tuple[str, str]]:
+    """Resolve the chosen software into files to copy onto the drive.
 
-    A donor is always preferred, so anything already resolved into the
-    partition's overlays is left alone; what is left is the freely
-    distributable software on Aminet, cached between builds.
+    A donor is preferred over a download; what no donor here can supply is
+    fetched from Aminet and cached between builds.
     """
     if not config.package_keys:
         return []
@@ -633,15 +632,18 @@ def _downloaded_packages(config: "BuildConfig",
                if config.package_chipset else machines.Chipset.AGA)
     display = (machines.Display(config.package_display)
                if config.package_display else machines.Display.NATIVE)
-    donor = config.package_donor or None
-    supplied = set(packages.available(donor))
-    wanted = [key for key in config.package_keys if key not in supplied]
-    if not wanted:
-        return []
-    progress.step("Fetching optional software")
-    return packages.overlays_for(donor, wanted, chipset=chipset,
-                                 display=display, progress=progress,
-                                 allow_download=True)
+    progress.step("Adding the software you chose")
+    resolved = packages.overlays_for(config.package_donor or None,
+                                     config.package_keys, chipset=chipset,
+                                     display=display, progress=progress,
+                                     allow_download=True)
+    #  The quick setup resolves what a donor can supply while it assembles the
+    #  configuration, so those pairs may already be on the partition.  Adding
+    #  them twice would copy every file twice; leaving them out of this list
+    #  would drop them entirely for a build driven from the pages, where
+    #  nothing resolved them earlier.
+    already = {(source, destination) for source, destination in existing}
+    return [pair for pair in resolved if pair not in already]
 
 
 def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
