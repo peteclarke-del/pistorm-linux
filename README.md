@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 239 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 249 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 

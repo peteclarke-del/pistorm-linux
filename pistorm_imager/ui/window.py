@@ -940,6 +940,15 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.image_info = Adw.ActionRow(title="Image details", subtitle="No image selected")
         self.image_info.set_sensitive(False)
         self.image_group.add(self.image_info)
+        self.patch_display_row = Adw.SwitchRow(
+            title="Adapt the display after writing",
+            subtitle="A finished system keeps its own drivers, which are "
+                     "right for it, but not its saved screen mode. Where "
+                     "there is no RTG display, clear it so Workbench opens on "
+                     "the Amiga's own screen instead of one that is not there.")
+        self.patch_display_row.connect("notify::active",
+                                       lambda *_a: self._update_summary())
+        self.image_group.add(self.patch_display_row)
         page.add(self.image_group)
 
         self.hdf_group = Adw.PreferencesGroup(
@@ -1756,6 +1765,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             hdf_image=self.hdf_row.path,
             output_hdf=self._making_hdf(),
             repair_rdb=self.repair_row.get_active(),
+            patch_display=self.patch_display_row.get_active(),
             boot_size=boot_size,
             amiga_partitions=[row.spec() for row in self.partition_rows],
             pfs3_binary=self.quick_donor.path,
@@ -2231,6 +2241,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.unit0_row.set_active(options.sd_unit0_rw)
         self.extra_row.set_text(options.extra_cmdline)
 
+        self.patch_display_row.set_active(config.patch_display)
         self.expand_row.set_active(config.expand_to_fill)
         for row in list(self.extra_rows):
             self.expand_group.remove(row)
