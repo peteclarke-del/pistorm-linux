@@ -35,7 +35,8 @@ import tempfile
 from pathlib import Path
 
 from . import (amigafs, amigaos, bootcfg, compat, devices, emu68, hdfcheck,
-               imgsrc, kickstart, mbr, packages, pfs3, rdb)
+               imgsrc, kickstart, mbr, packages, pfs3, postwrite,
+               rdb)
 from .fat32 import Fat32
 from .util import (MIB, Cancelled, Progress, align_up, copy_stream, human_size,
                    require_tool, run)
@@ -151,6 +152,10 @@ class BuildConfig:
     output_hdf: bool = False
     #  Repair the RDB of an imported image for PiStorm compatibility
     repair_rdb: bool = True
+    #  After writing a prepared system, clear a saved screen mode that would
+    #  put Workbench on a screen this machine has not got.  Off by default:
+    #  it edits a system the user chose deliberately.
+    patch_display: bool = False
 
     #  Post-processing
     expand_to_fill: bool = False
@@ -1233,6 +1238,13 @@ def check_and_repair(handle, offset: int, capacity: int, config: BuildConfig,
     except (ValueError, OSError) as error:
         progress.log(f"Could not re-read the RDB to check it: {error}")
         return
+
+    #  A written-in system keeps its own drivers, which are right for it; what
+    #  it cannot know is which screen this machine is watched on.
+    if config.patch_display:
+        progress.step("Adapting the display setup on the card")
+        postwrite.adapt_display(handle, offset, table, config.rtg_display,
+                                progress)
 
     progress.step("Checking the Amiga drive for PiStorm compatibility")
     findings = hdfcheck.analyse(table, capacity)

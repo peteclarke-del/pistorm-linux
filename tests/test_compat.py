@@ -458,3 +458,45 @@ class TestContentInstall(_Scratch):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestWhdloadPrefs(unittest.TestCase):
+    """WHDLoad runs its hooks around every game, on every launch."""
+
+    PREFS = (b";WHDLoad preferences\n"
+             b"ExecuteStartup=uae-configuration cachesize 0\n"
+             b"ExecuteCleanup=uae-configuration cpu_speed max\n"
+             b"PAL           ;force PAL video mode\n"
+             b"QuitKey=$59\n"
+             b";ExecutePreDisk=Execute S:WHDLoad-PreDisk\n")
+
+    def clean(self) -> str:
+        fixer = compat.Compatibility(Progress(), enabled=True, rtg=False,
+                                     native=True)
+        return fixer.offer("S/WHDLoad.prefs", self.PREFS).decode("latin-1")
+
+    def test_emulator_hooks_are_commented_out(self):
+        """uae-configuration does not exist on a PiStorm, so every launch
+        would run something that is not there."""
+        out = self.clean()
+        self.assertIn(";ExecuteStartup=uae-configuration", out)
+        self.assertIn(";ExecuteCleanup=uae-configuration", out)
+
+    def test_the_rest_of_the_settings_are_kept(self):
+        out = self.clean()
+        self.assertIn("PAL           ;force PAL video mode", out)
+        self.assertIn("QuitKey=$59", out)
+
+    def test_an_already_commented_hook_is_not_commented_twice(self):
+        self.assertIn(";ExecutePreDisk=Execute S:WHDLoad-PreDisk", self.clean())
+        self.assertNotIn(";;ExecutePreDisk", self.clean())
+
+    def test_a_hook_that_runs_something_real_is_left_alone(self):
+        fixer = compat.Compatibility(Progress(), enabled=True, rtg=False,
+                                     native=True)
+        prefs = b"ExecuteStartup=Execute S:MyOwnScript\n"
+        self.assertEqual(fixer.offer("S/WHDLoad.prefs", prefs), prefs)
+
+    def test_nothing_is_touched_when_the_pass_is_off(self):
+        fixer = compat.Compatibility(Progress(), enabled=False)
+        self.assertEqual(fixer.offer("S/WHDLoad.prefs", self.PREFS), self.PREFS)
