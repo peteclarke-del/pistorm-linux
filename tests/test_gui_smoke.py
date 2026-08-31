@@ -34,8 +34,30 @@ import tempfile  # noqa: E402
 SCRATCH = Path(tempfile.mkdtemp(prefix="pistorm-gui-test-"))
 SOURCE_IMAGE = SCRATCH / "source.img"
 SOURCE_IMAGE.write_bytes(b"\0" * 4096)
+#  A real Rigid Disk Block with two named drives, so the drive chooser has
+#  something to list.  An empty file would leave it with nothing to offer and
+#  the check below would prove nothing.
 HDF_IMAGE = SCRATCH / "disk.hdf"
-HDF_IMAGE.write_bytes(b"\0" * 4096)
+
+
+def _make_test_hdf() -> None:
+    from pistorm_imager.core import rdb  # noqa: PLC0415
+    geometry = rdb.Geometry()
+    size = 64 * 1024 * 1024
+    table = rdb.Rdb(
+        geometry=geometry,
+        partitions=[
+            rdb.Partition("DH0", 1, 40, rdb.DOSTYPE_FFS_INTL, bootable=True),
+            rdb.Partition("DH1", 41, 80, rdb.DOSTYPE_FFS_INTL),
+        ],
+        filesystems=[],
+        cylinders=(size // 512) // geometry.cyl_blocks)
+    with open(HDF_IMAGE, "wb") as handle:
+        handle.truncate(size)
+        table.write(handle, 0)
+
+
+_make_test_hdf()
 
 failures: list[str] = []
 
@@ -275,6 +297,20 @@ def on_activate(app: ImagerApplication) -> None:
         check(window._primary() == "image",
               "a session saved before the split still picks the right source")
 
+        #  A folder is genuinely hard to pick in the GTK dialog - you have to
+        #  highlight it from its parent, and once inside it nothing is
+        #  selected and Open greys out - so a path can be typed or pasted.
+        window.quick_pimiga.set_text("/mnt/pimiga/home/pi/pimiga")
+        check(window.quick_pimiga.path == "/mnt/pimiga/home/pi/pimiga",
+              "a typed path is taken as the choice")
+        window.quick_pimiga.set_text("'/mnt/pimiga/home/pi/pimiga'")
+        check(window.quick_pimiga.path == "/mnt/pimiga/home/pi/pimiga",
+              "a quoted path pastes cleanly")
+        window.quick_pimiga.set_text("file:///mnt/pimiga/home/pi/pimiga")
+        check(window.quick_pimiga.path == "/mnt/pimiga/home/pi/pimiga",
+              "a file:// URI from a file manager pastes cleanly")
+        window.quick_pimiga.set_path("")
+
         #  A partition can take its contents from an image of its own, so a
         #  drive out of an .hdf can be added to a PiMiga card rather than
         #  replacing it.
@@ -283,12 +319,27 @@ def on_activate(app: ImagerApplication) -> None:
             builder.AmigaPartitionSpec("DH4", None, "PFS\\3",
                                        content_folder="/somewhere/Games"),
             on_remove=lambda _r: None, on_change=None)
+        #  Either a folder or an image is a valid answer for a partition's
+        #  contents - PiMiga's Games and Demos drives are folders - so the row
+        #  offers both and works out which was chosen.
+        folder = SCRATCH / "GamesTree"
+        folder.mkdir(exist_ok=True)
+        extra.hdf_row.set_path(str(folder))
+        spec = extra.spec()
+        check(spec.content_folder == str(folder) and spec.content_hdf == "",
+              "a folder fills the partition from a tree of files")
+
         extra.hdf_row.set_path(str(HDF_IMAGE))
-        extra.hdf_part_row.set_text("dh1")
+        listed = [extra.hdf_part_row.get_model().get_string(i)
+                  for i in range(extra.hdf_part_row.get_model().get_n_items())]
+        check(any("DH0" in text for text in listed)
+              and any("DH1" in text for text in listed),
+              f"the drives in the image are offered by name ({len(listed)} entries)")
+        extra.choose_drive("dh1")
         check(extra.spec().content_hdf == str(HDF_IMAGE)
               and extra.spec().content_hdf_partition == "DH1"
               and extra.spec().content_folder == "",
-              "a partition filled from an image replaces its folder source")
+              "an image replaces the folder source rather than joining it")
 
         #  The display choice lives on the Quick setup page but decides what
         #  happens to a copied system's graphics setup.  gather() is what a
