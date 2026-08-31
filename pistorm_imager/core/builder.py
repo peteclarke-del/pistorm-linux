@@ -809,9 +809,14 @@ class Drive:
     bootable: bool
 
     @property
+    def whole_image(self) -> bool:
+        """A bare file system with no partition table: the file is the drive."""
+        return not self.name
+
+    @property
     def label(self) -> str:
         """What to show in a list: the drive, its volume and how big it is."""
-        parts = [self.name]
+        parts = [self.name or "The whole image"]
         if self.volume and self.volume.upper() != self.name.upper():
             parts.append(f'"{self.volume}"')
         parts.append(human_size(self.size))
@@ -835,7 +840,21 @@ def list_drives(path: str | Path) -> list[Drive]:
     with handle:
         located = find_rdb(handle)
         if located is None:
-            return []
+            #  No partition table.  A bare file system is still one drive -
+            #  ClassicWB and plenty of older .hdf files are exactly this - and
+            #  answering "nothing here" would leave the caller thinking no
+            #  image had been chosen at all.
+            try:
+                volume, _label = amigaos.open_amiga_volume(path)
+            except Exception:                     # noqa: BLE001 - best effort
+                return []
+            dostype = ("PFS3" if isinstance(volume, pfs3.Pfs3Volume)
+                       else "FFS/OFS")
+            try:
+                size = Path(path).stat().st_size
+            except OSError:
+                size = 0
+            return [Drive("", getattr(volume, "name", ""), size, dostype, False)]
         base, table = located
         drives: list[Drive] = []
         for part in table.partitions:

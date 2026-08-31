@@ -169,7 +169,27 @@ class TestListDrives(_Scratch):
         self.assertEqual(len(drives), 1)
         self.assertEqual(drives[0].volume, "")
 
-    def test_nothing_to_list_without_an_rdb(self):
+    def test_a_bare_file_system_is_offered_as_the_whole_image(self):
+        """ClassicWB and plenty of older .hdf files have no partition table.
+
+        Answering "nothing here" for those read, in the chooser, as though no
+        image had been selected at all.
+        """
+        from pistorm_imager.core import amigaos, amigafs      # noqa: PLC0415
+        path = self.scratch() / "bare.hdf"
+        with open(path, "w+b") as handle:
+            handle.truncate(4 * MIB)
+            volume = amigaos.make_volume(handle, 0, (4 * MIB) // amigafs.BLOCK,
+                                         "Bare", amigafs.DOSTYPE_FFS_INTL)
+            volume.close()
+        drives = builder.list_drives(path)
+        self.assertEqual(len(drives), 1)
+        self.assertTrue(drives[0].whole_image)
+        self.assertEqual(drives[0].name, "")
+        self.assertEqual(drives[0].volume, "Bare")
+        self.assertIn("whole image", drives[0].label)
+
+    def test_nothing_to_list_without_an_amiga_file_system(self):
         path = self.scratch() / "empty.hdf"
         path.write_bytes(b"\0" * 8192)
         self.assertEqual(builder.list_drives(path), [])
