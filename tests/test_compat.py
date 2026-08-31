@@ -500,3 +500,70 @@ class TestWhdloadPrefs(unittest.TestCase):
     def test_nothing_is_touched_when_the_pass_is_off(self):
         fixer = compat.Compatibility(Progress(), enabled=False)
         self.assertEqual(fixer.offer("S/WHDLoad.prefs", self.PREFS), self.PREFS)
+
+
+class TestGamesListFilter(unittest.TestCase):
+    """iGame stores an absolute path to every slave it knows about."""
+
+    def setUp(self):
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-igame-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        self.games = folder / "Games"
+        for relative in ("WHDLOAD/OCS/D/Driller/Driller.slave",
+                         "WHDLOAD/AGA/S/Slamtilt/slamtilt.slave",
+                         "WHDLOAD/Foreign/H/Hugo2Fi/hugo2fi.slave"):
+            path = self.games / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"slave")
+
+    def fixer(self, *excludes: str) -> compat.Compatibility:
+        fixer = compat.Compatibility(Progress(), enabled=True, rtg=False,
+                                     native=True)
+        fixer.content["GAMES"] = (self.games, excludes)
+        return fixer
+
+    def filter(self, fixer, *paths: str) -> list[str]:
+        lines = "".join(f"0;Name;Unknown;{path};0;0;0;0\n" for path in paths)
+        out = fixer.offer("Programs/iGame/gameslist.csv",
+                          lines.encode("latin-1")).decode("latin-1")
+        return [line for line in out.splitlines() if line.strip()]
+
+    def test_a_game_that_is_there_is_kept(self):
+        kept = self.filter(self.fixer(),
+                           "Games:WHDLOAD/OCS/D/Driller/Driller.slave")
+        self.assertEqual(len(kept), 1)
+
+    def test_a_game_that_is_not_there_is_dropped(self):
+        kept = self.filter(self.fixer(),
+                           "Games:WHDLOAD/OCS/N/Nothing/nothing.slave")
+        self.assertEqual(kept, [])
+
+    def test_an_excluded_collection_is_dropped_even_though_it_exists(self):
+        """The AGA games are in the source and deliberately left off an OCS
+        card; every one of them would otherwise still be offered."""
+        kept = self.filter(self.fixer("WHDLOAD/AGA"),
+                           "Games:WHDLOAD/AGA/S/Slamtilt/slamtilt.slave")
+        self.assertEqual(kept, [])
+
+    def test_the_match_ignores_case(self):
+        """The list was written on a case-insensitive volume and is checked
+        against a Linux tree, where WHDLoad and WHDLOAD are two directories."""
+        kept = self.filter(self.fixer(),
+                           "games:whdload/ocs/d/driller/driller.slave")
+        self.assertEqual(len(kept), 1)
+
+    def test_a_volume_nothing_fills_is_left_alone(self):
+        """Dropping what cannot be checked would be worse than keeping it."""
+        kept = self.filter(self.fixer(), "Work:Somewhere/else.slave")
+        self.assertEqual(len(kept), 1)
+
+    def test_a_line_that_is_not_an_entry_is_kept(self):
+        fixer = self.fixer()
+        data = b"# a comment\n;;;\n"
+        self.assertEqual(fixer.offer("Programs/iGame/gameslist.csv", data), data)
+
+    def test_nothing_happens_without_a_content_map(self):
+        fixer = compat.Compatibility(Progress(), enabled=True)
+        data = b"0;Name;Unknown;Games:WHDLOAD/Nope/x.slave;0;0;0;0\n"
+        self.assertEqual(fixer.offer("Programs/iGame/gameslist.csv", data), data)
+

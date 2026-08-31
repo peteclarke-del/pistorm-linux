@@ -44,6 +44,8 @@ STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
 #  cache and CPU speed through uae-configuration - and on a PiStorm that
 #  command does not exist, so every launch runs something that is not there.
 WHDLOAD_PREFS = ["S/WHDLoad.prefs"]
+#  iGame keeps an absolute path to every slave it knows about.
+GAMES_LIST = "/gameslist.csv"
 WHDLOAD_HOOKS = ("executestartup", "executecleanup")
 
 #  A saved screen mode points at a specific display board.  Carried over to a
@@ -177,6 +179,11 @@ class Compatibility:
         self.monitor_file: bytes | None = None
         self.monitor_icon: bytes | None = None
         self._seen_picasso = False
+        self._said_no_picasso = False
+        #  Volume name -> (host folder it is filled from, paths left out), so
+        #  a games list can be checked against what will actually be there.
+        self.content: dict[str, tuple[Path, tuple[str, ...]]] = {}
+        self._listing: dict[Path, dict[str, str]] = {}
         #  Monitor drivers already installed in DEVS:Monitors, and the spare
         #  native ones sitting in STORAGE:Monitors, so a native driver can be
         #  installed if the target needs one and the source has none.
@@ -267,7 +274,82 @@ class Compatibility:
             return self._clean_startup(posix, data)
         if any(posix.lower() == f.lower() for f in WHDLOAD_PREFS):
             return self._clean_whdload_prefs(posix, data)
+        if posix.lower().endswith(GAMES_LIST):
+            return self._filter_games_list(posix, data)
         return data
+
+    # -------------------------------------------------- iGame's games list
+
+    def _resolve(self, root: Path, relative: str) -> bool:
+        """Whether ``relative`` exists under ``root``, ignoring case.
+
+        The list was written on a case-insensitive Amiga volume and is being
+        checked against a Linux tree, where "WHDLoad" and "WHDLOAD" are two
+        different directories.  Listings are cached because a games list runs
+        to thousands of lines through the same few drawers.
+        """
+        here = root
+        for part in [p for p in relative.split("/") if p]:
+            names = self._listing.get(here)
+            if names is None:
+                try:
+                    names = {entry.name.lower(): entry.name
+                             for entry in here.iterdir()}
+                except OSError:
+                    names = {}
+                self._listing[here] = names
+            actual = names.get(part.lower())
+            if actual is None:
+                return False
+            here = here / actual
+        return True
+
+    def _on_the_card(self, amiga_path: str) -> bool | None:
+        """Whether an AMIGA:path/file will be on the finished card.
+
+        None when it cannot be judged - a volume nothing here fills - in which
+        case the entry is kept, because dropping what we cannot check would
+        be worse than leaving it.
+        """
+        volume, _, rest = amiga_path.partition(":")
+        known = self.content.get(volume.strip().upper())
+        if known is None or not rest:
+            return None
+        root, excludes = known
+        lowered = rest.lower().lstrip("/")
+        for skip in excludes:
+            skip = skip.replace("\\", "/").strip("/").lower()
+            if skip and (lowered == skip or lowered.startswith(skip + "/")):
+                return False
+        return self._resolve(root, rest)
+
+    def _filter_games_list(self, relative: str, data: bytes) -> bytes:
+        """Drop entries whose game will not be on the card.
+
+        iGame stores an absolute path to each slave.  Leave out a collection -
+        the AGA games on a machine that cannot run them - and every one of its
+        entries stays in the list, offering games that are not there.
+        """
+        if not self.content:
+            return data
+        out: list[str] = []
+        dropped = 0
+        for line in data.decode("latin-1").splitlines(keepends=True):
+            fields = line.split(";")
+            if len(fields) < 4 or not fields[3].strip():
+                out.append(line)
+                continue
+            present = self._on_the_card(fields[3].strip())
+            if present is False:
+                dropped += 1
+                continue
+            out.append(line)
+        if dropped:
+            self.note("edited",
+                      f"{relative}: dropped {dropped} game"
+                      f"{'s' if dropped != 1 else ''} that will not be on the "
+                      f"card, so iGame does not offer what it cannot launch")
+        return "".join(out).encode("latin-1")
 
     def _clean_whdload_prefs(self, relative: str, data: bytes) -> bytes:
         """Disarm WHDLoad hooks that call an emulator's own control program.
@@ -379,7 +461,11 @@ class Compatibility:
 
     def _finish_rtg(self, target, progress: Progress) -> None:
         if not self.enabled or not self._seen_picasso:
-            if self.enabled and not self._seen_picasso:
+            #  finish() runs once per tree copied, and a build copies many.
+            #  Saying this a dozen times buries everything else in the log.
+            if (self.enabled and not self._seen_picasso
+                    and not self._said_no_picasso):
+                self._said_no_picasso = True
                 progress.log("  compatibility - no Picasso96 install found; "
                              "leaving graphics setup alone")
             return
