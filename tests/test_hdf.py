@@ -141,6 +141,54 @@ class TestCompatibilityChecks(_Scratch):
         self.assertTrue(hdfcheck.unresolved(findings))
 
 
+class TestUserStartupOnBothFileSystems(_Scratch):
+    """The generated S:User-Startup has to work on either system drive.
+
+    The lookup used to write it existed only on the PFS3 writer, so a build
+    onto an FFS system drive got all the way through installing Workbench and
+    every package before failing at the last step.
+    """
+
+    ADFS = Path(__file__).resolve().parent.parent / "samples" / "workbench"
+
+    def build_with_startup(self, dostype: str) -> Path:
+        out = self.scratch() / f"{dostype}.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            image_size=400 * MIB, install_emu68=False,
+            install_amigaos=True, adf_folder=str(self.ADFS),
+            amiga_volume_name="Workbench", fix_compatibility=False,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            #  iconlib contributes a line to S:User-Startup, which is what
+            #  makes the file get written at all.
+            package_keys=["iconlib"],
+            package_chipset="OCS", package_display="native",
+            amiga_partitions=[
+                builder.AmigaPartitionSpec("DH0", None, dostype, True, 0,
+                                           volume_name="Workbench")],
+        ), QUIET)
+        return out
+
+    def check(self, dostype: str) -> None:
+        from pistorm_imager.core import amigaos          # noqa: PLC0415
+        out = self.build_with_startup(dostype)
+        self.assertEqual(builder.list_drives(out)[0].volume, "Workbench")
+        volume, _label = amigaos.open_amiga_volume(out)
+        entry = volume.find("S/User-Startup")
+        self.assertIsNotNone(entry, f"{dostype}: no S:User-Startup written")
+        body = volume.read_file(entry).decode("latin-1")
+        self.assertIn("LoadResident", body)
+        volume.f.close()
+
+    @unittest.skipUnless(ADFS.is_dir(), "no Workbench disks available")
+    def test_ffs_system_drive(self):
+        self.check("FFS-INTL")
+
+    @unittest.skipUnless(ADFS.is_dir(), "no Workbench disks available")
+    def test_pfs3_system_drive(self):
+        self.check("PFS3")
+
+
 class TestEmptyPartitionsAreFormatted(_Scratch):
     """A drive with nothing to put in it should still mount."""
 
