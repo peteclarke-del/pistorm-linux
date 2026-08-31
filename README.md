@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 233 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 239 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -236,6 +236,32 @@ only Amiga file system this tool can create.
 Put your own Workbench disks and Kickstart in `samples/` and they are found
 automatically - see `samples/README.md`. None of that material is kept in this
 repository, and the tests that use it skip when it is absent.
+
+## Prepared systems
+
+Several people distribute a whole, finished AmigaOS installation as an image,
+and basing a card on one is far quicker than installing Workbench from six
+floppies. Download it from its author, point the **Pre-built image** source at
+the file, and the tool names what it found and says what that system expects of
+the machine.
+
+**CaffeineOS** is recognised: AmigaOS 3.9 built for Emu68 and the PiStorm, with
+Dopus Magellan as its Workbench replacement, its own custom Kickstart on the
+boot partition, and its own Emu68 kernel and command line. It wants a 64 GB
+card or larger. The detail worth knowing before committing a card to it is that
+its Workbench opens on an **RTG screen only** — its own WinUAE configuration
+sets `rtg_nocustom=true` — so on a machine watched on the Amiga's own 15 kHz
+video there is a desktop nobody can see. The tool says so, and says it more
+loudly when the display is set to native.
+
+**PiMiga** is in the catalogue as well, not because it can be used this way but
+because it cannot: it is a Raspberry Pi system running the Amiberry emulator,
+and its Amiga drives are ordinary folders inside its Linux root partition.
+Pointing the image chooser at it explains that, rather than reporting an empty
+list of drives.
+
+Recognition is by volume label, which is the one thing that survives an author
+repartitioning between releases. An unknown image is never guessed at.
 
 ## Checking an image against the machine
 
