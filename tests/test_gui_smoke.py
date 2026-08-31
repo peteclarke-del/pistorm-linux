@@ -297,6 +297,20 @@ def on_activate(app: ImagerApplication) -> None:
         check(window._primary() == "image",
               "a session saved before the split still picks the right source")
 
+        #  A folder is genuinely hard to pick in the GTK dialog - you have to
+        #  highlight it from its parent, and once inside it nothing is
+        #  selected and Open greys out - so a path can be typed or pasted.
+        window.quick_pimiga.set_text("/mnt/pimiga/home/pi/pimiga")
+        check(window.quick_pimiga.path == "/mnt/pimiga/home/pi/pimiga",
+              "a typed path is taken as the choice")
+        window.quick_pimiga.set_text("'/mnt/pimiga/home/pi/pimiga'")
+        check(window.quick_pimiga.path == "/mnt/pimiga/home/pi/pimiga",
+              "a quoted path pastes cleanly")
+        window.quick_pimiga.set_text("file:///mnt/pimiga/home/pi/pimiga")
+        check(window.quick_pimiga.path == "/mnt/pimiga/home/pi/pimiga",
+              "a file:// URI from a file manager pastes cleanly")
+        window.quick_pimiga.set_path("")
+
         #  A partition can take its contents from an image of its own, so a
         #  drive out of an .hdf can be added to a PiMiga card rather than
         #  replacing it.
