@@ -347,17 +347,23 @@ def excluded_for(machine: machines.Machine) -> list[str]:
 
 
 def package_overlays(donor: str | Path | None, keys: list[str] | None,
-                     rtg: bool) -> list[tuple[str, str]]:
+                     rtg: bool,
+                     chipset: machines.Chipset = machines.Chipset.AGA,
+                     display: machines.Display | None = None
+                     ) -> list[tuple[str, str]]:
     """Optional software to lay on top of a Workbench built from floppies.
 
     A Workbench installed from the original disks has no archiver, no installer
     and no WHDLoad, so the pieces almost everyone adds next are offered here.
-    They are copied out of a system the user already has rather than shipped.
+    Only what a donor system on this machine can supply is resolved now;
+    anything that has to come from Aminet is fetched during the build, where
+    there is a progress report to hang the download off.
     """
     if donor is None:
         return []
     chosen = packages.default_keys(rtg) if keys is None else keys
-    return packages.overlays_for(donor, chosen, rtg)
+    return packages.overlays_for(donor, chosen, rtg, chipset=chipset,
+                                 display=display)
 
 
 def machine_setup(machine: machines.Machine, display: machines.Display,
@@ -439,7 +445,15 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
         #  archiver, or the installer most software expects.
         system.overlays = package_overlays(
             package_donor or pimiga_folder or None, package_keys,
-            display.uses_rtg)
+            display.uses_rtg, machine.chipset, display)
+        #  Whatever no donor here can supply is fetched from Aminet during the
+        #  build, so the choice has to travel with the configuration.
+        config.package_donor = package_donor or pimiga_folder or ""
+        config.package_keys = list(
+            packages.default_keys(display.uses_rtg)
+            if package_keys is None else package_keys)
+        config.package_chipset = machine.chipset.value
+        config.package_display = display.value
 
     if disks is not None:
         #  The system partition must take a fixed size now: the PiMiga drives
