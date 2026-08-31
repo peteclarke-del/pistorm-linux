@@ -128,7 +128,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 184 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 202 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -190,6 +190,22 @@ Adding to a source rather than replacing it is a per-partition matter: any
 partition on the **Amiga partitions** page can be filled from a drive inside an
 `.hdf`, so an image can be added as a fourth drive beside PiMiga's System,
 Games and Work rather than displacing them.
+
+### What Quick setup decides, and what it leaves alone
+
+Applying a quick setup rebuilds the whole layout from the machine, the card and
+the source — that is what the page is for. It has no opinion about the settings
+made elsewhere, so those are carried through untouched: the WiFi network, the
+volume name, the Emu68 release and any local archive, a Cloanto Kickstart key,
+the source image and `.hdf` on the Source page, and the boot switches only a
+person can decide (overclock, CM4 antenna, swapping `DF0:` with `DF1:`, letting
+the Amiga write to the whole card). Applying used to return every one of them to
+its default and then save the session in that state, so they could not be kept
+at all.
+
+The one field the two share is **Additional cmdline.txt options**: the trapdoor
+switch puts `move_slow_to_chip` there and anything else in the box was typed by
+hand. Both survive, and turning the switch off removes only its own option.
 
 ## Installing AmigaOS from floppy images
 
@@ -383,6 +399,52 @@ with these fixes applied automatically:
 
 Every change is reported in the log, and none of them touch your files. Turn the
 whole thing off with `fix_compatibility=False` if you would rather do it by hand.
+
+### Linux file names, Amiga file names
+
+Such a drive was assembled under rules that are not the Amiga's, and the
+differences have to be settled on the way in:
+
+* **Character set.** Amiga names are ISO-8859-1 bytes, and Linux stores file
+  names as bytes too, so `português.language` already carries exactly the bytes
+  AmigaOS wants — even though Python cannot read them as UTF-8. Those names are
+  passed through untouched. A name genuinely stored as UTF-8 is converted, and
+  the occasional letter ISO-8859-1 has no room for is folded to its unaccented
+  form (`čeština` → `cestina`) rather than replaced with `?`, which AmigaDOS
+  reads as a pattern wildcard.
+* **Case.** AmigaDOS cannot tell `Bombuzal.slave` from `Bombuzal.Slave`, and a
+  collection built on Linux is full of such pairs — on PiMiga's Games drive,
+  289 of them. Only one of each can exist here, and, which is what decides the
+  matter, only one can be *reached*: every spelling of a name finds the same
+  entry, so a second copy kept as `Bombuzal_2.slave` is a file nothing would
+  ever ask for. The second copy is therefore left out, and the card holds what
+  the drawer always looked like to the Amiga.
+
+  Which one stays is decided by the drawer's icon. A WHDLoad icon names its
+  slave in a `SLAVE=` tool type, and an emulator mounting the host directory
+  opens that exact spelling; keeping the other would run a *different build* of
+  the game here than the same collection runs there. That is not a matter of
+  taking the newest file — in seven of PiMiga's pairs the icon names a slave
+  years older than the one beside it, and reproducing what it does means
+  keeping the old one. Every file left out is named in the log.
+
+  Two drawers of the same name are **merged into one** rather than either being
+  renamed, which would leave a game looking for half of its files.
+* **Length.** FFS allows 30 characters, PFS3 far more. Only a name that really
+  had to be cut short is reported as shortened, and that is the warning worth
+  acting on: a shortened name can stop a game starting, because a WHDLoad slave
+  and an icon's tool types both name files. Where the reference is one this tool
+  can see — a tool type naming a file in the same drawer — it is **rewritten to
+  match**, so the icon still launches its slave. A name buried inside a binary
+  cannot be reached that way, which is why the warning still exists. Choosing
+  PFS3 sidesteps the question almost entirely: 3 names across PiMiga's four
+  drives are too long for it, against 1,597 on the Work drive alone under FFS.
+
+Across PiMiga 5's System, Demos and Games drives this brings the names that have
+to change down from 309 to 3 — all three of them names that were already
+corrupt in the source — and leaves every accented locale name alone. Nothing is
+renamed to make room for something else any more, so no `_2` names appear on the
+card at all.
 
 ## Hard disk images: two shapes
 

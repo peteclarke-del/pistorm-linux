@@ -66,6 +66,44 @@ HDF_FILTERS = [("Amiga hard disk images", ["*.hdf", "*.HDF", "*.hdz", "*.rdsk", 
 ZIP_FILTERS = [("Emu68 release", ["*.zip"])]
 
 
+#  The Quick setup page builds a whole configuration from the machine and the
+#  card, which is what makes it useful - and what made it destructive: every
+#  setting made anywhere else came back at its default, so applying it emptied
+#  the WiFi network, the volume name and the boot switches without a word.
+#  These are the settings the page has no opinion about, and must hand back.
+KEPT_ACROSS_QUICK_SETUP = (
+    "release_tag", "emu68_archive", "install_emu68", "kickstart_key",
+    "amiga_volume_name", "wifi_ssid", "wifi_password", "wifi_country",
+    "expand_to_fill", "extra_partitions",
+    #  The quick page has a source chooser of its own, so these belong to the
+    #  Source page alone: applying a fresh layout used to empty it.
+    "source_image", "hdf_image", "repair_rdb",
+)
+
+#  The same for the boot settings.  The machine decides the ones that follow
+#  from its chipset and its display; these are the ones only a person can.
+KEPT_BOOT_OPTIONS = (
+    "overclock", "cm4_external_antenna", "swap_df0_with_df1", "sd_unit0_rw",
+    "hdmi_force_hotplug", "boot_delay", "gpu_mem", "total_mem", "limit_2g",
+    "z2_ram_size", "unicam_extra",
+)
+
+
+def merge_cmdline(from_machine: str, typed: str) -> str:
+    """Both sets of extra cmdline options, without repeating any.
+
+    The machine's own options and whatever was typed by hand share a single
+    field, so one of the two used to be thrown away.  The machine's words are
+    dropped from the typed side before the two are joined: they are put back
+    when they still apply, and must not linger once the switch that added them
+    is turned off.
+    """
+    words = from_machine.split()
+    words += [word for word in typed.split()
+              if word not in words and word not in machines.CMDLINE_OPTIONS]
+    return " ".join(words)
+
+
 class PartitionRow(Adw.ExpanderRow):
     """Editor for one Amiga partition inside the RDB."""
 
@@ -660,7 +698,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             if device is not None:
                 size = device.size
         hdmi_choice = bootcfg.HDMI_MODES[self.hdmi_row.get_selected()]
-        return presets.machine_setup(
+        return self._keep_other_pages(presets.machine_setup(
             self._machine(), self._display(), base.target,
             base.target_is_device, size, detected,
             pimiga_folder=self.quick_pimiga.path,
@@ -672,7 +710,20 @@ class ImagerWindow(Adw.ApplicationWindow):
             work_partition=self.quick_work.get_active(),
             package_donor=self._package_donor(),
             package_keys=self._chosen_packages(),
-            prefer_rtg_screen=self._prefer_rtg_screen())
+            prefer_rtg_screen=self._prefer_rtg_screen()), base)
+
+    def _keep_other_pages(self, config: builder.BuildConfig,
+                          base: builder.BuildConfig) -> builder.BuildConfig:
+        """Put back the settings the quick setup does not decide."""
+        options = dataclasses.replace(
+            config.boot_options,
+            extra_cmdline=merge_cmdline(config.boot_options.extra_cmdline,
+                                        base.boot_options.extra_cmdline),
+            **{name: getattr(base.boot_options, name)
+               for name in KEPT_BOOT_OPTIONS})
+        return dataclasses.replace(
+            config, boot_options=options,
+            **{name: getattr(base, name) for name in KEPT_ACROSS_QUICK_SETUP})
 
     def _on_layout_changed(self) -> None:
         """Something that shapes the partition layout has changed.
