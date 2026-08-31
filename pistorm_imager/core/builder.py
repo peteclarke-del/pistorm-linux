@@ -864,7 +864,13 @@ def list_drives(path: str | Path) -> list[Drive]:
                 if part.dostype in (rdb.DOSTYPE_PFS3, rdb.DOSTYPE_PDS3):
                     volume = pfs3.Pfs3Volume(handle, offset).name
                 else:
-                    volume = amigafs.Volume(handle, offset).name
+                    #  FFS puts its root block in the middle of the partition,
+                    #  so the size has to be the partition's.  Left to work it
+                    #  out from the file, a drive inside a card image lands on
+                    #  the wrong block and reads back as an empty volume.
+                    volume = amigafs.Volume(handle, offset,
+                                            part.blocks(table.geometry),
+                                            part.reserved_blocks).name
             except Exception:                     # noqa: BLE001 - best effort
                 volume = ""
             drives.append(Drive(part.drive_name, volume,
