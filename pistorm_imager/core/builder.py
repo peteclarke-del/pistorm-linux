@@ -588,7 +588,8 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
             continue
         if source.is_dir():
             copied, _renamed = amigaos.install_tree(volume, source, destination,
-                                                    progress, compat=fixer)
+                                                    progress, compat=fixer,
+                                                    merge=True)
             progress.log(f"  overlay: {source.name}/ -> {destination or ':'} "
                          f"({copied} files)")
         else:
