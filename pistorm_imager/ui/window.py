@@ -17,7 +17,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from .. import __version__  # noqa: E402
-from ..core import (amigaos, bootcfg, builder, devices, distributions,  # noqa: E402
+from ..core import (amigaos, bootcfg, builder, content, devices,  # noqa: E402
+                    distributions,
                     emu68, hdfcheck, jobs, kickstart, machines, packages,
                     prepare, presets, rdb)
 from ..core.util import (GIB, MIB, Progress, describe_size, human_size,  # noqa: E402
@@ -116,9 +117,13 @@ NO_DRIVES = "No Amiga drive could be read from this image"
 class PartitionRow(Adw.ExpanderRow):
     """Editor for one Amiga partition inside the RDB."""
 
-    def __init__(self, spec: builder.AmigaPartitionSpec, on_remove, on_change):
+    def __init__(self, spec: builder.AmigaPartitionSpec, on_remove, on_change,
+                 machine=None):
         super().__init__()
         self._on_change = on_change
+        #  What the card is for decides which categories are worth copying, so
+        #  the row asks rather than being told once at construction.
+        self._machine = machine or (lambda: machines.MACHINES[0])
         #  Everything the editor does not show - where the contents come from,
         #  what to leave out, files to overlay - has to survive being edited.
         #  Rebuilding the spec from the widgets alone silently discarded it.
@@ -156,9 +161,15 @@ class PartitionRow(Adw.ExpanderRow):
         #  Which drive to take is a choice between the ones the image actually
         #  holds, named as Workbench names them - not a device name typed from
         #  memory and silently wrong.
-        self.exclude_row = Adw.EntryRow(
-            title="Leave out (comma separated, e.g. WHDLOAD/AGA)")
-        self.exclude_row.set_text(", ".join(spec.exclude or ()))
+        #  Categories found in whatever this partition is filled from, each
+        #  a switch.  Built when a folder is chosen, because until then there
+        #  is nothing to divide up.
+        self.exclude_group = Adw.ExpanderRow(
+            title="Leave out", subtitle="Choose a folder to see what it holds")
+        self._category_rows: dict[str, Adw.SwitchRow] = {}
+        #  Anything already excluded that the tree does not explain is kept
+        #  rather than quietly dropped.
+        self._extra_excludes: list[str] = list(spec.exclude or ())
         self.hdf_part_row = Adw.ComboRow(title="Which drive to import",
                                          model=combo([FIRST_DRIVE]))
         self._drive_keys: list[str] = [""]
@@ -169,9 +180,8 @@ class PartitionRow(Adw.ExpanderRow):
 
         for row in (self.name_row, self.volume_row, self.size_row, self.fs_row,
                     self.boot_row, self.priority_row, self.content_row,
-                    self.hdf_row, self.hdf_part_row, self.exclude_row):
+                    self.hdf_row, self.hdf_part_row, self.exclude_group):
             self.add_row(row)
-        self.exclude_row.connect("changed", lambda _r: self._refresh())
         for row in (self.name_row, self.volume_row, self.size_row):
             row.connect("changed", lambda _r: self._refresh())
         self.fs_row.connect("notify::selected", lambda *_a: self._refresh())
@@ -204,7 +214,55 @@ class PartitionRow(Adw.ExpanderRow):
 
     def _on_hdf_chosen(self) -> None:
         self._reload_drives(self._source.content_hdf_partition)
+        self.reload_categories()
         self._refresh()
+
+    def _excluded(self) -> list[str]:
+        """Category paths switched off, plus anything we could not explain."""
+        chosen = [path for path, row in self._category_rows.items()
+                  if row.get_active()]
+        return chosen + [p for p in self._extra_excludes
+                         if p not in self._category_rows]
+
+    def reload_categories(self) -> None:
+        """List what the chosen folder holds, defaulting to what runs here.
+
+        A category the machine cannot use starts switched off - the AGA games
+        on an A500 - but every one stays changeable, because "cannot run it"
+        is a sensible default and not a rule.
+        """
+        for row in self._category_rows.values():
+            self.exclude_group.remove(row)
+        self._category_rows.clear()
+
+        path = self.hdf_row.path
+        folder = bool(path) and Path(path).is_dir()
+        found = content.discover(path) if folder else []
+        if not folder:
+            self.exclude_group.set_subtitle("Choose a folder to see what it holds")
+        elif not found:
+            self.exclude_group.set_subtitle("Nothing in here is divided into "
+                                            "categories")
+        else:
+            machine = self._machine()
+            unsuitable = set(content.unsuitable(found, machine))
+            already = set(self._extra_excludes)
+            for category in found:
+                #  A choice already made wins over the default.
+                off = (category.path in already if already
+                       else category.path in unsuitable)
+                note = category.note or "No hardware requirement known"
+                row = Adw.SwitchRow(
+                    title=f"{category.label}  ({category.entries})",
+                    subtitle=note + ("" if category.suits(machine)
+                                     else f"  -  not for the {machine.label}"))
+                row.set_active(off)
+                row.connect("notify::active", lambda *_a: self._refresh())
+                self._category_rows[category.path] = row
+                self.exclude_group.add_row(row)
+            self.exclude_group.set_subtitle(
+                f"{len(found)} categories, {len(unsuitable)} of them not for "
+                f"this machine")
 
     def choose_drive(self, name: str) -> bool:
         """Select a drive by device name; False if the image has no such drive."""
@@ -309,8 +367,7 @@ class PartitionRow(Adw.ExpanderRow):
             content_folder=(chosen if chosen and is_folder
                             else "" if chosen
                             else self._source.content_folder),
-            exclude=[part.strip() for part
-                     in self.exclude_row.get_text().split(",") if part.strip()],
+            exclude=self._excluded(),
         )
 
 
@@ -719,6 +776,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_machine_hint.set_subtitle(
             f"{machine.board_label} - {machine.chipset.value} chipset "
             f"({machine.chipset.native_colours})")
+        #  Which content categories are worth copying follows the machine.
+        self._refresh_categories()
         #  Keep the Source page's board in step with the model.
         for index, variant in enumerate(emu68.VARIANTS):
             if variant.key == machine.board:
@@ -1452,7 +1511,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             index = len(self.partition_rows)
             spec = builder.AmigaPartitionSpec(f"DH{index}", None, "PFS3", index == 0,
                                               0 if index == 0 else -128)
-        row = PartitionRow(spec, self._remove_partition, self._update_summary)
+        row = PartitionRow(spec, self._remove_partition,
+                           self._update_summary, machine=self._machine)
         self.partition_rows.append(row)
         self.partition_group.add(row)
         self._update_summary()
@@ -1467,7 +1527,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         if spec is None:
             index = len(self.extra_rows) + 1
             spec = builder.AmigaPartitionSpec(f"DH{index}", None, "PFS3", False, -128)
-        row = PartitionRow(spec, self._remove_extra_partition, self._update_summary)
+        row = PartitionRow(spec, self._remove_extra_partition,
+                           self._update_summary, machine=self._machine)
         self.extra_rows.append(row)
         self.expand_group.add(row)
         row.set_visible(self.expand_row.get_active())
@@ -1503,6 +1564,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             if row.get_sensitive():
                 row.set_active(key in wanted)
         self._refresh_packages()
+
+    def _refresh_categories(self) -> None:
+        """Re-default every partition's categories for the machine now chosen."""
+        for row in list(self.partition_rows) + list(self.extra_rows):
+            row.reload_categories()
 
     def _refresh_packages(self) -> None:
         """Offer only the software that can actually be obtained and used."""
