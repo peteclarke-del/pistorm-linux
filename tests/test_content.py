@@ -413,11 +413,30 @@ class UpdatesForAnAcceleratedMachine(unittest.TestCase):
         self.assertIn("mmulib", keys)
         self.assertIn("setpatch", keys)
 
-    def test_whdload_cannot_be_installed_without_them(self):
+    def test_whdload_does_not_drag_in_what_stops_it_working(self):
+        """These were once required by WHDLoad.  It was exactly backwards.
+
+        Built one variable at a time against a card proven to run a game:
+        SetPatch 44.38 alone leaves WHDLoad hanging on a black screen, and
+        MMULib alone gives a yellow screen - a CPU exception with no OS left
+        to draw a Guru.  Either of them stops every game.
+        """
         order = packages.expand(["whdload"])
         for key in ("setpatch", "mmulib"):
-            self.assertIn(key, order)
-            self.assertLess(order.index(key), order.index("whdload"))
+            self.assertNotIn(key, order)
+
+    def test_the_cpu_patches_are_off_by_default(self):
+        for key in ("setpatch", "mmulib"):
+            package = packages.CATALOGUE_BY_KEY[key]
+            self.assertFalse(package.default, key)
+            self.assertIn("games", package.note.lower(),
+                          f"{key} must say what it costs")
+
+    def test_a_suggested_build_leaves_them_out(self):
+        from pistorm_imager.core.machines import Display      # noqa: PLC0415
+        chosen = packages.suggested(machines.MACHINES[0], Display.NATIVE)
+        for key in ("setpatch", "mmulib"):
+            self.assertNotIn(key, chosen)
 
     def test_the_cpu_libraries_come_from_aminet_not_a_donor(self):
         #  They are freely distributable, so a card built from floppies alone
@@ -433,15 +452,12 @@ class UpdatesForAnAcceleratedMachine(unittest.TestCase):
         self.assertIsNone(setpatch.download)
         self.assertEqual(dict(setpatch.items)["C/SetPatch"], "C")
 
-    def test_a_suggested_build_updates_the_cpu_support(self):
-        from pistorm_imager.core.machines import Chipset, Display  # noqa
-        donor = Path(tempfile.mkdtemp(prefix="pistorm-donor-"))
-        self.addCleanup(shutil.rmtree, donor, True)
-        (donor / "System" / "C").mkdir(parents=True)
-        (donor / "System" / "C" / "SetPatch").write_bytes(b"x")
-        machine = machines.MACHINES[0]
-        chosen = packages.suggested(machine, Display.NATIVE, donor=donor)
-        self.assertIn("setpatch", chosen)
+    def test_they_are_still_offered_for_a_machine_used_for_applications(self):
+        #  Off by default is not the same as gone: the newer CPU support is
+        #  a real improvement where WHDLoad is not the point.
+        keys = {p.key for p in
+                packages.in_category(packages.Category.UPDATES)}
+        self.assertEqual(keys, {"mmulib", "setpatch"})
 
 
 class NiceToHaves(unittest.TestCase):

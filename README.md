@@ -566,15 +566,26 @@ because this file system creates files and never overwrites them, so it is
 edited in flight on its way off the floppy image. Asked again after that change,
 the Amiga answers `icon.library 51.4`.
 
-### Updates and patches
+### Updates and patches, and why they are off
 
-Installing from the original floppies gives you exactly what shipped in 1994,
-and some of that is not fit for the machine it is going onto. A PiStorm is a
-**68040-class accelerator**, and Workbench 3.1's idea of a 68040 is
-`SetPatch 40.16` from February 1994 and `68040.library 37.30` — both older than
-the CPU they are meant to set up.
+Installing from the original floppies gives you exactly what shipped in 1994.
+A PiStorm is a **68040-class accelerator**, and Workbench 3.1's idea of a 68040
+is `SetPatch 40.16` from February 1994 and `68040.library 37.30` — both older
+than the CPU they are meant to set up. Replacing them looks like an obvious
+improvement.
 
-So a build from ADFs offers, and by default takes, two updates:
+**It stops every WHDLoad game from running.** Either one is enough on its own:
+`SetPatch 44.38` leaves a game hanging on a black screen, and MMULib's
+libraries give a yellow screen — a CPU exception, with no operating system left
+to draw a Guru. This was established by building the same card four times,
+changing one thing at a time, against a card proven to run the game.
+
+So they are offered and **not taken by default**, and neither is required by
+anything. They are worth having on a machine used for applications, where the
+newer CPU support is the point and no game is going to take the hardware over.
+On a card built around a WHDLoad collection, leave them alone.
+
+Two updates are offered:
 
 | | |
 | --- | --- |
