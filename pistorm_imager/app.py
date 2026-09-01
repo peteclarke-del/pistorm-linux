@@ -23,15 +23,38 @@ if "SNAP_INSTANCE_NAME" in os.environ or "/snap/" in os.environ.get("GTK_EXE_PRE
         else:
             os.environ.pop("LD_LIBRARY_PATH", None)
 
+from pathlib import Path  # noqa: E402
+
 import gi  # noqa: E402
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 
 from .ui.window import ImagerWindow  # noqa: E402
 
 APP_ID = "org.pistorm.Imager"
+ICON_NAME = "pistorm-imager"
+
+
+def _register_icon() -> None:
+    """Let GTK find the icon when it is not installed into a theme yet.
+
+    Running from a checkout - which is how ./run.sh works - the icon has not
+    been installed into ~/.local/share/icons, so the window would fall back to
+    a stock one.  The project keeps its icons in the theme layout GTK expects
+    (hicolor/scalable/apps), so the directory can simply be added to the
+    search path; that costs nothing once the icon *is* installed properly.
+    """
+    here = Path(__file__).resolve().parent.parent / "data" / "icons"
+    if not here.is_dir():
+        return
+    display = Gdk.Display.get_default()
+    if display is None:
+        return
+    theme = Gtk.IconTheme.get_for_display(display)
+    if str(here) not in theme.get_search_path():
+        theme.add_search_path(str(here))
 
 
 class ImagerApplication(Adw.Application):
@@ -47,7 +70,9 @@ class ImagerApplication(Adw.Application):
 
     def do_activate(self) -> None:  # noqa: D102 - GObject vfunc naming
         if self.window is None:
+            _register_icon()
             self.window = ImagerWindow(self)
+            self.window.set_icon_name(ICON_NAME)
         self.window.present()
 
     def do_command_line(self, command_line) -> int:  # noqa: D102

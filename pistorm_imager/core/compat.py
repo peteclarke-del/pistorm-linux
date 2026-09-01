@@ -50,6 +50,10 @@ STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
 WHDLOAD_PREFS = ["whdload.prefs"]
 #  iGame keeps an absolute path to every slave it knows about.
 GAMES_LIST = "gameslist.csv"
+#  iGame's list of drawers to scan, one AMIGA:path per line.  It is written
+#  from what the donor system had, so it names collections that this card was
+#  told to leave out.
+GAMES_REPOS = "repos.prefs"
 WHDLOAD_HOOKS = ("executestartup", "executecleanup")
 
 #  A saved screen mode points at a specific display board.  Carried over to a
@@ -281,6 +285,8 @@ class Compatibility:
             return self._clean_whdload_prefs(posix, data)
         if name == GAMES_LIST:
             return self._filter_games_list(posix, data)
+        if name == GAMES_REPOS:
+            return self._filter_repositories(posix, data)
         return data
 
     # -------------------------------------------------- iGame's games list
@@ -354,6 +360,35 @@ class Compatibility:
                       f"{relative}: dropped {dropped} game"
                       f"{'s' if dropped != 1 else ''} that will not be on the "
                       f"card, so iGame does not offer what it cannot launch")
+        return "".join(out).encode("latin-1")
+
+    def _filter_repositories(self, relative: str, data: bytes) -> bytes:
+        """Drop the drawers iGame is told to scan that will not be there.
+
+        Filtering the games list was only half of it.  iGame also keeps the
+        list of drawers it scans, and that still named every collection the
+        donor had - including the ones this card was told to leave out.  So a
+        card with the AGA games excluded still sent iGame looking through
+        Games:WHDLOAD/AGA/, which does not exist on it.
+        """
+        if not self.content:
+            return data
+        out: list[str] = []
+        dropped: list[str] = []
+        for line in data.decode("latin-1").splitlines(keepends=True):
+            path = line.strip()
+            if not path or path.startswith(";"):
+                out.append(line)
+                continue
+            if self._on_the_card(path) is False:
+                dropped.append(path)
+                continue
+            out.append(line)
+        if dropped:
+            self.note("edited",
+                      f"{relative}: dropped {len(dropped)} repository that "
+                      f"will not be on the card ("
+                      + ", ".join(sorted(dropped)) + ")")
         return "".join(out).encode("latin-1")
 
     def _clean_whdload_prefs(self, relative: str, data: bytes) -> bytes:
