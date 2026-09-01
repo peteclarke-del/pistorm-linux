@@ -1138,12 +1138,23 @@ class StartupSequenceEditor:
     #  run IPrefs at all.
     ANCHORS = ("c:iprefs", "iprefs", "c:conclip")
 
-    def __init__(self, lines: Iterable[str], progress: Progress):
+    def __init__(self, lines: Iterable[str], progress: Progress,
+                 replace: Iterable[str] = ()):
         self.lines = [line for line in lines if line.strip()]
         self.progress = progress
         self.inserted = False
+        #  Files the floppies would install that something better is going to
+        #  supply afterwards.  They have to be refused here rather than
+        #  overwritten later, because this file system creates files and never
+        #  replaces them.
+        self.replace = {name.replace("\\", "/").lower() for name in replace}
+        self.replaced: list[str] = []
 
-    def skip(self, relative: str) -> bool:  # noqa: D102 - matches compat
+    def skip(self, relative: str) -> bool:
+        posix = relative.replace("\\", "/").lower()
+        if posix in self.replace:
+            self.replaced.append(relative)
+            return True
         return False
 
     def finish(self, target, progress) -> None:
