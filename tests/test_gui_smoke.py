@@ -454,6 +454,26 @@ def on_activate(app: ImagerApplication) -> None:
             found = holder is window.stack.get_child_by_name(page_name)
             check(found, f"a group lives on the {page_name} page")
 
+        #  Nothing is written until the setup has been accepted, and any
+        #  change to it puts that back.
+        window._set_customising(True)
+        window.file_row.set_path(str(SCRATCH / "gate.img"))
+        window._update_summary()
+        check(not window.write_button.get_sensitive(),
+              "Write is off until the setup is applied")
+        check(window.apply_button.get_sensitive(),
+              "and Apply is offered once the setup is valid")
+        window._on_apply_quick(None)
+        check(window.write_button.get_sensitive(),
+              "applying enables Write")
+        window.partition_rows[0].volume_row.set_text("ChangedAfterApply")
+        window._update_summary()
+        check(not window.write_button.get_sensitive(),
+              "changing anything afterwards disables Write again")
+        window._on_apply_quick(None)
+        check(window.write_button.get_sensitive(),
+              "and applying again re-enables it")
+
         #  Editing storage has to show up in the plan the user reads before
         #  pressing Write; it used to describe the quick settings alone.
         window.file_row.set_path(str(SCRATCH / "plan.img"))

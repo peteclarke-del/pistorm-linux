@@ -488,6 +488,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.summary = Gtk.Label(xalign=0.0, wrap=True, hexpand=True)
         self.summary.add_css_class("dim-label")
         bottom.append(self.summary)
+        #  Nothing is written until the setup has been looked at and
+        #  accepted, whichever way it was arrived at.
+        self.apply_button = Gtk.Button(label="Apply this setup")
+        self.apply_button.add_css_class("pill")
+        self.apply_button.connect("clicked", self._on_apply_quick)
+        bottom.append(self.apply_button)
         self.write_button = Gtk.Button(label="Write card")
         self.write_button.add_css_class("suggested-action")
         self.write_button.add_css_class("pill")
@@ -832,12 +838,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         box.append(self.quick_plan)
         box.add_css_class("card")
         group.add(box)
-        apply_button = Gtk.Button(label="Apply this setup", halign=Gtk.Align.CENTER,
-                                  margin_top=12)
-        apply_button.add_css_class("suggested-action")
-        apply_button.add_css_class("pill")
-        apply_button.connect("clicked", self._on_apply_quick)
-        group.add(apply_button)
         self.group_plan = group
         page.add(group)
         return page
@@ -1169,6 +1169,19 @@ class ImagerWindow(Adw.ApplicationWindow):
             config, self._machine(), self._display(), detected))
 
     def _on_apply_quick(self, _button) -> None:
+        #  In the full workflow the pages *are* the configuration, so applying
+        #  accepts what is there.  Regenerating it from the quick settings
+        #  would undo the very customising that was asked for.
+        if getattr(self, "_customising", False):
+            try:
+                self._applied_config = repr(self.gather())
+            except Exception as error:           # noqa: BLE001
+                self._toast(str(error))
+                return
+            self._update_summary()
+            self._remember_session()
+            self._toast("Setup accepted - Write is ready")
+            return
         try:
             config = self._quick_config()
         except Exception as error:  # noqa: BLE001
@@ -1183,6 +1196,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         if kept is not None:
             config = dataclasses.replace(config, amiga_partitions=kept)
         self.apply(config)
+        try:
+            self._applied_config = repr(self.gather())
+        except Exception:                        # noqa: BLE001
+            self._applied_config = None
+        self._update_summary()
         if kept is not None:
             self._toast("Quick setup applied; your own partitions were kept")
         else:
@@ -1190,7 +1208,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  Remember it now, not only on a clean exit: this is the point at
         #  which the setup is worth keeping.
         self._remember_session()
-        self.stack.set_visible_child_name("target")
 
     def _hand_edited_partitions(self):
         """The partitions if they have been edited, else None.
@@ -2001,12 +2018,19 @@ class ImagerWindow(Adw.ApplicationWindow):
         except Exception as error:  # noqa: BLE001 - partial input while typing
             self.summary.set_text(str(error))
             self.write_button.set_sensitive(False)
+            self.apply_button.set_sensitive(False)
             return
         problems = config.validate()
         if problems:
             self.summary.set_text(problems[0])
             self.write_button.set_sensitive(False)
+            self.apply_button.set_sensitive(False)
             return
+        #  Comparing the configuration itself, rather than trying to notice
+        #  every widget that could change it: anything that alters what would
+        #  be written puts the setup back to needing another look.
+        self.apply_button.set_sensitive(True)
+        applied = repr(config) == getattr(self, "_applied_config", None)
         target = config.target
         if config.mode is builder.BuildMode.IMAGE:
             what = f"Write {Path(config.source_image).name}"
@@ -2018,8 +2042,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             what = "Partition and build"
         else:
             what = "Update the boot partition of"
-        self.summary.set_text(f"{what} → {target}")
-        self.write_button.set_sensitive(True)
+        if applied:
+            self.summary.set_text(f"{what} → {target}")
+        else:
+            self.summary.set_text(f"{what} → {target}"
+                                  "   -   Apply this setup to enable Write")
+        self.write_button.set_sensitive(applied)
         self._quick_preview()
 
     # ------------------------------------------------------- config gather
