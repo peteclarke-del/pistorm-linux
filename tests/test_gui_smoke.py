@@ -65,6 +65,13 @@ _make_test_hdf()
 failures: list[str] = []
 
 
+def pump() -> None:
+    """Let GTK settle, so a check sees the state a person would."""
+    context = GLib.MainContext.default()
+    while context.pending():
+        context.iteration(False)
+
+
 def check(condition: bool, message: str) -> None:
     print(("  ok   " if condition else "  FAIL ") + message)
     if not condition:
@@ -708,6 +715,48 @@ def on_activate(app: ImagerApplication) -> None:
               "HDF mode hides the partition editor (the RDB comes from the image)")
         problems = window.gather().validate()
         check(problems == [], f"HDF mode config is valid ({problems})")
+
+        #  A card built from floppies has to be able to be pointed at the
+        #  floppies.  The quick start reported what it had found and offered
+        #  no way to correct it, because the choosers live on pages it does
+        #  not show - so "build a new card, install from my floppy images"
+        #  led to a screen with nowhere to select them.
+        from gi.repository import Adw as _Adw
+        from pistorm_imager.ui.window import FRESH_SOURCES as _SOURCES
+
+        def group_of(row):
+            g = row.get_ancestor(_Adw.PreferencesGroup)
+            return g.get_title() if g is not None else "nowhere"
+
+        window._choose_basic()
+        pump()
+        on_quick = group_of(window.adf_row)
+        check(on_quick == group_of(window.quick_found_adf),
+              f"the basic screen offers the ADF chooser (it is on {on_quick!r})")
+        check(group_of(window.rom_row) == on_quick,
+              "the basic screen offers the Kickstart chooser")
+        check(group_of(window.quick_system_source) == on_quick,
+              "the basic screen offers the install-from-floppies choice")
+        #  An earlier check left an .hdf selected, and an .hdf source
+        #  correctly rules a floppy install out - so start from a clean one.
+        window.quick_hdf.set_path("")
+        window.quick_system_source.set_selected(_SOURCES.index("adf"))
+        pump()
+        check(window.adf_row.get_visible(),
+              "choosing a floppy install shows the folder chooser")
+
+        #  And the workflow must get them back, or its own pages come up
+        #  with nothing to choose a Kickstart or the disks with.
+        window._set_customising(True)
+        pump()
+        check(group_of(window.rom_row) == "Kickstart ROM",
+              f"the Kickstart chooser returns to its page "
+              f"(it is on {group_of(window.rom_row)!r})")
+        check(group_of(window.adf_row) == "Workbench floppy images",
+              f"the ADF chooser returns to its page "
+              f"(it is on {group_of(window.adf_row)!r})")
+        window._set_customising(False)
+        pump()
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()
