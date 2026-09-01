@@ -548,6 +548,22 @@ class ImagerWindow(Adw.ApplicationWindow):
             current.remove(group)
         page.add(group)
 
+    @staticmethod
+    def _move_row(row, group) -> None:
+        """Put one row in ``group``, taking it off wherever it was.
+
+        The same idea as _move_group, for the choosers the quick start needs
+        to borrow: the Kickstart and the Workbench disks are chosen on the
+        Amiga and Source pages, and a quick screen that shows neither still
+        has to let someone say where they are.
+        """
+        current = row.get_ancestor(Adw.PreferencesGroup)
+        if current is group:
+            return
+        if current is not None:
+            current.remove(row)
+        group.add(row)
+
     def _set_quick_screen(self, name: str) -> None:
         """Which of the quick start's three screens is showing.
 
@@ -573,6 +589,19 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._move_group(group, self.page_quick)
             group.set_visible(True)
 
+        #  The quick start told people what it had found to install from and
+        #  gave them no way to correct it - the choosers live on the Amiga and
+        #  Source pages, which a quick screen does not show.  So a card built
+        #  from floppies could not be pointed at the floppies.
+        if name == "basic":
+            self._move_row(self.rom_row, self.group_detected)
+            self._move_row(self.quick_system_source, self.group_detected)
+            self._move_row(self.adf_row, self.group_detected)
+        else:
+            self._move_row(self.rom_row, self.group_kickstart)
+            self._move_row(self.quick_system_source, self.group_primary)
+            self._move_row(self.adf_row, self.os_group)
+
         #  What this screen does not want goes home, so the workflow finds it
         #  where it belongs rather than missing.
         if "group_hardware" not in wanted:
@@ -592,8 +621,12 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _choose_basic(self) -> None:
         """Emu68 and an empty Amiga drive, ready for a floppy install."""
         self.quick_primary.set_selected(PRIMARY_SOURCES.index("default"))
-        if "none" in FRESH_SOURCES:
-            self.quick_system_source.set_selected(FRESH_SOURCES.index("none"))
+        #  If Workbench disks have been found, install them: a card with an
+        #  empty drive is not what most people mean by a basic PiStorm card,
+        #  and the choice can still be changed on the screen itself.
+        detected = getattr(self, "detected", None)
+        wants = "adf" if (detected and detected.adf_folder) else "none"
+        self.quick_system_source.set_selected(FRESH_SOURCES.index(wants))
         self.image_row.set_path("")
         self.quick_hdf.set_path("")
         self.quick_pimiga.set_path("")
@@ -635,6 +668,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._move_group(self.group_hardware, self.page_amiga)
             self._move_group(self.image_group, self.page_source)
             self.group_hardware.set_visible(True)
+            #  And the choosers the quick start borrowed, or the Amiga and
+            #  Source pages come up without a way to pick a Kickstart or the
+            #  Workbench disks at all.
+            self._move_row(self.rom_row, self.group_kickstart)
+            self._move_row(self.quick_system_source, self.group_primary)
+            self._move_row(self.adf_row, self.os_group)
             #  Finishing happens on Target, so that is where the summary and
             #  the button that accepts it belong.
             self._move_group(self.group_plan, self.page_target)
@@ -1119,8 +1158,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._relayout_partitions()
         self._quick_preview()
 
-    #  Kept for the source rows, which also refresh their own descriptions.
-    _on_source_changed = _on_layout_changed
+    def _on_source_changed(self) -> None:
+        """A source changed, so the layout follows - and so does what is shown.
+
+        Choosing "install Workbench from my floppy images" has to reveal the
+        folder chooser, and only _sync_visibility ever sets that.  Sharing
+        _on_layout_changed meant the choice was recorded, the partitions were
+        redrawn, and the row that says where the disks are stayed hidden: the
+        card could be told to install from floppies with no way to point at
+        any.
+        """
+        self._on_layout_changed()
+        self._sync_visibility()
 
     def _relayout_partitions(self) -> None:
         """Replace the partition rows with the layout the choices imply.
@@ -1436,6 +1485,9 @@ class ImagerWindow(Adw.ApplicationWindow):
             description="Emu68 maps a Kickstart from the boot partition. An A1200 "
                         "(AGA) ROM is expected. Cloanto-encrypted ROMs are decrypted "
                         "automatically when rom.key sits beside them.")
+        #  Kept, because the quick start borrows rom_row and has to be able
+        #  to give it back.
+        self.group_kickstart = group
         self.rom_row = FileRow("Kickstart ROM file", filters=ROM_FILTERS,
                                on_change=lambda _p: self._on_rom_chosen())
         group.add(self.rom_row)
