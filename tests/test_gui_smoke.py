@@ -464,9 +464,9 @@ def on_activate(app: ImagerApplication) -> None:
         window.file_row.set_path(str(SCRATCH / "gate.img"))
         window.rom_row.set_path("")
         window._update_summary()
-        check(not window.workflow_apply_button.get_sensitive()
-              and "Kickstart" in window.workflow_apply_row.get_subtitle(),
-              f"Apply waits for a Kickstart ({window.workflow_apply_row.get_subtitle()})")
+        check(not window.apply_button.get_sensitive()
+              and "Kickstart" in window.apply_row.get_subtitle(),
+              f"Apply waits for a Kickstart ({window.apply_row.get_subtitle()})")
 
         rom = Path(__file__).resolve().parent.parent / "samples" / "kickstart"
         roms = sorted(rom.glob("*.rom"))
@@ -476,9 +476,9 @@ def on_activate(app: ImagerApplication) -> None:
         window._update_summary()
         check(not window.write_button.get_sensitive(),
               "Write is off until the setup is applied")
-        check(window.workflow_apply_button.get_sensitive(),
+        check(window.apply_button.get_sensitive(),
               f"Apply is offered once the choices are made "
-              f"({window.workflow_apply_row.get_subtitle()})")
+              f"({window.apply_row.get_subtitle()})")
         window._on_apply_quick(None)
         check(window.write_button.get_sensitive(),
               "applying enables Write")
@@ -489,6 +489,20 @@ def on_activate(app: ImagerApplication) -> None:
         window._on_apply_quick(None)
         check(window.write_button.get_sensitive(),
               "and applying again re-enables it")
+
+        #  The same block finishes every route: what it will build, with the
+        #  button that accepts it underneath.
+        check(window.group_plan.get_ancestor(Adw.PreferencesPage)
+              is window.page_target,
+              "customising finishes on the Target page")
+        window._set_customising(False)
+        window._choose_basic()
+        check(window.group_plan.get_ancestor(Adw.PreferencesPage)
+              is window.page_quick,
+              "and a quick option finishes on its own screen")
+        check(window.apply_row.get_ancestor(Adw.PreferencesGroup)
+              is window.group_plan,
+              "with Apply inside the summary group, under what it describes")
         #  Reconsidering the choice withdraws the setup with it.
         window._go_back()
         window._update_summary()
