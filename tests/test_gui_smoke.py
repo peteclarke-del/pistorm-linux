@@ -435,15 +435,19 @@ def on_activate(app: ImagerApplication) -> None:
               and not window.back_button.get_visible(),
               "Back returns to the three choices")
 
-        #  One Back, doing whatever going back means where you are.
+        #  One Back, doing whatever going back means where you are - and
+        #  always to the choice itself, never to the screen last open.
         window._choose_basic()
         window._go_back()
-        check(window.group_choices.get_visible(),
+        check(window.group_choices.get_visible()
+              and not window.back_button.get_visible(),
               "Back from a quick screen returns to the choices")
+        window._choose_basic()
         window._set_customising(True)
         window._go_back()
-        check(not window._customising and window.group_choices.get_visible(),
-              "Back from the workflow returns to the choices too")
+        check(not window._customising and window.group_choices.get_visible()
+              and not window.back_button.get_visible(),
+              "Back from the workflow returns to the choices, not the last screen")
 
         #  Settings belong on the page they are about.
         window._set_customising(True)
@@ -485,6 +489,11 @@ def on_activate(app: ImagerApplication) -> None:
         window._on_apply_quick(None)
         check(window.write_button.get_sensitive(),
               "and applying again re-enables it")
+        #  Reconsidering the choice withdraws the setup with it.
+        window._go_back()
+        window._update_summary()
+        check(not window.write_button.get_sensitive(),
+              "going back withdraws the accepted setup")
 
         #  Editing storage has to show up in the plan the user reads before
         #  pressing Write; it used to describe the quick settings alone.
