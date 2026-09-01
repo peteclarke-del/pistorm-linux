@@ -847,19 +847,35 @@ class ImagerWindow(Adw.ApplicationWindow):
                                     margin_top=6, margin_bottom=6,
                                     margin_start=12, margin_end=12)
         self.quick_plan.add_css_class("dim-label")
+
+        #  All one box.  A preferences group keeps plain widgets and rows in
+        #  separate places, so adding the summary and then an ActionRow does
+        #  not put the row after the summary - it puts it wherever the group
+        #  keeps rows, which was above it.
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(self.quick_plan)
         box.add_css_class("card")
-        group.add(box)
-        self.apply_row = Adw.ActionRow(
-            title="Apply this setup",
-            subtitle="Accepts the setup above and enables Write")
+        box.append(self.quick_plan)
+
+        strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
+                        margin_top=6, margin_bottom=12,
+                        margin_start=12, margin_end=12)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        heading = Gtk.Label(xalign=0.0, label="Apply this setup")
+        self.apply_note = Gtk.Label(xalign=0.0, wrap=True)
+        self.apply_note.add_css_class("dim-label")
+        self.apply_note.add_css_class("caption")
+        titles.append(heading)
+        titles.append(self.apply_note)
+        strip.append(titles)
         self.apply_button = Gtk.Button(label="Apply", valign=Gtk.Align.CENTER)
         self.apply_button.add_css_class("suggested-action")
         self.apply_button.connect("clicked", self._on_apply_quick)
-        self.apply_row.add_suffix(self.apply_button)
-        self.apply_row.set_activatable_widget(self.apply_button)
-        group.add(self.apply_row)
+        strip.append(self.apply_button)
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        box.append(strip)
+        group.add(box)
+        #  Kept under the old name so callers still have something to ask.
+        self.apply_row = strip
         self.group_plan = group
         page.add(group)
         return page
@@ -1203,8 +1219,8 @@ class ImagerWindow(Adw.ApplicationWindow):
                     else f"Still needed: {first}, and {len(missing) - 1} more")
         else:
             note = "Accepts the setup above and enables Write"
-        if getattr(self, "apply_row", None) is not None:
-            self.apply_row.set_subtitle(note)
+        if getattr(self, "apply_note", None) is not None:
+            self.apply_note.set_text(note)
             self.apply_button.set_sensitive(not missing)
 
     def _missing_choices(self) -> list[str]:
