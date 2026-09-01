@@ -49,6 +49,11 @@ STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
 #  insisted on one of those spellings silently did nothing for the others.
 WHDLOAD_PREFS = ["whdload.prefs"]
 #  iGame keeps an absolute path to every slave it knows about.
+#  A forced display mode in WHDLoad's preferences.  Harmless under the
+#  emulator a donor came from; fatal on a PiStorm, where forcing the mode
+#  takes the machine down before the game is reached.
+FORCED_MODES = {"pal", "ntsc"}
+
 GAMES_LIST = "gameslist.csv"
 #  iGame's list of drawers to scan, one AMIGA:path per line.  It is written
 #  from what the donor system had, so it names collections that this card was
@@ -392,28 +397,54 @@ class Compatibility:
         return "".join(out).encode("latin-1")
 
     def _clean_whdload_prefs(self, relative: str, data: bytes) -> bytes:
-        """Disarm WHDLoad hooks that call an emulator's own control program.
+        """Take out what an emulator put in this file and a PiStorm cannot use.
 
-        The rest of the file is worth keeping - the quit key, the splash
-        delay, whether it forces PAL - so only the two hooks that shell out
-        are commented, and only when what they run is an emulator command.
+        Two things.  The hooks that shell out to the emulator's own control
+        program, which a PiStorm has not got - and the forced display mode.
+
+        The second was found the hard way.  A donor's preferences carry
+        "PAL", which asks WHDLoad to force that mode before handing over, and
+        on a PiStorm every single game died on the spot: a yellow screen -
+        a CPU exception with no operating system left to draw a Guru - then
+        black, then nothing.  Not one game ran, on any card this tool has
+        ever built.
+
+        It took bisecting a card down to Workbench and WHDLoad alone to find
+        it, because everything else pointed elsewhere: the same game runs off
+        Commodore's own floppy, the files on the card are byte-identical to
+        the source, and it fails the same way on FFS and PFS3, on a 68020 and
+        a 68040.  The one difference that survived every elimination was this
+        file, and within it this line.
+
+        Left out, WHDLoad uses the mode the machine is already in, which is
+        what it does on a bare install and is right on hardware whose display
+        the user has already chosen.
         """
         out: list[str] = []
-        changed = 0
+        hooks = modes = 0
         for line in data.decode("latin-1").splitlines(keepends=True):
             stripped = line.strip().lower()
             key, _, value = stripped.partition("=")
-            if (not stripped.startswith(";") and key.strip() in WHDLOAD_HOOKS
+            if stripped.startswith(";"):
+                out.append(line)
+            elif (key.strip() in WHDLOAD_HOOKS
                     and any(name in value for name in EMULATOR_COMMANDS)):
                 out.append(";" + line)
-                changed += 1
+                hooks += 1
+            elif stripped.split(";")[0].strip() in FORCED_MODES:
+                out.append(";" + line)
+                modes += 1
             else:
                 out.append(line)
-        if changed:
+        if hooks:
             self.note("edited",
-                      f"{relative}: commented out {changed} WHDLoad hook"
-                      f"{'s' if changed != 1 else ''} that call an emulator's "
+                      f"{relative}: commented out {hooks} WHDLoad hook"
+                      f"{'s' if hooks != 1 else ''} that call an emulator's "
                       f"control program, which a PiStorm has not got")
+        if modes:
+            self.note("edited",
+                      f"{relative}: stopped WHDLoad forcing a display mode, "
+                      f"which kills every game on a PiStorm before it starts")
         return "".join(out).encode("latin-1")
 
     def _clean_startup(self, relative: str, data: bytes) -> bytes:

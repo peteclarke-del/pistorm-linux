@@ -172,6 +172,40 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
         entry = volume.find(path)
         return volume.read_file(entry).decode("latin-1") if entry else ""
 
+    UAE_PREFS_PAL = (b";WHDLoad preferences\n"
+                     b"PAL           ;force PAL video mode\n"
+                     b"QuitKey=$59   ;rawkey code to quit\n"
+                     b"ExecuteStartup=uae-configuration cachesize 0\n"
+                     b";NTSC         ;already commented, leave alone\n")
+
+    def test_a_forced_display_mode_is_taken_out(self):
+        """This killed every game on every card the tool has ever built.
+
+        A donor's WHDLoad preferences carry "PAL", asking WHDLoad to force
+        that mode before handing over.  On a PiStorm the machine dies on the
+        spot - a yellow screen, which is a CPU exception with no OS left to
+        draw a Guru, then black.  Not one game ran.  The same game runs from
+        Commodore's own floppy, and runs off this card the moment the line
+        is gone.
+        """
+        source = self.scratch() / "tree"
+        (source / "S").mkdir(parents=True)
+        (source / "S" / "WHDLoad.prefs").write_bytes(self.UAE_PREFS_PAL)
+        body = self.read(self.build(source), "S/WHDLoad.prefs")
+        live = [l.strip() for l in body.splitlines()
+                if l.strip() and not l.strip().startswith(";")]
+        self.assertFalse([l for l in live if l.lower().startswith("pal")],
+                         f"PAL is still in force: {live}")
+        self.assertTrue([l for l in live if l.startswith("QuitKey")],
+                        "the rest of the file should be left alone")
+
+    def test_an_already_commented_mode_is_not_commented_twice(self):
+        source = self.scratch() / "tree2"
+        (source / "S").mkdir(parents=True)
+        (source / "S" / "WHDLoad.prefs").write_bytes(self.UAE_PREFS_PAL)
+        body = self.read(self.build(source), "S/WHDLoad.prefs")
+        self.assertNotIn(";;NTSC", body)
+
     def test_whdload_prefs_are_cleaned_when_copied_as_a_tree(self):
         source = self.scratch() / "tree"
         (source / "S").mkdir(parents=True)
