@@ -90,7 +90,17 @@ MACHINES: list[Machine] = [
     Machine("a500", "Amiga 500", Chipset.OCS, "pistorm", "PiStorm (classic)",
             ((40, 68), (40, 63), (37, 175)), trapdoor_ram=True,
             notes="The classic PiStorm replaces the 68000. The chipset is "
-                  "untouched, so the Amiga's own video output stays OCS."),
+                  "untouched, so the Amiga's own video output stays OCS. If "
+                  "a Super Denise has been fitted, choose \"Amiga 500 with "
+                  "ECS\" instead."),
+    Machine("a500ecs", "Amiga 500 with ECS", Chipset.ECS, "pistorm",
+            "PiStorm (classic)", ((40, 68), (40, 63), (37, 175)),
+            trapdoor_ram=True,
+            notes="A rev 6A board with a Super Denise fitted is a full ECS "
+                  "machine, not an OCS one - a common enough upgrade that "
+                  "picking the plain A500 would quietly get the chipset "
+                  "wrong, and with it which game collections are worth "
+                  "copying and which screen modes exist."),
     Machine("a500plus", "Amiga 500+", Chipset.ECS, "pistorm", "PiStorm (classic)",
             ((40, 68), (40, 63), (37, 175)), trapdoor_ram=True,
             notes="ECS chipset; otherwise identical to an A500 for our purposes."),
