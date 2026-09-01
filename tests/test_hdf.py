@@ -509,3 +509,156 @@ class TestCardImageAsSource(_Scratch):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class DrawerIcons(_Scratch):
+    """A drawer with no icon does not exist as far as Workbench is concerned."""
+
+    def _volume(self, handle):
+        from pistorm_imager.core import amigaos, amigafs      # noqa: PLC0415
+        handle.truncate(8 * MIB)
+        return amigaos.make_volume(handle, 0, (8 * MIB) // amigafs.BLOCK,
+                                   "Workbench", amigafs.DOSTYPE_FFS_INTL)
+
+    def read(self, image, path):
+        """The file's bytes, so an icon can be compared exactly."""
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        volume, _label = amigaos.open_amiga_volume(image)
+        entry = volume.find(path)
+        return volume.read_file(entry) if entry else b""
+
+    @staticmethod
+    def drawer_icon(marker: int) -> bytes:
+        """A real drawer icon, tagged so the copy can be identified.
+
+        Fake bytes will not do: only genuine drawer icons are accepted now,
+        because handing a drawer a project icon is what produced "unable to
+        open script" on a double click.
+        """
+        import struct                                        # noqa: PLC0415
+        from pistorm_imager.core import amigainfo            # noqa: PLC0415
+        raw = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">H", raw, 0, amigainfo.MAGIC)
+        raw[amigainfo.TYPE_OFFSET] = amigainfo.WBDRAWER
+        struct.pack_into(">I", raw, amigainfo.DRAWER_DATA, 0x1234)
+        struct.pack_into(">I", raw, 74, marker)              # do_StackSize
+        return bytes(raw)
+
+    @staticmethod
+    def marker_of(data: bytes) -> int:
+        import struct                                        # noqa: PLC0415
+        return struct.unpack_from(">I", data, 74)[0] if data else 0
+
+    STORAGE, GENERIC = 0xA1, 0xB2
+
+    def _icons(self):
+        """A folder of drawer icons, as an icon set or a donor provides."""
+        folder = self.scratch() / "icons"
+        folder.mkdir()
+        (folder / "Storage.info").write_bytes(self.drawer_icon(self.STORAGE))
+        (folder / "Utilities.info").write_bytes(self.drawer_icon(self.GENERIC))
+        #  A project icon under a name a drawer might have: it must never be
+        #  chosen, however well the name matches.
+        import struct                                        # noqa: PLC0415
+        from pistorm_imager.core import amigainfo            # noqa: PLC0415
+        bad = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">H", bad, 0, amigainfo.MAGIC)
+        bad[amigainfo.TYPE_OFFSET] = 4                       # WBPROJECT
+        (folder / "Install.info").write_bytes(bytes(bad))
+        return folder
+
+    def test_a_drawer_this_tool_made_is_given_an_icon(self):
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "icons.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            for drawer in ("Programs", "Internet", "Storage"):
+                volume.makedirs(drawer)
+            written = amigaos.ensure_drawer_icons(
+                volume, ["Programs", "Internet", "Storage"],
+                [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 3)
+        #  Storage gets its own; the other two fall back to a real drawer icon
+        #  rather than being left invisible.
+        self.assertEqual(self.marker_of(self.read(path, "Storage.info")),
+                         self.STORAGE)
+        self.assertEqual(self.marker_of(self.read(path, "Programs.info")),
+                         self.GENERIC)
+        self.assertEqual(self.marker_of(self.read(path, "Internet.info")),
+                         self.GENERIC)
+
+    def test_an_icon_that_is_already_there_is_left_alone(self):
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "keep.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            volume.makedirs("Programs")
+            volume.write_file(volume.root, "Programs.info",
+                              self.drawer_icon(0xDEAD))
+            written = amigaos.ensure_drawer_icons(volume, ["Programs"],
+                                                  [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 0)
+        self.assertEqual(self.marker_of(self.read(path, "Programs.info")),
+                         0xDEAD)
+
+    def test_the_drawers_workbench_hides_stay_hidden(self):
+        """C: and LIBS: have no icons because Commodore chose that."""
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "hidden.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            for drawer in ("C", "Libs", "Devs", "S"):
+                volume.makedirs(drawer)
+            written = amigaos.ensure_drawer_icons(
+                volume, ["C", "Libs", "Devs", "S"], [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 0)
+
+    def test_a_drawer_that_is_not_there_gets_nothing(self):
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "absent.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            written = amigaos.ensure_drawer_icons(volume, ["Programs"],
+                                                  [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 0)
+
+    def test_a_drawer_inside_a_hidden_one_is_left_alone(self):
+        """An icon in CLASSES: is only seen by someone showing all files."""
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "nested.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            volume.makedirs("Classes/Gadgets")
+            volume.makedirs("Programs/iGame")
+            written = amigaos.ensure_drawer_icons(
+                volume, ["Classes/Gadgets", "Programs", "Programs/iGame"],
+                [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 2)
+        self.assertEqual(self.read(path, "Classes/Gadgets.info"), b"")
+
+    def test_a_drawer_never_wears_a_project_icon(self):
+        """MagicWB's Install.info is its installer script's icon.
+
+        Matching on the name alone gave it to the Storage/Install drawer, and
+        double-clicking that answered "unable to open script" instead of
+        opening a window.
+        """
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "project.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            volume.makedirs("Storage/Install")
+            written = amigaos.ensure_drawer_icons(
+                volume, ["Storage/Install"], [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 1)
+        #  It fell back to a real drawer icon rather than the project icon
+        #  that happened to share the name.
+        self.assertEqual(self.marker_of(self.read(path,
+                                                  "Storage/Install.info")),
+                         self.GENERIC)

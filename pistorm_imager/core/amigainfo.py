@@ -120,3 +120,54 @@ def set_tooltype(data: bytes, key: str, value: str) -> bytes:
     if not replaced:
         updated.insert(0, f"{key}={value}")
     return write_tooltypes(data, updated)
+
+
+#  Offsets into DiskObject.  do_CurrentX and do_CurrentY are where Workbench
+#  remembers a snapshotted icon's place; 0x80000000 is NO_ICON_POSITION, which
+#  tells it to find a free spot instead.
+CURRENT_X = 58
+CURRENT_Y = 62
+NO_ICON_POSITION = 0x80000000
+
+
+def clear_position(data: bytes) -> bytes:
+    """Forget where this icon was snapshotted, so Workbench places it.
+
+    An icon copied from somewhere else brings that drawer's saved coordinates
+    with it.  Give several drawers icons taken from the same source and every
+    one of them claims the same square of the window, so they land on top of
+    one another and read as a single unreadable smear of overlapping labels.
+    """
+    if len(data) < DISKOBJECT_SIZE:
+        return data
+    out = bytearray(data)
+    struct.pack_into(">II", out, CURRENT_X, NO_ICON_POSITION, NO_ICON_POSITION)
+    return bytes(out)
+
+
+TYPE_OFFSET = 48
+DRAWER_DATA = 66
+WBDRAWER = 2
+
+
+def is_drawer_icon(data: bytes) -> bool:
+    """Whether this icon is one a *drawer* can wear.
+
+    Icons are typed, and only a drawer icon opens a drawer.  A project icon
+    tells Workbench to run its default tool on the file beside it, so giving
+    one to a drawer produces "unable to open script" on a double click rather
+    than a window - which is what happened when a drawer called ``Install``
+    was matched by name against MagicWB's ``Install.info``, the project icon
+    for MagicWB's own installer script.
+
+    A drawer icon also carries DrawerData, which is where Workbench keeps the
+    window's size and scroll position; one without it is not usable as a
+    drawer's icon even if it is typed as one.
+    """
+    if len(data) < DISKOBJECT_SIZE:
+        return False
+    if struct.unpack_from(">H", data, 0)[0] != MAGIC:
+        return False
+    if data[TYPE_OFFSET] != WBDRAWER:
+        return False
+    return struct.unpack_from(">I", data, DRAWER_DATA)[0] != 0

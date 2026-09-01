@@ -591,6 +591,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                        overlays=list(spec.overlays) + extra)
             _apply_overlays(volume, spec, _make_fixer(config, progress),
                             progress)
+        _give_drawers_icons(volume, spec, config, progress)
     _write_user_startup(volume, config, progress)
     progress.step("Finalising the Amiga file system")
     volume.close()
@@ -606,7 +607,10 @@ def _write_user_startup(volume, config: "BuildConfig",
     the ROM version in use and the whole package inert.
     """
     lines: list[str] = []
-    for key in config.package_keys:
+    #  expand() so that a package pulled in as a dependency gets its lines
+    #  too: MUI is never ticked by name, and without its assigns muimaster
+    #  cannot be found however completely its files were copied.
+    for key in packages.expand(config.package_keys):
         package = packages.CATALOGUE_BY_KEY.get(key)
         if package is not None and package.startup:
             lines += list(package.startup)
@@ -679,6 +683,44 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
                                    data)
             volume.write_file(parent, source.name, data, check_existing=True)
             progress.log(f"  overlay: {source.name} -> {destination or ':'}")
+
+
+def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
+                        config: "BuildConfig", progress: Progress) -> None:
+    """Make the drawers this build created visible on Workbench.
+
+    Copying a package into ``Programs`` or ``Internet`` creates the drawer but
+    not its icon, and a drawer with no icon does not appear on Workbench at
+    all.  Every browser and launcher the user ticked went onto the card and
+    then could not be found from the desktop.
+
+    The drawers to cover are taken from where the packages were actually put,
+    rather than a fixed list, so a package added later is covered by having a
+    destination at all.  ``Storage`` is added because the real Commodore
+    installer creates that drawer *and* its icon, while installing from the
+    ADFs here creates only the drawer.
+    """
+    wanted: list[str] = ["Storage"]
+    for _source, destination in spec.overlays:
+        path = str(destination).strip("/")
+        while path:
+            if path not in wanted:
+                wanted.append(path)
+            path = path.rpartition("/")[0]
+
+    #  Where to find real drawer icons, best first: the icon set the user
+    #  chose, then the system they are copying from.
+    sources: list[Path] = []
+    if "magicwb" in (config.package_keys or []):
+        sources += packages.icon_set_dirs("magicwb")
+    donor = packages.donor_system(config.package_donor) \
+        if config.package_donor else None
+    if donor is not None:
+        sources.append(donor)
+
+    written = amigaos.ensure_drawer_icons(volume, wanted, sources, progress)
+    if written:
+        progress.log(f"{written} drawer(s) given an icon")
 
 
 def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibility":
