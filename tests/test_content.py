@@ -205,3 +205,153 @@ class DrawerIconTypes(unittest.TestCase):
         self.assertFalse(amigainfo.is_drawer_icon(b"not an icon at all"))
         self.assertFalse(amigainfo.is_drawer_icon(
             bytes(amigainfo.DISKOBJECT_SIZE)))
+
+
+class ResolvedFromTheBinaries(unittest.TestCase):
+    """What a program needs is read out of it, not listed by hand.
+
+    Naming dependencies by hand caught MUI and a few libraries and missed
+    twenty more, each of which copied onto the card and then would not run.
+    """
+
+    def setUp(self):
+        self.donor = Path(tempfile.mkdtemp(prefix="pistorm-donor-"))
+        self.addCleanup(shutil.rmtree, self.donor, True)
+        self.system = self.donor / "System"
+        for drawer in ("C", "Libs", "Devs", "Classes", "Internet/Thing"):
+            (self.system / drawer).mkdir(parents=True)
+        for name in ("bsdsocket.library", "ixemul.library"):
+            (self.system / "Libs" / name).write_bytes(b"L" * 4096)
+        (self.system / "Devs" / "netinfo.device").write_bytes(b"D" * 4096)
+
+    def _program(self, *mentions):
+        #  Real binaries separate their strings with NULs; without one the
+        #  padding runs into the first name and the scan reads them as a
+        #  single word, which is the over-matching the resolver tolerates.
+        body = (b"PADDING\x00" * 400
+                + b"".join(m.encode("latin-1") + b"\x00" for m in mentions)
+                + b"tail\x00" * 200)
+        (self.system / "Internet" / "Thing" / "thing").write_bytes(body)
+        return [(str(self.system / "Internet" / "Thing"), "Internet/Thing")]
+
+    def test_a_library_a_program_names_is_found_and_copied(self):
+        pairs = self._program("bsdsocket.library", "netinfo.device")
+        extra = packages.resolve_dependencies(pairs, self.donor)
+        got = {Path(s).name for s, _d in extra}
+        self.assertEqual(got, {"bsdsocket.library", "netinfo.device"})
+
+    def test_each_lands_where_the_donor_keeps_it(self):
+        extra = packages.resolve_dependencies(
+            self._program("bsdsocket.library", "netinfo.device"), self.donor)
+        where = {Path(s).name: d for s, d in extra}
+        self.assertEqual(where["bsdsocket.library"], "Libs")
+        self.assertEqual(where["netinfo.device"], "Devs")
+
+    def test_a_rom_library_is_not_copied(self):
+        #  dos.library is in Kickstart; copying one would be worse than
+        #  useless, it would shadow the ROM.
+        (self.system / "Libs" / "dos.library").write_bytes(b"x" * 4096)
+        extra = packages.resolve_dependencies(
+            self._program("dos.library", "intuition.library"), self.donor)
+        self.assertEqual(extra, [])
+
+    def test_something_already_being_copied_is_not_copied_again(self):
+        (self.system / "Internet" / "Thing" / "ixemul.library").write_bytes(
+            b"x" * 4096)
+        extra = packages.resolve_dependencies(
+            self._program("ixemul.library"), self.donor)
+        self.assertEqual(extra, [],
+                         "it travels inside the drawer already")
+
+    def test_a_name_the_donor_does_not_have_is_simply_dropped(self):
+        #  The scan over-matches where two strings abut; a fragment resolves
+        #  to nothing and costs nothing.
+        extra = packages.resolve_dependencies(
+            self._program("nusomething.library"), self.donor)
+        self.assertEqual(extra, [])
+
+    def test_no_donor_means_no_guessing(self):
+        self.assertEqual(packages.resolve_dependencies(
+            self._program("bsdsocket.library"), None), [])
+
+    def test_a_dependency_of_a_dependency_is_found_too(self):
+        """One round left seven behind: mmu wants 68030, ixemul wants ixnet."""
+        (self.system / "Libs" / "ixnet.library").write_bytes(
+            b"PAD\x00" * 400 + b"deeper.library\x00")
+        (self.system / "Libs" / "deeper.library").write_bytes(b"z" * 4096)
+        #  ixemul names ixnet, which names deeper.  Only ixemul is referenced
+        #  by the program itself.
+        (self.system / "Libs" / "ixemul.library").write_bytes(
+            b"PAD\x00" * 400 + b"ixnet.library\x00")
+        extra = packages.resolve_dependencies(
+            self._program("ixemul.library"), self.donor)
+        got = {Path(s).name for s, _d in extra}
+        self.assertEqual(got, {"ixemul.library", "ixnet.library",
+                               "deeper.library"})
+
+    def test_resolution_terminates_when_libraries_name_each_other(self):
+        #  A pair that reference one another must not loop for ever.
+        (self.system / "Libs" / "ping.library").write_bytes(
+            b"PAD\x00" * 400 + b"pong.library\x00")
+        (self.system / "Libs" / "pong.library").write_bytes(
+            b"PAD\x00" * 400 + b"ping.library\x00")
+        extra = packages.resolve_dependencies(
+            self._program("ping.library"), self.donor)
+        got = {Path(s).name for s, _d in extra}
+        self.assertEqual(got, {"ping.library", "pong.library"})
+
+
+class SoftKickBeforeIPrefs(unittest.TestCase):
+    """The disk icon.library must replace the ROM one, or icons stay blank.
+
+    A modern Amiga icon keeps its picture in an appended OS3.5 colour chunk
+    and leaves the classic image 0x0.  Kickstart 3.1's icon.library 40.1
+    cannot read that and draws nothing, so a card full of good icons comes up
+    with half of them blank.  Soft-kicking the replacement from
+    S:User-Startup does not work: IPrefs has already opened the ROM one, and
+    a library in use cannot be flushed.  Booted and asked, the Amiga answered
+    "icon.library 40.1" while 51.4 sat unused in LIBS:.
+    """
+
+    LINES = ["IF EXISTS LIBS:icon.library",
+             "   C:LoadResident LIBS:icon.library",
+             "EndIF"]
+
+    def _edit(self, body):
+        from pistorm_imager.core.util import Progress          # noqa: PLC0415
+        editor = amigaos.StartupSequenceEditor(self.LINES, Progress())
+        out = editor.offer("S/Startup-Sequence", body.encode("latin-1"))
+        return editor, out.decode("latin-1")
+
+    def test_the_soft_kick_goes_in_before_iprefs(self):
+        editor, out = self._edit(
+            "C:SetPatch QUIET\nBindDrivers\nC:IPrefs\nC:LoadWB\n")
+        self.assertTrue(editor.inserted)
+        lines = [line.strip() for line in out.splitlines()]
+        self.assertLess(lines.index("C:LoadResident LIBS:icon.library"),
+                        lines.index("C:IPrefs"))
+
+    def test_everything_that_was_there_is_still_there(self):
+        body = "C:SetPatch QUIET\nBindDrivers\nC:IPrefs\nC:LoadWB\n"
+        _editor, out = self._edit(body)
+        for line in body.splitlines():
+            self.assertIn(line, out)
+
+    def test_another_file_is_left_completely_alone(self):
+        from pistorm_imager.core.util import Progress          # noqa: PLC0415
+        editor = amigaos.StartupSequenceEditor(self.LINES, Progress())
+        self.assertEqual(editor.offer("S/User-Startup", b"anything"),
+                         b"anything")
+        self.assertEqual(editor.offer("C/Copy", b"binary"), b"binary")
+        self.assertFalse(editor.inserted)
+
+    def test_a_startup_with_no_iprefs_is_not_mangled(self):
+        #  Better to leave it alone and say so than to guess at a place.
+        editor, out = self._edit("Echo \"a strange startup\"\n")
+        self.assertFalse(editor.inserted)
+        self.assertEqual(out, "Echo \"a strange startup\"\n")
+
+    def test_it_is_only_inserted_once(self):
+        editor, out = self._edit(
+            "C:SetPatch\nC:IPrefs\nC:ConClip\nC:IPrefs\n")
+        self.assertEqual(out.count("C:LoadResident LIBS:icon.library"), 1)

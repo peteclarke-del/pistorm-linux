@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import re
 import shutil
 import subprocess
 import urllib.request
@@ -195,6 +196,10 @@ CATALOGUE: list[Package] = [
         #  and locale added to the system's.  This is how a real MUI install
         #  is arranged, and how the donor systems carry it.
         items=(("System/MUI", "System/MUI"),),
+        #  MUI reads its configuration from ENV:MUI, which Workbench fills
+        #  from ENVARC: at boot.  Without it every MUI application starts on
+        #  built-in defaults and loses whatever the donor had set up.
+        support=(("Prefs/Env-Archive/mui", "Prefs/Env-Archive/mui"),),
         startup=(
             "IF EXISTS SYS:System/MUI",
             "   Assign >NIL: MUI: SYS:System/MUI",
@@ -246,14 +251,22 @@ CATALOGUE: list[Package] = [
         "A far faster icon.library that also understands modern icon formats. "
         "Worth having on any machine, and the PiStorm renders them instantly.",
         category=Category.LOOK,
+        #  Taken from a donor in preference, because a working system already
+        #  has the pieces this needs arranged together: LoadModule to install
+        #  it, and the workbench.library that goes with it.
+        items=(("Libs/icon.library", "Libs"),
+               ("Libs/workbench.library", "Libs"),
+               ("C/LoadModule", "C")),
         download=Download("util/libs/IconLib_46.4.lha",
                           (("IconLib_46.4/Libs/icon.library", "Libs"),
                            ("IconLib_46.4/ThirdParty/LoadResident/LoadResident",
                             "C"))),
-        startup=("C:LoadResident LIBS:icon.library",),
-        note="Soft-kicked over the ROM's own icon.library at boot, so it "
-             "takes effect from the second start onwards - the first boot "
-             "still draws with the 40.1 in ROM.",
+        #  Nothing in S:User-Startup: see StartupSequenceEditor.  By the time
+        #  that file runs, IPrefs has opened the ROM icon.library, and a
+        #  library already in the system list cannot be replaced - the Amiga
+        #  was asked and answered 40.1 with 51.4 sitting unused in LIBS:.
+        note="Installed by LoadModule at the top of S:Startup-Sequence, which "
+             "is the only point early enough to replace the one in ROM.",
     ),
     Package(
         "magicwb", "MagicWB",
@@ -416,13 +429,20 @@ CATALOGUE: list[Package] = [
         #  without them it opens no window at all.
         items=(("Internet/AWeb_APL", "Internet/AWeb"),),
         #  ReAction is the gadget classes *and* the window and requester
-        #  classes that hold them; Gadgets alone still opens nothing.
+        #  classes that hold them; Gadgets alone still opens nothing.  AWeb
+        #  itself is reached through an assign - the donor system makes one -
+        #  and both it and ReAction keep settings in ENVARC.
         support=(("Classes/Gadgets", "Classes/Gadgets"),
                  ("Classes/window.class", "Classes"),
                  ("Classes/requester.class", "Classes"),
                  ("Classes/arexx.class", "Classes"),
                  ("Classes/startup.class", "Classes"),
-                 ("Libs/codesets.library", "Libs")),
+                 ("Libs/codesets.library", "Libs"),
+                 ("Prefs/Env-Archive/AWeb3", "Prefs/Env-Archive/AWeb3"),
+                 ("Prefs/Env-Archive/ClassAct", "Prefs/Env-Archive/ClassAct")),
+        startup=("IF EXISTS SYS:Internet/AWeb",
+                 "   Assign >NIL: AWEB_APL: SYS:Internet/AWeb",
+                 "EndIF"),
     ),
     Package(
         "amftp", "AmFTP",
@@ -479,6 +499,152 @@ def icon_set_dirs(key: str) -> list[Path]:
         path = unpacked / relative
         if path.is_dir():
             out.append(path)
+    return out
+
+
+#  Libraries and devices Kickstart 3.1 has in ROM, or that a Workbench 3.1
+#  install puts in LIBS: itself.  A program asking for one of these needs
+#  nothing copied for it.
+STOCK = {
+    "exec", "dos", "graphics", "intuition", "layers", "utility", "expansion",
+    "gadtools", "workbench", "icon", "keymap", "mathffp", "mathieeesingbas",
+    "misc", "potgo", "timer", "input", "console", "trackdisk", "audio",
+    "gameport", "keyboard", "ramdrive", "serial", "parallel", "printer",
+    "clipboard", "translator", "diskfont", "commodities", "asl", "iffparse",
+    "rexxsyslib", "rexxsupport", "mathtrans", "mathieeedoubbas",
+    "mathieeedoubtrans", "mathieeesingtrans", "nonvolatile", "realtime",
+    "bullet", "amigaguide", "datatypes", "locale", "lowlevel", "version",
+}
+
+#  Where a donor system keeps the things programs look up by name, and where
+#  each belongs on the card.  Order matters only in that the first hit wins.
+LOOKUP_DIRS = (
+    ("Libs", "Libs"),
+    ("Classes", "Classes"),
+    ("Classes/Gadgets", "Classes/Gadgets"),
+    ("Classes/DataTypes", "Classes/DataTypes"),
+    ("Devs", "Devs"),
+    ("Devs/Networks", "Devs/Networks"),
+    ("L", "L"),
+    ("System/MUI/Libs", "System/MUI/Libs"),
+    ("System/MUI/Libs/mui", "System/MUI/Libs/mui"),
+)
+
+REFERENCE = re.compile(
+    rb"[A-Za-z0-9_]{2,28}\.(?:library|device|class|gadget|mcc)")
+
+#  Small enough to skip nothing that matters: a stub library can be a few
+#  hundred bytes, and a floor of 2 KB stepped straight over some of them.
+#  Scanning a text file costs a little time and finds nothing, because a name
+#  that is not a real library does not resolve in the donor anyway.
+SCAN_MIN = 64
+SCAN_MAX = 6 << 20
+
+
+def _referenced(path: Path) -> set[str]:
+    """Every library-ish name mentioned inside one file.
+
+    Amiga binaries name what they open as plain strings, so reading them out
+    is the only way to know what a program needs without a list maintained by
+    hand - and a list maintained by hand is what kept missing things.  The
+    pattern over-matches where two strings sit next to each other with no
+    separator, which is harmless: a name that is really a fragment of another
+    resolves to nothing in the donor and is dropped.
+    """
+    try:
+        if not (SCAN_MIN <= path.stat().st_size <= SCAN_MAX):
+            return set()
+        data = path.read_bytes()
+    except OSError:
+        return set()
+    return {m.decode("latin-1") for m in REFERENCE.findall(data)}
+
+
+def _provided_by(pairs: Iterable[tuple[str, str]]) -> set[str]:
+    """Every file name these copies will put on the card, lower-cased."""
+    names: set[str] = set()
+    for source, _destination in pairs:
+        path = Path(source)
+        if path.is_dir():
+            for child in path.rglob("*"):
+                if child.is_file():
+                    names.add(child.name.lower())
+        elif path.is_file():
+            names.add(path.name.lower())
+    return names
+
+
+def resolve_dependencies(pairs: list[tuple[str, str]],
+                         donor: str | Path | None,
+                         progress: Progress | None = None
+                         ) -> list[tuple[str, str]]:
+    """Extra files the copied programs need and the donor can supply.
+
+    Declaring dependencies by hand caught MUI and a handful of libraries, and
+    missed nineteen more: bsdsocket for the network clients, ixemul and
+    netinfo for NetSurf, Picasso96API for AWeb, screennotify for Birdie,
+    popupmenu and vapor_toolkit for the MUI applications.  Each one was a
+    program that copied onto the card perfectly and then would not run.
+
+    So they are read out of the binaries instead.  Anything a copied program
+    names, that will not be on the card and that the donor has, is copied too.
+    """
+    system = donor_system(donor) if donor else None
+    if system is None or not pairs:
+        return []
+
+    index: dict[str, tuple[Path, str]] = {}
+    for folder, destination in LOOKUP_DIRS:
+        here = system / folder
+        if not here.is_dir():
+            continue
+        try:
+            for entry in here.iterdir():
+                if entry.is_file():
+                    index.setdefault(entry.name.lower(), (entry, destination))
+        except OSError:
+            continue
+
+    provided = _provided_by(pairs)
+
+    def references_of(paths: Iterable[Path]) -> set[str]:
+        names: set[str] = set()
+        for path in paths:
+            children = ([c for c in path.rglob("*") if c.is_file()]
+                        if path.is_dir() else [path])
+            for child in children:
+                names |= _referenced(child)
+        return names
+
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    frontier = [Path(source) for source, _destination in pairs]
+
+    #  A library brings its own needs with it: mmu.library wants
+    #  68030.library, ixemul wants ixnet, xpkmaster wants xfdmaster.  Resolving
+    #  one round left seven of those behind, so keep going until a round finds
+    #  nothing new.  It terminates because the donor holds finitely many files
+    #  and none is ever taken twice.
+    while frontier:
+        found_now: list[tuple[str, str]] = []
+        for name in sorted(references_of(frontier)):
+            lowered = name.lower()
+            if lowered.rsplit(".", 1)[0] in STOCK or lowered in provided:
+                continue
+            if lowered in seen:
+                continue
+            found = index.get(lowered)
+            if found is None:
+                continue
+            seen.add(lowered)
+            found_now.append((str(found[0]), found[1]))
+        out += found_now
+        frontier = [Path(source) for source, _destination in found_now]
+    if out and progress is not None:
+        progress.log(f"  {len(out)} further file(s) the chosen software needs "
+                     f"were found in the donor system")
+        for source, destination in out:
+            progress.log(f"    {Path(source).name} -> {destination}")
     return out
 
 
