@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 332 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 336 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -341,6 +341,14 @@ only ever *removes* a saved choice and never installs one, because which mode
 suits a monitor is not something this can know. Blanking a file's data touches no
 metadata — the extents are already allocated — which is what makes it safe on a
 finished volume, where deleting a file would not be.
+
+### A rev 6A A500 is not necessarily OCS
+
+Fitting a Super Denise to a rev 6A board makes it a full **ECS** machine, and
+that is a common enough upgrade that offering only a plain OCS A500 gets the
+chipset wrong for a real machine. The chipset decides which game collections
+are worth copying and which screen modes exist, so there is a separate
+**Amiga 500 with ECS** to choose, and the plain A500's note points at it.
 
 ## Checking an image against the machine
 
