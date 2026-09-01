@@ -442,3 +442,52 @@ class UpdatesForAnAcceleratedMachine(unittest.TestCase):
         machine = machines.MACHINES[0]
         chosen = packages.suggested(machine, Display.NATIVE, donor=donor)
         self.assertIn("setpatch", chosen)
+
+
+class NiceToHaves(unittest.TestCase):
+    """The extras that make a stock Workbench pleasant to use."""
+
+    def test_every_package_has_a_route_onto_the_card(self):
+        #  A catalogue entry with neither a donor path nor a download can
+        #  never be installed, and would sit in the list doing nothing.
+        for package in packages.CATALOGUE:
+            with self.subTest(package.key):
+                self.assertTrue(package.items or package.download,
+                                f"{package.key} has no way of being obtained")
+
+    def test_the_desktop_extras_are_on_by_default(self):
+        #  DefIcons is most of why a stock 3.1 desktop looks bare, and a
+        #  missing mouse wheel is the first thing anyone notices.
+        for key in ("deficons", "freewheel"):
+            self.assertTrue(packages.CATALOGUE_BY_KEY[key].default, key)
+
+    def test_the_commodities_land_in_wbstartup(self):
+        #  They have to be started at boot to do anything at all.
+        for key in ("deficons", "freewheel", "clicktofront"):
+            package = packages.CATALOGUE_BY_KEY[key]
+            places = list(package.items) + list(
+                package.download.items if package.download else ())
+            self.assertTrue(any(d == "WBStartup" for _s, d in places),
+                            f"{key} never reaches WBStartup")
+
+    def test_media_and_extras_are_offered_as_their_own_groups(self):
+        for category, expected in ((packages.Category.MEDIA,
+                                    {"amplifier", "hippoplayer",
+                                     "digibooster"}),
+                                   (packages.Category.EXTRAS,
+                                    {"dockit", "visage", "snoopdos",
+                                     "diropus4"})):
+            keys = {p.key for p in packages.in_category(category)}
+            self.assertEqual(keys, expected)
+
+    def test_what_is_not_freely_distributable_needs_a_donor(self):
+        #  HippoPlayer and Directory Opus are not on Aminet; offering to
+        #  download them would be a promise that cannot be kept.
+        for key in ("hippoplayer", "diropus4"):
+            package = packages.CATALOGUE_BY_KEY[key]
+            self.assertIsNone(package.download, key)
+            self.assertTrue(package.items, key)
+
+    def test_no_two_packages_share_a_key(self):
+        keys = [p.key for p in packages.CATALOGUE]
+        self.assertEqual(len(keys), len(set(keys)))
