@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 326 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 332 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -637,6 +637,29 @@ which one is usable:
   that drawer's snapshotted coordinates with it, so several drawers given the
   same fallback icon all claim one square of the window and land on top of each
   other.
+
+### Making a stock Workbench pleasant
+
+Workbench 3.1 out of the box is sparse in ways that are easy to forget until
+you use it. Two of these are on by default because their absence is the first
+thing anyone notices:
+
+* **DefIcons** gives every file an icon chosen from what it actually is.
+  Without it a window shows programs and nothing else, which is most of why a
+  stock desktop looks so bare.
+* **FreeWheel** makes the mouse wheel scroll the window under the pointer.
+
+Beyond those, offered rather than assumed: **ClickToFront**, the **backdrops
+and boot pictures** from the system you are copying from (several megabytes of
+them, so worth a thought on a small system partition), a **Dock-It** dock along
+the screen edge, **Visage** for pictures, **SnoopDos** for when something will
+not start and you need to see what it is looking for, and **Directory Opus 4**
+as a real file manager.
+
+For music there is **AMPlifier** (modules, MP3, skins) and **DigiBooster 1.7**
+as an eight channel tracker, both from Aminet; **HippoPlayer** is the classic
+lightweight player but is not freely distributable, so it is copied from a
+donor or not at all.
 
 **Suggested load** picks a set from the machine and the display, because the
 right answer genuinely differs:
