@@ -300,6 +300,36 @@ class ResolvedFromTheBinaries(unittest.TestCase):
         got = {Path(s).name for s, _d in extra}
         self.assertEqual(got, {"ping.library", "pong.library"})
 
+    def test_a_key_file_travels_with_what_it_unlocks(self):
+        #  Registered software looks for <name>.key beside the system, not in
+        #  its own drawer.  Copy xadmaster.library and leave xadmaster.key and
+        #  it runs crippled, which reads as the copy having failed.
+        (self.system / "S").mkdir(exist_ok=True)
+        (self.system / "Libs" / "xadmaster.library").write_bytes(b"x" * 4096)
+        (self.system / "S" / "xadmaster.key").write_bytes(b"key")
+        extra = packages.resolve_dependencies(
+            self._program("xadmaster.library"), self.donor)
+        where = {Path(s).name: d for s, d in extra}
+        self.assertIn("xadmaster.key", where)
+        self.assertEqual(where["xadmaster.key"], "S")
+
+    def test_a_key_for_something_not_being_copied_is_left(self):
+        (self.system / "S").mkdir(exist_ok=True)
+        (self.system / "S" / "SomethingElse.key").write_bytes(b"key")
+        extra = packages.resolve_dependencies(
+            self._program("bsdsocket.library"), self.donor)
+        self.assertNotIn("SomethingElse.key",
+                         {Path(s).name for s, _d in extra})
+
+    def test_no_pair_is_ever_produced_twice(self):
+        #  The writer refuses to overwrite, so one duplicate ends a build.
+        (self.system / "S").mkdir(exist_ok=True)
+        (self.system / "S" / "ixemul.key").write_bytes(b"key")
+        pairs = self._program("ixemul.library", "bsdsocket.library")
+        extra = packages.resolve_dependencies(pairs, self.donor)
+        both = pairs + extra
+        self.assertEqual(len(both), len(set(both)))
+
 
 class SoftKickBeforeIPrefs(unittest.TestCase):
     """The disk icon.library must replace the ROM one, or icons stay blank.
@@ -355,3 +385,14 @@ class SoftKickBeforeIPrefs(unittest.TestCase):
         editor, out = self._edit(
             "C:SetPatch\nC:IPrefs\nC:ConClip\nC:IPrefs\n")
         self.assertEqual(out.count("C:LoadResident LIBS:icon.library"), 1)
+
+class WhdloadNeedsKickstarts(unittest.TestCase):
+    """A slave asks WHDLoad for the Kickstart the game expects."""
+
+    def test_whdload_asks_for_the_kickstart_images(self):
+        #  These are ROM images, not code: nothing names them inside a binary,
+        #  so no scan can find them and they have to be declared.  Without
+        #  them iGame launches a game and the machine falls over.
+        support = dict(packages.CATALOGUE_BY_KEY["whdload"].support)
+        self.assertIn("Devs/Kickstarts", support)
+        self.assertEqual(support["Devs/Kickstarts"], "Devs/Kickstarts")
