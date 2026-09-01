@@ -20,7 +20,7 @@ from .. import __version__  # noqa: E402
 from ..core import (amigaos, bootcfg, builder, content, devices,  # noqa: E402
                     distributions,
                     emu68, hdfcheck, jobs, kickstart, machines, packages,
-                    prepare, presets, rdb)
+                    prepare, presets, rdb, updates)
 from ..core.util import (GIB, MIB, Progress, describe_size, human_size,  # noqa: E402
                          parse_size)
 from .widgets import FileRow, SaveRow, combo, show_full_value  # noqa: E402
@@ -442,6 +442,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                    ("Load settings…", "load-settings", self._on_load_settings),
                    ("Forget saved setup", "forget-session", self._on_forget_session),
                    ("Inspect the target", "inspect-target", self._on_inspect),
+                   ("Check for updates…", "check-updates", self._on_check_updates),
                    ("About", "about", self._on_about))
         model = Gio.Menu()
         for label, name, handler in entries:
@@ -493,6 +494,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.write_button.add_css_class("pill")
         self.write_button.connect("clicked", self._on_write)
         bottom.append(self.write_button)
+        self.bottom_bar = bottom
         view.add_bottom_bar(bottom)
         return view
 
@@ -516,12 +518,20 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._set_quick_screen("choices")
 
     def _update_back(self) -> None:
-        """Back is only shown where there is somewhere to go."""
+        """Back is only shown where there is somewhere to go.
+
+        The whole bar goes with it on the first screen: nothing has been
+        chosen yet, so there is nothing to summarise, nothing to go back to
+        and nothing to write.  A choice is all that screen is.
+        """
         if not hasattr(self, "back_button"):
             return
-        self.back_button.set_visible(
-            getattr(self, "_customising", False)
-            or getattr(self, "_quick_screen", "choices") != "choices")
+        beyond_the_choice = (getattr(self, "_customising", False)
+                             or getattr(self, "_quick_screen", "choices")
+                             != "choices")
+        self.back_button.set_visible(beyond_the_choice)
+        if hasattr(self, "bottom_bar"):
+            self.bottom_bar.set_visible(beyond_the_choice)
 
     def _move_group(self, group, page) -> None:
         """Put a group on a page, taking it off whatever page it is on.
@@ -2601,6 +2611,51 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._toast("Log saved")
 
         dialog.save(self, None, done)
+
+    def _on_check_updates(self, _button) -> None:
+        """Ask GitHub whether there is a newer release, off the UI thread."""
+        self._toast("Checking for updates…")
+
+        def work() -> None:
+            release = updates.latest()
+            GLib.idle_add(self._updates_answered, release)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _updates_answered(self, release) -> None:
+        if release is None:
+            self._update_dialog(
+                "Could not check for updates",
+                "GitHub could not be reached, or it has no published releases "
+                "yet. Nothing is wrong with this copy - the question simply "
+                "could not be answered.", None)
+            return False
+        if not updates.is_newer(release.tag):
+            self._update_dialog(
+                "No newer version available",
+                f"This is version {__version__}, and {release.name} is the "
+                f"newest release. You are up to date.", None)
+            return False
+        notes = release.notes or "No release notes were published."
+        if len(notes) > 2000:
+            notes = notes[:2000].rstrip() + "\n\n(continues on GitHub)"
+        self._update_dialog(
+            f"{release.name} is available",
+            f"You have version {__version__}.\n\n{notes}", release.url)
+        return False
+
+    def _update_dialog(self, heading: str, body: str, url: str | None) -> None:
+        dialog = Adw.AlertDialog(heading=heading, body=body)
+        dialog.add_response("close", "Close")
+        if url:
+            dialog.add_response("open", "Go to GitHub")
+            dialog.set_response_appearance("open",
+                                           Adw.ResponseAppearance.SUGGESTED)
+            dialog.connect("response", lambda _d, name, link=url:
+                           Gtk.UriLauncher(uri=link).launch(self, None, None)
+                           if name == "open" else None)
+        dialog.set_default_response("close")
+        dialog.present(self)
 
     def _on_about(self, _button) -> None:
         about = Adw.AboutDialog(
