@@ -625,6 +625,10 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._move_group(self.group_hardware, self.page_amiga)
             self._move_group(self.image_group, self.page_source)
             self.group_hardware.set_visible(True)
+            #  Finishing happens on Target, so that is where the summary and
+            #  the button that accepts it belong.
+            self._move_group(self.group_plan, self.page_target)
+            self.group_plan.set_visible(True)
         else:
             self._set_quick_screen(getattr(self, "_quick_screen", "choices"))
         self.stack.set_visible_child_name("source" if self._customising
@@ -833,15 +837,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.group_target = group
         page.add(group)
 
+        #  The same block wherever the setup is finished: what it adds up to,
+        #  and the button that accepts it, at the bottom of the last thing
+        #  read.  It moves to the Target page when customising.
         group = Adw.PreferencesGroup(
             title="What this will build",
-            description="Choose the card or image file on the Target page first; "
-                        "the sizes below follow from it.")
+            description="Everything chosen so far, and what it comes to.")
         self.quick_plan = Gtk.Label(xalign=0.0, wrap=True, selectable=True,
                                     margin_top=6, margin_bottom=6,
                                     margin_start=12, margin_end=12)
         self.quick_plan.add_css_class("dim-label")
-        holder = Adw.PreferencesGroup()
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.append(self.quick_plan)
         box.add_css_class("card")
@@ -1198,14 +1203,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                     else f"Still needed: {first}, and {len(missing) - 1} more")
         else:
             note = "Accepts the setup above and enables Write"
-        for row, button in ((getattr(self, "apply_row", None),
-                             getattr(self, "apply_button", None)),
-                            (getattr(self, "workflow_apply_row", None),
-                             getattr(self, "workflow_apply_button", None))):
-            if row is not None:
-                row.set_subtitle(note)
-            if button is not None:
-                button.set_sensitive(not missing)
+        if getattr(self, "apply_row", None) is not None:
+            self.apply_row.set_subtitle(note)
+            self.apply_button.set_sensitive(not missing)
 
     def _missing_choices(self) -> list[str]:
         """What still has to be decided before writing makes sense.
@@ -1612,6 +1612,7 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _page_target(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_target = page
 
         group = Adw.PreferencesGroup(title="Where should the result go?")
         self.target_row = Adw.ComboRow(
@@ -1649,20 +1650,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.file_size_row.connect("changed", lambda _r: self._update_summary())
         self.file_group.add(self.file_size_row)
         page.add(self.file_group)
-
-        self.workflow_apply_group = Adw.PreferencesGroup(
-            title="Ready to write?",
-            description="Everything chosen across these pages is accepted "
-                        "here, and Write is enabled once it is.")
-        self.workflow_apply_row = Adw.ActionRow(title="Apply this setup")
-        self.workflow_apply_button = Gtk.Button(label="Apply",
-                                                valign=Gtk.Align.CENTER)
-        self.workflow_apply_button.add_css_class("suggested-action")
-        self.workflow_apply_button.connect("clicked", self._on_apply_quick)
-        self.workflow_apply_row.add_suffix(self.workflow_apply_button)
-        self.workflow_apply_row.set_activatable_widget(self.workflow_apply_button)
-        self.workflow_apply_group.add(self.workflow_apply_row)
-        page.add(self.workflow_apply_group)
 
         self.boot_group = Adw.PreferencesGroup(
             title="Boot partition",
