@@ -1649,22 +1649,26 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.vc4_row)
         self.vbr_row = Adw.SwitchRow(
             title="Move the vector base register to fast RAM",
-            subtitle="Faster, but breaks many floppy-loaded games and demos")
+            subtitle="Faster, but Emu68 reports it breaks floppy-loaded games "
+                     "and demos badly - the wrong trade on an OCS or ECS "
+                     "machine kept for running them")
         group.add(self.vbr_row)
         self.slowdown_row = Adw.SwitchRow(
             title="Chip RAM slowdown",
-            subtitle="Improves compatibility with software that busy-waits")
+            subtitle="For OCS and ECS software that busy-waits on the "
+                     "chipset, which a PiStorm otherwise runs straight past. "
+                     "Set for you on an A500, A500+, A600, A1000 or A2000")
         group.add(self.slowdown_row)
         self.dbf_row = Adw.SwitchRow(
             title="DBF loop slowdown",
-            subtitle="For OCS-era software that times itself with a delay "
-                     "loop and runs far too fast on a PiStorm")
+            subtitle="For OCS and ECS era software that times itself with a "
+                     "delay loop and runs far too fast on a PiStorm")
         group.add(self.dbf_row)
         self.blitwait_row = Adw.SwitchRow(
             title="Wait for the blitter",
-            subtitle="For software that starts a blit and reads the result "
-                     "without waiting, which only worked because the real "
-                     "chipset was slower")
+            subtitle="For OCS and ECS software that starts a blit and reads "
+                     "the result without waiting, which only worked because "
+                     "the real chipset was slower")
         group.add(self.blitwait_row)
         self.swapdf_row = Adw.SwitchRow(title="Swap DF0: with DF1:")
         group.add(self.swapdf_row)
