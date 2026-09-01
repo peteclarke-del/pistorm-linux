@@ -497,7 +497,19 @@ class ImagerWindow(Adw.ApplicationWindow):
         return view
 
     def _go_back(self) -> None:
-        """Back to the choice, from wherever going back makes sense."""
+        """Back to the choice, from wherever going back makes sense.
+
+        Always to the choice itself, not to whichever screen was last open:
+        coming out of the workflow onto the basic-card screen looks like the
+        first screen with a Back button on it, which is not a place that
+        exists.
+
+        Going back also withdraws the setup.  It had been accepted, and Write
+        stayed lit while the choice that led to it was being reconsidered -
+        which is the one moment it should not be.
+        """
+        self._applied_config = None
+        self._quick_screen = "choices"
         if getattr(self, "_customising", False):
             self._set_customising(False)
         else:
@@ -577,6 +589,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_pimiga.set_path("")
         self.mode_row.set_selected(0)            # a fresh card
         self._on_source_changed()
+        self._applied_config = None
         self._set_quick_screen("basic")
 
     def _choose_prepared(self) -> None:
@@ -587,6 +600,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 self.mode_row.set_selected(index)
                 break
         self._on_source_changed()
+        self._applied_config = None
         self._set_quick_screen("prepared")
 
     def _set_customising(self, on: bool) -> None:
