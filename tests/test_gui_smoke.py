@@ -454,15 +454,27 @@ def on_activate(app: ImagerApplication) -> None:
             found = holder is window.stack.get_child_by_name(page_name)
             check(found, f"a group lives on the {page_name} page")
 
-        #  Nothing is written until the setup has been accepted, and any
-        #  change to it puts that back.
+        #  Writing needs more than a valid configuration: a card written with
+        #  no Kickstart boots into nothing.
         window._set_customising(True)
         window.file_row.set_path(str(SCRATCH / "gate.img"))
+        window.rom_row.set_path("")
+        window._update_summary()
+        check(not window.workflow_apply_button.get_sensitive()
+              and "Kickstart" in window.workflow_apply_row.get_subtitle(),
+              f"Apply waits for a Kickstart ({window.workflow_apply_row.get_subtitle()})")
+
+        rom = Path(__file__).resolve().parent.parent / "samples" / "kickstart"
+        roms = sorted(rom.glob("*.rom"))
+        if roms:
+            window.rom_row.set_path(str(roms[0]))
+        window.releases = [object()]             # as if the list had loaded
         window._update_summary()
         check(not window.write_button.get_sensitive(),
               "Write is off until the setup is applied")
-        check(window.apply_button.get_sensitive(),
-              "and Apply is offered once the setup is valid")
+        check(window.workflow_apply_button.get_sensitive(),
+              f"Apply is offered once the choices are made "
+              f"({window.workflow_apply_row.get_subtitle()})")
         window._on_apply_quick(None)
         check(window.write_button.get_sensitive(),
               "applying enables Write")

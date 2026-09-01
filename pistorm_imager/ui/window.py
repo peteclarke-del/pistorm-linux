@@ -488,12 +488,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.summary = Gtk.Label(xalign=0.0, wrap=True, hexpand=True)
         self.summary.add_css_class("dim-label")
         bottom.append(self.summary)
-        #  Nothing is written until the setup has been looked at and
-        #  accepted, whichever way it was arrived at.
-        self.apply_button = Gtk.Button(label="Apply this setup")
-        self.apply_button.add_css_class("pill")
-        self.apply_button.connect("clicked", self._on_apply_quick)
-        bottom.append(self.apply_button)
         self.write_button = Gtk.Button(label="Write card")
         self.write_button.add_css_class("suggested-action")
         self.write_button.add_css_class("pill")
@@ -838,6 +832,15 @@ class ImagerWindow(Adw.ApplicationWindow):
         box.append(self.quick_plan)
         box.add_css_class("card")
         group.add(box)
+        self.apply_row = Adw.ActionRow(
+            title="Apply this setup",
+            subtitle="Accepts the setup above and enables Write")
+        self.apply_button = Gtk.Button(label="Apply", valign=Gtk.Align.CENTER)
+        self.apply_button.add_css_class("suggested-action")
+        self.apply_button.connect("clicked", self._on_apply_quick)
+        self.apply_row.add_suffix(self.apply_button)
+        self.apply_row.set_activatable_widget(self.apply_button)
+        group.add(self.apply_row)
         self.group_plan = group
         page.add(group)
         return page
@@ -1167,6 +1170,69 @@ class ImagerWindow(Adw.ApplicationWindow):
                 return
         self.quick_plan.set_text(presets.describe_machine_setup(
             config, self._machine(), self._display(), detected))
+
+    def _show_readiness(self, missing: list[str]) -> None:
+        """Say what is still wanted, and only offer Apply when nothing is.
+
+        Both Apply rows are kept in step: the one on the quick start's plan
+        and the one at the end of the workflow are the same decision reached
+        two ways.
+        """
+        if missing:
+            first = missing[0]
+            note = ("Still needed: " + first if len(missing) == 1
+                    else f"Still needed: {first}, and {len(missing) - 1} more")
+        else:
+            note = "Accepts the setup above and enables Write"
+        for row, button in ((getattr(self, "apply_row", None),
+                             getattr(self, "apply_button", None)),
+                            (getattr(self, "workflow_apply_row", None),
+                             getattr(self, "workflow_apply_button", None))):
+            if row is not None:
+                row.set_subtitle(note)
+            if button is not None:
+                button.set_sensitive(not missing)
+
+    def _missing_choices(self) -> list[str]:
+        """What still has to be decided before writing makes sense.
+
+        validate() covers what would make the build fail outright; this is the
+        rest - the things without which a card would be written and then not
+        boot.  A Kickstart it has no ROM for, an install from floppies with no
+        floppies.
+        """
+        try:
+            config = self.gather()
+        except Exception:                        # noqa: BLE001
+            return ["a target to write to"]
+        missing = [problem.rstrip(".") for problem in config.validate()]
+
+        if config.mode is builder.BuildMode.IMAGE:
+            #  A prepared system brings its own everything; the image and a
+            #  card is the whole of it.
+            return missing
+
+        if not config.kickstart_path:
+            missing.append("a Kickstart ROM")
+        if config.install_emu68 and not config.emu68_archive \
+                and not config.emu68_prepared_dir and not self.releases:
+            missing.append("an Emu68 release - still looking, or choose a "
+                           "local archive on the Source page")
+        if config.install_amigaos:
+            if not config.adf_folder:
+                missing.append("a folder of Workbench floppy images")
+            else:
+                disks = getattr(self, "_adf_disks", None) or []
+                if not disks:
+                    missing.append("Workbench disks in that folder")
+                else:
+                    chosen = amigaos.choose_set(disks, config.adf_version)
+                    gaps = amigaos.missing_roles(chosen)
+                    if gaps:
+                        missing.append("the "
+                                       + ", ".join(r.label for r in gaps)
+                                       + " disk")
+        return missing
 
     def _on_apply_quick(self, _button) -> None:
         #  In the full workflow the pages *are* the configuration, so applying
@@ -1569,6 +1635,20 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.file_size_row.connect("changed", lambda _r: self._update_summary())
         self.file_group.add(self.file_size_row)
         page.add(self.file_group)
+
+        self.workflow_apply_group = Adw.PreferencesGroup(
+            title="Ready to write?",
+            description="Everything chosen across these pages is accepted "
+                        "here, and Write is enabled once it is.")
+        self.workflow_apply_row = Adw.ActionRow(title="Apply this setup")
+        self.workflow_apply_button = Gtk.Button(label="Apply",
+                                                valign=Gtk.Align.CENTER)
+        self.workflow_apply_button.add_css_class("suggested-action")
+        self.workflow_apply_button.connect("clicked", self._on_apply_quick)
+        self.workflow_apply_row.add_suffix(self.workflow_apply_button)
+        self.workflow_apply_row.set_activatable_widget(self.workflow_apply_button)
+        self.workflow_apply_group.add(self.workflow_apply_row)
+        page.add(self.workflow_apply_group)
 
         self.boot_group = Adw.PreferencesGroup(
             title="Boot partition",
@@ -2013,23 +2093,21 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  The plan reads from the same configuration, so a partition edited
         #  on the Storage page shows up in it.
         self._describe_plan()
+        missing = self._missing_choices()
+        self._show_readiness(missing)
         try:
             config = self.gather()
         except Exception as error:  # noqa: BLE001 - partial input while typing
             self.summary.set_text(str(error))
             self.write_button.set_sensitive(False)
-            self.apply_button.set_sensitive(False)
             return
-        problems = config.validate()
-        if problems:
-            self.summary.set_text(problems[0])
+        if missing:
+            self.summary.set_text("Still needed: " + missing[0])
             self.write_button.set_sensitive(False)
-            self.apply_button.set_sensitive(False)
             return
         #  Comparing the configuration itself, rather than trying to notice
         #  every widget that could change it: anything that alters what would
         #  be written puts the setup back to needing another look.
-        self.apply_button.set_sensitive(True)
         applied = repr(config) == getattr(self, "_applied_config", None)
         target = config.target
         if config.mode is builder.BuildMode.IMAGE:
