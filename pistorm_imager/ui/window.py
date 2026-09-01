@@ -486,6 +486,47 @@ class ImagerWindow(Adw.ApplicationWindow):
         view.add_bottom_bar(bottom)
         return view
 
+    def _move_group(self, group, page) -> None:
+        """Put a group on a page, taking it off whatever page it is on.
+
+        Two screens genuinely need the same settings - the Amiga model matters
+        to a basic card and to a customised one - and a widget has one parent,
+        so it is moved rather than duplicated.  Duplicating would mean two
+        controls for one setting, which is worse than either.
+        """
+        current = group.get_ancestor(Adw.PreferencesPage)
+        if current is page:
+            return
+        if current is not None:
+            current.remove(group)
+        page.add(group)
+
+    def _set_quick_screen(self, name: str) -> None:
+        """Which of the quick start's three screens is showing.
+
+        The first is the choice and nothing else: a page of settings under it
+        is not a choice, it is the thing being chosen between.
+        """
+        self._quick_screen = name
+        choosing = name == "choices"
+        self.group_choices.set_visible(choosing)
+        self.group_back.set_visible(not choosing)
+        #  A basic card needs to know which Amiga it is for; a prepared system
+        #  brings its own answer to that.
+        self.group_hardware.set_visible(name == "basic")
+        self.group_detected.set_visible(name == "basic")
+        self.image_group.set_visible(name == "prepared")
+        self.group_target.set_visible(not choosing)
+        self.group_plan.set_visible(not choosing)
+        if name == "basic":
+            self._move_group(self.group_hardware, self.page_quick)
+        elif name == "prepared":
+            self._move_group(self.image_group, self.page_quick)
+        else:
+            self._move_group(self.group_hardware, self.page_amiga)
+            self._move_group(self.image_group, self.page_source)
+        self._update_summary()
+
     def _choose_basic(self) -> None:
         """Emu68 and an empty Amiga drive, ready for a floppy install."""
         self.quick_primary.set_selected(PRIMARY_SOURCES.index("default"))
@@ -496,20 +537,17 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_pimiga.set_path("")
         self.mode_row.set_selected(0)            # a fresh card
         self._on_source_changed()
-        self._update_summary()
-        self._toast("Set up for a basic card - choose the card below, then Write")
+        self._set_quick_screen("basic")
 
     def _choose_prepared(self) -> None:
         """Write a finished system somebody else built."""
         self.quick_primary.set_selected(PRIMARY_SOURCES.index("image"))
-        self.mode_row.set_selected(
-            [m[0] for m in MODES].index(next(m[0] for m in MODES
-                                             if "image" in m[0].lower()))
-            if any("image" in m[0].lower() for m in MODES) else 0)
+        for index, mode in enumerate(MODES):
+            if "image" in mode[0].lower():
+                self.mode_row.set_selected(index)
+                break
         self._on_source_changed()
-        self._set_customising(True)
-        self.stack.set_visible_child_name("source")
-        self._toast("Choose the image on this page, then Write")
+        self._set_quick_screen("prepared")
 
     def _set_customising(self, on: bool) -> None:
         """Switch between the quick start and the full workflow.
@@ -528,11 +566,30 @@ class ImagerWindow(Adw.ApplicationWindow):
         if quick is not None:
             quick.set_visible(not self._customising)
         self.back_to_quick.set_visible(self._customising)
+        if self._customising:
+            #  The full workflow owns these again.
+            self._move_group(self.group_hardware, self.page_amiga)
+            self._move_group(self.image_group, self.page_source)
+            self.group_hardware.set_visible(True)
+        else:
+            self._set_quick_screen(getattr(self, "_quick_screen", "choices"))
         self.stack.set_visible_child_name("source" if self._customising
                                           else "quick")
 
     def _page_quick(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_quick = page
+
+        #  Shown on every screen but the first, because the first is the only
+        #  one there is nothing to go back to.
+        self.group_back = Adw.PreferencesGroup()
+        back = Adw.ActionRow(title="Back", subtitle="Choose something else")
+        button = Gtk.Button(label="Back", valign=Gtk.Align.CENTER)
+        button.connect("clicked", lambda _b: self._set_quick_screen("choices"))
+        back.add_suffix(button)
+        back.set_activatable_widget(button)
+        self.group_back.add(back)
+        page.add(self.group_back)
 
         #  Three things anyone actually wants to do, rather than a page of
         #  settings that happens to be first.
@@ -561,6 +618,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             row.add_suffix(button)
             row.set_activatable_widget(button)
             choices.add(row)
+        self.group_choices = choices
         page.add(choices)
 
         group = Adw.PreferencesGroup(
@@ -582,6 +640,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         rescan.add_css_class("flat")
         rescan.connect("clicked", lambda _b: self._detect_material())
         group.set_header_suffix(rescan)
+        self.group_detected = group
         page.add(group)
 
         group = Adw.PreferencesGroup(
@@ -727,6 +786,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_size_info = Adw.ActionRow(title="Size", subtitle="")
         self.quick_size_info.set_sensitive(False)
         group.add(self.quick_size_info)
+        self.group_target = group
         page.add(group)
 
         group = Adw.PreferencesGroup(
@@ -748,6 +808,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         apply_button.add_css_class("pill")
         apply_button.connect("clicked", self._on_apply_quick)
         group.add(apply_button)
+        self.group_plan = group
         page.add(group)
         return page
 
@@ -1115,6 +1176,7 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _page_source(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_source = page
 
         group = Adw.PreferencesGroup(title="What do you want to do?")
         self.mode_row = Adw.ComboRow(title="Task",
@@ -1209,6 +1271,7 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _page_amiga(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_amiga = page
         #  Which Amiga this is, and how it is being looked at, decides most of
         #  what follows on this page.
         page.add(self.group_hardware)
@@ -1543,7 +1606,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_workbench_screen.set_visible(
             self._display().has_choice_of_screen)
         self.mode_hint.set_subtitle(MODES[self.mode_row.get_selected()][2])
-        self.image_group.set_visible(mode is builder.BuildMode.IMAGE)
+        #  On the quick start the screen decides what is on show, not the
+        #  task mode; letting both set it made the image chooser flicker in
+        #  and out as the mode was adjusted underneath.
+        if getattr(self, "_customising", True):
+            self.image_group.set_visible(mode is builder.BuildMode.IMAGE)
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
         self.os_group.set_visible(mode is builder.BuildMode.FRESH)
