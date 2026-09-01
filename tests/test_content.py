@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager.core import content, machines  # noqa: E402
+from pistorm_imager.core import amigainfo, amigaos, content, machines, packages  # noqa: E402
 
 
 class TestDiscover(unittest.TestCase):
@@ -69,3 +69,139 @@ class TestDiscover(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class Dependencies(unittest.TestCase):
+    """A package that cannot run alone must bring what it needs."""
+
+    def test_mui_applications_pull_mui_in(self):
+        for key in ("igame", "netsurf", "amftp", "wookiechat", "ibrowse"):
+            with self.subTest(key):
+                self.assertIn("mui", packages.expand([key]),
+                              f"{key} is a MUI application and would open "
+                              f"nothing without muimaster.library")
+
+    def test_a_dependency_comes_before_what_needs_it(self):
+        order = packages.expand(["igame"])
+        self.assertLess(order.index("mui"), order.index("igame"))
+
+    def test_expand_keeps_what_was_asked_for_and_adds_no_duplicates(self):
+        keys = ["igame", "amftp", "netsurf"]
+        out = packages.expand(keys)
+        self.assertEqual(len(out), len(set(out)))
+        for key in keys:
+            self.assertIn(key, out)
+
+    def test_mui_assigns_itself_in_user_startup(self):
+        #  Copying MUI's files is not enough: it is found through MUI:, and
+        #  its libraries only through LIBS: having MUI:Libs added to it.
+        lines = "\n".join(packages.CATALOGUE_BY_KEY["mui"].startup)
+        self.assertIn("Assign >NIL: MUI: SYS:System/MUI", lines)
+        self.assertIn("ADD LIBS: MUI:Libs", lines)
+
+    def test_a_shared_library_is_only_copied_once(self):
+        #  Three packages want codesets.library, and the writer refuses to
+        #  overwrite a file that is already there.
+        donor = Path(tempfile.mkdtemp(prefix="pistorm-donor-"))
+        self.addCleanup(shutil.rmtree, donor, True)
+        system = donor / "System"
+        #  A C drawer is what marks a folder as a system drive.
+        (system / "C").mkdir(parents=True)
+        (system / "Libs").mkdir(parents=True)
+        for name in ("codesets.library", "openurl.library"):
+            (system / "Libs" / name).write_bytes(b"x")
+        for drawer in ("Internet/WookieChat", "Internet/AWeb_APL",
+                       "Internet/IBrowse"):
+            (system / drawer).mkdir(parents=True)
+        pairs = packages.overlays_for(donor, ["wookiechat", "aweb", "ibrowse"],
+                                      allow_download=False)
+        self.assertEqual(len(pairs), len(set(pairs)))
+        codesets = [d for s, d in pairs if s.endswith("codesets.library")]
+        self.assertEqual(len(codesets), 1, "copied more than once")
+
+    def test_support_survives_a_downloaded_payload(self):
+        #  NetSurf comes from Aminet, but its supporting libraries still have
+        #  to come off the donor.  Putting them in items made the donor look
+        #  like the source of NetSurf itself and skipped the download.
+        netsurf = packages.CATALOGUE_BY_KEY["netsurf"]
+        self.assertEqual(netsurf.items, ())
+        self.assertTrue(netsurf.download)
+        self.assertTrue(netsurf.support)
+
+
+class ExcludedDrawerIcons(unittest.TestCase):
+    """Leaving a category out must take its icon with it."""
+
+    def test_the_drawers_icon_goes_too(self):
+        skip = ["whdload/aga"]
+        self.assertTrue(amigaos._excluded("whdload/aga", skip))
+        self.assertTrue(amigaos._excluded("whdload/aga/game", skip))
+        self.assertTrue(amigaos._excluded("whdload/aga.info", skip),
+                        "the icon was left behind, so Workbench shows a "
+                        "drawer that is not on the card")
+
+    def test_a_similarly_named_drawer_is_kept(self):
+        skip = ["whdload/aga"]
+        self.assertFalse(amigaos._excluded("whdload/agatha", skip))
+        self.assertFalse(amigaos._excluded("whdload/agatha.info", skip))
+        self.assertFalse(amigaos._excluded("whdload/ocs", skip))
+
+
+class IconPositions(unittest.TestCase):
+    """Copied icons must not all claim the same square of the window."""
+
+    def _icon(self, x, y):
+        import struct
+        raw = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">II", raw, amigainfo.CURRENT_X, x, y)
+        return bytes(raw)
+
+    def test_a_snapshotted_position_is_forgotten(self):
+        import struct
+        out = amigainfo.clear_position(self._icon(120, 48))
+        x, y = struct.unpack_from(">II", out, amigainfo.CURRENT_X)
+        self.assertEqual(x, amigainfo.NO_ICON_POSITION)
+        self.assertEqual(y, amigainfo.NO_ICON_POSITION)
+
+    def test_nothing_else_in_the_icon_changes(self):
+        before = self._icon(10, 20)
+        after = amigainfo.clear_position(before)
+        self.assertEqual(len(after), len(before))
+        self.assertEqual(after[:amigainfo.CURRENT_X],
+                         before[:amigainfo.CURRENT_X])
+        self.assertEqual(after[amigainfo.CURRENT_Y + 4:],
+                         before[amigainfo.CURRENT_Y + 4:])
+
+    def test_something_too_short_to_be_an_icon_is_left_alone(self):
+        self.assertEqual(amigainfo.clear_position(b"nope"), b"nope")
+
+
+class DrawerIconTypes(unittest.TestCase):
+    """Only a drawer icon may be given to a drawer."""
+
+    def _icon(self, kind, drawerdata):
+        import struct
+        raw = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">H", raw, 0, amigainfo.MAGIC)
+        raw[amigainfo.TYPE_OFFSET] = kind
+        struct.pack_into(">I", raw, amigainfo.DRAWER_DATA, drawerdata)
+        return bytes(raw)
+
+    def test_a_drawer_icon_is_accepted(self):
+        self.assertTrue(amigainfo.is_drawer_icon(self._icon(2, 0x1234)))
+
+    def test_a_project_icon_is_refused(self):
+        #  This is the one that produced "unable to open script": a drawer
+        #  wearing the project icon of somebody's installer.
+        self.assertFalse(amigainfo.is_drawer_icon(self._icon(4, 0)))
+
+    def test_a_tool_icon_is_refused(self):
+        self.assertFalse(amigainfo.is_drawer_icon(self._icon(3, 0)))
+
+    def test_a_drawer_icon_with_no_drawer_data_is_refused(self):
+        self.assertFalse(amigainfo.is_drawer_icon(self._icon(2, 0)))
+
+    def test_something_that_is_not_an_icon_is_refused(self):
+        self.assertFalse(amigainfo.is_drawer_icon(b"not an icon at all"))
+        self.assertFalse(amigainfo.is_drawer_icon(
+            bytes(amigainfo.DISKOBJECT_SIZE)))

@@ -33,6 +33,7 @@ import enum
 import shutil
 import subprocess
 import urllib.request
+from collections.abc import Iterable
 from pathlib import Path
 
 from .machines import Chipset, Display, Machine
@@ -103,6 +104,18 @@ class Package:
     #  something soft-kicks the one on disk over it, and a patch like FBlit
     #  does nothing until it is run.
     startup: tuple[str, ...] = ()
+    #  Other packages this one cannot run without.  iGame, AmFTP, NetSurf and
+    #  WookieChat are all MUI applications: copied on their own they land on
+    #  the card, appear on Workbench and then do nothing at all when clicked,
+    #  because muimaster.library is not there.  A dependency is pulled in
+    #  whether or not the user thought to tick it.
+    requires: tuple[str, ...] = ()
+    #  Files the package needs but which are not the package: the shared
+    #  libraries and classes it draws with.  Kept apart from ``items``
+    #  because ``items`` means "the donor's copy of this package", and a
+    #  package taken from Aminet instead still needs these.  They are always
+    #  taken from a donor, never downloaded, and a missing one is not fatal.
+    support: tuple[tuple[str, str], ...] = ()
     note: str = ""
 
     @property
@@ -168,6 +181,31 @@ CATALOGUE: list[Package] = [
         "igame", "iGame",
         "A launcher that lists WHDLoad games with their screenshots.",
         items=(("Programs/iGame", "Programs/iGame"),),
+        #  iGame draws its screenshots through these two.
+        support=(("Libs/guigfx.library", "Libs"),
+                 ("Libs/render.library", "Libs")),
+        requires=("mui",),
+    ),
+    Package(
+        "mui", "MUI",
+        "Magic User Interface: the toolkit a great deal of Amiga software "
+        "draws itself with. Nothing that needs it will start without it.",
+        #  MUI is not a drawer of files that can be scattered into LIBS: - it
+        #  expects to be found through a MUI: assign, with its own libraries
+        #  and locale added to the system's.  This is how a real MUI install
+        #  is arranged, and how the donor systems carry it.
+        items=(("System/MUI", "System/MUI"),),
+        startup=(
+            "IF EXISTS SYS:System/MUI",
+            "   Assign >NIL: MUI: SYS:System/MUI",
+            "   IF EXISTS MUI:Libs",
+            "      Assign >NIL: ADD LIBS: MUI:Libs",
+            "   EndIF",
+            "   IF EXISTS MUI:Locale",
+            "      Assign >NIL: ADD LOCALE: MUI:Locale",
+            "   EndIF",
+            "EndIF",
+        ),
     ),
     Package(
         "identify", "identify.library",
@@ -222,9 +260,17 @@ CATALOGUE: list[Package] = [
         "The classic eight-colour icon and font set. Designed for exactly the "
         "kind of limited palette a native Workbench has.",
         category=Category.LOOK,
+        #  Its fonts and patterns are ordinary files and are installed here;
+        #  its icon set is used to give this build's own drawers icons (see
+        #  ``icon_set_dirs``).  Only the parts that replace icons already on
+        #  the card still need its Installer, because the file system this
+        #  tool writes creates files and never overwrites them.
         download=Download("util/wb/MagicWB21p.lha",
-                          stage=STAGING + "/MagicWB"),
-        note="Icons, fonts and patterns to apply from Storage/Install.",
+                          (("MagicWB2.1p/Fonts", "Fonts"),
+                           ("MagicWB2.1p/Patterns", "Prefs/Presets"),
+                           ("MagicWB2.1p", STAGING + "/MagicWB"))),
+        note="Fonts and patterns are installed; run its Installer from "
+             "Storage/Install to restyle the icons already on the card.",
     ),
     Package(
         "magicmenu", "MagicMenu",
@@ -261,6 +307,7 @@ CATALOGUE: list[Package] = [
         "Patches the system, so it installs itself on the Amiga.",
         category=Category.LOOK,
         items=(("C/NewIcons", "C"), ("Prefs/NewIcons", "Prefs")),
+        support=(("Libs/newicon.library", "Libs"),),
         download=Download("util/wb/NewIcons46.lha", stage=STAGING + "/NewIcons"),
         note="Run its Installer from Storage/Install on the Amiga.",
     ),
@@ -355,6 +402,9 @@ CATALOGUE: list[Package] = [
         category=Category.NETWORK,
         download=Download("comm/www/netsurf-m68k.lha",
                           stage="Internet/NetSurf"),
+        support=(("Libs/codesets.library", "Libs"),
+                 ("Libs/openurl.library", "Libs")),
+        requires=("mui",),
         note="Unpacked into Internet/NetSurf, ready to run.",
     ),
     Package(
@@ -362,19 +412,32 @@ CATALOGUE: list[Package] = [
         "The lighter classic browser, now freely distributable. Quicker than "
         "NetSurf on a plain native screen.",
         category=Category.NETWORK,
+        #  AWeb draws with ReAction, whose gadget classes live in CLASSES: -
+        #  without them it opens no window at all.
         items=(("Internet/AWeb_APL", "Internet/AWeb"),),
+        #  ReAction is the gadget classes *and* the window and requester
+        #  classes that hold them; Gadgets alone still opens nothing.
+        support=(("Classes/Gadgets", "Classes/Gadgets"),
+                 ("Classes/window.class", "Classes"),
+                 ("Classes/requester.class", "Classes"),
+                 ("Classes/arexx.class", "Classes"),
+                 ("Classes/startup.class", "Classes"),
+                 ("Libs/codesets.library", "Libs")),
     ),
     Package(
         "amftp", "AmFTP",
         "An FTP client, which is still how most Amiga file transfer is done.",
         category=Category.NETWORK,
         items=(("Internet/AmFTP", "Internet/AmFTP"),),
+        requires=("mui",),
     ),
     Package(
         "wookiechat", "WookieChat",
         "An IRC client.",
         category=Category.NETWORK,
         items=(("Internet/WookieChat", "Internet/WookieChat"),),
+        support=(("Libs/codesets.library", "Libs"),),
+        requires=("mui",),
     ),
     Package(
         "ibrowse", "IBrowse",
@@ -382,10 +445,65 @@ CATALOGUE: list[Package] = [
         "already own - it is not freely distributable.",
         category=Category.NETWORK,
         items=(("Internet/IBrowse", "Internet/IBrowse"),),
+        support=(("Libs/openurl.library", "Libs"),),
+        requires=("mui",),
     ),
 ]
 
 CATALOGUE_BY_KEY = {p.key: p for p in CATALOGUE}
+
+
+#  Where a package keeps drawer icons once its archive is unpacked, best
+#  first.  MagicWB splits them: ImageDrawers holds the plain system drawers
+#  (Storage, Tools, Utilities and so on), XEN-Icons the rest.
+ICON_SET_DIRS = {
+    "magicwb": ("MagicWB2.1p/XEN-Icons/SPECIAL/ImageDrawers",
+                "MagicWB2.1p/XEN-Icons"),
+}
+
+
+def icon_set_dirs(key: str) -> list[Path]:
+    """Unpacked directories of ``key`` that hold drawer icons.
+
+    Only what is already in the cache is returned; this never downloads,
+    because it runs while a volume is open and a build that got this far has
+    already fetched whatever it is going to.
+    """
+    package = CATALOGUE_BY_KEY.get(key)
+    if package is None or package.download is None:
+        return []
+    unpacked = cache_dir() / (package.download.filename.rsplit(".", 1)[0]
+                              + ".unpacked")
+    out = []
+    for relative in ICON_SET_DIRS.get(key, ()):
+        path = unpacked / relative
+        if path.is_dir():
+            out.append(path)
+    return out
+
+
+def expand(keys: Iterable[str]) -> list[str]:
+    """``keys`` plus everything they require, dependencies first.
+
+    Order matters: a dependency's files should be on the card, and its lines
+    in ``S:User-Startup``, before whatever needs it.
+    """
+    out: list[str] = []
+
+    def add(key: str, seen: tuple[str, ...] = ()) -> None:
+        if key in out or key in seen:
+            return                      # already added, or a cycle
+        package = CATALOGUE_BY_KEY.get(key)
+        if package is None:
+            return
+        for need in package.requires:
+            add(need, seen + (key,))
+        if key not in out:
+            out.append(key)
+
+    for key in keys:
+        add(key)
+    return out
 
 
 def in_category(category: Category) -> list[Package]:
@@ -550,7 +668,19 @@ def overlays_for(donor: str | Path | None, keys: list[str],
     progress = progress or Progress()
     system = donor_system(donor) if donor else None
     out: list[tuple[str, str]] = []
-    for key in keys:
+    seen: set[tuple[str, str]] = set()
+
+    def add(pairs: list[tuple[str, str]]) -> None:
+        for pair in pairs:
+            #  Several packages lean on the same library - three of them want
+            #  codesets - and copying one file twice is not merely wasteful:
+            #  the writer creates files and refuses to overwrite, so the
+            #  second copy would end the build.
+            if pair not in seen:
+                seen.add(pair)
+                out.append(pair)
+
+    for key in expand(keys):
         package = CATALOGUE_BY_KEY.get(key)
         if package is None or not package.suits(chipset, display):
             continue
@@ -561,9 +691,18 @@ def overlays_for(donor: str | Path | None, keys: list[str],
                 if path.exists():
                     from_donor.append((str(path), destination))
         if from_donor:
-            out += from_donor
+            add(from_donor)
         elif allow_download and package.download is not None:
-            out += fetch(package, progress)
+            add(fetch(package, progress))
+        #  Support goes on whichever way the package itself arrived.
+        if system is not None:
+            for source, destination in package.support:
+                path = system / source
+                if path.exists():
+                    add([(str(path), destination)])
+                elif progress is not None:
+                    progress.log(f"  {package.label}: {source} is not in the "
+                                 f"donor system; it may not run without it")
     return out
 
 

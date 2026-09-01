@@ -19,6 +19,7 @@ import os
 import re
 import time
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
 
 from . import amigafs, amigainfo, compat as compat_module, pfs3, rdb
@@ -259,6 +260,22 @@ def open_amiga_volume(path: str | Path, partition: str = ""):
     return Volume(handle, offset, blocks), label
 
 
+def _excluded(lowered: str, skip: list[str]) -> bool:
+    """Whether ``lowered`` is inside one of the excluded paths.
+
+    A drawer's icon is its *sibling*, not its child: excluding
+    ``WHDLOAD/AGA`` has to take ``WHDLOAD/AGA.info`` with it, or Workbench
+    draws an icon for a drawer that is not on the card and opening it fails.
+    Matching only the drawer and its contents left exactly that behind.
+    """
+    for entry in skip:
+        if lowered == entry or lowered.startswith(entry + "/"):
+            return True
+        if lowered == entry + ".info":
+            return True
+    return False
+
+
 def copy_volume(source, target, destination: str, progress: Progress,
                  skip_existing: bool = True, compat=None,
                  exclude: list[str] | None = None) -> tuple[int, int]:
@@ -277,7 +294,7 @@ def copy_volume(source, target, destination: str, progress: Progress,
     for index, (path, entry) in enumerate(entries, start=1):
         progress.check_cancelled()
         lowered = path.lower()
-        if any(lowered == e or lowered.startswith(e + "/") for e in skip):
+        if _excluded(lowered, skip):
             skipped += 1
             continue
         parent_path, _, name = path.rpartition("/")
@@ -810,7 +827,7 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
             continue
         relative = str(path.relative_to(source)).replace(os.sep, "/")
         lowered = relative.lower()
-        if any(lowered == e or lowered.startswith(e + "/") for e in skip):
+        if _excluded(lowered, skip):
             skipped_paths += 1
             continue
         entries.append((path, relative, path.is_dir()))
@@ -981,3 +998,113 @@ def install(handle, offset: int, total_blocks: int, chosen: dict[str, DiskMatch]
     progress.log(f"{total_copied} files installed; "
                  f"{human_size(target.free_bytes)} free on {volume_name}:")
     return target
+
+
+#  Drawers Workbench 3.1 deliberately leaves without an icon.  These are the
+#  system's working parts, not places a person browses to, and giving them
+#  icons would clutter the desktop with drawers Commodore chose to hide.
+HIDDEN_DRAWERS = {
+    "c", "l", "s", "libs", "devs", "fonts", "locale", "classes", "t",
+    "rexxc", "expansion", "prefs/env-archive",
+}
+
+
+def _is_hidden(path: str) -> bool:
+    """Whether Workbench would never show this drawer anyway.
+
+    A drawer inside a hidden one is hidden too: an icon on ``Classes/Gadgets``
+    can only be seen by someone who has already turned on Show All Files to
+    get into ``Classes`` at all, so writing one is just a file nobody sees.
+    """
+    lowered = path.lower()
+    parts = lowered.split("/")
+    for depth in range(1, len(parts) + 1):
+        if "/".join(parts[:depth]) in HIDDEN_DRAWERS:
+            return True
+    return False
+
+
+def _drawer_icon_sources(folders: Iterable[str | Path]) -> dict[str, bytes]:
+    """Every drawer icon found in ``folders``, keyed on the drawer's name.
+
+    MagicWB keeps its drawer icons beside a one-byte stub of the drawer they
+    are for, so the ``.info`` files alone are what is wanted.  A donor system
+    simply has them next to the real drawers.
+    """
+    found: dict[str, bytes] = {}
+    for folder in folders:
+        base = Path(folder)
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.info")):
+            stem = path.name[:-5]
+            if not stem:
+                continue
+            data = path.read_bytes()
+            #  Only a drawer icon opens a drawer.  Matching purely on the name
+            #  handed the Storage/Install drawer MagicWB's Install.info, which
+            #  is the project icon for MagicWB's own installer script, and a
+            #  double click answered "unable to open script".
+            if not amigainfo.is_drawer_icon(data):
+                continue
+            #  First one wins, so the order folders are passed in is the
+            #  order of preference.
+            found.setdefault(stem.lower(), data)
+    return found
+
+
+def ensure_drawer_icons(volume, drawers: Iterable[str],
+                        sources: Iterable[str | Path],
+                        progress: Progress) -> int:
+    """Give a drawer an icon when nothing else was going to.
+
+    A drawer with no ``.info`` beside it does not appear on Workbench at all -
+    it can only be reached from a Shell, or by turning on Show All Files.  That
+    is correct for ``C:`` and ``LIBS:``, which is why Commodore ships them
+    without icons, but this tool also creates drawers of its own to hold the
+    software the user chose - ``Programs``, ``Internet``, ``AmiTCP`` - and gave
+    them no icons either.  Every one of iGame, NetSurf, IBrowse and the rest
+    was written to the card and then left unreachable from the desktop, which
+    looks exactly like the software never having been installed.
+
+    Icons are taken from real Amiga icons rather than invented: the chosen icon
+    set or the donor system, matched on the drawer's own name where possible
+    and otherwise any drawer icon among them, because one drawer icon is as
+    good as another and having one is what matters.
+    """
+    icons = _drawer_icon_sources(sources)
+    if not icons:
+        return 0
+    #  A stand-in for a drawer whose name nothing matched.  Preferring the
+    #  plain Workbench drawers keeps it looking like a drawer.
+    generic = next((icons[name] for name in ("drawer", "tools", "utilities",
+                                             "storage", "system")
+                    if name in icons), None)
+    written = 0
+    for drawer in drawers:
+        path = drawer.strip("/")
+        if not path or _is_hidden(path):
+            continue
+        parent_path, _, name = path.rpartition("/")
+        try:
+            parent = (volume.makedirs(parent_path) if parent_path
+                      else volume.root)
+        except Exception:
+            continue
+        if volume._entry_exists(parent, name) is None:
+            continue                    # the drawer itself is not there
+        if volume._entry_exists(parent, name + ".info") is not None:
+            continue                    # it already has one
+        data = icons.get(name.lower(), generic)
+        if data is not None:
+            #  Otherwise every drawer given the same fallback icon inherits
+            #  that icon's snapshotted position and they all pile up.
+            data = amigainfo.clear_position(data)
+        if data is None:
+            progress.log(f"  {path} has no icon and none was available; it "
+                         f"will only show under Window/Show/All Files")
+            continue
+        volume.write_file(parent, name + ".info", data, check_existing=True)
+        progress.log(f"  gave {path} an icon, so Workbench can show it")
+        written += 1
+    return written
