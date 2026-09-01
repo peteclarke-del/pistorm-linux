@@ -1649,9 +1649,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.vc4_row)
         self.vbr_row = Adw.SwitchRow(
             title="Move the vector base register to fast RAM",
-            subtitle="Faster, but Emu68 reports it breaks floppy-loaded games "
-                     "and demos badly - the wrong trade on an OCS or ECS "
-                     "machine kept for running them")
+            subtitle="Faster, but it moves the interrupt vectors away from "
+                     "address 0, where games and demos that take over the "
+                     "machine expect to install their own. That includes "
+                     "WHDLoad titles run from the hard drive - it is how the "
+                     "software was written, not where it is loaded from")
         group.add(self.vbr_row)
         self.slowdown_row = Adw.SwitchRow(
             title="Chip RAM slowdown",
