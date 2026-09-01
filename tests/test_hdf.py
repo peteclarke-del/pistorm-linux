@@ -699,3 +699,46 @@ class DrawerIcons(_Scratch):
         self.assertEqual(self.marker_of(self.read(path,
                                                   "Storage/Install.info")),
                          self.GENERIC)
+
+
+class DuplicateOverlayFile(_Scratch):
+    """One duplicate file must not end a whole build.
+
+    A tree copied as an overlay has always skipped what is already there; a
+    single file raised instead, and a real build died at
+    "colorwheel.gadget already exists" after installing Workbench and most of
+    the software - because the dependency scan offered a file the floppies
+    had already put in CLASSES:Gadgets.
+    """
+
+    def test_a_file_already_on_the_card_is_left_alone(self):
+        from pistorm_imager.core import amigaos, amigafs      # noqa: PLC0415
+        path = self.scratch() / "dupe.hdf"
+        source = self.scratch() / "again"
+        source.mkdir()
+        (source / "thing.gadget").write_bytes(b"second")
+
+        spec = builder.AmigaPartitionSpec(
+            "DH0", None, "FFS-INTL", True, 0, volume_name="Sys",
+            overlays=[(str(source / "thing.gadget"), "Classes/Gadgets")])
+
+        with open(path, "w+b") as handle:
+            handle.truncate(8 * MIB)
+            volume = amigaos.make_volume(handle, 0, (8 * MIB) // amigafs.BLOCK,
+                                         "Sys", amigafs.DOSTYPE_FFS_INTL)
+            parent = volume.makedirs("Classes/Gadgets")
+            volume.write_file(parent, "thing.gadget", b"first")
+            #  This raised before, and took the whole build with it.
+            builder._apply_overlays(volume, spec, None, QUIET)
+            volume.close()
+
+        volume, _label = amigaos.open_amiga_volume(path)
+        kept = volume.read_file(volume.find("Classes/Gadgets/thing.gadget"))
+        volume.f.close()
+        self.assertEqual(kept, b"first", "the existing file was replaced")
+
+    def test_the_classes_workbench_installs_are_not_hunted_for(self):
+        from pistorm_imager.core import packages               # noqa: PLC0415
+        for name in ("colorwheel", "gradientslider", "tapedeck"):
+            self.assertIn(name, packages.STOCK,
+                          f"{name}.gadget comes with Workbench 3.1")

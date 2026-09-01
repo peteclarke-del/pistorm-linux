@@ -656,6 +656,8 @@ STOCK = {
     "rexxsyslib", "rexxsupport", "mathtrans", "mathieeedoubbas",
     "mathieeedoubtrans", "mathieeesingtrans", "nonvolatile", "realtime",
     "bullet", "amigaguide", "datatypes", "locale", "lowlevel", "version",
+    #  Workbench 3.1 installs these itself, into CLASSES:Gadgets.
+    "colorwheel", "gradientslider", "tapedeck",
 }
 
 #  Where a donor system keeps the things programs look up by name, and where

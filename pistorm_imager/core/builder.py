@@ -726,6 +726,14 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
             #  A tree copied as an overlay goes through the compatibility pass;
             #  a single file did not, so a package that is one file - WHDLoad's
             #  own preferences among them - was written exactly as found.
+            if volume._entry_exists(parent, source.name) is not None:
+                #  Whatever is there came from the floppies or an earlier
+                #  package and is no worse than this copy.  A tree copy has
+                #  always skipped in this situation; a single file raised, and
+                #  ended the whole build over one duplicate file.
+                progress.log(f"  overlay: {source.name} already present in "
+                             f"{destination or ':'}, left as it is")
+                continue
             data = source.read_bytes()
             if fixer is not None:
                 data = fixer.offer(f"{destination}/{source.name}".lstrip("/"),
