@@ -174,7 +174,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 281 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 303 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -496,12 +496,64 @@ IBrowse and MiamiDx among them — is only ever **copied out of a donor system
 you already have**, which is what pointing at a PiMiga installation is for. A
 donor is always preferred over a download.
 
-Not everything can be installed by copying files. VisualPrefs, MCP, NewIcons,
-MagicWB and Picasso96 patch the system or run their own script; those are
-unpacked into `Storage/Install` on the card, ready to be installed on the Amiga
-itself, and say so. Where a package needs a line to take effect — PeterK's
+Whatever can be installed outright is installed, and `Storage/Install` is a last
+resort rather than the default: a tick box that produces an installer you have to
+find and run has not delivered what it promised. MagicWB's fonts and patterns go
+straight into `Fonts:` and `Prefs/Presets`, and its icon set is what gives this
+build's own drawers their icons. What still needs running on the Amiga is the
+part that *replaces* icons already on the card, because the file system here
+creates files and never overwrites them — so VisualPrefs, MCP, NewIcons and
+Picasso96, which patch the system or restyle what is already there, are unpacked
+into `Storage/Install` and say so in the log. Where a package needs a line to take effect — PeterK's
 `icon.library` has to be soft-kicked over the one in ROM, FBlit has to be
 started — the build writes `S:User-Startup` to do it.
+
+### What a package needs to actually run
+
+Copying a program's drawer onto the card is not the same as installing it. A
+great deal of Amiga software draws itself with **MUI**, and iGame, AmFTP,
+WookieChat and NetSurf all do: copied on their own they land on the card, appear
+on Workbench, and then do nothing whatsoever when clicked, because
+`muimaster.library` is not there. So packages declare what they need, and a
+dependency is pulled in whether or not it was ticked — MUI is copied to
+`SYS:System/MUI` and given its `MUI:` assign in `S:User-Startup`, which is how a
+real MUI install is arranged and how the donor systems carry it.
+
+The same goes for the shared libraries a program draws through, which are kept
+apart from the package itself because a program fetched from Aminet still needs
+them off the donor: `guigfx.library` and `render.library` for iGame's
+screenshots, `codesets.library` and `openurl.library` for the browsers, and the
+ReAction classes — `Classes/Gadgets` plus `window.class` and its companions —
+without which AWeb opens no window at all. A library wanted by three packages is
+copied once; the file system here creates files and refuses to overwrite them, so
+a second copy would not merely be wasteful, it would end the build.
+
+### Drawers you can actually see
+
+A drawer with no `.info` beside it does not appear on Workbench — it can only be
+reached from a Shell or by turning on **Window/Show/All Files**. That is correct
+for `C:` and `LIBS:`, which is why Commodore ships them without icons, but this
+tool also creates drawers of its own — `Programs`, `Internet`, `AmiTCP` — and
+gave them none either, so every browser and launcher that was installed could
+not be found from the desktop. It looked exactly like the software never having
+been installed. `Storage` had the same problem: the real Commodore installer
+creates that drawer *and* its icon, and installing from the ADFs creates only the
+drawer.
+
+Every drawer this build makes now gets an icon, taken from a real Amiga icon
+rather than invented — the chosen icon set, or the donor system — matched on the
+drawer's own name and otherwise any drawer icon among them. Two things decide
+which one is usable:
+
+* **It must be a drawer icon.** Icons are typed, and only a drawer icon opens a
+  drawer; a project icon tells Workbench to run its default tool, so a drawer
+  wearing one answers *unable to open script* on a double click. Matching purely
+  on the name gave the `Storage/Install` drawer MagicWB's `Install.info`, which
+  is the project icon for MagicWB's own installer script.
+* **Its remembered position is cleared.** An icon copied from elsewhere brings
+  that drawer's snapshotted coordinates with it, so several drawers given the
+  same fallback icon all claim one square of the window and land on top of each
+  other.
 
 **Suggested load** picks a set from the machine and the display, because the
 right answer genuinely differs:
