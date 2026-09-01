@@ -196,9 +196,13 @@ def boot_options(machine: Machine, display: Display,
     #  Software written for OCS/ECS machines often busy-waits on the chipset,
     #  which a JIT runs straight past.
     options.chip_slowdown = machine.chipset in (Chipset.OCS, Chipset.ECS)
-    #  Moving the vector base into fast RAM is quicker but, in Emu68's own
-    #  words, hurts floppy-loaded games and demos badly - the wrong trade on
-    #  a machine that exists to run them.
+    #  Moving the vector base into fast RAM is quicker, but it takes the
+    #  interrupt vectors away from address 0 - where software that takes the
+    #  machine over installs its own.  Emu68 puts it as hurting floppy-loaded
+    #  games and demos badly, and that phrase is about how the software was
+    #  written rather than where it is loaded from: WHDLoad exists to run
+    #  exactly that software off a hard drive, and the code inside still
+    #  pokes the vectors at 0.  The wrong trade on a machine kept for games.
     options.vbr_move = False
 
     if machine.trapdoor_ram and trapdoor_to_chip:
