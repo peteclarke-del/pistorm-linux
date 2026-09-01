@@ -64,8 +64,14 @@ or install it and use the desktop entry:
 
 ```
 pip install --user .
-cp pistorm-imager.desktop ~/.local/share/applications/
+install -Dm644 data/icons/hicolor/scalable/apps/pistorm-imager.svg \
+        ~/.local/share/icons/hicolor/scalable/apps/pistorm-imager.svg
+install -Dm644 pistorm-imager.desktop ~/.local/share/applications/
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
 ```
+
+The icon is a scalable SVG in `data/icons`, laid out the way GTK expects a
+theme to be, so running from a checkout finds it without installing anything.
 
 ## The window
 
@@ -168,13 +174,15 @@ pistorm_imager/
     jobs.py      job serialisation across the privilege boundary
   ui/            the GTK4 interface
   cli.py         command line front end and privileged writer
+  app.py         the GTK application itself
+data/icons/      the application icon, in the hicolor theme layout
 tests/           unit tests plus a real end-to-end image build
 ```
 
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 303 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 304 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 

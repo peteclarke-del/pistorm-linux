@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <title>PiStorm Imager</title>
+  <!--
+    Three things have to read at 48 pixels: it is for Linux (Tux), it is about
+    the PiStorm (a board in an Amiga's CPU socket), and it is about the Amiga
+    (the boing ball's red and white check).  Anything more becomes mush at
+    icon size, so the ball is a backdrop, the board is a plinth, and Tux -
+    the one shape everybody recognises instantly - takes the middle.
+  -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2d4a7c"/>
+      <stop offset="1" stop-color="#16233c"/>
+    </linearGradient>
+    <linearGradient id="pcb" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f7a43"/>
+      <stop offset="1" stop-color="#12512c"/>
+    </linearGradient>
+    <radialGradient id="belly" cx="0.42" cy="0.34" r="0.75">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dfe3e8"/>
+    </radialGradient>
+    <radialGradient id="body" cx="0.36" cy="0.24" r="0.85">
+      <stop offset="0" stop-color="#4a4a4a"/>
+      <stop offset="1" stop-color="#0d0d0d"/>
+    </radialGradient>
+    <linearGradient id="beak" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffc21e"/>
+      <stop offset="1" stop-color="#e8880c"/>
+    </linearGradient>
+    <clipPath id="ball">
+      <circle cx="64" cy="52" r="34"/>
+    </clipPath>
+    <clipPath id="rounded">
+      <rect x="4" y="4" width="120" height="120" rx="26"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#rounded)">
+    <rect x="4" y="4" width="120" height="120" fill="url(#sky)"/>
+
+    <!-- The Amiga boing ball, kept pale so Tux stays the subject. -->
+    <g clip-path="url(#ball)" opacity="0.5">
+      <rect x="30" y="18" width="68" height="68" fill="#f2f2f2"/>
+      <g fill="#d8232a">
+        <rect x="30" y="18" width="17" height="17"/><rect x="64" y="18" width="17" height="17"/>
+        <rect x="47" y="35" width="17" height="17"/><rect x="81" y="35" width="17" height="17"/>
+        <rect x="30" y="52" width="17" height="17"/><rect x="64" y="52" width="17" height="17"/>
+        <rect x="47" y="69" width="17" height="17"/><rect x="81" y="69" width="17" height="17"/>
+      </g>
+    </g>
+    <circle cx="64" cy="52" r="34" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="2"/>
+
+    <!-- The board it all plugs into: a green PCB plinth with gold pins. -->
+    <rect x="14" y="96" width="100" height="22" rx="3" fill="url(#pcb)"/>
+    <rect x="14" y="96" width="100" height="3" fill="#2ea15a" opacity="0.8"/>
+    <g fill="#e8c34a">
+      <rect x="21" y="112" width="6" height="6" rx="1"/><rect x="33" y="112" width="6" height="6" rx="1"/>
+      <rect x="45" y="112" width="6" height="6" rx="1"/><rect x="57" y="112" width="6" height="6" rx="1"/>
+      <rect x="69" y="112" width="6" height="6" rx="1"/><rect x="81" y="112" width="6" height="6" rx="1"/>
+      <rect x="93" y="112" width="6" height="6" rx="1"/><rect x="101" y="112" width="6" height="6" rx="1"/>
+    </g>
+    <!-- The CM4 sitting on it, edge on. -->
+    <rect x="78" y="86" width="30" height="11" rx="2" fill="#0f0f14"/>
+    <rect x="82" y="89" width="22" height="5" rx="1" fill="#3a3f4a"/>
+
+    <!-- Tux. -->
+    <g>
+      <!-- feet -->
+      <path d="M50 92c-6 3-12 3-12 6s7 3 13 1z" fill="url(#beak)"/>
+      <path d="M74 92c6 3 12 3 12 6s-7 3-13 1z" fill="url(#beak)"/>
+      <!-- body -->
+      <path d="M62 26c11 0 19 9 19 21 0 5-1 8-1 12 0 8 6 14 6 24 0 9-10 15-24 15s-24-6-24-15c0-10 6-16 6-24 0-4-1-7-1-12 0-12 8-21 19-21z" fill="url(#body)"/>
+      <!-- flippers -->
+      <path d="M43 62c-5 6-8 15-7 20 1 4 4 4 6 1 2-4 4-13 5-18z" fill="url(#body)"/>
+      <path d="M85 62c5 6 8 15 7 20-1 4-4 4-6 1-2-4-4-13-5-18z" fill="url(#body)"/>
+      <!-- belly -->
+      <ellipse cx="64" cy="76" rx="17" ry="21" fill="url(#belly)"/>
+      <!-- face -->
+      <ellipse cx="64" cy="44" rx="15" ry="13" fill="url(#belly)" opacity="0.96"/>
+      <ellipse cx="57.5" cy="41" rx="4" ry="5.5" fill="#ffffff"/>
+      <ellipse cx="70.5" cy="41" rx="4" ry="5.5" fill="#ffffff"/>
+      <ellipse cx="58.5" cy="42" rx="2.1" ry="2.9" fill="#12121a"/>
+      <ellipse cx="69.5" cy="42" rx="2.1" ry="2.9" fill="#12121a"/>
+      <path d="M64 46c5 0 8 3 8 6s-4 5-8 5-8-2-8-5 3-6 8-6z" fill="url(#beak)"/>
+    </g>
+  </g>
+</svg>

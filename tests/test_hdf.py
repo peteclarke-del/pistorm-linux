@@ -154,7 +154,7 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
                  b"ExecuteCleanup=uae-configuration cpu_speed max\n"
                  b"QuitKey=$59\n")
 
-    def build(self, overlay_dir):
+    def build(self, overlay_dir, exclude=None):
         out = self.scratch() / "card.hdf"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
@@ -162,7 +162,8 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
             pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, volume_name="Sys",
-                content_folder=str(overlay_dir))]), QUIET)
+                content_folder=str(overlay_dir),
+                exclude=list(exclude or []))]), QUIET)
         return out
 
     def read(self, image, path):
@@ -193,6 +194,28 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
         body = self.read(self.build(source), "Programs/iGame/gameslist.csv")
         self.assertIn("Driller", body)
         self.assertNotIn("Missing", body)
+
+    def test_the_repository_list_is_filtered_too(self):
+        """Filtering the games list was only half of the job.
+
+        iGame also keeps the list of drawers it scans, and that still named
+        every collection the donor had, so a card with the AGA games left out
+        still sent iGame looking through a drawer that is not on it.
+        """
+        source = self.scratch() / "tree"
+        for category in ("OCS", "AGA"):
+            (source / "WHDLOAD" / category).mkdir(parents=True)
+        igame = source / "Programs" / "iGame"
+        igame.mkdir(parents=True)
+        (igame / "repos.prefs").write_text(
+            "Sys:WHDLOAD/OCS/\n"
+            "Sys:WHDLOAD/AGA/\n"
+            "Sys:WHDLOAD/Nowhere/\n")
+        body = self.read(self.build(source, exclude=["WHDLOAD/AGA"]),
+                         "Programs/iGame/repos.prefs")
+        self.assertIn("WHDLOAD/OCS/", body)
+        self.assertNotIn("WHDLOAD/AGA/", body)
+        self.assertNotIn("Nowhere", body)
 
 
 class TestUserStartupOnBothFileSystems(_Scratch):
