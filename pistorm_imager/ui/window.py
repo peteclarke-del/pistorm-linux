@@ -107,6 +107,15 @@ def merge_cmdline(from_machine: str, typed: str) -> str:
     return " ".join(words)
 
 
+#  What each quick-start screen shows, in the order it shows it.  Reading down
+#  a screen should follow the order of the decisions: what the card is for,
+#  what goes on it, where it is going, and finally what that adds up to.
+QUICK_SCREENS = {
+    "choices": ("group_choices",),
+    "basic": ("group_hardware", "group_detected", "group_target", "group_plan"),
+    "prepared": ("image_group", "group_target", "group_plan"),
+}
+
 FIRST_DRIVE = "The first bootable drive"
 NO_IMAGE = "Choose an image first"
 #  An image can be chosen and still have nothing to offer.  Saying "choose an
@@ -524,23 +533,38 @@ class ImagerWindow(Adw.ApplicationWindow):
         is not a choice, it is the thing being chosen between.
         """
         self._quick_screen = name
-        choosing = name == "choices"
-        self.group_choices.set_visible(choosing)
-        self._update_back()
-        #  A basic card needs to know which Amiga it is for; a prepared system
-        #  brings its own answer to that.
-        self.group_hardware.set_visible(name == "basic")
-        self.group_detected.set_visible(name == "basic")
-        self.image_group.set_visible(name == "prepared")
-        self.group_target.set_visible(not choosing)
-        self.group_plan.set_visible(not choosing)
-        if name == "basic":
-            self._move_group(self.group_hardware, self.page_quick)
-        elif name == "prepared":
-            self._move_group(self.image_group, self.page_quick)
-        else:
+        wanted = QUICK_SCREENS.get(name, QUICK_SCREENS["choices"])
+
+        #  Everything the quick start can show, taken off the page so it can
+        #  go back on in the order this screen wants.  add() appends, so a
+        #  group moved here from another page landed last - which is how the
+        #  image chooser ended up underneath the summary that describes it.
+        movable = ("group_choices", "group_hardware", "group_detected",
+                   "image_group", "group_target", "group_plan")
+        for attribute in movable:
+            group = getattr(self, attribute, None)
+            if group is not None and group.get_ancestor(Adw.PreferencesPage) \
+                    is self.page_quick:
+                self.page_quick.remove(group)
+        for attribute in wanted:
+            group = getattr(self, attribute)
+            self._move_group(group, self.page_quick)
+            group.set_visible(True)
+
+        #  What this screen does not want goes home, so the workflow finds it
+        #  where it belongs rather than missing.
+        if "group_hardware" not in wanted:
             self._move_group(self.group_hardware, self.page_amiga)
+            self.group_hardware.set_visible(True)
+        if "image_group" not in wanted:
             self._move_group(self.image_group, self.page_source)
+        for attribute in movable:
+            if attribute not in wanted and attribute in ("group_choices",
+                                                         "group_detected",
+                                                         "group_target",
+                                                         "group_plan"):
+                getattr(self, attribute).set_visible(False)
+        self._update_back()
         self._update_summary()
 
     def _choose_basic(self) -> None:

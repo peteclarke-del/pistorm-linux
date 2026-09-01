@@ -375,34 +375,60 @@ def on_activate(app: ImagerApplication) -> None:
         check(window.stack.get_visible_child_name() == "quick",
               "going back returns to the quick start")
 
+        def on_quick_screen() -> set:
+            names = {"choices": window.group_choices,
+                     "hardware": window.group_hardware,
+                     "detected": window.group_detected,
+                     "image": window.image_group,
+                     "target": window.group_target,
+                     "plan": window.group_plan}
+            return {name for name, group in names.items()
+                    if group.get_visible()
+                    and group.get_ancestor(Adw.PreferencesPage)
+                    is window.page_quick}
+
         #  The first screen is the choice and nothing else.
         window._set_customising(False)
         window._set_quick_screen("choices")
-        shown = {name for name, group in (
-            ("choices", window.group_choices),
-            ("hardware", window.group_hardware), ("detected", window.group_detected),
-            ("image", window.image_group), ("target", window.group_target),
-            ("plan", window.group_plan)) if group.get_visible()}
+        shown = on_quick_screen()
         check(shown == {"choices"},
               f"the first screen shows only the three choices ({shown})")
 
         window._choose_basic()
-        shown = {name for name, group in (
-            ("choices", window.group_choices),
-            ("hardware", window.group_hardware), ("image", window.image_group),
-            ("target", window.group_target)) if group.get_visible()}
-        check("choices" not in shown and {"hardware", "target"} <= shown
-              and "image" not in shown and window.back_button.get_visible(),
+        shown = on_quick_screen()
+        check(shown == {"hardware", "detected", "target", "plan"}
+              and window.back_button.get_visible(),
               f"a basic card shows its own options and a way back ({shown})")
 
         window._choose_prepared()
-        shown = {name for name, group in (
-            ("choices", window.group_choices),
-            ("hardware", window.group_hardware), ("image", window.image_group),
-            ("target", window.group_target)) if group.get_visible()}
-        check("image" in shown and "hardware" not in shown
-              and "target" in shown and window.back_button.get_visible(),
+        shown = on_quick_screen()
+        check(shown == {"image", "target", "plan"}
+              and window.back_button.get_visible(),
               f"a prepared system asks only for the image and the card ({shown})")
+
+        def rank(group) -> int:
+            """Where a group sits among its siblings on the page."""
+            parent = group.get_parent()
+            index, child = 0, parent.get_first_child()
+            while child is not None:
+                if child is group:
+                    return index
+                index, child = index + 1, child.get_next_sibling()
+            return -1
+
+        #  The picker has to come before the summary that describes what it
+        #  chose; add() appends, so a group moved here landed last.
+        window._choose_prepared()
+        check(rank(window.image_group) < rank(window.group_target)
+              < rank(window.group_plan),
+              f"image {rank(window.image_group)}, card "
+              f"{rank(window.group_target)}, plan {rank(window.group_plan)} "
+              f"- in that order")
+
+        window._choose_basic()
+        check(rank(window.group_hardware) < rank(window.group_detected)
+              < rank(window.group_target) < rank(window.group_plan),
+              "a basic card reads hardware, disks, card, plan")
 
         window._set_quick_screen("choices")
         check(window.group_choices.get_visible()
