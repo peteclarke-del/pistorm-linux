@@ -52,6 +52,8 @@ class Category(enum.Enum):
     LOOK = "Look and feel"
     SPEED = "Speed"
     NETWORK = "Networking"
+    MEDIA = "Music and pictures"
+    EXTRAS = "Handy extras"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -382,6 +384,105 @@ CATALOGUE: list[Package] = [
         download=Download("util/misc/PowerWindows.lha",
                           stage=STAGING + "/PowerWindows"),
         note="Copy it into WBStartup on the Amiga.",
+    ),
+    Package(
+        "deficons", "DefIcons",
+        "Gives every file an icon chosen from what it actually is. Without it "
+        "a Workbench window shows programs and nothing else, which is most of "
+        "why a stock 3.1 desktop looks so bare.",
+        category=Category.LOOK,
+        download=Download("util/wb/DefIcons44.lha",
+                          (("DefIcons44/DefIcons44", "WBStartup"),
+                           ("DefIcons44/DefIconsPrefs", "Prefs"),
+                           ("DefIcons44/deficons.prefs",
+                            "Prefs/Env-Archive"))),
+        default=True,
+    ),
+    Package(
+        "freewheel", "FreeWheel",
+        "Mouse wheel support: scrolls the window under the pointer. Its "
+        "absence is one of the first things anyone notices.",
+        category=Category.LOOK,
+        #  The 020 build, since a PiStorm is a 68040.
+        download=Download("util/mouse/FreeWheel.lha",
+                          (("FreeWheel/FreeWheel_020", "WBStartup"),
+                           ("FreeWheel/FreeWheel.cfg", "S"))),
+        default=True,
+    ),
+    Package(
+        "clicktofront", "ClickToFront",
+        "Click anywhere in a window to bring it to the front, instead of "
+        "aiming for the depth gadget.",
+        category=Category.LOOK,
+        items=(("WBStartup/ClickToFront", "WBStartup"),),
+    ),
+    Package(
+        "backdrops", "Backdrops and boot pictures",
+        "The wallpapers and boot pictures from the system you are copying "
+        "from. Several megabytes of them, so worth a thought on a small "
+        "system partition.",
+        category=Category.LOOK,
+        items=(("Prefs/Presets/Backdrops", "Prefs/Presets/Backdrops"),
+               ("Prefs/Presets/BootPics", "Prefs/Presets/BootPics")),
+    ),
+
+    # ------------------------------------------------------- handy extras
+    Package(
+        "dockit", "Dock-It",
+        "A dock along the edge of the screen to launch what you use most. "
+        "Light enough for an OCS machine, unlike the start-menu sort.",
+        category=Category.EXTRAS,
+        download=Download("util/wb/Dock-It375.lha",
+                          (("Dock-It", "Utilities/Dock-It"),
+                           ("Dock", "Utilities/Dock-It/Dock"),
+                           ("dock.cfg", "Utilities/Dock-It"))),
+    ),
+    Package(
+        "visage", "Visage",
+        "A picture viewer that handles the formats datatypes do not.",
+        category=Category.EXTRAS,
+        download=Download("gfx/show/Visage.lha", stage="Utilities/Visage"),
+        note="Unpacked into Utilities/Visage, ready to run.",
+    ),
+    Package(
+        "snoopdos", "SnoopDos",
+        "Shows what a program is looking for and failing to find. The first "
+        "thing to reach for when something will not start.",
+        category=Category.EXTRAS,
+        download=Download("util/moni/SnoopDos.lha",
+                          stage="Utilities/SnoopDos"),
+        note="Unpacked into Utilities/SnoopDos, ready to run.",
+    ),
+    Package(
+        "diropus4", "Directory Opus 4",
+        "A two-pane file manager, and a considerable step up from moving "
+        "things about in Workbench windows.",
+        category=Category.EXTRAS,
+        items=(("Programs/DirectoryOpus4", "Programs/DirectoryOpus4"),),
+    ),
+
+    # ------------------------------------------------------ music and pictures
+    Package(
+        "amplifier", "AMPlifier",
+        "A multiformat audio player: modules, MP3 and the rest, with skins.",
+        category=Category.MEDIA,
+        download=Download("mus/play/AMPlifier.lha", stage="Audio/AMPlifier"),
+        note="Unpacked into Audio/AMPlifier, ready to run.",
+    ),
+    Package(
+        "hippoplayer", "HippoPlayer",
+        "The classic lightweight module player. Not freely distributable, so "
+        "only ever copied from a system you already have.",
+        category=Category.MEDIA,
+        items=(("Audio/HippoPlayer", "Audio/HippoPlayer"),),
+    ),
+    Package(
+        "digibooster", "DigiBooster 1.7",
+        "An eight channel tracker, the full version rather than a demo.",
+        category=Category.MEDIA,
+        download=Download("mus/edit/DigiBooster1_7.lha",
+                          stage="Audio/DigiBooster"),
+        note="Unpacked into Audio/DigiBooster, ready to run.",
     ),
     Package(
         "scalos", "Scalos",
