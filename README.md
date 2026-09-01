@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 304 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 317 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -535,6 +535,51 @@ ReAction classes â€” `Classes/Gadgets` plus `window.class` and its companions â€
 without which AWeb opens no window at all. A library wanted by three packages is
 copied once; the file system here creates files and refuses to overwrite them, so
 a second copy would not merely be wasteful, it would end the build.
+
+### Why half the icons were blank
+
+A modern Amiga icon keeps its picture in an **OS3.5 colour chunk appended after
+the classic one**, and often leaves the classic planar image at 0x0 - iGame's
+does exactly that. Kickstart 3.1's `icon.library` 40.1 knows nothing about that
+chunk, so it draws nothing at all, and a card full of perfectly good icons comes
+up with half of them blank. PeterK's `icon.library` reads them, which is why the
+systems these files come from show them.
+
+Copying the replacement into `LIBS:` is not enough, and neither is soft-kicking
+it from `S:User-Startup`: by the time that file runs, `IPrefs` has already
+opened the one in ROM, and a library in the system list cannot be replaced.
+Booted and asked directly, the Amiga answered `icon.library 40.1` while 51.4 sat
+unused in `LIBS:`.
+
+So it is installed with **`LoadModule`, inserted above `IPrefs` at the top of
+`S:Startup-Sequence`** - which is what the donor systems themselves do on the
+third line of their own startup. The file cannot be rewritten afterwards,
+because this file system creates files and never overwrites them, so it is
+edited in flight on its way off the floppy image. Asked again after that change,
+the Amiga answers `icon.library 51.4`.
+
+### What a program needs is read out of it
+
+Declaring dependencies by hand caught MUI and a handful of libraries and missed
+twenty more, each of which copied onto the card perfectly and then would not
+run: `bsdsocket.library` for the network clients, `ixemul` and `netinfo.device`
+for NetSurf, `Picasso96API` for AWeb, `screennotify` for Birdie, `popupmenu` and
+`vapor_toolkit` for the MUI applications.
+
+Amiga binaries name what they open as plain strings, so the answer is in the
+files themselves. Everything a copied program mentions, that will not be on the
+card and that the donor system has, is copied too - and then the same question
+is asked of *those*, because a library brings its own needs with it
+(`mmu.library` wants `68030.library`, `ixemul` wants `ixnet`, `xpkmaster` wants
+`xfdmaster`). One round left seven behind; repeating until a round finds nothing
+new brought the real card down from nineteen missing files to three, and those
+three are optional (`narrator.device` is speech synthesis).
+
+The scan over-matches where two strings abut in a binary, which costs nothing: a
+name that is really a fragment of another resolves to nothing in the donor and
+is dropped. Settings are carried too, since files alone are not a working
+install - `ENVARC:mui`, `ENVARC:AWeb3` and `ENVARC:ClassAct`, and the
+`AWEB_APL:` assign that AWeb is found through.
 
 ### Drawers you can actually see
 

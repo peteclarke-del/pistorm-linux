@@ -576,10 +576,15 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             f"{partition.drive_name} is {rdb.dostype_name(dostype)}; AmigaOS can "
             f"only be installed onto an FFS or PFS3 partition."
         )
+    editor = _startup_sequence_editor(config, progress)
     volume = amigaos.install(handle, offset, partition.blocks(table.geometry),
                              chosen, progress,
                              volume_name=config.amiga_volume_name,
-                             dostype=dostype, close=False)
+                             dostype=dostype, close=False, edit=editor)
+    if editor is not None and not editor.inserted:
+        progress.log("WARNING: S:Startup-Sequence could not be edited, so the "
+                     "icon.library on disk will not replace the one in ROM "
+                     "and OS3.5 colour icons will not be drawn")
     #  Overlays (WHDLoad and the like) go on while the volume is still open;
     #  reopening a finished volume would mean rebuilding its allocation state.
     spec = next((s for s in config.amiga_partitions
@@ -595,6 +600,26 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     _write_user_startup(volume, config, progress)
     progress.step("Finalising the Amiga file system")
     volume.close()
+
+
+def _startup_sequence_editor(config: BuildConfig, progress: Progress):
+    """What has to run before Workbench draws its first icon.
+
+    Only ``icon.library`` so far, and only when it was chosen.  It has to be
+    soft-kicked before ``IPrefs`` opens the ROM one, which is why this cannot
+    live in ``S:User-Startup`` with the rest of the package startup lines.
+    """
+    if "iconlib" not in packages.expand(config.package_keys):
+        return None
+    #  LoadModule, not LoadResident.  LoadResident cannot displace a library
+    #  that is already in the system list, and icon.library is there from the
+    #  moment the machine starts; LoadModule loads the replacement and soft
+    #  resets so it is in place from the next boot onwards.  This is exactly
+    #  what the donor systems do, on the third line of their own startup.
+    return amigaos.StartupSequenceEditor(
+        ["IF EXISTS LIBS:icon.library",
+         "   C:LoadModule LIBS:workbench.library LIBS:icon.library",
+         "EndIF"], progress)
 
 
 def _write_user_startup(volume, config: "BuildConfig",
@@ -655,7 +680,17 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     #  would drop them entirely for a build driven from the pages, where
     #  nothing resolved them earlier.
     already = {(source, destination) for source, destination in existing}
-    return [pair for pair in resolved if pair not in already]
+    chosen = [pair for pair in resolved if pair not in already]
+
+    #  What the chosen software needs but nothing named: read out of the
+    #  binaries themselves and taken from the donor.  Declaring dependencies
+    #  by hand caught MUI and a few libraries and missed twenty more, each of
+    #  which copied onto the card perfectly and then would not run.
+    extra = packages.resolve_dependencies(list(existing) + chosen,
+                                          config.package_donor or None,
+                                          progress)
+    seen = already | set(chosen)
+    return chosen + [pair for pair in extra if pair not in seen]
 
 
 def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
