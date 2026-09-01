@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 321 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 326 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -557,6 +557,25 @@ third line of their own startup. The file cannot be rewritten afterwards,
 because this file system creates files and never overwrites them, so it is
 edited in flight on its way off the floppy image. Asked again after that change,
 the Amiga answers `icon.library 51.4`.
+
+### Updates and patches
+
+Installing from the original floppies gives you exactly what shipped in 1994,
+and some of that is not fit for the machine it is going onto. A PiStorm is a
+**68040-class accelerator**, and Workbench 3.1's idea of a 68040 is
+`SetPatch 40.16` from February 1994 and `68040.library 37.30` — both older than
+the CPU they are meant to set up.
+
+So a build from ADFs offers, and by default takes, two updates:
+
+| | |
+| --- | --- |
+| **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
+| **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
+
+The floppies' `C:SetPatch` is **refused during the install** rather than
+overwritten afterwards, because this file system creates files and never
+replaces them; the newer one is then copied into its place.
 
 ### What a program needs is read out of it
 
