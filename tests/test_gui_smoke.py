@@ -465,8 +465,8 @@ def on_activate(app: ImagerApplication) -> None:
         window.rom_row.set_path("")
         window._update_summary()
         check(not window.apply_button.get_sensitive()
-              and "Kickstart" in window.apply_row.get_subtitle(),
-              f"Apply waits for a Kickstart ({window.apply_row.get_subtitle()})")
+              and "Kickstart" in window.apply_note.get_text(),
+              f"Apply waits for a Kickstart ({window.apply_note.get_text()})")
 
         rom = Path(__file__).resolve().parent.parent / "samples" / "kickstart"
         roms = sorted(rom.glob("*.rom"))
@@ -478,7 +478,7 @@ def on_activate(app: ImagerApplication) -> None:
               "Write is off until the setup is applied")
         check(window.apply_button.get_sensitive(),
               f"Apply is offered once the choices are made "
-              f"({window.apply_row.get_subtitle()})")
+              f"({window.apply_note.get_text()})")
         window._on_apply_quick(None)
         check(window.write_button.get_sensitive(),
               "applying enables Write")
@@ -500,9 +500,15 @@ def on_activate(app: ImagerApplication) -> None:
         check(window.group_plan.get_ancestor(Adw.PreferencesPage)
               is window.page_quick,
               "and a quick option finishes on its own screen")
-        check(window.apply_row.get_ancestor(Adw.PreferencesGroup)
-              is window.group_plan,
-              "with Apply inside the summary group, under what it describes")
+        #  The strip is the last thing in the summary card, under the text.
+        card = window.quick_plan.get_parent()
+        order, child = [], card.get_first_child()
+        while child is not None:
+            order.append(child)
+            child = child.get_next_sibling()
+        check(order and order[0] is window.quick_plan
+              and order[-1] is window.apply_row,
+              "Apply sits at the end of the summary, underneath it")
         #  Reconsidering the choice withdraws the setup with it.
         window._go_back()
         window._update_summary()
