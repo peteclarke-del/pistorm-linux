@@ -507,3 +507,49 @@ class NiceToHaves(unittest.TestCase):
     def test_no_two_packages_share_a_key(self):
         keys = [p.key for p in packages.CATALOGUE]
         self.assertEqual(len(keys), len(set(keys)))
+
+
+class NeverScavengeCpuLibraries(unittest.TestCase):
+    """The dependency scan must not take CPU support from a donor.
+
+    It did, and it quietly undid a deliberate choice: with the CPU patch
+    packages deselected, the scan still copied mmu.library, 68030.library and
+    68040.library off the donor because something in the tree named them - and
+    those are exactly what stops every WHDLoad game from starting.  Cards were
+    built again and again with the packages removed and the libraries still
+    there, which sent the search off in entirely the wrong direction.
+    """
+
+    def setUp(self):
+        self.donor = Path(tempfile.mkdtemp(prefix="pistorm-donor-"))
+        self.addCleanup(shutil.rmtree, self.donor, True)
+        self.system = self.donor / "System"
+        for drawer in ("C", "Libs", "Programs/Thing"):
+            (self.system / drawer).mkdir(parents=True)
+        for name in ("mmu.library", "68040.library", "68030.library",
+                     "680x0.library", "memory.library", "codesets.library"):
+            (self.system / "Libs" / name).write_bytes(b"L" * 4096)
+
+    def _program(self, *mentions):
+        body = (b"PAD\x00" * 400
+                + b"".join(m.encode("latin-1") + b"\x00" for m in mentions))
+        (self.system / "Programs" / "Thing" / "thing").write_bytes(body)
+        return [(str(self.system / "Programs" / "Thing"), "Programs/Thing")]
+
+    def test_cpu_libraries_are_never_taken(self):
+        pairs = self._program("mmu.library", "68040.library",
+                              "68030.library", "680x0.library",
+                              "memory.library")
+        extra = packages.resolve_dependencies(pairs, self.donor)
+        self.assertEqual(extra, [], f"scavenged: {[Path(s).name for s, _ in extra]}")
+
+    def test_ordinary_libraries_are_still_taken(self):
+        extra = packages.resolve_dependencies(
+            self._program("codesets.library"), self.donor)
+        self.assertEqual({Path(s).name for s, _d in extra},
+                         {"codesets.library"})
+
+    def test_the_mmulib_package_can_still_install_them_deliberately(self):
+        #  Off by default and warned about, but not unreachable.
+        mmulib = packages.CATALOGUE_BY_KEY["mmulib"]
+        self.assertEqual(dict(mmulib.download.items)["MMULib/Libs"], "Libs")

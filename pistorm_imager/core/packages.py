@@ -669,6 +669,17 @@ STOCK = {
     "colorwheel", "gradientslider", "tapedeck",
 }
 
+#  Never taken from a donor, whatever names it, because they are the CPU's own
+#  support and SetPatch loads whichever the machine needs.  Scavenging them
+#  broke every WHDLoad game: with mmu.library present a game dies on a yellow
+#  screen, and the scan was quietly putting it back even after the package
+#  that installs it had been deselected.  If someone wants these, the MMULib
+#  package installs them deliberately and says what it costs.
+NEVER_SCAVENGE = {
+    "mmu", "memory", "softieee", "disassembler",
+    "68020", "68030", "68040", "68060", "680x0",
+}
+
 #  Where a donor system keeps the things programs look up by name, and where
 #  each belongs on the card.  Order matters only in that the first hit wins.
 LOOKUP_DIRS = (
@@ -814,7 +825,8 @@ def resolve_dependencies(pairs: list[tuple[str, str]],
         found_now: list[tuple[str, str]] = []
         for name in sorted(references_of(frontier)):
             lowered = name.lower()
-            if lowered.rsplit(".", 1)[0] in STOCK or lowered in provided:
+            stem = lowered.rsplit(".", 1)[0]
+            if stem in STOCK or stem in NEVER_SCAVENGE or lowered in provided:
                 continue
             if lowered in seen:
                 continue
