@@ -630,9 +630,24 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
     #  moment the machine starts; LoadModule loads the replacement and soft
     #  resets so it is in place from the next boot onwards.  This is exactly
     #  what the donor systems do, on the third line of their own startup.
+    #  AUTO, and a guard on LoadModule itself.
+    #
+    #  LoadModule installs the modules and soft resets so they are in place
+    #  from the next boot.  Without AUTO it resets every time, and on a card
+    #  where the modules do not survive the reset that is a loop: the machine
+    #  resets, runs this again, resets again, and never reaches Workbench.
+    #  A card was left doing exactly that, two resets deep, with a black
+    #  screen.  AUTO resets only when it has actually installed something,
+    #  so the second pass finds them resident and carries on.
+    #
+    #  The IF EXISTS on C:LoadModule matters too: without the soft-kick the
+    #  icons still draw badly, but a Startup-Sequence that calls a command
+    #  that is not there is worse than one that skips it.
     return amigaos.StartupSequenceEditor(
-        ["IF EXISTS LIBS:icon.library",
-         "   C:LoadModule LIBS:workbench.library LIBS:icon.library",
+        ["IF EXISTS C:LoadModule",
+         "   IF EXISTS LIBS:icon.library",
+         "      C:LoadModule AUTO LIBS:workbench.library LIBS:icon.library",
+         "   EndIF",
          "EndIF"], progress, replace=replace)
 
 
