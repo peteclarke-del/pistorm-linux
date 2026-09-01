@@ -466,15 +466,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  The quick start is a choice of three things to do, not a page among
         #  equals: it is all there is until "Customise" is chosen, and this
         #  button is how to get back to it afterwards.
-        self.back_to_quick = Gtk.Button(icon_name="go-home-symbolic",
-                                        tooltip_text="Back to the quick start")
-        self.back_to_quick.connect("clicked",
-                                   lambda _b: self._set_customising(False))
-        header.pack_start(self.back_to_quick)
         self._customising = False
 
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
                          margin_top=10, margin_bottom=10, margin_start=12, margin_end=12)
+        #  Back sits with Write, at the other end of the same bar: they are
+        #  the two things you do when you have finished reading the page.
+        self.back_button = Gtk.Button(label="Back")
+        self.back_button.add_css_class("pill")
+        self.back_button.connect("clicked", lambda _b: self._go_back())
+        bottom.append(self.back_button)
         self.summary = Gtk.Label(xalign=0.0, wrap=True, hexpand=True)
         self.summary.add_css_class("dim-label")
         bottom.append(self.summary)
@@ -485,6 +486,21 @@ class ImagerWindow(Adw.ApplicationWindow):
         bottom.append(self.write_button)
         view.add_bottom_bar(bottom)
         return view
+
+    def _go_back(self) -> None:
+        """Back to the choice, from wherever going back makes sense."""
+        if getattr(self, "_customising", False):
+            self._set_customising(False)
+        else:
+            self._set_quick_screen("choices")
+
+    def _update_back(self) -> None:
+        """Back is only shown where there is somewhere to go."""
+        if not hasattr(self, "back_button"):
+            return
+        self.back_button.set_visible(
+            getattr(self, "_customising", False)
+            or getattr(self, "_quick_screen", "choices") != "choices")
 
     def _move_group(self, group, page) -> None:
         """Put a group on a page, taking it off whatever page it is on.
@@ -510,7 +526,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._quick_screen = name
         choosing = name == "choices"
         self.group_choices.set_visible(choosing)
-        self.group_back.set_visible(not choosing)
+        self._update_back()
         #  A basic card needs to know which Amiga it is for; a prepared system
         #  brings its own answer to that.
         self.group_hardware.set_visible(name == "basic")
@@ -565,7 +581,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         quick = self.stack.get_page(self.stack.get_child_by_name("quick"))
         if quick is not None:
             quick.set_visible(not self._customising)
-        self.back_to_quick.set_visible(self._customising)
+        self._update_back()
         if self._customising:
             #  The full workflow owns these again.
             self._move_group(self.group_hardware, self.page_amiga)
@@ -580,16 +596,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         page = Adw.PreferencesPage()
         self.page_quick = page
 
-        #  Shown on every screen but the first, because the first is the only
-        #  one there is nothing to go back to.
-        self.group_back = Adw.PreferencesGroup()
-        back = Adw.ActionRow(title="Back", subtitle="Choose something else")
-        button = Gtk.Button(label="Back", valign=Gtk.Align.CENTER)
-        button.connect("clicked", lambda _b: self._set_quick_screen("choices"))
-        back.add_suffix(button)
-        back.set_activatable_widget(button)
-        self.group_back.add(back)
-        page.add(self.group_back)
 
         #  Three things anyone actually wants to do, rather than a page of
         #  settings that happens to be first.

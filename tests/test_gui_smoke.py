@@ -359,7 +359,7 @@ def on_activate(app: ImagerApplication) -> None:
                        window.stack.get_child_by_name(name)).get_visible()}
         check(visible == {"quick"},
               f"the quick start is the only page to begin with ({visible})")
-        check(not window.back_to_quick.get_visible(),
+        check(not window.back_button.get_visible(),
               "and there is nothing to go back to")
 
         window._set_customising(True)
@@ -369,7 +369,7 @@ def on_activate(app: ImagerApplication) -> None:
                        window.stack.get_child_by_name(name)).get_visible()}
         check("quick" not in visible and "storage" in visible,
               f"customising shows the workflow and hides the quick start ({visible})")
-        check(window.back_to_quick.get_visible(),
+        check(window.back_button.get_visible(),
               "and offers a way back to it")
         window._set_customising(False)
         check(window.stack.get_visible_child_name() == "quick",
@@ -379,7 +379,7 @@ def on_activate(app: ImagerApplication) -> None:
         window._set_customising(False)
         window._set_quick_screen("choices")
         shown = {name for name, group in (
-            ("choices", window.group_choices), ("back", window.group_back),
+            ("choices", window.group_choices),
             ("hardware", window.group_hardware), ("detected", window.group_detected),
             ("image", window.image_group), ("target", window.group_target),
             ("plan", window.group_plan)) if group.get_visible()}
@@ -388,26 +388,36 @@ def on_activate(app: ImagerApplication) -> None:
 
         window._choose_basic()
         shown = {name for name, group in (
-            ("choices", window.group_choices), ("back", window.group_back),
+            ("choices", window.group_choices),
             ("hardware", window.group_hardware), ("image", window.image_group),
             ("target", window.group_target)) if group.get_visible()}
-        check("choices" not in shown and {"back", "hardware", "target"} <= shown
-              and "image" not in shown,
+        check("choices" not in shown and {"hardware", "target"} <= shown
+              and "image" not in shown and window.back_button.get_visible(),
               f"a basic card shows its own options and a way back ({shown})")
 
         window._choose_prepared()
         shown = {name for name, group in (
-            ("choices", window.group_choices), ("back", window.group_back),
+            ("choices", window.group_choices),
             ("hardware", window.group_hardware), ("image", window.image_group),
             ("target", window.group_target)) if group.get_visible()}
         check("image" in shown and "hardware" not in shown
-              and {"back", "target"} <= shown,
+              and "target" in shown and window.back_button.get_visible(),
               f"a prepared system asks only for the image and the card ({shown})")
 
         window._set_quick_screen("choices")
         check(window.group_choices.get_visible()
-              and not window.group_back.get_visible(),
+              and not window.back_button.get_visible(),
               "Back returns to the three choices")
+
+        #  One Back, doing whatever going back means where you are.
+        window._choose_basic()
+        window._go_back()
+        check(window.group_choices.get_visible(),
+              "Back from a quick screen returns to the choices")
+        window._set_customising(True)
+        window._go_back()
+        check(not window._customising and window.group_choices.get_visible(),
+              "Back from the workflow returns to the choices too")
 
         #  Settings belong on the page they are about.
         window._set_customising(True)
