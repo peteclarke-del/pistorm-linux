@@ -350,6 +350,51 @@ def on_activate(app: ImagerApplication) -> None:
         check(edited is not None and edited[0].volume_name == "MyOwnName",
               "an edited layout is noticed and would be kept")
 
+        #  The quick start is a choice of three things to do, and is the
+        #  whole window until "Customise" is chosen.
+        window._set_customising(False)
+        visible = {name for name in ("quick", "source", "storage", "amiga",
+                                     "options", "target")
+                   if window.stack.get_page(
+                       window.stack.get_child_by_name(name)).get_visible()}
+        check(visible == {"quick"},
+              f"the quick start is the only page to begin with ({visible})")
+        check(not window.back_to_quick.get_visible(),
+              "and there is nothing to go back to")
+
+        window._set_customising(True)
+        visible = {name for name in ("quick", "source", "storage", "amiga",
+                                     "options", "target")
+                   if window.stack.get_page(
+                       window.stack.get_child_by_name(name)).get_visible()}
+        check("quick" not in visible and "storage" in visible,
+              f"customising shows the workflow and hides the quick start ({visible})")
+        check(window.back_to_quick.get_visible(),
+              "and offers a way back to it")
+        window._set_customising(False)
+        check(window.stack.get_visible_child_name() == "quick",
+              "going back returns to the quick start")
+
+        #  Settings belong on the page they are about.
+        window._set_customising(True)
+        for group, page_name in ((window.group_hardware, "amiga"),
+                                 (window.group_primary, "source"),
+                                 (window.group_sizes, "storage")):
+            holder = group.get_ancestor(Adw.PreferencesPage)
+            found = holder is window.stack.get_child_by_name(page_name)
+            check(found, f"a group lives on the {page_name} page")
+
+        #  Editing storage has to show up in the plan the user reads before
+        #  pressing Write; it used to describe the quick settings alone.
+        window.file_row.set_path(str(SCRATCH / "plan.img"))
+        window._update_summary()
+        before = window.quick_plan.get_text()
+        window.partition_rows[0].volume_row.set_text("PlanCheck")
+        window._update_summary()
+        after = window.quick_plan.get_text()
+        check(before != after and "PlanCheck" in after,
+              "a storage change shows up in the plan")
+
         #  Software ticked on the Amiga page has to reach the build.  It used
         #  to be carried only by the quick setup, so ticking a package and
         #  pressing Write from the pages themselves built a card without it.

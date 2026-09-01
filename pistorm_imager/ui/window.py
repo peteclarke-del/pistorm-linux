@@ -412,6 +412,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.connect("close-request", self._on_close)
         self._load_releases_async()
         self._sync_visibility()
+        #  Start on the quick start with nothing else in the way.  A restored
+        #  session that was in the middle of customising reopens there.
+        self._set_customising(getattr(self, "_restored_customising", False))
 
     # ------------------------------------------------------------ setup UI
 
@@ -450,6 +453,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         amiga_page = self._page_amiga()
         self.stack.add_titled_with_icon(self._page_storage(), "storage", "Storage",
                                         "drive-harddisk-symbolic")
+        #  Everything past the quick start is the customising workflow, and is
+        #  hidden until it is asked for.
         self.stack.add_titled_with_icon(amiga_page, "amiga", "Amiga",
                                         "applications-system-symbolic")
         self.stack.add_titled_with_icon(self._page_options(), "options", "Options",
@@ -457,6 +462,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.stack.add_titled_with_icon(self._page_target(), "target", "Target",
                                         "media-flash-symbolic")
         view.set_content(self.stack)
+
+        #  The quick start is a choice of three things to do, not a page among
+        #  equals: it is all there is until "Customise" is chosen, and this
+        #  button is how to get back to it afterwards.
+        self.back_to_quick = Gtk.Button(icon_name="go-home-symbolic",
+                                        tooltip_text="Back to the quick start")
+        self.back_to_quick.connect("clicked",
+                                   lambda _b: self._set_customising(False))
+        header.pack_start(self.back_to_quick)
+        self._customising = False
 
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
                          margin_top=10, margin_bottom=10, margin_start=12, margin_end=12)
@@ -471,8 +486,82 @@ class ImagerWindow(Adw.ApplicationWindow):
         view.add_bottom_bar(bottom)
         return view
 
+    def _choose_basic(self) -> None:
+        """Emu68 and an empty Amiga drive, ready for a floppy install."""
+        self.quick_primary.set_selected(PRIMARY_SOURCES.index("default"))
+        if "none" in FRESH_SOURCES:
+            self.quick_system_source.set_selected(FRESH_SOURCES.index("none"))
+        self.image_row.set_path("")
+        self.quick_hdf.set_path("")
+        self.quick_pimiga.set_path("")
+        self.mode_row.set_selected(0)            # a fresh card
+        self._on_source_changed()
+        self._update_summary()
+        self._toast("Set up for a basic card - choose the card below, then Write")
+
+    def _choose_prepared(self) -> None:
+        """Write a finished system somebody else built."""
+        self.quick_primary.set_selected(PRIMARY_SOURCES.index("image"))
+        self.mode_row.set_selected(
+            [m[0] for m in MODES].index(next(m[0] for m in MODES
+                                             if "image" in m[0].lower()))
+            if any("image" in m[0].lower() for m in MODES) else 0)
+        self._on_source_changed()
+        self._set_customising(True)
+        self.stack.set_visible_child_name("source")
+        self._toast("Choose the image on this page, then Write")
+
+    def _set_customising(self, on: bool) -> None:
+        """Switch between the quick start and the full workflow.
+
+        The quick start is not a page among equals - it is the whole window
+        until someone asks for more - so the others are hidden rather than
+        merely unselected, and the switcher has nothing to offer but the one
+        thing there is to do.
+        """
+        self._customising = bool(on)
+        for name in ("source", "storage", "amiga", "options", "target"):
+            page = self.stack.get_page(self.stack.get_child_by_name(name))
+            if page is not None:
+                page.set_visible(self._customising)
+        quick = self.stack.get_page(self.stack.get_child_by_name("quick"))
+        if quick is not None:
+            quick.set_visible(not self._customising)
+        self.back_to_quick.set_visible(self._customising)
+        self.stack.set_visible_child_name("source" if self._customising
+                                          else "quick")
+
     def _page_quick(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+
+        #  Three things anyone actually wants to do, rather than a page of
+        #  settings that happens to be first.
+        choices = Adw.PreferencesGroup(
+            title="What would you like to do?",
+            description="Everything below applies to whichever you pick. "
+                        "Choose the card and its size, then Write.")
+        for title, subtitle, label, handler in (
+            ("A basic PiStorm card",
+             "Emu68 and an empty Amiga drive, partitioned and formatted, ready "
+             "to install Workbench onto from floppies.",
+             "Set up", self._choose_basic),
+            ("Write a prepared system",
+             "A finished image you have downloaded - CaffeineOS, an Emu68 "
+             "Hatcher image, or a backup of a card.",
+             "Choose image", self._choose_prepared),
+            ("Customise an installation",
+             "The full workflow: sources, storage, the software to add, boot "
+             "options. Everything the other two decide for you.",
+             "Customise", lambda: self._set_customising(True)),
+        ):
+            row = Adw.ActionRow(title=title, subtitle=subtitle)
+            button = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+            button.add_css_class("suggested-action")
+            button.connect("clicked", lambda _b, h=handler: h())
+            row.add_suffix(button)
+            row.set_activatable_widget(button)
+            choices.add(row)
+        page.add(choices)
 
         group = Adw.PreferencesGroup(
             title="Quick setup",
@@ -532,7 +621,9 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Trapdoor 512K fitted, use it as chip RAM",
             subtitle="A500 and A500+ only")
         group.add(self.quick_trapdoor)
-        page.add(group)
+        #  What the machine is belongs with the machine; the Amiga
+        #  page adds this.
+        self.group_hardware = group
 
         group = Adw.PreferencesGroup(
             title="Primary installation",
@@ -580,7 +671,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                      "built around RTG.")
         self.quick_os_hint.set_sensitive(False)
         group.add(self.quick_os_hint)
-        page.add(group)
+        #  Where the system comes from belongs with the other
+        #  sources; the Source page adds this.
+        self.group_primary = group
 
         group = Adw.PreferencesGroup(title="Choices")
         self.quick_system = Adw.EntryRow(title="System drive size")
@@ -600,7 +693,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             "Looking for one…", filters=HDF_FILTERS,
             on_change=lambda _p: self._quick_preview())
         group.add(self.quick_donor)
-        page.add(group)
+        #  Sizes are a storage question; the Storage page adds this.
+        self.group_sizes = group
 
         group = Adw.PreferencesGroup(
             title="Where to write it",
@@ -956,11 +1050,30 @@ class ImagerWindow(Adw.ApplicationWindow):
         detected = dataclasses.replace(
             getattr(self, "detected", presets.Detected()),
             pfs3_donor=self.quick_donor.path)
+        self._describe_plan(detected)
+
+    def _describe_plan(self, detected=None) -> None:
+        """Describe what will actually be written, not what was asked for.
+
+        The plan used to come from the quick settings alone, so a partition
+        edited on the Storage page changed the card and not a word of the
+        description - which is the wrong way round, because this is the thing
+        the user reads before pressing Write.  The real configuration is used
+        when there is one, and the quick settings only stand in before a
+        target has been chosen.
+        """
+        if detected is None:
+            detected = dataclasses.replace(
+                getattr(self, "detected", presets.Detected()),
+                pfs3_donor=self.quick_donor.path)
         try:
-            config = self._quick_config()
-        except Exception as error:  # noqa: BLE001 - no target chosen yet, usually
-            self.quick_plan.set_text(str(error))
-            return
+            config = self.gather()
+        except Exception:                        # noqa: BLE001 - no target yet
+            try:
+                config = self._quick_config()
+            except Exception as error:           # noqa: BLE001
+                self.quick_plan.set_text(str(error))
+                return
         self.quick_plan.set_text(presets.describe_machine_setup(
             config, self._machine(), self._display(), detected))
 
@@ -1039,6 +1152,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.image_group.add(self.patch_display_row)
         page.add(self.image_group)
 
+        page.add(self.group_primary)
+
         self.hdf_group = Adw.PreferencesGroup(
             title="Amiga hard disk image",
             description="An .hdf holding a Rigid Disk Block, as produced by "
@@ -1094,6 +1209,9 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _page_amiga(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        #  Which Amiga this is, and how it is being looked at, decides most of
+        #  what follows on this page.
+        page.add(self.group_hardware)
 
         group = Adw.PreferencesGroup(
             title="Kickstart ROM",
@@ -1187,6 +1305,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         was easy to find.
         """
         page = Adw.PreferencesPage()
+
+        page.add(self.group_sizes)
 
         self.partition_group = Adw.PreferencesGroup(
             title="Amiga partitions",
@@ -1776,6 +1896,9 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _update_summary(self) -> None:
         if not self._ready:
             return
+        #  The plan reads from the same configuration, so a partition edited
+        #  on the Storage page shows up in it.
+        self._describe_plan()
         try:
             config = self.gather()
         except Exception as error:  # noqa: BLE001 - partial input while typing
