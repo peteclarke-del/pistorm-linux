@@ -303,20 +303,42 @@ def on_activate(app: ImagerApplication) -> None:
         #  A tree can hold more than this machine can run - the AGA games on
         #  an OCS A500 - so what to leave out is editable per partition.
         from pistorm_imager.ui.window import PartitionRow as _PR  # noqa: PLC0415
+        from pistorm_imager.core import machines as _m  # noqa: PLC0415
+
+        #  A tree divided into categories, some of which an A500 cannot run.
+        tree = SCRATCH / "GamesTree" / "WHDLOAD"
+        for name in ("AGA", "CD32", "OCS", "Cinemaware"):
+            (tree / name / "Something").mkdir(parents=True, exist_ok=True)
+
         row = _PR(builder.AmigaPartitionSpec("DH1", None, "PFS3",
                                              volume_name="Games"),
-                  on_remove=lambda _r: None, on_change=None)
-        check(row.exclude_row.get_text() == "",
-              "a partition starts with nothing left out")
-        row.exclude_row.set_text("WHDLOAD/AGA, WHDLOAD/CD32")
-        check(row.spec().exclude == ["WHDLOAD/AGA", "WHDLOAD/CD32"],
-              f"exclusions are editable and split ({row.spec().exclude})")
-        kept = _PR(builder.AmigaPartitionSpec("DH2", None, "PFS3",
-                                              exclude=["WHDLOAD/CDTV"]),
-                   on_remove=lambda _r: None, on_change=None)
-        check(kept.exclude_row.get_text() == "WHDLOAD/CDTV"
-              and kept.spec().exclude == ["WHDLOAD/CDTV"],
-              "an existing exclusion is shown and survives a round trip")
+                  on_remove=lambda _r: None, on_change=None,
+                  machine=lambda: _m.MACHINES_BY_KEY["a500"])
+        check(row.spec().exclude == [],
+              "a partition with no content leaves nothing out")
+        row.hdf_row.set_path(str(SCRATCH / "GamesTree"))
+        found = sorted(row._category_rows)
+        check(len(found) == 4, f"the tree's categories are listed ({found})")
+        check(sorted(row.spec().exclude) == ["WHDLOAD/AGA", "WHDLOAD/CD32"],
+              f"an A500 leaves out what it cannot run ({row.spec().exclude})")
+        row._category_rows["WHDLOAD/AGA"].set_active(False)
+        check(row.spec().exclude == ["WHDLOAD/CD32"],
+              "the default can be overridden per category")
+
+        aga = _PR(builder.AmigaPartitionSpec("DH2", None, "PFS3"),
+                  on_remove=lambda _r: None, on_change=None,
+                  machine=lambda: next(m for m in _m.MACHINES if m.aga))
+        aga.hdf_row.set_path(str(SCRATCH / "GamesTree"))
+        check(aga.spec().exclude == [],
+              f"an AGA machine leaves nothing out ({aga.spec().exclude})")
+
+        kept = _PR(builder.AmigaPartitionSpec("DH3", None, "PFS3",
+                                              exclude=["WHDLOAD/Nowhere"]),
+                   on_remove=lambda _r: None, on_change=None,
+                   machine=lambda: _m.MACHINES_BY_KEY["a500"])
+        kept.hdf_row.set_path(str(SCRATCH / "GamesTree"))
+        check("WHDLOAD/Nowhere" in kept.spec().exclude,
+              "an exclusion the tree cannot explain is kept, not dropped")
 
         #  Applying the quick setup must not throw away partitions that have
         #  been arranged by hand.
