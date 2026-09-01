@@ -670,8 +670,14 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
                          f"({copied} files)")
         else:
             parent = volume.makedirs(destination) if destination else volume.root
-            volume.write_file(parent, source.name, source.read_bytes(),
-                              check_existing=True)
+            #  A tree copied as an overlay goes through the compatibility pass;
+            #  a single file did not, so a package that is one file - WHDLoad's
+            #  own preferences among them - was written exactly as found.
+            data = source.read_bytes()
+            if fixer is not None:
+                data = fixer.offer(f"{destination}/{source.name}".lstrip("/"),
+                                   data)
+            volume.write_file(parent, source.name, data, check_existing=True)
             progress.log(f"  overlay: {source.name} -> {destination or ':'}")
 
 

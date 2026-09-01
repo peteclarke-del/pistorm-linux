@@ -43,9 +43,13 @@ STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
 #  An emulator installation puts its own tuning there - PiMiga sets the JIT
 #  cache and CPU speed through uae-configuration - and on a PiStorm that
 #  command does not exist, so every launch runs something that is not there.
-WHDLOAD_PREFS = ["S/WHDLoad.prefs"]
+#  Matched on the file name, not the path.  A tree copied whole gives
+#  "S/WHDLoad.prefs", an overlay of that one file gives "S/WHDLoad.prefs" or
+#  just "WHDLoad.prefs" depending on where it is going, and a rule that
+#  insisted on one of those spellings silently did nothing for the others.
+WHDLOAD_PREFS = ["whdload.prefs"]
 #  iGame keeps an absolute path to every slave it knows about.
-GAMES_LIST = "/gameslist.csv"
+GAMES_LIST = "gameslist.csv"
 WHDLOAD_HOOKS = ("executestartup", "executecleanup")
 
 #  A saved screen mode points at a specific display board.  Carried over to a
@@ -272,9 +276,10 @@ class Compatibility:
         posix = relative.replace("\\", "/")
         if any(posix.lower() == f.lower() for f in STARTUP_FILES):
             return self._clean_startup(posix, data)
-        if any(posix.lower() == f.lower() for f in WHDLOAD_PREFS):
+        name = Path(posix).name.lower()
+        if name in WHDLOAD_PREFS:
             return self._clean_whdload_prefs(posix, data)
-        if posix.lower().endswith(GAMES_LIST):
+        if name == GAMES_LIST:
             return self._filter_games_list(posix, data)
         return data
 
