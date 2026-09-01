@@ -141,6 +141,60 @@ class TestCompatibilityChecks(_Scratch):
         self.assertTrue(hdfcheck.unresolved(findings))
 
 
+class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
+    """The rules have to fire on the paths the build actually produces.
+
+    Both of these were written and tested by calling the pass directly with a
+    full path - "S/WHDLoad.prefs", "Programs/iGame/gameslist.csv" - which is
+    not what a copy hands it.  The unit tests passed and the card came out
+    unchanged.
+    """
+
+    UAE_PREFS = (b"ExecuteStartup=uae-configuration cachesize 0\n"
+                 b"ExecuteCleanup=uae-configuration cpu_speed max\n"
+                 b"QuitKey=$59\n")
+
+    def build(self, overlay_dir):
+        out = self.scratch() / "card.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            image_size=200 * MIB, install_emu68=False, fix_compatibility=True,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0, volume_name="Sys",
+                content_folder=str(overlay_dir))]), QUIET)
+        return out
+
+    def read(self, image, path):
+        from pistorm_imager.core import amigaos           # noqa: PLC0415
+        volume, _label = amigaos.open_amiga_volume(image)
+        entry = volume.find(path)
+        return volume.read_file(entry).decode("latin-1") if entry else ""
+
+    def test_whdload_prefs_are_cleaned_when_copied_as_a_tree(self):
+        source = self.scratch() / "tree"
+        (source / "S").mkdir(parents=True)
+        (source / "S" / "WHDLoad.prefs").write_bytes(self.UAE_PREFS)
+        body = self.read(self.build(source), "S/WHDLoad.prefs")
+        self.assertIn(";ExecuteStartup=uae-configuration", body)
+        self.assertIn(";ExecuteCleanup=uae-configuration", body)
+        self.assertIn("QuitKey=$59", body)
+
+    def test_the_games_list_is_filtered_when_copied_as_a_tree(self):
+        source = self.scratch() / "tree"
+        games = source / "WHDLOAD" / "OCS" / "Driller"
+        games.mkdir(parents=True)
+        (games / "Driller.slave").write_bytes(b"x")
+        igame = source / "Programs" / "iGame"
+        igame.mkdir(parents=True)
+        (igame / "gameslist.csv").write_text(
+            "0;Driller;x;Sys:WHDLOAD/OCS/Driller/Driller.slave;0;0;0;0\n"
+            "0;Gone;x;Sys:WHDLOAD/OCS/Missing/missing.slave;0;0;0;0\n")
+        body = self.read(self.build(source), "Programs/iGame/gameslist.csv")
+        self.assertIn("Driller", body)
+        self.assertNotIn("Missing", body)
+
+
 class TestUserStartupOnBothFileSystems(_Scratch):
     """The generated S:User-Startup has to work on either system drive.
 
