@@ -375,6 +375,40 @@ def on_activate(app: ImagerApplication) -> None:
         check(window.stack.get_visible_child_name() == "quick",
               "going back returns to the quick start")
 
+        #  The first screen is the choice and nothing else.
+        window._set_customising(False)
+        window._set_quick_screen("choices")
+        shown = {name for name, group in (
+            ("choices", window.group_choices), ("back", window.group_back),
+            ("hardware", window.group_hardware), ("detected", window.group_detected),
+            ("image", window.image_group), ("target", window.group_target),
+            ("plan", window.group_plan)) if group.get_visible()}
+        check(shown == {"choices"},
+              f"the first screen shows only the three choices ({shown})")
+
+        window._choose_basic()
+        shown = {name for name, group in (
+            ("choices", window.group_choices), ("back", window.group_back),
+            ("hardware", window.group_hardware), ("image", window.image_group),
+            ("target", window.group_target)) if group.get_visible()}
+        check("choices" not in shown and {"back", "hardware", "target"} <= shown
+              and "image" not in shown,
+              f"a basic card shows its own options and a way back ({shown})")
+
+        window._choose_prepared()
+        shown = {name for name, group in (
+            ("choices", window.group_choices), ("back", window.group_back),
+            ("hardware", window.group_hardware), ("image", window.image_group),
+            ("target", window.group_target)) if group.get_visible()}
+        check("image" in shown and "hardware" not in shown
+              and {"back", "target"} <= shown,
+              f"a prepared system asks only for the image and the card ({shown})")
+
+        window._set_quick_screen("choices")
+        check(window.group_choices.get_visible()
+              and not window.group_back.get_visible(),
+              "Back returns to the three choices")
+
         #  Settings belong on the page they are about.
         window._set_customising(True)
         for group, page_name in ((window.group_hardware, "amiga"),
