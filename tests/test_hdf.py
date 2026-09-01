@@ -236,9 +236,10 @@ class TestUserStartupOnBothFileSystems(_Scratch):
             install_amigaos=True, adf_folder=str(self.ADFS),
             amiga_volume_name="Workbench", fix_compatibility=False,
             pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
-            #  iconlib contributes a line to S:User-Startup, which is what
-            #  makes the file get written at all.
-            package_keys=["iconlib"],
+            #  fblit contributes a line to S:User-Startup, which is what
+            #  makes that file get written at all; iconlib goes into
+            #  S:Startup-Sequence instead, so both routes are covered here.
+            package_keys=["fblit", "iconlib"],
             package_chipset="OCS", package_display="native",
             amiga_partitions=[
                 builder.AmigaPartitionSpec("DH0", None, dostype, True, 0,
@@ -254,7 +255,20 @@ class TestUserStartupOnBothFileSystems(_Scratch):
         entry = volume.find("S/User-Startup")
         self.assertIsNotNone(entry, f"{dostype}: no S:User-Startup written")
         body = volume.read_file(entry).decode("latin-1")
-        self.assertIn("LoadResident", body)
+        self.assertIn("FBlit", body)
+
+        #  icon.library cannot be soft-kicked from User-Startup - IPrefs has
+        #  already opened the ROM one - so it goes in above IPrefs instead.
+        startup = volume.find("S/Startup-Sequence")
+        self.assertIsNotNone(startup, f"{dostype}: no S:Startup-Sequence")
+        boot = volume.read_file(startup).decode("latin-1")
+        lines = [line.strip() for line in boot.splitlines()]
+        kick = next(i for i, line in enumerate(lines) if "LoadModule" in line)
+        iprefs = next(i for i, line in enumerate(lines)
+                      if line.lower().startswith("c:iprefs"))
+        self.assertLess(kick, iprefs,
+                        "the replacement must load before IPrefs opens the "
+                        "ROM icon.library")
         volume.f.close()
 
     @unittest.skipUnless(ADFS.is_dir(), "no Workbench disks available")

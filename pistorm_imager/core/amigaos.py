@@ -959,7 +959,7 @@ def tree_size(source: str | Path) -> tuple[int, int]:
 def install(handle, offset: int, total_blocks: int, chosen: dict[str, DiskMatch],
             progress: Progress, *, volume_name: str = "Workbench",
             dostype: int = amigafs.DOSTYPE_FFS_INTL,
-            close: bool = True) -> VolumeWriter:
+            close: bool = True, edit=None) -> VolumeWriter:
     """Format a partition and copy the chosen Workbench disks into it."""
     missing = missing_roles(chosen)
     if missing:
@@ -983,7 +983,8 @@ def install(handle, offset: int, total_blocks: int, chosen: dict[str, DiskMatch]
         with open(match.path, "rb") as source_handle:
             source = Volume(source_handle)
             copied, skipped = copy_volume(source, target,
-                                           match.role.destination, progress)
+                                           match.role.destination, progress,
+                                           compat=edit)
         total_copied += copied
         progress.log(f"  {copied} files copied"
                      + (f", {skipped} already present" if skipped else ""))
@@ -1108,3 +1109,72 @@ def ensure_drawer_icons(volume, drawers: Iterable[str],
         progress.log(f"  gave {path} an icon, so Workbench can show it")
         written += 1
     return written
+
+
+class StartupSequenceEditor:
+    """Insert lines into ``S:Startup-Sequence`` as it comes off the ADF.
+
+    Some things have to be done before Workbench opens its first icon, and
+    ``S:User-Startup`` is too late for them.  The clearest case is PeterK's
+    ``icon.library``: a modern Amiga icon keeps its picture in an appended
+    OS3.5 colour chunk and leaves the classic planar image empty, and the
+    40.1 icon.library in Kickstart 3.1 cannot read that - it draws nothing at
+    all, so a card full of perfectly good icons comes up with half of them
+    blank.  The replacement on disk handles them, but soft-kicking it from
+    ``S:User-Startup`` does nothing, because ``IPrefs`` has already opened the
+    ROM one by then and a library in use cannot be flushed.  Asked which was
+    live, the Amiga answered 40.1 while 51.4 sat unused in ``LIBS:``.
+
+    The file cannot be rewritten after the fact - this file system creates
+    files and never overwrites them - so it is edited in flight, on its way
+    from the floppy image onto the card.
+
+    It carries the same ``offer``/``skip`` pair the compatibility pass uses,
+    so it can be handed to ``copy_volume`` in exactly the same way.
+    """
+
+    #  Insert above the first of these that appears.  IPrefs is the one that
+    #  matters; SetPatch is the fallback for a Startup-Sequence that does not
+    #  run IPrefs at all.
+    ANCHORS = ("c:iprefs", "iprefs", "c:conclip")
+
+    def __init__(self, lines: Iterable[str], progress: Progress):
+        self.lines = [line for line in lines if line.strip()]
+        self.progress = progress
+        self.inserted = False
+
+    def skip(self, relative: str) -> bool:  # noqa: D102 - matches compat
+        return False
+
+    def finish(self, target, progress) -> None:
+        """Nothing to do at the end; the whole edit happens in ``offer``.
+
+        Part of the same trio ``copy_volume`` calls on the compatibility pass,
+        so it has to be here even though it does nothing.
+        """
+
+    def offer(self, relative: str, data: bytes) -> bytes:
+        posix = relative.replace("\\", "/").lower()
+        if not self.lines or posix != "s/startup-sequence":
+            return data
+        text = data.decode("latin-1")
+        out: list[str] = []
+        done = False
+        for line in text.splitlines(keepends=True):
+            if not done and line.strip().lower().split()[:1] \
+                    and line.strip().lower().split()[0] in self.ANCHORS:
+                out.append("; Added by the PiStorm imager: this has to happen "
+                           "before IPrefs opens\n")
+                out.append("; the ROM icon.library, or the one on disk can "
+                           "never replace it.\n")
+                out += [entry + "\n" for entry in self.lines]
+                done = True
+            out.append(line)
+        if not done:
+            #  Nothing recognisable to sit in front of: put it after SetPatch,
+            #  which is always the first line that matters.
+            return data
+        self.inserted = True
+        self.progress.log(f"  S:Startup-Sequence: added {len(self.lines)} "
+                          f"line(s) before IPrefs")
+        return "".join(out).encode("latin-1")
