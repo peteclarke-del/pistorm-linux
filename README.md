@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 317 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 321 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -577,7 +577,18 @@ three are optional (`narrator.device` is speech synthesis).
 
 The scan over-matches where two strings abut in a binary, which costs nothing: a
 name that is really a fragment of another resolves to nothing in the donor and
-is dropped. Settings are carried too, since files alone are not a working
+is dropped.
+
+**Key files travel with what they unlock.** Registered Amiga software looks for
+`<name>.key` beside the system rather than in its own drawer, so copying
+`xadmaster.library` without `S:xadmaster.key` leaves it crippled in a way that
+reads as the copy having failed. Anything being copied that has a matching key
+in `S:`, `L:` or `DEVS:keyfiles` takes it along — which picks up MUI's key too.
+
+**Some things no scan can find.** A WHDLoad slave asks for the Kickstart the
+game expects, and those are ROM images, not code: nothing names them inside a
+binary. Without `DEVS:Kickstarts` iGame launches a game and the machine falls
+over on the spot, so WHDLoad asks for that drawer outright. It is 6.8 MB. Settings are carried too, since files alone are not a working
 install - `ENVARC:mui`, `ENVARC:AWeb3` and `ENVARC:ClassAct`, and the
 `AWEB_APL:` assign that AWeb is found through.
 

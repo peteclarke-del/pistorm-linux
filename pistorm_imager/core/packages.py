@@ -152,6 +152,12 @@ CATALOGUE: list[Package] = [
                #  Its settings live here, not in the command: the quit key,
                #  whether it forces PAL, and the hooks it runs around a game.
                ("S/WHDLoad.prefs", "S")),
+        #  Nearly every slave asks WHDLoad for the Kickstart the game expects
+        #  and will not start without it.  These are ROM images rather than
+        #  code, so nothing names them inside a binary and no scan can find
+        #  them - they have to be asked for.  Without them iGame launches a
+        #  game and the machine falls over on the spot.
+        support=(("Devs/Kickstarts", "Devs/Kickstarts"),),
         download=Download("dev/misc/WHDLoad_usr.lha",
                           (("WHDLoad/C/WHDLoad", "C"),
                            ("WHDLoad/C/WHDLoadCD32", "C"),
@@ -199,6 +205,8 @@ CATALOGUE: list[Package] = [
         #  MUI reads its configuration from ENV:MUI, which Workbench fills
         #  from ENVARC: at boot.  Without it every MUI application starts on
         #  built-in defaults and loses whatever the donor had set up.
+        #  MUI's own key is picked up by the key rule in
+        #  resolve_dependencies, which matches it to this drawer's name.
         support=(("Prefs/Env-Archive/mui", "Prefs/Env-Archive/mui"),),
         startup=(
             "IF EXISTS SYS:System/MUI",
@@ -560,6 +568,38 @@ def _referenced(path: Path) -> set[str]:
     return {m.decode("latin-1") for m in REFERENCE.findall(data)}
 
 
+#  Where a system keeps the key files that register its software.
+KEY_DIRS = (("S", "S"), ("L", "L"), ("Devs/keyfiles", "Devs/keyfiles"))
+
+
+def _keys_for(names: Iterable[str], system: Path) -> list[tuple[str, str]]:
+    """Key files belonging to things being copied.
+
+    Registered Amiga software looks for ``<name>.key`` beside the system, not
+    inside its own drawer: xadmaster.library wants ``S:xadmaster.key`` and
+    telser.device wants ``S:telser.key``.  Copy the library and leave the key
+    and it runs crippled or not at all, which looks like the copy having
+    failed.  Matched on the stem, so a key is only taken when the thing it
+    unlocks is going too.
+    """
+    stems = {Path(name).stem.lower() for name in names}
+    out: list[tuple[str, str]] = []
+    for folder, destination in KEY_DIRS:
+        here = system / folder
+        if not here.is_dir():
+            continue
+        try:
+            entries = list(here.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_file() or entry.suffix.lower() != ".key":
+                continue
+            if entry.stem.lower() in stems:
+                out.append((str(entry), destination))
+    return out
+
+
 def _provided_by(pairs: Iterable[tuple[str, str]]) -> set[str]:
     """Every file name these copies will put on the card, lower-cased."""
     names: set[str] = set()
@@ -640,6 +680,18 @@ def resolve_dependencies(pairs: list[tuple[str, str]],
             found_now.append((str(found[0]), found[1]))
         out += found_now
         frontier = [Path(source) for source, _destination in found_now]
+
+    #  Whatever is going, take the key that registers it.  Deduplicated
+    #  against what is already being copied as well as what was resolved: the
+    #  writer creates files and refuses to overwrite, so a second copy of one
+    #  key would end the build.
+    taken = {Path(source).name for source, _d in pairs}
+    taken |= {Path(source).name for source, _d in out}
+    already = {source for source, _d in pairs} | {source for source, _d in out}
+    for pair in _keys_for(taken, system):
+        if pair[0] not in already:
+            already.add(pair[0])
+            out.append(pair)
     if out and progress is not None:
         progress.log(f"  {len(out)} further file(s) the chosen software needs "
                      f"were found in the donor system")
