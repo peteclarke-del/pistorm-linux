@@ -609,8 +609,22 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
     soft-kicked before ``IPrefs`` opens the ROM one, which is why this cannot
     live in ``S:User-Startup`` with the rest of the package startup lines.
     """
-    if "iconlib" not in packages.expand(config.package_keys):
-        return None
+    chosen = packages.expand(config.package_keys)
+
+    #  What the floppies install that a donor is about to better.  Workbench
+    #  3.1's SetPatch is 40.16 from 1994 and knows nothing of the 68040, so on
+    #  a PiStorm it leaves the CPU half set up; the copy is refused here so
+    #  the newer one can take its place.
+    replace: list[str] = []
+    if "setpatch" in chosen and config.package_donor:
+        system = packages.donor_system(config.package_donor)
+        if system is not None and (system / "C/SetPatch").exists():
+            replace.append("C/SetPatch")
+
+    if "iconlib" not in chosen:
+        if not replace:
+            return None
+        return amigaos.StartupSequenceEditor([], progress, replace=replace)
     #  LoadModule, not LoadResident.  LoadResident cannot displace a library
     #  that is already in the system list, and icon.library is there from the
     #  moment the machine starts; LoadModule loads the replacement and soft
@@ -619,7 +633,7 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
     return amigaos.StartupSequenceEditor(
         ["IF EXISTS LIBS:icon.library",
          "   C:LoadModule LIBS:workbench.library LIBS:icon.library",
-         "EndIF"], progress)
+         "EndIF"], progress, replace=replace)
 
 
 def _write_user_startup(volume, config: "BuildConfig",

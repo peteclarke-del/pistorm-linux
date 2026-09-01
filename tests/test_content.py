@@ -396,3 +396,49 @@ class WhdloadNeedsKickstarts(unittest.TestCase):
         support = dict(packages.CATALOGUE_BY_KEY["whdload"].support)
         self.assertIn("Devs/Kickstarts", support)
         self.assertEqual(support["Devs/Kickstarts"], "Devs/Kickstarts")
+
+
+class UpdatesForAnAcceleratedMachine(unittest.TestCase):
+    """Workbench 3.1 is not set up for the CPU a PiStorm provides.
+
+    Its SetPatch is 40.16 from 1994, which predates the 68040 and does not
+    set one up, and its 68040.library is 37.30.  On a card built from the
+    floppies that leaves WHDLoad taking a privilege violation the moment it
+    tries to start a game.
+    """
+
+    def test_the_cpu_libraries_are_offered_as_an_update(self):
+        keys = {p.key for p in
+                packages.in_category(packages.Category.UPDATES)}
+        self.assertIn("mmulib", keys)
+        self.assertIn("setpatch", keys)
+
+    def test_whdload_cannot_be_installed_without_them(self):
+        order = packages.expand(["whdload"])
+        for key in ("setpatch", "mmulib"):
+            self.assertIn(key, order)
+            self.assertLess(order.index(key), order.index("whdload"))
+
+    def test_the_cpu_libraries_come_from_aminet_not_a_donor(self):
+        #  They are freely distributable, so a card built from floppies alone
+        #  can still have them - which is the whole point of offering them.
+        mmulib = packages.CATALOGUE_BY_KEY["mmulib"]
+        self.assertTrue(mmulib.download)
+        self.assertEqual(mmulib.items, ())
+        self.assertEqual(dict(mmulib.download.items)["MMULib/Libs"], "Libs")
+
+    def test_setpatch_can_only_come_from_a_donor(self):
+        #  Commodore's, from a later release, and not on Aminet.
+        setpatch = packages.CATALOGUE_BY_KEY["setpatch"]
+        self.assertIsNone(setpatch.download)
+        self.assertEqual(dict(setpatch.items)["C/SetPatch"], "C")
+
+    def test_a_suggested_build_updates_the_cpu_support(self):
+        from pistorm_imager.core.machines import Chipset, Display  # noqa
+        donor = Path(tempfile.mkdtemp(prefix="pistorm-donor-"))
+        self.addCleanup(shutil.rmtree, donor, True)
+        (donor / "System" / "C").mkdir(parents=True)
+        (donor / "System" / "C" / "SetPatch").write_bytes(b"x")
+        machine = machines.MACHINES[0]
+        chosen = packages.suggested(machine, Display.NATIVE, donor=donor)
+        self.assertIn("setpatch", chosen)

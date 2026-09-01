@@ -48,6 +48,7 @@ class Category(enum.Enum):
     """How the packages are grouped when they are offered."""
 
     SYSTEM = "System"
+    UPDATES = "Updates and patches"
     LOOK = "Look and feel"
     SPEED = "Speed"
     NETWORK = "Networking"
@@ -158,6 +159,11 @@ CATALOGUE: list[Package] = [
         #  them - they have to be asked for.  Without them iGame launches a
         #  game and the machine falls over on the spot.
         support=(("Devs/Kickstarts", "Devs/Kickstarts"),),
+        #  Both of these are about the CPU rather than about WHDLoad, but
+        #  WHDLoad is what falls over without them: it takes a privilege
+        #  violation the moment it tries to start a game on a 68040 that
+        #  nothing has set up properly.
+        requires=("setpatch", "mmulib"),
         download=Download("dev/misc/WHDLoad_usr.lha",
                           (("WHDLoad/C/WHDLoad", "C"),
                            ("WHDLoad/C/WHDLoadCD32", "C"),
@@ -192,6 +198,33 @@ CATALOGUE: list[Package] = [
         support=(("Libs/guigfx.library", "Libs"),
                  ("Libs/render.library", "Libs")),
         requires=("mui",),
+    ),
+    Package(
+        "mmulib", "68k CPU libraries (MMULib)",
+        "Modern replacements for the CPU support libraries. Workbench 3.1 "
+        "ships 68040.library 37.30 from 1994; these are maintained, and a "
+        "PiStorm is a 68040-class machine that depends on them.",
+        category=Category.UPDATES,
+        #  Thomas Richter's MMULib, freely distributable from Aminet.  The
+        #  whole Libs drawer goes in: 68020 through 68060, 680x0, mmu,
+        #  memory and softieee, all of which the ROM's own are older than.
+        download=Download("util/libs/MMULib.lha",
+                          (("MMULib/Libs", "Libs"),)),
+        default=True,
+    ),
+    Package(
+        "setpatch", "A SetPatch that knows about the 68040",
+        "Workbench 3.1 ships SetPatch 40.16, from 1994 - it predates the "
+        "68040 and does not set one up. A PiStorm is a 68040-class machine, "
+        "so the newer one matters.",
+        category=Category.UPDATES,
+        #  Only a donor can supply this: it is Commodore's, from a later
+        #  release, and is not on Aminet.  Without it WHDLoad takes a
+        #  privilege violation the moment it tries to start a game, because
+        #  the CPU it is running on was never properly set up.
+        items=(("C/SetPatch", "C"),),
+        support=(("C/PatchRAM", "C"),),
+        default=True,
     ),
     Package(
         "mui", "MUI",
@@ -935,6 +968,10 @@ def suggested(machine: Machine, display: Display, *,
 
     The reasoning, in one place rather than scattered through the interface:
 
+    * A PiStorm is a 68040-class machine and Workbench 3.1 is not set up for
+      one: its SetPatch is from 1994 and its 68040.library is 37.30.  The
+      CPU libraries are updated on every build, because without them WHDLoad
+      takes a privilege violation the moment it starts a game.
     * Everything needs WHDLoad, an archiver and Installer.
     * A faster icon.library is free speed on any machine.
     * On a native screen the cost is the chipset drawing it, so FBlit, FText
@@ -943,7 +980,8 @@ def suggested(machine: Machine, display: Display, *,
     * On an RTG screen there is no blitter in the way; Picasso96 is the point
       of it, and a heavier desktop becomes affordable.
     """
-    chosen = ["whdload", "lha", "installer", "igame", "iconlib",
+    chosen = ["mmulib", "setpatch",
+              "whdload", "lha", "installer", "igame", "iconlib",
               "magicmenu", "visualprefs"]
     if display.uses_native and machine.chipset is not Chipset.NONE:
         chosen += ["fblit", "ftext", "fullpalette", "magicwb"]
