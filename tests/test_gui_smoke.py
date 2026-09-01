@@ -361,6 +361,8 @@ def on_activate(app: ImagerApplication) -> None:
               f"the quick start is the only page to begin with ({visible})")
         check(not window.back_button.get_visible(),
               "and there is nothing to go back to")
+        check(not window.bottom_bar.get_visible(),
+              "nor anything to summarise or write yet")
 
         window._set_customising(True)
         visible = {name for name in ("quick", "source", "storage", "amiga",
@@ -369,8 +371,9 @@ def on_activate(app: ImagerApplication) -> None:
                        window.stack.get_child_by_name(name)).get_visible()}
         check("quick" not in visible and "storage" in visible,
               f"customising shows the workflow and hides the quick start ({visible})")
-        check(window.back_button.get_visible(),
-              "and offers a way back to it")
+        check(window.back_button.get_visible()
+              and window.bottom_bar.get_visible(),
+              "and offers a way back to it, with the summary and Write")
         window._set_customising(False)
         check(window.stack.get_visible_child_name() == "quick",
               "going back returns to the quick start")
@@ -684,9 +687,17 @@ def on_activate(app: ImagerApplication) -> None:
         #  Every menu item must be reachable as an action, or choosing it does
         #  nothing and the menu stays open.
         for name in ("save-settings", "load-settings", "forget-session",
-                     "inspect-target", "about"):
+                     "inspect-target", "check-updates", "about"):
             check(window.lookup_action(name) is not None,
                   f"menu action {name} exists")
+
+        #  The answer is shown without asking GitHub anything in a test.
+        from pistorm_imager.core import updates as _u  # noqa: PLC0415
+        window._updates_answered(None)
+        window._updates_answered(_u.Release("v0.0.1", "Ancient", "old", "u"))
+        window._updates_answered(_u.Release("v99.0.0", "Future",
+                                            "It flies now", "u"))
+        check(True, "every update answer renders without error")
 
         hdf_index = next(i for i, m in enumerate(MODES)
                          if m[1] is builder.BuildMode.HDF)
