@@ -161,11 +161,10 @@ CATALOGUE: list[Package] = [
         #  them - they have to be asked for.  Without them iGame launches a
         #  game and the machine falls over on the spot.
         support=(("Devs/Kickstarts", "Devs/Kickstarts"),),
-        #  Both of these are about the CPU rather than about WHDLoad, but
-        #  WHDLoad is what falls over without them: it takes a privilege
-        #  violation the moment it tries to start a game on a 68040 that
-        #  nothing has set up properly.
-        requires=("setpatch", "mmulib"),
+        #  These were once required here, on the reasoning that a 68040
+        #  needs modern CPU support.  Tested, the opposite is true: either
+        #  of them stops every WHDLoad game dead.  See their own entries.
+
         download=Download("dev/misc/WHDLoad_usr.lha",
                           (("WHDLoad/C/WHDLoad", "C"),
                            ("WHDLoad/C/WHDLoadCD32", "C"),
@@ -207,18 +206,24 @@ CATALOGUE: list[Package] = [
         "ships 68040.library 37.30 from 1994; these are maintained, and a "
         "PiStorm is a 68040-class machine that depends on them.",
         category=Category.UPDATES,
-        #  Thomas Richter's MMULib, freely distributable from Aminet.  The
-        #  whole Libs drawer goes in: 68020 through 68060, 680x0, mmu,
-        #  memory and softieee, all of which the ROM's own are older than.
+        #  Thomas Richter's MMULib, freely distributable from Aminet.
+        #
+        #  NOT on by default, and not to be taken lightly: with these
+        #  installed, every WHDLoad game dies the moment it is launched -
+        #  a yellow screen, which is a CPU exception with no operating
+        #  system left to draw a Guru, then nothing.  Proven by building
+        #  the same card with and without them and running the same game.
         download=Download("util/libs/MMULib.lha",
                           (("MMULib/Libs", "Libs"),)),
-        default=True,
+        note="Do not install this on a card for games: it stops every "
+             "WHDLoad title from starting. Worth having on a machine used "
+             "for applications, where the newer CPU support is the point.",
     ),
     Package(
         "setpatch", "A SetPatch that knows about the 68040",
         "Workbench 3.1 ships SetPatch 40.16, from 1994 - it predates the "
-        "68040 and does not set one up. A PiStorm is a 68040-class machine, "
-        "so the newer one matters.",
+        "68040 and does not set one up. Newer, but it stops WHDLoad games "
+        "starting, so it is off unless you know you want it.",
         category=Category.UPDATES,
         #  Only a donor can supply this: it is Commodore's, from a later
         #  release, and is not on Aminet.  Without it WHDLoad takes a
@@ -226,7 +231,11 @@ CATALOGUE: list[Package] = [
         #  the CPU it is running on was never properly set up.
         items=(("C/SetPatch", "C"),),
         support=(("C/PatchRAM", "C"),),
-        default=True,
+        #  Same story as MMULib: replacing Commodore's SetPatch leaves
+        #  WHDLoad games hanging on a black screen.  Tested one variable at
+        #  a time against a card that runs the game.
+        note="Do not install this on a card for games: WHDLoad titles hang "
+             "instead of starting.",
     ),
     Package(
         "mui", "MUI",
@@ -1071,10 +1080,10 @@ def suggested(machine: Machine, display: Display, *,
 
     The reasoning, in one place rather than scattered through the interface:
 
-    * A PiStorm is a 68040-class machine and Workbench 3.1 is not set up for
-      one: its SetPatch is from 1994 and its 68040.library is 37.30.  The
-      CPU libraries are updated on every build, because without them WHDLoad
-      takes a privilege violation the moment it starts a game.
+    * The CPU patches are deliberately NOT here.  Newer SetPatch and CPU
+      libraries look like an obvious win on a 68040-class machine, and they
+      stop every WHDLoad game from running - which is what these cards are
+      mostly for.
     * Everything needs WHDLoad, an archiver and Installer.
     * A faster icon.library is free speed on any machine.
     * On a native screen the cost is the chipset drawing it, so FBlit, FText
@@ -1083,8 +1092,7 @@ def suggested(machine: Machine, display: Display, *,
     * On an RTG screen there is no blitter in the way; Picasso96 is the point
       of it, and a heavier desktop becomes affordable.
     """
-    chosen = ["mmulib", "setpatch",
-              "whdload", "lha", "installer", "igame", "iconlib",
+    chosen = ["whdload", "lha", "installer", "igame", "iconlib",
               "magicmenu", "visualprefs"]
     if display.uses_native and machine.chipset is not Chipset.NONE:
         chosen += ["fblit", "ftext", "fullpalette", "magicwb"]
