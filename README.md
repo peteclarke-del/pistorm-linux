@@ -17,7 +17,6 @@ Four tasks, all ending with the same boot-partition customisation pass:
 | **Build a new card** | Writes an MBR with a FAT32 boot partition (Emu68 + Raspberry Pi firmware + your Kickstart) and a type `0x76` Amiga partition carrying a Rigid Disk Block. Optionally installs AmigaOS onto it from a set of Workbench floppy images, so the card boots straight to Workbench. |
 | **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
 | **Import an Amiga hard disk image** | Takes a WinUAE/FS-UAE/HstWB `.hdf` — the Amiga drive on its own, with no partition table — and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
-
 | **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
 
 It can also produce a bare **Amiga hard disk image** instead of a card, which
@@ -68,6 +67,49 @@ pip install --user .
 cp pistorm-imager.desktop ~/.local/share/applications/
 ```
 
+## The window
+
+It opens on a choice of three, and nothing else, because a choice with a page of
+settings under it is not a choice — the settings are the thing being chosen
+between:
+
+| | |
+| --- | --- |
+| **A basic PiStorm card** | Emu68 and an empty Amiga drive, partitioned and formatted, ready to install Workbench onto from floppies. Leads to which Amiga it is for, what was found to install from, the card and its size, and the plan. |
+| **Write a prepared system** | A finished image you have downloaded — CaffeineOS, an Emu68 Hatcher image, or a backup of a card. Leads to the image chooser and the card, and nothing about the machine, because the image brings its own answer to that. |
+| **Customise an installation** | The full workflow: sources, storage, the software to add, boot options. Everything the other two decide for you. |
+
+Each screen is laid out in the order its decisions are made, and ends with the
+same block: **what this will build**, and `Apply this setup` beneath it. That
+block finishes whichever route was taken — the last thing on a quick screen, or
+the last thing on the Target page when customising — so the same decision reads
+the same way whichever way it was reached.
+
+Nothing is written until that Apply has been pressed. Write stays off before it,
+and goes off again whenever something changes what would actually be written —
+a partition renamed two pages away puts the setup back to needing another look,
+and says so beside the summary. Apply itself is offered only once enough has been
+chosen for a card to boot: not merely a configuration that will write, but one
+with a Kickstart for Emu68 to map and floppies for an install from floppies. What
+is still wanted is named where the button is —
+
+> Still needed: a Kickstart ROM, and 1 more
+
+— and a prepared image is exempt, because the image and a card are the whole
+requirement.
+
+`Back` sits bottom left, in the same bar as `Write`, and always returns to the
+choice. It withdraws the acceptance with it, so reconsidering the choice that led
+to a setup does not leave Write lit while you do.
+
+**Check for updates…** in the menu asks GitHub for this project's releases and
+says what it found — the newest with its notes and a way to go and get it, or
+that this is already the newest. It is asked for rather than done at startup: a
+tool that prepares a card should not reach out to the internet unless someone has
+asked it a question. No network, a changed API or a repository with no releases
+yet are all reported as the question going unanswered, because none of them mean
+anything is wrong with the copy in front of you.
+
 ## Privileges
 
 The interface never runs as root. All downloading and unpacking happens as you;
@@ -115,6 +157,10 @@ pistorm_imager/
     machines.py  target machine profiles: chipset, board, Kickstart, display
     presets.py   turns a machine and a source into a complete build
     packages.py  optional software taken from a system you already have
+    content.py   what a games or demos tree is divided into, and what runs here
+    distributions.py  recognising a prepared system and what it expects
+    postwrite.py adapting a prepared system after it has been written
+    updates.py   asking GitHub whether there is a newer release of this tool
     devices.py   finding and describing removable drives
     prepare.py   partitioning and formatting the target
     util.py      sizes, progress reporting, stream copying
@@ -157,7 +203,9 @@ Emu68 installation, Kickstart handling, `config.txt`/`cmdline.txt`, RDB
 creation, image writing (including compressed sources), and expansion into
 unused space. On top of that: PFS3 and FFS volumes created and filled, PiMiga
 and `.hdf` drives imported and adapted, per-machine presets, the display
-handling described above, and optional software copied from a donor system.
+handling described above, optional software copied from a donor system or
+fetched from Aminet, prepared systems recognised and adapted after writing, and
+per-category exclusions followed through into iGame's list.
 
 Validated against real material: a full Workbench 3.1 install built from the
 original floppy images (643 files, verified in `xdftool`), a 106 GiB HstWB
@@ -171,11 +219,17 @@ covers the parts every build shares — the MBR, the FAT32 boot partition, the
 Emu68 and firmware payload, `config.txt` and `cmdline.txt`, the `0x76`
 partition, the Rigid Disk Block inside it and the AmigaOS install on top.
 
-**Not yet tried on hardware:** everything past that. Importing PiMiga or an
-`.hdf`; the RTG and dual-output display handling, including the switcher
-scripts; optional software copied from a donor system; multi-partition layouts.
-Those are checked against the format specifications and against independent
-tools, which is not the same as an Amiga booting from them.
+**Booted in an emulator:** a card built here from PiMiga — its System drive on a
+multi-gigabyte PFS3 partition — has been lifted out as an `.hdf` and booted in
+FS-UAE, which runs the real PFS3 19.2 handler out of the RDB rather than this
+project's own reader. That is what found and then settled five PFS3 writer bugs
+that were silent at build time and fatal at mount.
+
+**Not yet tried on hardware:** everything past the basic card. The RTG and
+dual-output display handling, including the switcher scripts; optional software
+copied from a donor system; multi-partition layouts; adapting a written prepared
+system. Those are checked against the format specifications, against independent
+tools and in an emulator, which is not the same as an Amiga booting from them.
 
 ## One primary source, not several
 
@@ -263,6 +317,23 @@ list of drives.
 Recognition is by volume label, which is the one thing that survives an author
 repartitioning between releases. An unknown image is never guessed at.
 
+### Adapting one after it has been written
+
+Writing a prepared image copies raw sectors, so none of the file-by-file
+compatibility work described below happens to it — which is right, because a
+system built for Emu68 already has the drivers it needs. What it cannot know is
+which *screen* this machine is watched on. CaffeineOS's startup already branches
+on the board it finds and applies `ENVARC:Sys/screenmode.prefs.PI` on a PiStorm;
+with no monitor on the Pi's HDMI output, that opens Workbench where nobody can
+see it.
+
+An optional pass after writing blanks the saved mode, so the machine keeps the
+native screen it started on and a mode can be chosen in Prefs and saved there. It
+only ever *removes* a saved choice and never installs one, because which mode
+suits a monitor is not something this can know. Blanking a file's data touches no
+metadata — the extents are already allocated — which is what makes it safe on a
+finished volume, where deleting a file would not be.
+
 ## Checking an image against the machine
 
 Plenty of ready-made drives are built for an A1200 and say so only by the
@@ -277,8 +348,31 @@ says:
 `STORAGE:Monitors` is deliberately ignored - AmigaOS ships the whole set there
 uninstalled, so its contents say nothing about what a system expects.
 
-Chipset-specific game collections are handled separately: on a machine without
-AGA, the `WHDLOAD/AGA` and `WHDLOAD/CD32` categories are simply not copied.
+### What to leave out of a games or demos drive
+
+A WHDLoad collection is arranged by category, and not every category suits every
+Amiga: the AGA games on an OCS A500 waste gigabytes on titles that cannot run and
+leave iGame offering them. The categories are **discovered from the tree itself**
+rather than fixed here, because collections differ and grow — PiMiga's Games
+drawer has ten (ARCADIA, BETA, CD32, CDTV, Cinemaware, Foreign, Mags, NTSC, OCS
+and AGA) and its Demos drawer four, one of which appears in no other collection
+this project has seen.
+
+Each is a switch on the partition, with the count of titles in it. What is fixed
+is what a handful of well-known names *mean*, which is enough to propose a
+default: AGA and CD32 need AGA, ECS needs ECS, and CDTV does not — it is an A500
+with a CD drive, which is easy to assume otherwise. A name nothing is known about
+is offered with nothing assumed, so it is never excluded by default. The default
+follows the machine and moves with it, and every switch stays changeable, because
+"this machine cannot run it" is a sensible default and not a rule.
+
+Leaving a collection out is followed through to **iGame's list**, which keeps an
+absolute path to every slave it knows about; entries whose slave will not be on
+the card are dropped, honouring the same exclusions the copy uses. On PiMiga's
+real list that is 4,201 entries in and 3,886 out. Matching ignores case, because
+the list was written on a case-insensitive Amiga volume and is checked against a
+Linux tree where `WHDLoad` and `WHDLOAD` are two different directories, and an
+entry on a volume nothing here fills is kept rather than dropped unchecked.
 
 ## Software to add to a floppy install
 
@@ -499,7 +593,12 @@ with these fixes applied automatically:
 * the Picasso96 monitor icon in `DEVS:Monitors` is rewritten with
   `BOARDTYPE=VideoCore`, which is how Picasso96 chooses its board;
 * startup scripts have emulator-only commands (`uae-configuration` and friends)
-  commented out, so they cannot fail the boot.
+  commented out, so they cannot fail the boot;
+* `S:WHDLoad.prefs` is cleaned the same way. This is where WHDLoad's settings
+  actually live — the quit key, whether it forces PAL, and the hooks it runs
+  around every game — and PiMiga's copy sets `ExecuteStartup` and
+  `ExecuteCleanup` to `uae-configuration`, Amiberry's own control program. Carried
+  over unedited, a card runs a missing command before and after every single game.
 
 Every change is reported in the log, and none of them touch your files. Turn the
 whole thing off with `fix_compatibility=False` if you would rather do it by hand.

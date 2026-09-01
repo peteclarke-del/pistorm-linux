@@ -653,8 +653,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  settings that happens to be first.
         choices = Adw.PreferencesGroup(
             title="What would you like to do?",
-            description="Everything below applies to whichever you pick. "
-                        "Choose the card and its size, then Write.")
+            #  Nothing is below it any more - this screen is the choice
+            #  and nothing else - so it can no longer promise settings here.
+            description="Each one leads to what it needs, and back here if "
+                        "you change your mind.")
         for title, subtitle, label, handler in (
             ("A basic PiStorm card",
              "Emu68 and an empty Amiga drive, partitioned and formatted, ready "
