@@ -583,10 +583,15 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             f"only be installed onto an FFS or PFS3 partition."
         )
     editor = _startup_sequence_editor(config, progress)
+    #  One pass for the whole partition. Each overlay used to get its own, so
+    #  no single one of them ever saw everything the card was given - and the
+    #  floppies were seen by none of them.
+    fixer = _make_fixer(config, progress)
     volume = amigaos.install(handle, offset, partition.blocks(table.geometry),
                              chosen, progress,
                              volume_name=config.amiga_volume_name,
-                             dostype=dostype, close=False, edit=editor)
+                             dostype=dostype, close=False,
+                             edit=_BothPasses(editor, fixer))
     if editor is not None and not editor.inserted:
         progress.log("WARNING: S:Startup-Sequence could not be edited, so the "
                      "icon.library on disk will not replace the one in ROM "
@@ -595,9 +600,6 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     #  reopening a finished volume would mean rebuilding its allocation state.
     spec = next((s for s in config.amiga_partitions
                  if s.name.upper() == partition.drive_name.upper()), None)
-    #  One pass for the whole partition. Each overlay used to get its own, so
-    #  no single one of them ever saw everything the card was given.
-    fixer = _make_fixer(config, progress)
     if spec is not None:
         extra = _package_overlays(config, list(spec.overlays), progress)
         if spec.overlays or extra:
@@ -611,6 +613,40 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     fixer.finish(volume, progress)
     progress.step("Finalising the Amiga file system")
     volume.close()
+
+
+class _BothPasses:
+    """Show every file to the startup editor and to the compatibility pass.
+
+    The floppies were only ever shown to the editor, so no compatibility rule
+    saw the operating system itself - only the packages laid on top of it. A
+    monitor driver sitting in the Storage disk was invisible, and a card built
+    from floppies went out with no way to choose a screen mode.
+    """
+
+    #  The editor finishes with each tree, because it has to put its lines
+    #  into the Startup-Sequence as the disk carrying it is copied. The
+    #  compatibility pass is finished once, by the builder, when the volume
+    #  is full.
+    finish_with_each_tree = True
+
+    def __init__(self, editor, fixer):
+        self.editor = editor
+        self.fixer = fixer
+
+    def offer(self, relative: str, data: bytes) -> bytes:
+        if self.editor is not None:
+            data = self.editor.offer(relative, data)
+        return self.fixer.offer(relative, data)
+
+    def skip(self, relative: str) -> bool:
+        if self.editor is not None and self.editor.skip(relative):
+            return True
+        return self.fixer.skip(relative)
+
+    def finish(self, target, progress: Progress) -> None:
+        if self.editor is not None:
+            self.editor.finish(target, progress)
 
 
 def _startup_sequence_editor(config: BuildConfig, progress: Progress):
@@ -762,8 +798,14 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
                 continue
             data = source.read_bytes()
             if fixer is not None:
-                data = fixer.offer(f"{destination}/{source.name}".lstrip("/"),
-                                   data)
+                relative = f"{destination}/{source.name}".lstrip("/")
+                data = fixer.offer(relative, data)
+                #  A tree's files have always been able to be refused - an
+                #  emulator's monitor is kept back and written out again under
+                #  the name this machine's board uses. A single file could not
+                #  be, so it went on the card unchanged and under the old name.
+                if fixer.skip(relative):
+                    continue
             volume.write_file(parent, source.name, data, check_existing=True)
             progress.log(f"  overlay: {source.name} -> {destination or ':'}")
 

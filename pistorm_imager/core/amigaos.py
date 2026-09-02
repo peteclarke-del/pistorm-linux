@@ -311,8 +311,12 @@ def copy_volume(source, target, destination: str, progress: Progress,
                 continue
             data = source.read_file(entry)
             if compat is not None:
-                data = compat.offer(path, data)
-                if compat.skip(path):
+                #  Where it lands on the card, not where it sits on the disk
+                #  being copied: a rule about Storage has to see Storage.
+                landed = f"{destination}/{path}".lstrip("/") \
+                    if destination else path
+                data = compat.offer(landed, data)
+                if compat.skip(landed):
                     skipped += 1
                     continue
             target.write_file(parent, name, data, protect=entry.protect,
@@ -884,8 +888,15 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
             else:
                 data = _read_source(path, relative, compat, progress)
                 if compat is not None:
-                    data = compat.offer(relative, data)
-                    if compat.skip(relative):
+                    #  Where the file will live on the card, not where it came
+                    #  from: the rules are about the card. The Storage floppy
+                    #  is copied to Storage, so its Monitors/PAL is the card's
+                    #  Storage/Monitors/PAL - and asking about the source path
+                    #  meant no rule about Storage ever matched anything.
+                    landed = f"{destination}/{relative}".lstrip("/") \
+                        if destination else relative
+                    data = compat.offer(landed, data)
+                    if compat.skip(landed):
                         continue
                 if placed.name.lower().endswith(ICON_SUFFIX):
                     data, repointed = _repoint_icon(

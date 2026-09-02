@@ -822,3 +822,34 @@ class TheGraphicsPassSeesTheWholeCard(unittest.TestCase):
                                       package_keys=["whdload"])
         self.assertFalse(builder._make_fixer(without, Progress())
                          ._picasso_installed)
+
+
+class RulesAreAboutWhereAFileLands(unittest.TestCase):
+    """A rule naming Storage or Picasso96 has to match the card's path.
+
+    The floppies and the packages are copied into a destination, and the path
+    offered to the compatibility pass used to be relative to the source, so
+    the Storage floppy's Monitors/PAL never looked like Storage/Monitors/PAL
+    and no rule about Storage ever fired.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.source = Path(self.tmp.name) / "storage-floppy"
+        (self.source / "Monitors").mkdir(parents=True)
+        (self.source / "Monitors" / "PAL").write_bytes(b"PAL" * 64)
+        (self.source / "Monitors" / "PAL.info").write_bytes(b"i" * 32)
+
+    def test_a_stored_monitor_is_recognised_through_its_destination(self):
+        fixer = compat.Compatibility(Progress(), enabled=True, native=True)
+        for name in ("PAL", "PAL.info"):
+            data = (self.source / "Monitors" / name).read_bytes()
+            fixer.offer(f"Storage/Monitors/{name}", data)
+        self.assertIn("pal", fixer._stored_monitors)
+
+    def test_the_source_path_alone_is_not_enough(self):
+        """Which is what the copy used to pass, and why nothing matched."""
+        fixer = compat.Compatibility(Progress(), enabled=True, native=True)
+        fixer.offer("Monitors/PAL", b"PAL" * 64)
+        self.assertEqual(fixer._stored_monitors, {})
