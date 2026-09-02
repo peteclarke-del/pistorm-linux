@@ -495,7 +495,7 @@ class NiceToHaves(unittest.TestCase):
                                      "digibooster"}),
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
-                                     "diropus4"})):
+                                     "diropus4", "kingcon"})):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
 
@@ -1129,8 +1129,11 @@ class IgameNeedsNoDonor(unittest.TestCase):
 
     def test_it_declares_the_classes_it_opens(self):
         needs = set(packages.CATALOGUE_BY_KEY["igame"].requires)
+        #  Not Guigfx: it and render.library are compiled for a processor
+        #  with an FPU, which Emu68 does not give a PiStorm, and iGame lists
+        #  them as optional.
         self.assertEqual(needs, {"mui", "mcc_nlist", "mcc_texteditor",
-                                 "mcc_guigfx"})
+                                 "mcc_urltext"})
 
     def test_each_of_those_can_be_downloaded(self):
         for key in packages.CATALOGUE_BY_KEY["igame"].requires:
@@ -1140,7 +1143,7 @@ class IgameNeedsNoDonor(unittest.TestCase):
                                  f"donor cannot have iGame")
 
     def test_the_classes_land_where_mui_looks_for_them(self):
-        for key in ("mcc_nlist", "mcc_texteditor", "mcc_guigfx"):
+        for key in ("mcc_nlist", "mcc_texteditor", "mcc_urltext"):
             places = {dest for _src, dest
                       in packages.CATALOGUE_BY_KEY[key].download.items}
             self.assertIn("System/MUI/Libs/mui", places, key)
@@ -1148,4 +1151,25 @@ class IgameNeedsNoDonor(unittest.TestCase):
     def test_ticking_igame_brings_them_all(self):
         self.assertEqual(
             packages.expand(["igame"]),
-            ["mui", "mcc_nlist", "mcc_texteditor", "mcc_guigfx", "igame"])
+            ["mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext", "igame"])
+
+
+class NothingOnTheCardNeedsAnFpu(unittest.TestCase):
+    """Emu68 gives a PiStorm a 68040 with no FPU. An FPU instruction on such
+    a machine is a line-F exception - guru 8000000B, which is exactly what
+    iGame's own site warns about for these libraries."""
+
+    def test_igame_does_not_ask_for_the_guigfx_stack(self):
+        needs = packages.CATALOGUE_BY_KEY["igame"].requires
+        self.assertNotIn("mcc_guigfx", needs)
+
+    def test_the_guigfx_class_is_not_offered_at_all(self):
+        """guigfx.library opens render.library, render.library carries 153
+        floating point instructions, and no build without them exists."""
+        self.assertNotIn("mcc_guigfx", packages.CATALOGUE_BY_KEY)
+
+    def test_igame_is_told_not_to_look_for_it(self):
+        written = {name: text for name, _dest, text
+                   in packages.CATALOGUE_BY_KEY["igame"].download.write}
+        self.assertIn("igame.prefs", written)
+        self.assertIn("no_guigfx=1", written["igame.prefs"])
