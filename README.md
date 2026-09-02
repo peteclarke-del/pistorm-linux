@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 389 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 393 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -776,6 +776,27 @@ something that looks like it is already there. The length is checked against
 what the server said while the answer is still at hand; this was found when a
 real download arrived 170 KB short and the failure only surfaced two steps
 later.
+
+### MUI, and the classes that are not in MUI
+
+MUI is published on Aminet too, so it follows the same rule: MUI 3.8 goes on
+first and a donor's MUI fills in behind it. That matters more here than
+elsewhere, because a donor's MUI is usually the richer one - PiMiga's carries
+84 classes against the archive's 36.
+
+Those extra classes are not decoration. iGame's window is built from `NList`,
+`NListview`, `TextEditor` and `Guigfx`, **none of which are part of MUI**, and
+they are published separately. Each is now a package of its own, so a card built
+from floppies and Aminet alone - no donor anywhere - has everything iGame opens:
+
+| Package | Supplies |
+| --- | --- |
+| MUI | `muimaster.library` and 36 standard classes |
+| MUI NList classes | `NList.mcc`, `NListview.mcc` and the rest of that family |
+| MUI TextEditor class | `TextEditor.mcc` |
+| MUI Guigfx class | `Guigfx.mcc`, `guigfx.library`, `render.library` |
+
+iGame names all four as requirements, so ticking iGame ticks them.
 
 ### Ticking something ticks what it needs
 
