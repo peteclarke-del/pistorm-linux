@@ -321,7 +321,7 @@ def copy_volume(source, target, destination: str, progress: Progress,
             copied += 1
         if index % 200 == 0 or index == len(entries):
             progress.fraction(index / len(entries))
-    if compat is not None:
+    if compat is not None and getattr(compat, "finish_with_each_tree", True):
         #  Without this the emulator's driver is removed and nothing put back.
         compat.finish(target, progress)
     return copied, skipped
@@ -938,7 +938,7 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
     if changes.get("merged"):
         progress.log(f"  {changes['merged']} drawer(s) differing from another "
                      f"only in case were merged into one")
-    if compat is not None:
+    if compat is not None and getattr(compat, "finish_with_each_tree", True):
         compat.finish(target, progress)
     return copied, renamed
 

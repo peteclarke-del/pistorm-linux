@@ -595,15 +595,20 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     #  reopening a finished volume would mean rebuilding its allocation state.
     spec = next((s for s in config.amiga_partitions
                  if s.name.upper() == partition.drive_name.upper()), None)
+    #  One pass for the whole partition. Each overlay used to get its own, so
+    #  no single one of them ever saw everything the card was given.
+    fixer = _make_fixer(config, progress)
     if spec is not None:
         extra = _package_overlays(config, list(spec.overlays), progress)
         if spec.overlays or extra:
             spec = dataclasses.replace(spec,
                                        overlays=list(spec.overlays) + extra)
-            _apply_overlays(volume, spec, _make_fixer(config, progress),
-                            progress)
+            _apply_overlays(volume, spec, fixer, progress)
         _give_drawers_icons(volume, spec, config, progress)
     _write_user_startup(volume, config, progress)
+    #  Now that everything is on it, and not before: the graphics driver and
+    #  the display-switching scripts depend on what the packages installed.
+    fixer.finish(volume, progress)
     progress.step("Finalising the Amiga file system")
     volume.close()
 
@@ -807,6 +812,8 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
                                  rtg=config.rtg_display,
                                  native=config.native_display,
                                  workbench_on_rtg=config.workbench_on_rtg)
+    if "picasso96" in (config.package_keys or ()):
+        fixer.expect_picasso()
     #  What each volume will be filled from, so a games list can be checked
     #  against what is actually going onto the card.
     for spec in config.amiga_partitions:
@@ -925,6 +932,11 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             #  Overlay-only partitions are handled where they were installed.
             continue
         _apply_overlays(volume, spec, fixer, progress)
+        if spec.bootable:
+            #  Only the drive the machine boots from: Games and Demos were
+            #  each being given their own copy of the display-switching
+            #  scripts, which belong in the system drive's S: and nowhere.
+            fixer.finish(volume, progress)
         volume.close()
         progress.log(fixer.summary())
 

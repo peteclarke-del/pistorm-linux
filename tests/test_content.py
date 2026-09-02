@@ -790,3 +790,35 @@ class TheFfsWarningIsAboutFfs(unittest.TestCase):
         from pistorm_imager.core import amigafs
         self.assertTrue(amigafs.is_dos_family(amigafs.DOSTYPE_FFS_INTL))
         self.assertTrue(amigafs.is_ffs(amigafs.DOSTYPE_FFS_INTL))
+
+
+class TheGraphicsPassSeesTheWholeCard(unittest.TestCase):
+    """It used to decide after the first tree copied, and by path only."""
+
+    def _fixer(self, **kw):
+        fixer = compat.Compatibility(Progress(), enabled=True, **kw)
+        return fixer
+
+    def test_it_no_longer_finishes_after_every_tree(self):
+        """A volume is filled from many trees; deciding after the first meant
+        deciding before the packages were on it at all."""
+        self.assertFalse(compat.Compatibility.finish_with_each_tree)
+
+    def test_a_chosen_package_counts_as_an_install(self):
+        """A package overlay is copied *to* Libs/Picasso96, so the paths the
+        pass is offered never name Picasso96 and it saw nothing."""
+        fixer = self._fixer()
+        self.assertFalse(fixer._picasso_installed)
+        fixer.expect_picasso()
+        self.assertTrue(fixer._picasso_installed)
+
+    def test_the_builder_declares_it_from_the_chosen_packages(self):
+        from pistorm_imager.core import builder
+        config = builder.BuildConfig(target="/tmp/x.img",
+                                     package_keys=["picasso96", "whdload"])
+        self.assertTrue(builder._make_fixer(config, Progress())
+                        ._picasso_installed)
+        without = builder.BuildConfig(target="/tmp/x.img",
+                                      package_keys=["whdload"])
+        self.assertFalse(builder._make_fixer(without, Progress())
+                         ._picasso_installed)
