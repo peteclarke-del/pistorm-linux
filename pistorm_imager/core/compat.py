@@ -192,6 +192,7 @@ class Compatibility:
         self.monitor_file: bytes | None = None
         self.monitor_icon: bytes | None = None
         self._seen_picasso = False
+        self._picasso_expected = False
         self._said_no_picasso = False
         self._added_monitor = False
         self._added_switch = False
@@ -471,6 +472,14 @@ class Compatibility:
 
     # ----------------------------------------------------------- extra files
 
+    #  A volume is filled from many trees - the floppies, then a package at a
+    #  time - and this used to run after each of them.  It decided what to do
+    #  about the graphics driver after the first, which on a card with any
+    #  software on it is WHDLoad, several overlays before Picasso96 arrives:
+    #  so a card that had Picasso96 installed was told it had none.  The
+    #  builder calls it once now, on the system volume, when it is full.
+    finish_with_each_tree = False
+
     def finish(self, target, progress: Progress) -> None:
         """Add whatever drivers the target's displays need to a filled volume.
 
@@ -540,12 +549,25 @@ class Compatibility:
         self.note("added", f"Devs/Monitors/{proper} (from Storage, so native "
                            f"screen modes can be chosen)")
 
+    def expect_picasso(self) -> None:
+        """Say that a package will install Picasso96, whatever the copy sees.
+
+        Recognising it by path only works when it arrives inside a tree that
+        names it - importing somebody's whole System drive does. A package
+        overlay is a plain directory copied *to* Libs/Picasso96, and the paths
+        offered here are relative to the source, so nothing in them says
+        Picasso96 at all: a card that had it installed was told it had none,
+        and went out without the graphics driver a PiStorm needs.
+        """
+        self._picasso_expected = True
+
+    @property
+    def _picasso_installed(self) -> bool:
+        return self._seen_picasso or self._picasso_expected
+
     def _finish_rtg(self, target, progress: Progress) -> None:
-        if not self.enabled or not self._seen_picasso:
-            #  finish() runs once per tree copied, and a build copies many.
-            #  Saying this a dozen times buries everything else in the log.
-            if (self.enabled and not self._seen_picasso
-                    and not self._said_no_picasso):
+        if not self.enabled or not self._picasso_installed:
+            if self.enabled and not self._said_no_picasso:
                 self._said_no_picasso = True
                 progress.log("  compatibility - no Picasso96 install found; "
                              "leaving graphics setup alone")
