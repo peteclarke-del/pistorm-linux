@@ -214,7 +214,10 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
         self.assertIn(";ExecuteCleanup=uae-configuration", body)
         self.assertIn("QuitKey=$59", body)
 
-    def test_the_games_list_is_filtered_when_copied_as_a_tree(self):
+    def test_the_games_list_is_left_off_when_copied_as_a_tree(self):
+        """Another program's data, written on somebody else's machine: iGame
+        builds its own from the card, which cannot name a game that is not
+        there."""
         source = self.scratch() / "tree"
         games = source / "WHDLOAD" / "OCS" / "Driller"
         games.mkdir(parents=True)
@@ -222,11 +225,12 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
         igame = source / "Programs" / "iGame"
         igame.mkdir(parents=True)
         (igame / "gameslist.csv").write_text(
-            "0;Driller;x;Sys:WHDLOAD/OCS/Driller/Driller.slave;0;0;0;0\n"
-            "0;Gone;x;Sys:WHDLOAD/OCS/Missing/missing.slave;0;0;0;0\n")
-        body = self.read(self.build(source), "Programs/iGame/gameslist.csv")
-        self.assertIn("Driller", body)
-        self.assertNotIn("Missing", body)
+            "0;Driller;x;Sys:WHDLOAD/OCS/Driller/Driller.slave;0;0;0;0\n")
+        (igame / "iGame").write_bytes(b"program")
+        volume = self.build(source)
+        self.assertEqual(self.read(volume, "Programs/iGame/gameslist.csv"), "")
+        #  The program itself is still copied.
+        self.assertEqual(self.read(volume, "Programs/iGame/iGame"), "program")
 
     def test_the_repository_list_is_filtered_too(self):
         """Filtering the games list was only half of the job.
