@@ -55,6 +55,16 @@ def dostype_flags(dostype: int) -> int:
     return dostype & 0xFF
 
 
+def is_dos_family(dostype: int) -> bool:
+    """Whether the ROM's own file system handles this, rather than a handler.
+
+    Only the low byte of a dostype carries the OFS/FFS flags, so testing that
+    byte alone says nothing about which file system it belongs to: PFS3 is
+    'PFS\\3', whose flag byte reads as FFS-with-directory-cache.
+    """
+    return dostype & 0xFFFFFF00 == DOSTYPE_BASE
+
+
 def is_ffs(dostype: int) -> bool:
     return bool(dostype_flags(dostype) & FLAG_FFS)
 

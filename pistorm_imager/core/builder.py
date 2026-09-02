@@ -561,11 +561,17 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             f"{partition.drive_name} is {human_size(available)}, but the install "
             f"needs about {human_size(needed)}."
         )
-    if available > amigafs.FFS_SAFE_LIMIT:
+    #  The limit is the ROM file system's, so it is not a fact about size: a
+    #  PFS3 volume is meant to be bigger than this, and warning about it sends
+    #  people off shrinking a partition that was right all along.
+    if (available > amigafs.FFS_SAFE_LIMIT
+            and amigafs.is_dos_family(partition.dostype)
+            and amigafs.is_ffs(partition.dostype)):
         progress.log(
-            f"WARNING: {partition.drive_name} is {human_size(available)}. FFS on "
-            f"AmigaOS 3.1 is unreliable above {human_size(amigafs.FFS_SAFE_LIMIT)}; "
-            f"a smaller system partition is safer."
+            f"WARNING: {partition.drive_name} is {human_size(available)} and "
+            f"formatted FFS. AmigaOS 3.1's FFS is unreliable above "
+            f"{human_size(amigafs.FFS_SAFE_LIMIT)}; a smaller system "
+            f"partition, or PFS3, is safer."
         )
 
     offset = partition.byte_offset(table.geometry, amiga.start_bytes)
