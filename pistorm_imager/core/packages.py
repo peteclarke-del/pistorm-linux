@@ -56,9 +56,18 @@ class Category(enum.Enum):
     EXTRAS = "Handy extras"
 
 
+#  Drawers an archive may carry that belong somewhere definite on the card.
+#  A ``merge`` download is laid out like a Workbench disk, so its contents can
+#  be placed without naming every file - which matters for an archive this
+#  code cannot fetch and therefore cannot read the layout of in advance.
+SYSTEM_DRAWERS = ("C", "L", "S", "Libs", "Devs", "Prefs", "Locale", "Rexxc",
+                  "Classes", "Fonts", "Storage", "System", "Tools",
+                  "Utilities", "Expansion")
+
+
 @dataclasses.dataclass(frozen=True)
 class Download:
-    """A freely distributable archive on Aminet.
+    """A freely distributable archive, from Aminet or a named source.
 
     ``items`` maps paths inside the unpacked archive to destinations on the
     card. When it is empty the whole archive is unpacked into ``stage``
@@ -72,9 +81,23 @@ class Download:
     #  archives; nothing here can unpack one, so the file itself goes on the
     #  card to be run there.
     raw: bool = False
+    #  Lay the archive out over the card by drawer name rather than by a list
+    #  of files: everything in its C, Libs, Devs and S goes to the card's.
+    merge: bool = False
+    #  Where a person can fetch the archive by hand.  Some publishers put
+    #  their downloads behind a page that will not serve them to anything but
+    #  a browser, and then the cached copy is the only route.
+    source: str = ""
+    #  True when there is no URL that can be fetched without a browser. The
+    #  build then uses a copy the user has put in the cache, and says where
+    #  to get one when there is none, rather than downloading a login page
+    #  and caching it as though it were the archive.
+    manual: bool = False
 
     @property
     def url(self) -> str:
+        if self.path.startswith(("http://", "https://")):
+            return self.path
         return AMINET + self.path
 
     @property
@@ -542,13 +565,61 @@ CATALOGUE: list[Package] = [
     # -------------------------------------------------------- networking
     Package(
         "network", "TCP/IP networking",
-        "The PiStorm's own network device and a TCP/IP stack, which is what "
-        "everything else here needs. Comes from a donor: the stack PiMiga "
-        "ships is already configured for the PiStorm.",
+        "The PiStorm's own network device and the MiamiDx stack, from a "
+        "donor. Miami arrives unregistered and unconfigured, so it has to be "
+        "set up on the Amiga before anything can use it; for a stack that "
+        "works as installed, choose Roadshow instead.",
         category=Category.NETWORK,
         items=(("Devs/Networks/vlink.device", "Devs/Networks"),
+               #  MiamiDx is the stack this system actually runs.  It brings
+               #  its own libraries and devices, and it publishes
+               #  bsdsocket.library itself, in memory, once it goes online -
+               #  which is why no copy of that file is installed here.  The
+               #  one in the donor's LIBS: is an orphaned AmiTCP 4.1 stub
+               #  with no stack behind it, and it stops every WHDLoad game.
+               ("Internet/MiamiDx", "Internet/MiamiDx"),
+               ("Libs/miamibpf.library", "Libs"),
+               ("Libs/miamiipnat.library", "Libs"),
+               ("Libs/miamipcap.library", "Libs"),
+               ("Libs/miamisecureshell.library", "Libs"),
+               ("Libs/miamisocks.library", "Libs"),
+               ("Libs/miamisocksd.library", "Libs"),
+               ("S/miami.key1", "S"),
+               ("S/miami.key2", "S"),
                ("AmiTCP", "AmiTCP"),
                ("Internet/Genesis", "Internet/Genesis")),
+        #  Miami looks for its own libraries under Miami:, and its window is
+        #  a MUI class, so neither the assign nor MUI is optional: without
+        #  them it exits silently and nothing publishes bsdsocket.
+        requires=("mui",),
+        startup=("IF EXISTS SYS:Internet/MiamiDx",
+                 "   Assign Miami: SYS:Internet/MiamiDx",
+                 "EndIF"),
+        note="Installs MiamiDx, which provides the socket library itself "
+             "while it is online. Nothing is left in LIBS: when it is not, "
+             "so WHDLoad games are unaffected.",
+    ),
+
+    Package(
+        "roadshow", "Roadshow (TCP/IP stack)",
+        "The TCP/IP stack most PiStorm machines run. It installs its own "
+        "bsdsocket.library, which is what the browsers, the FTP clients and "
+        "the IRC clients open, so nothing here can reach a network without a "
+        "stack of some kind.",
+        category=Category.NETWORK,
+        #  APC&TCP publish the demo through a page that serves it only to a
+        #  browser, so there is no address this can fetch.  The archive has
+        #  to be put in the cache by hand, and the build says so when it is
+        #  not there rather than quietly leaving the card without a stack.
+        download=Download("Roadshow-Demo-1.15.lha", merge=True,
+                          stage=STAGING + "/Roadshow", manual=True,
+                          source="http://roadshow.apc-tcp.de/ "
+                                 "(Download, then Demoversion)"),
+        note="The free demo is the full stack with each network session "
+             "limited to 15 minutes; the unlimited version is sold by "
+             "APC&TCP. Roadshow does put bsdsocket.library in LIBS:, so on a "
+             "card that also runs WHDLoad games, add C:NetShutdown to "
+             "S:WHDLoad-Startup to take the stack down while a game runs.",
     ),
     Package(
         "amissl", "AmiSSL",
@@ -678,6 +749,14 @@ STOCK = {
 NEVER_SCAVENGE = {
     "mmu", "memory", "softieee", "disassembler",
     "68020", "68030", "68040", "68060", "680x0",
+    #  bsdsocket is not a library that lives in LIBS: at all - a TCP/IP stack
+    #  puts it there while it runs.  Copying the donor's file leaves a stub
+    #  with nothing behind it, and it stops every WHDLoad game: the game
+    #  starts, the machine takes a CPU exception, and all you see is a yellow
+    #  screen and then nothing.  Bisected to this one file, on its own,
+    #  against a card proven to run the game.  The network package installs a
+    #  stack, which is what actually provides it.
+    "bsdsocket", "usergroup", "ixnet",
 }
 
 #  Where a donor system keeps the things programs look up by name, and where
@@ -953,6 +1032,12 @@ def download_archive(package: Package, progress: Progress) -> Path | None:
         progress.log(f"  {package.label}: using cached "
                      f"{target.name} ({human_size(target.stat().st_size)})")
         return target
+    if package.download.manual:
+        progress.log(f"  {package.label}: {target.name} is not in the cache, "
+                     f"and it cannot be downloaded automatically. Fetch it "
+                     f"from {package.download.source} and put it in "
+                     f"{cache_dir()}, then build again. Skipped.")
+        return None
     progress.log(f"  {package.label}: downloading {package.download.url}")
     request = urllib.request.Request(package.download.url,
                                      headers={"User-Agent": USER_AGENT})
@@ -994,6 +1079,34 @@ def unpack(archive: Path, progress: Progress) -> Path | None:
     return destination
 
 
+def _merged(package: Package, root: Path,
+            progress: Progress) -> list[tuple[str, str]]:
+    """Place an archive laid out like a Workbench disk, drawer by drawer.
+
+    Nothing is dropped silently: whatever is not a system drawer - the docs,
+    the publisher's own installer - is staged where the user can find it, and
+    said so in the log.
+    """
+    inner = [p for p in root.iterdir() if p.is_dir()]
+    if len(inner) == 1 and not any(p.is_file() for p in root.iterdir()):
+        root = inner[0]
+    known = {name.lower(): name for name in SYSTEM_DRAWERS}
+    pairs: list[tuple[str, str]] = []
+    staged: list[str] = []
+    for entry in sorted(root.iterdir(), key=lambda e: e.name.lower()):
+        target = known.get(entry.name.lower())
+        if target and entry.is_dir():
+            pairs.append((str(entry), target))
+        elif entry.name.lower().endswith(".info"):
+            continue
+        else:
+            staged.append(entry.name)
+            pairs.append((str(entry), package.download.stage or STAGING))
+    if staged:
+        progress.log(f"  {package.label}: staged {', '.join(staged)}")
+    return pairs
+
+
 def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
     """Download and unpack one package, as (host path, destination) pairs."""
     archive = download_archive(package, progress)
@@ -1005,6 +1118,8 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
     if root is None:
         return []
     download = package.download
+    if download.merge:
+        return _merged(package, root, progress)
     if not download.items:
         #  Self-installing: put the whole thing on the card to run there.
         inner = [p for p in root.iterdir() if p.is_dir()]

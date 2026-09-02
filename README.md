@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 336 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 351 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -600,9 +600,9 @@ replaces them; the newer one is then copied into its place.
 
 Declaring dependencies by hand caught MUI and a handful of libraries and missed
 twenty more, each of which copied onto the card perfectly and then would not
-run: `bsdsocket.library` for the network clients, `ixemul` and `netinfo.device`
-for NetSurf, `Picasso96API` for AWeb, `screennotify` for Birdie, `popupmenu` and
-`vapor_toolkit` for the MUI applications.
+run: `ixemul` and `netinfo.device` for NetSurf, `Picasso96API` for AWeb,
+`screennotify` for Birdie, `popupmenu` and `vapor_toolkit` for the MUI
+applications.
 
 Amiga binaries name what they open as plain strings, so the answer is in the
 files themselves. Everything a copied program mentions, that will not be on the
@@ -692,6 +692,36 @@ right answer genuinely differs:
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
 VisualPrefs. Networking — the PiStorm's `vlink.device`, a TCP/IP stack, AmiSSL
 and NetSurf — is suggested when a WiFi network has been configured.
+
+## A socket library belongs to its stack, not to the card
+
+`bsdsocket.library` is the one library that must never be copied because a
+program mentions it. Every browser and FTP client on a donor system names it,
+so the dependency scanner copied it onto every card - including cards built
+only for games. The file on the donor turned out to be an **AmiTCP 4.1 stub
+from 1996** with no AmiTCP daemon anywhere behind it, and its mere presence in
+`LIBS:` killed every WHDLoad game: a yellow screen, then nothing. Bisecting a
+card down to that single file, against a card proven to run the game, is what
+found it. It is now in `NEVER_SCAVENGE` along with `usergroup` and `ixnet`.
+
+A stack puts its own socket library in place, so nothing is lost by refusing to
+guess at one:
+
+- **MiamiDx**, which the PiMiga donor carries, publishes `bsdsocket.library` in
+  memory when it goes online and ships no copy on disk. The `network` package
+  installs it with the `Miami:` assign and MUI that it needs - though Miami
+  arrives unregistered and unconfigured, and has to be set up on the Amiga.
+- **Roadshow** installs a real `bsdsocket.library` into `LIBS:`. On a card that
+  also runs games, `C:NetShutdown` in `S:WHDLoad-Startup` takes the stack down
+  while a game runs, which is what those WHDLoad hooks are for.
+
+APC&TCP serve the Roadshow demo only to a browser, so the `roadshow` package is
+declared as a download this tool cannot make: put `Roadshow-Demo-1.15.lha` in
+`~/.cache/pistorm-imager/packages` and the build uses it, and when it is absent
+the build says where to get it instead of leaving the card silently stackless.
+Its archive is laid out like a Workbench disk, so it is placed drawer by drawer
+- `C`, `Libs`, `Devs`, `S` - rather than by a list of file names, and whatever
+is not a system drawer is staged in `Storage/Install/Roadshow` and reported.
 
 ## Two outputs at once
 
