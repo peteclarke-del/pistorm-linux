@@ -1995,14 +1995,21 @@ class ImagerWindow(Adw.ApplicationWindow):
             elif key in found:
                 note += "  -  from your donor system."
             elif downloadable:
-                note += ("  -  will be fetched from Aminet."
-                         if not package.manual else
-                         f"  -  fetched from Aminet; {package.note}")
+                where = package.download.source or "Aminet"
+                if package.download.manual:
+                    #  Nothing here can fetch it; the build uses a copy the
+                    #  user has put in the cache, so say so before the build
+                    #  rather than in the log afterwards.
+                    note += f"  -  supply the archive yourself, from {where}."
+                else:
+                    note += f"  -  will be fetched from {where}."
+                if package.note:
+                    note += f" {package.note}"
             else:
                 note += ("  -  needs a donor system that has it."
                          if donor else
                          "  -  choose where to take it from first.")
-            row.set_subtitle(note)
+            row.set_subtitle(GLib.markup_escape_text(note))
             if not usable:
                 row.set_active(False)
         self._on_layout_changed()
