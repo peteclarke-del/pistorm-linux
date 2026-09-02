@@ -248,18 +248,42 @@ def on_activate(app: ImagerApplication) -> None:
         window.quick_card_size.set_text("32G")
         window.quick_pimiga.set_path(str(SCRATCH / "pimiga"))
         saved = window.interface_state()
-        check(saved["machine"] == "a600" and saved["card_size"] == "32G",
+        check(saved["machine"] == "a600",
               "interface state captures the hardware choices")
+        #  The target and the card size belong to the configuration. Kept here
+        #  as well they went stale the moment either was set on its own page,
+        #  and this state is applied last, so the stale copy won.
+        check("card_size" not in saved and "target_kind" not in saved
+              and "image_path" not in saved,
+              f"the config's own settings are not duplicated ({sorted(saved)})")
 
         window.quick_machine.set_selected(0)
-        window.quick_card_size.set_text("8G")
         window.quick_pimiga.set_path("")
         window.apply_interface_state(saved)
         restored = window.interface_state()
         check(restored["machine"] == "a600", "machine is restored")
-        check(restored["card_size"] == "32G", "sizes are restored")
         check(restored["pimiga_folder"] == saved["pimiga_folder"],
               "folders are restored")
+
+        #  A 125 GiB image target, then a session saved when the quick screen
+        #  still said "SD card" at 59 GiB: the configuration has to win.
+        big = dataclasses.replace(
+            window.gather(), target=str(SCRATCH / "big.img"),
+            target_is_device=False, image_size=125 * 1024 ** 3)
+        window.apply(big, keep_partitions=True)
+        window.apply_interface_state(dict(saved, card_size="59.48G",
+                                          target_kind=0,
+                                          image_path="/tmp/somewhere-else.img"))
+        check(window.quick_card_size.get_text().startswith("125"),
+              f"the card size survives loading ({window.quick_card_size.get_text()!r})")
+        check(window.gather().target == str(SCRATCH / "big.img"),
+              f"the target survives loading ({window.gather().target!r})")
+        check(window.gather().image_size == 125 * 1024 ** 3,
+              f"and so does its size ({window.gather().image_size})")
+        #  apply() protects the layout it was given; hand it back, or the
+        #  checks below are testing a layout deliberately left alone.
+        window._derived_partitions = [r.spec() for r in window.partition_rows]
+        window.quick_card_size.set_text("32G")
 
         #  A source defines the partition layout, so changing it must redraw
         #  it: the rows are what a build reads, and leaving them behind would

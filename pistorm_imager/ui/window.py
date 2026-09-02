@@ -2508,7 +2508,14 @@ class ImagerWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------ saved sessions
 
     def interface_state(self) -> dict:
-        """The choices a BuildConfig cannot express, so they can be restored."""
+        """The choices a BuildConfig cannot express, so they can be restored.
+
+        Only those. Anything the configuration already carries - the target,
+        the card size - must not be written here as well: the quick screen
+        keeps its own copy of both, that copy goes stale the moment either is
+        set on its own page, and this state is applied after the
+        configuration, so the stale copy is the one that wins.
+        """
         return {
             "machine": self._machine().key,
             "display": self._display().name,
@@ -2522,11 +2529,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             "kickstart_key": self.rom_key_row.path,
             "adf_folder": self.adf_row.path,
             "trapdoor": self.quick_trapdoor.get_active(),
-            "card_size": self.quick_card_size.get_text(),
             "system_size": self.quick_system.get_text(),
             "boot_size": self.boot_size_row.get_text(),
-            "target_kind": self.quick_target.get_selected(),
-            "image_path": self.quick_file.path,
         }
 
     def apply_interface_state(self, state: dict) -> None:
@@ -2564,18 +2568,14 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.rom_key_row.set_path(state.get("kickstart_key", ""))
             self.adf_row.set_path(state.get("adf_folder", ""))
             self.quick_trapdoor.set_active(bool(state.get("trapdoor")))
-            for row, key in ((self.quick_card_size, "card_size"),
-                             (self.quick_system, "system_size"),
+            for row, key in ((self.quick_system, "system_size"),
                              (self.boot_size_row, "boot_size")):
                 if state.get(key):
                     row.set_text(str(state[key]))
-            #  Default to whatever the build itself implies, rather than to
-            #  "SD card": restoring a card that is not plugged in would leave
-            #  the whole page in an error state.
-            if "target_kind" in state:
-                self.quick_target.set_selected(int(state["target_kind"]))
-            if state.get("image_path"):
-                self.quick_file.set_path(state["image_path"])
+            #  The target and the card size come from the configuration, which
+            #  apply() has already put in place.  Sessions saved before this
+            #  also carry them here, and honouring those would undo it: a card
+            #  built to a 125 GiB image came back as a 59 GiB SD card.
         finally:
             self._ready = was_ready
         self._on_machine_changed()
