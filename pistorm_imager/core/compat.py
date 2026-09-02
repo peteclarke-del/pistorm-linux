@@ -193,6 +193,8 @@ class Compatibility:
         self.monitor_icon: bytes | None = None
         self._seen_picasso = False
         self._said_no_picasso = False
+        self._added_monitor = False
+        self._added_switch = False
         #  Volume name -> (host folder it is filled from, paths left out), so
         #  a games list can be checked against what will actually be there.
         self.content: dict[str, tuple[Path, tuple[str, ...]]] = {}
@@ -470,10 +472,18 @@ class Compatibility:
     # ----------------------------------------------------------- extra files
 
     def finish(self, target, progress: Progress) -> None:
-        """Add whatever drivers the target's displays need to a filled volume."""
-        if self.enabled and self.native:
+        """Add whatever drivers the target's displays need to a filled volume.
+
+        This runs once for every tree a build copies, and a build copies many,
+        so anything that writes a file has to be done once. Writing the same
+        script a second time is not harmless: it ends the build.
+        """
+        if self.enabled and self.native and not self._added_monitor:
+            self._added_monitor = True
             self._install_native_monitor(target)
-        if self.enabled and self.rtg and self.native:
+        if (self.enabled and self.rtg and self.native
+                and not self._added_switch):
+            self._added_switch = True
             self._install_display_switch(target)
         self._finish_rtg(target, progress)
 
