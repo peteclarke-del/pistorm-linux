@@ -944,3 +944,28 @@ class TheLayoutMustFitTheCard(unittest.TestCase):
         problems = self._fit_problems(self._config(16, [15.49, None]))
         self.assertTrue(problems)
         self.assertIn("too small to be a drive", problems[0])
+
+
+class NoMonitorIsInventedForACard(unittest.TestCase):
+    """Renaming the emulator's Picasso96 monitor made a card that would not
+    boot - a software error in VideoCore, which is that monitor bringing the
+    board up against the rtg.library the donor happens to carry. The driver
+    goes on the card; the monitor is left to Picasso96's own installer."""
+
+    def test_the_package_supplies_no_monitor(self):
+        package = packages.CATALOGUE_BY_KEY["picasso96"]
+        taken = [source for source, _dest in package.support]
+        self.assertEqual([t for t in taken if "Monitors" in t], [],
+                         f"a monitor is being supplied again: {taken}")
+
+    def test_the_note_says_where_the_monitor_comes_from(self):
+        package = packages.CATALOGUE_BY_KEY["picasso96"]
+        self.assertIn("Installer", package.note)
+
+    def test_an_adapted_system_still_has_its_monitor_retargeted(self):
+        """A system that already had one is a different case: it is being
+        moved to this board, not given a board it never had."""
+        fixer = compat.Compatibility(Progress(), enabled=True, rtg=True)
+        fixer.offer("Devs/Monitors/uaegfx", b"monitor")
+        self.assertTrue(fixer.skip("Devs/Monitors/uaegfx"))
+        self.assertEqual(fixer.monitor_file, b"monitor")

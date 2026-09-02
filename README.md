@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 374 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 377 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -871,15 +871,24 @@ package had been installed. The fixes are:
 
 * the emulator's RTG driver (`uaegfx.card`) is dropped and Emu68's
   `VideoCore.card` installed in `LIBS:Picasso96/` in its place;
-* the Picasso96 monitor in `DEVS:Monitors` is written out as `VideoCore`, with
-  `BOARDTYPE=VideoCore` in its icon, which is how Picasso96 chooses its board.
-  Every Picasso96 monitor is the same loader named differently, so the
-  emulator's is what gets renamed - and where there is no emulator to take one
-  from, the Picasso96 package supplies it. Without a monitor file the board's
-  screen modes cannot be selected at all, driver or no driver;
+* where a system being adapted already had a Picasso96 monitor for the
+  emulator's board, it is written out as `VideoCore` with `BOARDTYPE=VideoCore`
+  in its icon, which is how Picasso96 chooses its board;
 * a Picasso96 that was *chosen as a package* counts as installed even before
   anything is copied, while a copy merely staged in `Storage/Install` for you
   to install later does not - staging is not installing;
+
+A card built from floppies is **not** given a monitor file, and this is
+deliberate. Making one by renaming the emulator's monitor looked right - every
+Picasso96 monitor is the same loader with its board named in its icon - and
+produced a card that would not boot: a software error in VideoCore, which is
+that monitor bringing the board up against a 1999 `rtg.library`. Emu68's
+`VideoCore.card` still goes on the card, where nothing loads it until a monitor
+names it, and the monitor is left to Picasso96's own installer in
+`Storage/Install`, which is the only thing that knows what it is installing
+against. Without one the board's screen modes cannot be selected, so this is a
+gap rather than a fix - but a card that boots and cannot use RTG is worth more
+than one that does not boot.
 * startup scripts have emulator-only commands (`uae-configuration` and friends)
   commented out, so they cannot fail the boot;
 * `S:WHDLoad.prefs` is cleaned the same way. This is where WHDLoad's settings
