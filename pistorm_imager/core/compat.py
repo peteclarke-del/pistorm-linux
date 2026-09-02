@@ -193,9 +193,7 @@ class Compatibility:
         self.monitor_icon: bytes | None = None
         self._seen_picasso = False
         self._picasso_expected = False
-        self._said_no_picasso = False
-        self._added_monitor = False
-        self._added_switch = False
+        self._finished = False
         #  Volume name -> (host folder it is filled from, paths left out), so
         #  a games list can be checked against what will actually be there.
         self.content: dict[str, tuple[Path, tuple[str, ...]]] = {}
@@ -283,7 +281,7 @@ class Compatibility:
             elif len(parts) >= 3 and parts[-3] == "storage" \
                     and name.removesuffix(".info") in NATIVE_MONITORS:
                 self._stored_monitors[name] = data
-        if Path(relative).parent.name.lower() == "picasso96":
+        if relative.replace("\\", "/").lower().startswith("libs/picasso96/"):
             self._seen_picasso = True
         posix = relative.replace("\\", "/")
         if any(posix.lower() == f.lower() for f in STARTUP_FILES):
@@ -483,16 +481,16 @@ class Compatibility:
     def finish(self, target, progress: Progress) -> None:
         """Add whatever drivers the target's displays need to a filled volume.
 
-        This runs once for every tree a build copies, and a build copies many,
-        so anything that writes a file has to be done once. Writing the same
-        script a second time is not harmless: it ends the build.
+        Called once, by the builder, when the volume is full. It guards itself
+        as well, because everything here writes a file and writing the same
+        script twice is not harmless - it ends the build.
         """
-        if self.enabled and self.native and not self._added_monitor:
-            self._added_monitor = True
+        if self._finished:
+            return
+        self._finished = True
+        if self.enabled and self.native:
             self._install_native_monitor(target)
-        if (self.enabled and self.rtg and self.native
-                and not self._added_switch):
-            self._added_switch = True
+        if self.enabled and self.rtg and self.native:
             self._install_display_switch(target)
         self._finish_rtg(target, progress)
 
@@ -567,8 +565,7 @@ class Compatibility:
 
     def _finish_rtg(self, target, progress: Progress) -> None:
         if not self.enabled or not self._picasso_installed:
-            if self.enabled and not self._said_no_picasso:
-                self._said_no_picasso = True
+            if self.enabled:
                 progress.log("  compatibility - no Picasso96 install found; "
                              "leaving graphics setup alone")
             return

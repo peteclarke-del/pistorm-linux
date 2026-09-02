@@ -834,11 +834,8 @@ class Pfs3Writer:
 
     def _add_entry(self, dir_anode: int, entry: bytes) -> None:
         """Append a directory entry, extending the directory if it is full."""
-        chain = self._chain(dir_anode)
-        last_anode = dir_anode
         number = dir_anode
         while True:
-            seqnr, offset = number >> 16, number & 0xFFFF
             block_sector = self._read_anode(number).blocknr
             block = bytearray(self._read_reserved(block_sector))
             used = SIZEOF_DIRBLOCK_HEADER
@@ -851,7 +848,6 @@ class Pfs3Writer:
             nxt = self._read_anode(number).next
             if not nxt:
                 break
-            last_anode = number
             number = nxt
 
         #  Directory is full: chain another block onto it.

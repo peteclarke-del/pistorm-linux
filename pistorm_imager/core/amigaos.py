@@ -276,6 +276,17 @@ def _excluded(lowered: str, skip: list[str]) -> bool:
     return False
 
 
+def landed_path(destination: str, relative: str) -> str:
+    """Where a file being copied will live on the card.
+
+    Every compatibility rule is written about the card - Storage/Monitors/PAL,
+    Libs/Picasso96 - while a copy knows only where a file sits in the thing
+    being copied from. Asking about the source path meant no rule naming a
+    destination drawer could ever match.
+    """
+    return f"{destination}/{relative}".lstrip("/") if destination else relative
+
+
 def copy_volume(source, target, destination: str, progress: Progress,
                  skip_existing: bool = True, compat=None,
                  exclude: list[str] | None = None) -> tuple[int, int]:
@@ -311,10 +322,7 @@ def copy_volume(source, target, destination: str, progress: Progress,
                 continue
             data = source.read_file(entry)
             if compat is not None:
-                #  Where it lands on the card, not where it sits on the disk
-                #  being copied: a rule about Storage has to see Storage.
-                landed = f"{destination}/{path}".lstrip("/") \
-                    if destination else path
+                landed = landed_path(destination, path)
                 data = compat.offer(landed, data)
                 if compat.skip(landed):
                     skipped += 1
@@ -888,13 +896,7 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
             else:
                 data = _read_source(path, relative, compat, progress)
                 if compat is not None:
-                    #  Where the file will live on the card, not where it came
-                    #  from: the rules are about the card. The Storage floppy
-                    #  is copied to Storage, so its Monitors/PAL is the card's
-                    #  Storage/Monitors/PAL - and asking about the source path
-                    #  meant no rule about Storage ever matched anything.
-                    landed = f"{destination}/{relative}".lstrip("/") \
-                        if destination else relative
+                    landed = landed_path(destination, relative)
                     data = compat.offer(landed, data)
                     if compat.skip(landed):
                         continue

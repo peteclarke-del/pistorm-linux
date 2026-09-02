@@ -410,7 +410,21 @@ def on_activate(app: ImagerApplication) -> None:
         window.quick_primary.set_selected(2)
         check(window.quick_pimiga.path == "" and window.quick_hdf.get_visible(),
               "choosing an image drops the PiMiga folder")
-        window.quick_hdf.set_path(str(HDF_IMAGE))
+        #  A drive built for another machine is warned about. The check that
+        #  says so existed for weeks without ever being called, so this asks
+        #  whether the warning reaches the screen, not merely that it exists.
+        from pistorm_imager.core import presets as _presets
+        original = _presets.check_image_for_machine
+        _presets.check_image_for_machine = \
+            lambda *a, **k: ["installs display modes this machine cannot produce"]
+        try:
+            window.quick_hdf.set_path(str(HDF_IMAGE))
+            said = window.quick_hdf_info.get_subtitle()
+        finally:
+            _presets.check_image_for_machine = original
+        check("cannot produce" in said,
+              f"an image built for another machine is warned about ({said!r})")
+
         window.quick_primary.set_selected(0)
         check(window.quick_hdf.path == "" and window.quick_pimiga.path == "",
               "going back to Default drops both")
