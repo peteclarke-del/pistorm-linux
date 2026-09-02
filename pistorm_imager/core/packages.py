@@ -93,6 +93,14 @@ class Download:
     #  to get one when there is none, rather than downloading a login page
     #  and caching it as though it were the archive.
     manual: bool = False
+    #  Paths inside the archive that must not be placed, because they are
+    #  meant to be merged into a file the card already has rather than to
+    #  replace it.
+    skip: tuple[str, ...] = ()
+    #  Files this tool writes itself, as (name, destination, text). An
+    #  archive that ships templates for other people's hardware still needs
+    #  one for the machine being built.
+    write: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def url(self) -> str:
@@ -148,7 +156,8 @@ class Package:
     @property
     def manual(self) -> bool:
         """Whether this one has to finish installing on the Amiga itself."""
-        return bool(self.download and not self.download.items)
+        return bool(self.download and not self.download.items
+                    and not self.download.merge)
 
     @property
     def downloadable(self) -> bool:
@@ -614,7 +623,25 @@ CATALOGUE: list[Package] = [
         download=Download("Roadshow-Demo-1.15.lha", merge=True,
                           stage=STAGING + "/Roadshow", manual=True,
                           source="http://roadshow.apc-tcp.de/ "
-                                 "(Download, then Demoversion)"),
+                                 "(Download, then Demoversion)",
+                          #  Roadshow's own S/User-Startup is four lines meant
+                          #  to be added to the card's, not to replace it.
+                          skip=("S/User-Startup",),
+                          #  Every interface template in the archive is for
+                          #  somebody else's hardware. A PiStorm is always
+                          #  vlink.device, so the card gets one that works.
+                          write=(("vlink", "Devs/NetInterfaces",
+                                  "# Written by the PiStorm imager.\n"
+                                  "# The PiStorm's own Ethernet, as installed"
+                                  " by the networking package.\n"
+                                  "device=vlink.device\n"
+                                  "unit=0\n"
+                                  "configure=dhcp\n"
+                                  "requiresinitdelay=no\n"),)),
+        #  The lines Roadshow's installer would have added to User-Startup.
+        startup=("IF EXISTS S:Network-Startup",
+                 "   Execute S:Network-Startup",
+                 "EndIF"),
         note="The free demo is the full stack with each network session "
              "limited to 15 minutes; the unlimited version is sold by "
              "APC&TCP. Roadshow does put bsdsocket.library in LIBS:, so on a "
@@ -1088,23 +1115,59 @@ def _merged(package: Package, root: Path,
     said so in the log.
     """
     inner = [p for p in root.iterdir() if p.is_dir()]
-    if len(inner) == 1 and not any(p.is_file() for p in root.iterdir()):
+    loose = [p for p in root.iterdir()
+             if p.is_file() and not p.name.lower().endswith(".info")]
+    if len(inner) == 1 and not loose:
         root = inner[0]
+    #  A distribution built around an installer keeps the part that is shaped
+    #  like a Workbench disk in a drawer of its own; the rest is documentation
+    #  and the installer script, which belong on the card only as staging.
+    shaped = next((c for c in root.iterdir()
+                   if c.is_dir() and c.name.lower() in ("workbench", "amiga")),
+                  None)
     known = {name.lower(): name for name in SYSTEM_DRAWERS}
     pairs: list[tuple[str, str]] = []
     staged: list[str] = []
-    for entry in sorted(root.iterdir(), key=lambda e: e.name.lower()):
+    skip = {s.lower() for s in package.download.skip}
+    for entry in sorted((shaped or root).iterdir(), key=lambda e: e.name.lower()):
         target = known.get(entry.name.lower())
         if target and entry.is_dir():
-            pairs.append((str(entry), target))
+            pairs += _drawer(entry, target, skip)
         elif entry.name.lower().endswith(".info"):
             continue
-        else:
+        elif shaped is None:
             staged.append(entry.name)
             pairs.append((str(entry), package.download.stage or STAGING))
+    if shaped is not None:
+        for entry in sorted(root.iterdir(), key=lambda e: e.name.lower()):
+            if entry == shaped or entry.name.lower().endswith(".info"):
+                continue
+            staged.append(entry.name)
+            pairs.append((str(entry), package.download.stage or STAGING))
+    for name, destination, text in package.download.write:
+        made = cache_dir() / (package.key + "-written") / destination
+        made.mkdir(parents=True, exist_ok=True)
+        (made / name).write_text(text)
+        pairs.append((str(made / name), destination))
+        progress.log(f"  {package.label}: wrote {destination}/{name}")
     if staged:
         progress.log(f"  {package.label}: staged {', '.join(staged)}")
     return pairs
+
+
+def _drawer(drawer: Path, target: str,
+            skip: set[str]) -> list[tuple[str, str]]:
+    """One drawer of an archive, minus anything it must not place.
+
+    A file the card already keeps its own version of - S:User-Startup above
+    all - is never placed whole: the package adds its lines through the
+    startup mechanism instead.
+    """
+    inside = [f"{target}/{e.name}".lower() for e in drawer.iterdir()]
+    if not any(name in skip for name in inside):
+        return [(str(drawer), target)]
+    return [(str(entry), target) for entry in sorted(drawer.iterdir())
+            if f"{target}/{entry.name}".lower() not in skip]
 
 
 def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:

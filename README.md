@@ -719,9 +719,24 @@ APC&TCP serve the Roadshow demo only to a browser, so the `roadshow` package is
 declared as a download this tool cannot make: put `Roadshow-Demo-1.15.lha` in
 `~/.cache/pistorm-imager/packages` and the build uses it, and when it is absent
 the build says where to get it instead of leaving the card silently stackless.
-Its archive is laid out like a Workbench disk, so it is placed drawer by drawer
-- `C`, `Libs`, `Devs`, `S` - rather than by a list of file names, and whatever
-is not a system drawer is staged in `Storage/Install/Roadshow` and reported.
+
+The archive is an installer distribution, not a Workbench disk: the part that
+is shaped like one sits in a `Workbench` drawer beside the documentation, the
+`Install_Roadshow` script and the publisher's `Installer`. So the merge looks
+one level in, places `C`, `Libs`, `Devs`, `S`, `Locale` and `Storage` from
+there, and stages the rest in `Storage/Install/Roadshow`. Two details matter:
+
+- **`S/User-Startup` is never placed.** Roadshow's copy is four lines meant to
+  be *added* to the card's, and placing it as a file would either overwrite
+  everything the build wrote there or be skipped, leaving the stack unstarted.
+  The lines go in through the same `startup` mechanism every other package
+  uses.
+- **The card is given an interface for the machine it is being built for.**
+  Every one of the fifty-odd templates in `Storage/NetInterfaces` is for
+  somebody else's hardware - A2065, X-Surf, Ariadne - so the build writes
+  `DEVS:NetInterfaces/vlink` naming `vlink.device`, which is what a PiStorm
+  has, and asks for DHCP. Without it `AddNetInterface` has nothing to bring
+  up and the stack installs but never runs.
 
 ## Two outputs at once
 
