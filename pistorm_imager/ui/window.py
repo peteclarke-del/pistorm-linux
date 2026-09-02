@@ -1352,7 +1352,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         kept = self._hand_edited_partitions()
         if kept is not None:
             config = dataclasses.replace(config, amiga_partitions=kept)
-        self.apply(config)
+        self.apply(config, keep_partitions=kept is not None)
         try:
             self._applied_config = repr(self.gather())
         except Exception:                        # noqa: BLE001
@@ -1365,6 +1365,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  Remember it now, not only on a clean exit: this is the point at
         #  which the setup is worth keeping.
         self._remember_session()
+
+    def _quick_layout(self):
+        """The layout the quick settings describe, for comparing against.
+
+        An empty list when they cannot be read yet, which no real layout
+        matches, so a loaded one is left alone rather than redrawn from
+        settings that were not ready to say anything.
+        """
+        try:
+            return list(self._quick_config().amiga_partitions)
+        except Exception:                        # noqa: BLE001 - not ready
+            return []
 
     def _hand_edited_partitions(self):
         """The partitions if they have been edited, else None.
@@ -2580,7 +2592,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._append_log(f"Could not restore the last session: {error}")
             return
         try:
-            self.apply(config)
+            self.apply(config, keep_partitions=True)
             self.apply_interface_state(state)
         except Exception as error:  # noqa: BLE001
             self._toast(f"Could not restore the last session: {error}")
@@ -2636,7 +2648,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 return
             try:
                 config, state, _reduced = jobs.load_session(file.get_path())
-                self.apply(config)
+                self.apply(config, keep_partitions=True)
                 self.apply_interface_state(state)
                 self._toast("Settings loaded")
             except Exception as error:  # noqa: BLE001
@@ -2739,7 +2751,8 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------ applying config
 
-    def apply(self, config: builder.BuildConfig) -> None:
+    def apply(self, config: builder.BuildConfig, *,
+              keep_partitions: bool = False) -> None:
         """Push a loaded BuildConfig back into the widgets."""
         was_ready, self._ready = self._ready, False
         for index, (_label, mode, _hint) in enumerate(MODES):
@@ -2782,7 +2795,14 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._add_partition(spec)
         if not self.partition_rows:
             self._add_partition()
-        self._derived_partitions = [row.spec() for row in self.partition_rows]
+        #  What the quick settings *would* have produced, not what was just
+        #  loaded.  The relayout tells a layout somebody arranged from one it
+        #  derived itself by comparing the rows against this, so recording the
+        #  loaded rows here told it they were its own to redraw - and four
+        #  saved drives came back as the generic layout.
+        self._derived_partitions = (
+            self._quick_layout() if keep_partitions
+            else [row.spec() for row in self.partition_rows])
 
         options = config.boot_options
         for index, (_label, group, mode_id) in enumerate(bootcfg.HDMI_MODES):
