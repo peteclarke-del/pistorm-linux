@@ -25,7 +25,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402
 
-from pistorm_imager.core import bootcfg, builder  # noqa: E402
+from pistorm_imager.core import bootcfg, builder, jobs  # noqa: E402
 from pistorm_imager.ui.window import MODES  # noqa: E402
 
 import tempfile  # noqa: E402
@@ -258,6 +258,51 @@ def on_activate(app: ImagerApplication) -> None:
         check("binary" not in said,
               f"and an explicit GB is left alone ({said!r})")
         window.device_list = []
+
+        #  The whole setup, not one field at a time. Three separate things
+        #  were saved faithfully and never restored - the drives, the software
+        #  and its donor, and the Emu68 release - and each was found only when
+        #  somebody noticed it missing. This compares every field at once.
+        window.target_row.set_selected(1)
+        window.quick_target.set_selected(1)
+        window.file_row.set_path(str(SCRATCH / "roundtrip.img"))
+        window.quick_file.set_path(str(SCRATCH / "roundtrip.img"))
+        window.file_size_row.set_text("40GB")
+        donor = SCRATCH / "donor"
+        (donor / "Libs").mkdir(parents=True, exist_ok=True)
+        window.package_donor.set_path(str(donor))
+        for key in ("whdload", "lha"):
+            if key in window.package_rows:
+                window.package_rows[key].set_active(True)
+        saved_config = window.gather()
+        saved_state = window.interface_state()
+        session = SCRATCH / "session.json"
+        jobs.save_session(saved_config, saved_state, session)
+
+        #  Scramble everything the load has to put back.
+        window.file_size_row.set_text("8GB")
+        window.file_row.set_path(str(SCRATCH / "somewhere-else.img"))
+        window.package_donor.set_path("")
+        for row in window.package_rows.values():
+            row.set_active(False)
+        loaded, state, _reduced = jobs.load_session(session)
+        window._apply_saved(loaded, state)
+        back = window.gather()
+
+        differences = []
+        for field in dataclasses.fields(saved_config):
+            want, got = (getattr(saved_config, field.name),
+                         getattr(back, field.name))
+            if field.name == "package_keys":
+                want, got = sorted(want), sorted(got)
+            if field.name == "amiga_partitions":
+                want = [dataclasses.asdict(x) for x in want]
+                got = [dataclasses.asdict(x) for x in got]
+            if want != got:
+                differences.append(f"{field.name}: saved {want!r}, back {got!r}")
+        check(not differences,
+              "every field of a saved setup survives the round trip"
+              + ("" if not differences else ": " + "; ".join(differences)))
 
         #  A saved setup names the Emu68 build it was made against, and the
         #  list it has to be found in arrives from GitHub after the setup
