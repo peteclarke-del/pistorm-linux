@@ -4,7 +4,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -20,8 +19,8 @@ from .. import __version__  # noqa: E402
 from ..core import (amigaos, bootcfg, builder, content, devices,  # noqa: E402
                     distributions,
                     emu68, hdfcheck, jobs, kickstart, machines, packages,
-                    prepare, presets, rdb, updates)
-from ..core.util import (GIB, MIB, Progress, describe_size, human_size,  # noqa: E402
+                    prepare, presets, updates)
+from ..core.util import (GIB, Progress, describe_size, human_size,  # noqa: E402
                          parse_size)
 from .widgets import FileRow, SaveRow, combo, show_full_value  # noqa: E402
 
@@ -944,7 +943,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         if system.needs_floppies:
             text += ("  -  choose \u201cinstall Workbench from my floppy "
                      "images\u201d as well, or the card will not boot.")
-        self.quick_hdf_info.set_subtitle(text)
+        #  A ready-made drive built for an A1200 says so only by the display
+        #  modes it installs. This check was written to say that and then
+        #  never called, so nobody was ever warned.
+        for warning in presets.check_image_for_machine(path, self._machine()):
+            text += f"  -  {warning}"
+        self.quick_hdf_info.set_subtitle(GLib.markup_escape_text(text))
         self._relayout_partitions()
         self._quick_preview()
 
