@@ -190,7 +190,7 @@ class BuildConfig:
         if self.emu68_archive and not Path(self.emu68_archive).is_file():
             problems.append(f"Emu68 archive not found: {self.emu68_archive}")
         if self.mode is BuildMode.FRESH:
-            if self.boot_size < 64 * MIB:
+            if self.boot_size < 64 * MIB and not self.output_hdf:
                 problems.append("The boot partition must be at least 64 MiB.")
             if not self.amiga_partitions:
                 problems.append("Define at least one Amiga partition.")

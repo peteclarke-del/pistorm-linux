@@ -1026,3 +1026,57 @@ class MagicWbShipsNoInstaller(unittest.TestCase):
 
     def test_the_note_says_why(self):
         self.assertIn("booting", packages.CATALOGUE_BY_KEY["magicwb"].note)
+
+
+class IgameIsInstalledStandalone(unittest.TestCase):
+    """Nothing from a donor. A donor's copy is whatever its author installed
+    - PiMiga's is v2.1 from 2022 - and it arrives with that person's games
+    list, screenshots and settings, all written against their machine. The
+    release from Aminet is the whole package and starts empty, which is what
+    a program that scans your own drives should do.
+    """
+
+    def setUp(self):
+        self.package = packages.CATALOGUE_BY_KEY["igame"]
+
+    def test_nothing_is_taken_from_a_donor(self):
+        self.assertEqual(self.package.items, ())
+
+    def test_it_comes_from_its_own_release(self):
+        self.assertIsNotNone(self.package.download)
+        self.assertIn("iGame", self.package.download.path)
+
+    def test_the_processor_matched_build_is_the_one_the_icon_launches(self):
+        """Emu68 gives a PiStorm a 68040, one binary per processor is
+        shipped, and the icon launches whatever is called plain "iGame"."""
+        renames = {name: (inside, dest)
+                   for inside, dest, name in self.package.download.rename}
+        self.assertIn("iGame", renames)
+        inside, dest = renames["iGame"]
+        self.assertTrue(inside.endswith(".040"), inside)
+        self.assertEqual(dest, "Programs/iGame")
+
+    def test_it_still_needs_mui(self):
+        """Its list and its classes are MUI ones, which no download here
+        supplies: NList, NListview, Guigfx and TextEditor."""
+        self.assertIn("mui", self.package.requires)
+
+
+class ABareDriveHasNoBootPartition(unittest.TestCase):
+    """The whole file is the Amiga drive, so there is nothing to size."""
+
+    def _config(self, **kw):
+        from pistorm_imager.core import builder
+        from pistorm_imager.core.util import GIB
+        return builder.BuildConfig(
+            target="/tmp/x.hdf", image_size=2 * GIB, boot_size=0,
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                name="DH0", bootable=True, size=None)], **kw)
+
+    def test_a_bare_drive_is_not_asked_for_one(self):
+        problems = self._config(output_hdf=True).validate()
+        self.assertFalse([p for p in problems if "boot partition must" in p])
+
+    def test_a_card_still_is(self):
+        problems = self._config(output_hdf=False).validate()
+        self.assertTrue([p for p in problems if "boot partition must" in p])
