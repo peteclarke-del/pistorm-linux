@@ -4,6 +4,7 @@ This runs a genuine GTK application (it needs a display), builds every page,
 flips through the task modes and checks that a configuration survives being
 written into the widgets and read back out.
 """
+import dataclasses
 import os
 import sys
 import tempfile as _tempfile
@@ -24,7 +25,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402
 
-from pistorm_imager.core import bootcfg, builder  # noqa: E402
+from pistorm_imager.core import bootcfg, builder, jobs  # noqa: E402
 from pistorm_imager.ui.window import MODES  # noqa: E402
 
 import tempfile  # noqa: E402
@@ -38,6 +39,9 @@ SOURCE_IMAGE.write_bytes(b"\0" * 4096)
 #  something to list.  An empty file would leave it with nothing to offer and
 #  the check below would prove nothing.
 HDF_IMAGE = SCRATCH / "disk.hdf"
+#  The real Workbench disks, so the ADF-install path is exercised as
+#  the user actually drives it.
+ADF_FOLDER = Path(__file__).resolve().parent.parent / "samples" / "workbench"
 
 
 def _make_test_hdf() -> None:
@@ -60,6 +64,13 @@ def _make_test_hdf() -> None:
 _make_test_hdf()
 
 failures: list[str] = []
+
+
+def pump() -> None:
+    """Let GTK settle, so a check sees the state a person would."""
+    context = GLib.MainContext.default()
+    while context.pending():
+        context.iteration(False)
 
 
 def check(condition: bool, message: str) -> None:
@@ -144,6 +155,186 @@ def on_activate(app: ImagerApplication) -> None:
         window._sync_visibility()
         check(window.gather().mode is builder.BuildMode.FRESH, "mode switch takes effect")
 
+        #  A layout that arrived with a saved setup is the user's own. It used
+        #  to be recorded as though the quick settings had derived it, so the
+        #  next relayout replaced the drives someone had arranged - four
+        #  partitions saved, one generic layout loaded.
+        #  apply() writes every row from the config it is given, so anything a
+        #  later check depends on has to be put back afterwards.
+        kept_hdf = window.hdf_row.get_path() if hasattr(
+            window.hdf_row, "get_path") else window.hdf_row.path
+        saved = builder.BuildConfig(
+            target=str(SCRATCH / "restored.img"),
+            amiga_partitions=[
+                builder.AmigaPartitionSpec(name="DH0", volume_name="Workbench",
+                                      size=10 * 1024 ** 3, bootable=True),
+                builder.AmigaPartitionSpec(name="DH1", volume_name="Games",
+                                      size=20 * 1024 ** 3),
+                builder.AmigaPartitionSpec(name="DH2", volume_name="Demos",
+                                      size=10 * 1024 ** 3),
+                builder.AmigaPartitionSpec(name="DH3", volume_name="Work",
+                                      size=None),
+            ])
+        window.apply(saved, keep_partitions=True)
+        check([r.spec().volume_name for r in window.partition_rows]
+              == ["Workbench", "Games", "Demos", "Work"],
+              "a loaded layout reaches the rows")
+        #  Anything that would normally redraw the layout must now leave it be.
+        window._relayout_partitions()
+        names = [r.spec().volume_name for r in window.partition_rows]
+        check(names == ["Workbench", "Games", "Demos", "Work"],
+              f"a loaded layout survives a relayout ({names})")
+        window.quick_pimiga.set_path(str(SCRATCH / "pimiga"))
+        names = [r.spec().volume_name for r in window.partition_rows]
+        check(names == ["Workbench", "Games", "Demos", "Work"],
+              f"a loaded layout survives a quick-setting change ({names})")
+        check(window._hand_edited_partitions() is not None,
+              "a loaded layout counts as the user's when Apply is pressed")
+        window.quick_pimiga.set_path("")
+        #  Hand the layout back to the quick settings, or every check after
+        #  this one is testing a deliberately protected layout.
+        #  The software choices and the donor they come from were saved by
+        #  gather() and never put back, so loading a setup cleared every tick.
+        donor = SCRATCH / "donor"
+        (donor / "Libs").mkdir(parents=True, exist_ok=True)
+        with_packages = dataclasses.replace(
+            saved, package_donor=str(donor), package_keys=["whdload", "lha"])
+        window.apply(with_packages, keep_partitions=True)
+        check(window.package_donor.path == str(donor),
+              f"the donor is restored ({window.package_donor.path!r})")
+        ticked = {k for k, r in window.package_rows.items() if r.get_active()}
+        check({"whdload", "lha"} <= ticked,
+              f"the chosen software is restored ({sorted(ticked)})")
+        check("magicwb" not in ticked,
+              "software that was not chosen stays off")
+        back = window.gather()
+        check(set(back.package_keys) >= {"whdload", "lha"},
+              f"and survives a round trip ({back.package_keys})")
+        window.package_donor.set_path("")
+        for row in window.package_rows.values():
+            row.set_active(False)
+
+        #  A size typed for a card is a guess, and "125G" means 125 GiB - nine
+        #  gigabytes more than a card sold as 125 GB. When a card is in front
+        #  of us its capacity is known, so it is used and the box is closed.
+        from pistorm_imager.core import devices as _devices
+        card = _devices.Device(path="/dev/nonexistent-test", name="mmcblk0",
+                               size=125_000_000_000, model="TestCard",
+                               vendor="", transport="sd", removable=True,
+                               hotplug=True, read_only=False, partitions=[])
+        window.device_list = [card]
+        from pistorm_imager.ui.window import combo as _combo
+        labels = _combo(["Select a card", card.description])
+        window.device_row.set_model(labels)
+        window.quick_device.set_model(_combo(["Select a card",
+                                              card.description]))
+        window.target_row.set_selected(0)
+        window.quick_target.set_selected(0)
+        window.quick_card_size.set_text("125G")          # the trap: 125 GiB
+        window.quick_device.set_selected(1)
+        check(not window.quick_card_size.get_sensitive(),
+              "the size box is closed while writing to a card")
+        check(window.gather().image_size == card.size,
+              f"the card's own capacity is the size "
+              f"({window.gather().image_size} vs {card.size})")
+        check("125" in window.quick_card_size.get_title()
+              and "GB" in window.quick_card_size.get_title(),
+              f"the card is named with both readings ({window.quick_card_size.get_title()!r})")
+        window.quick_device.set_selected(0)
+        window.target_row.set_selected(1)
+        window.quick_target.set_selected(1)
+        check(window.quick_card_size.get_sensitive(),
+              "and opens again for an image file")
+        check("32GB as cards are sold" in window.quick_card_size.get_title(),
+              f"which says which unit it means ({window.quick_card_size.get_title()!r})")
+        window.quick_card_size.set_text("125G")
+        window._show_size()
+        said = window.quick_size_info.get_subtitle()
+        check("binary" in said and "125GB" in said,
+              f"a bare G is called out as binary ({said!r})")
+        window.quick_card_size.set_text("125GB")
+        window._show_size()
+        said = window.quick_size_info.get_subtitle()
+        check("binary" not in said,
+              f"and an explicit GB is left alone ({said!r})")
+        window.device_list = []
+
+        #  The whole setup, not one field at a time. Three separate things
+        #  were saved faithfully and never restored - the drives, the software
+        #  and its donor, and the Emu68 release - and each was found only when
+        #  somebody noticed it missing. This compares every field at once.
+        window.target_row.set_selected(1)
+        window.quick_target.set_selected(1)
+        window.file_row.set_path(str(SCRATCH / "roundtrip.img"))
+        window.quick_file.set_path(str(SCRATCH / "roundtrip.img"))
+        window.file_size_row.set_text("40GB")
+        donor = SCRATCH / "donor"
+        (donor / "Libs").mkdir(parents=True, exist_ok=True)
+        window.package_donor.set_path(str(donor))
+        for key in ("whdload", "lha"):
+            if key in window.package_rows:
+                window.package_rows[key].set_active(True)
+        saved_config = window.gather()
+        saved_state = window.interface_state()
+        session = SCRATCH / "session.json"
+        jobs.save_session(saved_config, saved_state, session)
+
+        #  Scramble everything the load has to put back.
+        window.file_size_row.set_text("8GB")
+        window.file_row.set_path(str(SCRATCH / "somewhere-else.img"))
+        window.package_donor.set_path("")
+        for row in window.package_rows.values():
+            row.set_active(False)
+        loaded, state, _reduced = jobs.load_session(session)
+        window._apply_saved(loaded, state)
+        back = window.gather()
+
+        differences = []
+        for field in dataclasses.fields(saved_config):
+            want, got = (getattr(saved_config, field.name),
+                         getattr(back, field.name))
+            if field.name == "package_keys":
+                want, got = sorted(want), sorted(got)
+            if field.name == "amiga_partitions":
+                want = [dataclasses.asdict(x) for x in want]
+                got = [dataclasses.asdict(x) for x in got]
+            if want != got:
+                differences.append(f"{field.name}: saved {want!r}, back {got!r}")
+        check(not differences,
+              "every field of a saved setup survives the round trip"
+              + ("" if not differences else ": " + "; ".join(differences)))
+
+        #  A saved setup names the Emu68 build it was made against, and the
+        #  list it has to be found in arrives from GitHub after the setup
+        #  does. Falling to the newest stable one swapped a card built on a
+        #  beta onto a different Emu68 without saying so.
+        from pistorm_imager.core import emu68 as _emu68
+        assets = ["v1.0.7-Emu68-pistorm.zip", "v1.1.0-beta.1-Emu68-pistorm.zip"]
+        window.releases = [
+            _emu68.Release(tag="v1.1.0-beta.1", name="1.1 beta 1",
+                           prerelease=True, published="2025-01-02",
+                           assets=assets),
+            _emu68.Release(tag="v1.0.7", name="1.0.7", prerelease=False,
+                           published="2024-01-01", assets=assets),
+        ]
+        window.variant_row.set_selected(
+            [v.key for v in _emu68.VARIANTS].index("pistorm"))
+        beta = dataclasses.replace(window.gather(), release_tag="v1.1.0-beta.1")
+        window.apply(beta, keep_partitions=True)
+        check(window.gather().release_tag == "v1.1.0-beta.1",
+              f"a saved Emu68 release is restored ({window.gather().release_tag!r})")
+        #  And a setup that named none still gets the newest stable build.
+        plain = dataclasses.replace(window.gather(), release_tag="")
+        window.apply(plain, keep_partitions=True)
+        check(window.gather().release_tag == "v1.0.7",
+              f"with none saved, the newest stable is chosen ({window.gather().release_tag!r})")
+        window.releases = []
+        #  Hand the layout back to the quick settings and put the hard disk
+        #  chooser back: every check after this one depends on both.
+        window._derived_partitions = [r.spec() for r in window.partition_rows]
+        window._relayout_partitions()
+        window.hdf_row.set_path(kept_hdf)
+
         #  The PiMiga summary must update even before a target is chosen: it
         #  used to sit after an early return and so never ran.
         window.target_row.set_selected(0)          # SD card, none selected
@@ -173,18 +364,42 @@ def on_activate(app: ImagerApplication) -> None:
         window.quick_card_size.set_text("32G")
         window.quick_pimiga.set_path(str(SCRATCH / "pimiga"))
         saved = window.interface_state()
-        check(saved["machine"] == "a600" and saved["card_size"] == "32G",
+        check(saved["machine"] == "a600",
               "interface state captures the hardware choices")
+        #  The target and the card size belong to the configuration. Kept here
+        #  as well they went stale the moment either was set on its own page,
+        #  and this state is applied last, so the stale copy won.
+        check("card_size" not in saved and "target_kind" not in saved
+              and "image_path" not in saved,
+              f"the config's own settings are not duplicated ({sorted(saved)})")
 
         window.quick_machine.set_selected(0)
-        window.quick_card_size.set_text("8G")
         window.quick_pimiga.set_path("")
         window.apply_interface_state(saved)
         restored = window.interface_state()
         check(restored["machine"] == "a600", "machine is restored")
-        check(restored["card_size"] == "32G", "sizes are restored")
         check(restored["pimiga_folder"] == saved["pimiga_folder"],
               "folders are restored")
+
+        #  A 125 GiB image target, then a session saved when the quick screen
+        #  still said "SD card" at 59 GiB: the configuration has to win.
+        big = dataclasses.replace(
+            window.gather(), target=str(SCRATCH / "big.img"),
+            target_is_device=False, image_size=125 * 1024 ** 3)
+        window.apply(big, keep_partitions=True)
+        window.apply_interface_state(dict(saved, card_size="59.48G",
+                                          target_kind=0,
+                                          image_path="/tmp/somewhere-else.img"))
+        check(window.quick_card_size.get_text().startswith("125"),
+              f"the card size survives loading ({window.quick_card_size.get_text()!r})")
+        check(window.gather().target == str(SCRATCH / "big.img"),
+              f"the target survives loading ({window.gather().target!r})")
+        check(window.gather().image_size == 125 * 1024 ** 3,
+              f"and so does its size ({window.gather().image_size})")
+        #  apply() protects the layout it was given; hand it back, or the
+        #  checks below are testing a layout deliberately left alone.
+        window._derived_partitions = [r.spec() for r in window.partition_rows]
+        window.quick_card_size.set_text("32G")
 
         #  A source defines the partition layout, so changing it must redraw
         #  it: the rows are what a build reads, and leaving them behind would
@@ -285,7 +500,21 @@ def on_activate(app: ImagerApplication) -> None:
         window.quick_primary.set_selected(2)
         check(window.quick_pimiga.path == "" and window.quick_hdf.get_visible(),
               "choosing an image drops the PiMiga folder")
-        window.quick_hdf.set_path(str(HDF_IMAGE))
+        #  A drive built for another machine is warned about. The check that
+        #  says so existed for weeks without ever being called, so this asks
+        #  whether the warning reaches the screen, not merely that it exists.
+        from pistorm_imager.core import presets as _presets
+        original = _presets.check_image_for_machine
+        _presets.check_image_for_machine = \
+            lambda *a, **k: ["installs display modes this machine cannot produce"]
+        try:
+            window.quick_hdf.set_path(str(HDF_IMAGE))
+            said = window.quick_hdf_info.get_subtitle()
+        finally:
+            _presets.check_image_for_machine = original
+        check("cannot produce" in said,
+              f"an image built for another machine is warned about ({said!r})")
+
         window.quick_primary.set_selected(0)
         check(window.quick_hdf.path == "" and window.quick_pimiga.path == "",
               "going back to Default drops both")
@@ -296,6 +525,255 @@ def on_activate(app: ImagerApplication) -> None:
                                       "hdf_source": str(HDF_IMAGE)})
         check(window._primary() == "image",
               "a session saved before the split still picks the right source")
+
+        #  A tree can hold more than this machine can run - the AGA games on
+        #  an OCS A500 - so what to leave out is editable per partition.
+        from pistorm_imager.ui.window import PartitionRow as _PR  # noqa: PLC0415
+        from pistorm_imager.core import machines as _m  # noqa: PLC0415
+
+        #  A tree divided into categories, some of which an A500 cannot run.
+        tree = SCRATCH / "GamesTree" / "WHDLOAD"
+        for name in ("AGA", "CD32", "OCS", "Cinemaware"):
+            (tree / name / "Something").mkdir(parents=True, exist_ok=True)
+
+        row = _PR(builder.AmigaPartitionSpec("DH1", None, "PFS3",
+                                             volume_name="Games"),
+                  on_remove=lambda _r: None, on_change=None,
+                  machine=lambda: _m.MACHINES_BY_KEY["a500"])
+        check(row.spec().exclude == [],
+              "a partition with no content leaves nothing out")
+        row.hdf_row.set_path(str(SCRATCH / "GamesTree"))
+        found = sorted(row._category_rows)
+        check(len(found) == 4, f"the tree's categories are listed ({found})")
+        check(sorted(row.spec().exclude) == ["WHDLOAD/AGA", "WHDLOAD/CD32"],
+              f"an A500 leaves out what it cannot run ({row.spec().exclude})")
+        row._category_rows["WHDLOAD/AGA"].set_active(False)
+        check(row.spec().exclude == ["WHDLOAD/CD32"],
+              "the default can be overridden per category")
+
+        aga = _PR(builder.AmigaPartitionSpec("DH2", None, "PFS3"),
+                  on_remove=lambda _r: None, on_change=None,
+                  machine=lambda: next(m for m in _m.MACHINES if m.aga))
+        aga.hdf_row.set_path(str(SCRATCH / "GamesTree"))
+        check(aga.spec().exclude == [],
+              f"an AGA machine leaves nothing out ({aga.spec().exclude})")
+
+        kept = _PR(builder.AmigaPartitionSpec("DH3", None, "PFS3",
+                                              exclude=["WHDLOAD/Nowhere"]),
+                   on_remove=lambda _r: None, on_change=None,
+                   machine=lambda: _m.MACHINES_BY_KEY["a500"])
+        kept.hdf_row.set_path(str(SCRATCH / "GamesTree"))
+        check("WHDLOAD/Nowhere" in kept.spec().exclude,
+              "an exclusion the tree cannot explain is kept, not dropped")
+
+        #  Applying the quick setup must not throw away partitions that have
+        #  been arranged by hand.
+        window._derived_partitions = [r.spec() for r in window.partition_rows]
+        check(window._hand_edited_partitions() is None,
+              "an untouched layout is not treated as hand-edited")
+        window.partition_rows[0].volume_row.set_text("MyOwnName")
+        edited = window._hand_edited_partitions()
+        check(edited is not None and edited[0].volume_name == "MyOwnName",
+              "an edited layout is noticed and would be kept")
+
+        #  The quick start is a choice of three things to do, and is the
+        #  whole window until "Customise" is chosen.
+        window._set_customising(False)
+        visible = {name for name in ("quick", "source", "storage", "amiga",
+                                     "options", "target")
+                   if window.stack.get_page(
+                       window.stack.get_child_by_name(name)).get_visible()}
+        check(visible == {"quick"},
+              f"the quick start is the only page to begin with ({visible})")
+        check(not window.back_button.get_visible(),
+              "and there is nothing to go back to")
+        check(not window.bottom_bar.get_visible(),
+              "nor anything to summarise or write yet")
+
+        window._set_customising(True)
+        visible = {name for name in ("quick", "source", "storage", "amiga",
+                                     "options", "target")
+                   if window.stack.get_page(
+                       window.stack.get_child_by_name(name)).get_visible()}
+        check("quick" not in visible and "storage" in visible,
+              f"customising shows the workflow and hides the quick start ({visible})")
+        check(window.back_button.get_visible()
+              and window.bottom_bar.get_visible(),
+              "and offers a way back to it, with the summary and Write")
+        window._set_customising(False)
+        check(window.stack.get_visible_child_name() == "quick",
+              "going back returns to the quick start")
+
+        def on_quick_screen() -> set:
+            names = {"choices": window.group_choices,
+                     "hardware": window.group_hardware,
+                     "detected": window.group_detected,
+                     "image": window.image_group,
+                     "target": window.group_target,
+                     "plan": window.group_plan}
+            return {name for name, group in names.items()
+                    if group.get_visible()
+                    and group.get_ancestor(Adw.PreferencesPage)
+                    is window.page_quick}
+
+        #  The first screen is the choice and nothing else.
+        window._set_customising(False)
+        window._set_quick_screen("choices")
+        shown = on_quick_screen()
+        check(shown == {"choices"},
+              f"the first screen shows only the three choices ({shown})")
+
+        window._choose_basic()
+        shown = on_quick_screen()
+        check(shown == {"hardware", "detected", "target", "plan"}
+              and window.back_button.get_visible(),
+              f"a basic card shows its own options and a way back ({shown})")
+
+        window._choose_prepared()
+        shown = on_quick_screen()
+        check(shown == {"image", "target", "plan"}
+              and window.back_button.get_visible(),
+              f"a prepared system asks only for the image and the card ({shown})")
+
+        def rank(group) -> int:
+            """Where a group sits among its siblings on the page."""
+            parent = group.get_parent()
+            index, child = 0, parent.get_first_child()
+            while child is not None:
+                if child is group:
+                    return index
+                index, child = index + 1, child.get_next_sibling()
+            return -1
+
+        #  The picker has to come before the summary that describes what it
+        #  chose; add() appends, so a group moved here landed last.
+        window._choose_prepared()
+        check(rank(window.image_group) < rank(window.group_target)
+              < rank(window.group_plan),
+              f"image {rank(window.image_group)}, card "
+              f"{rank(window.group_target)}, plan {rank(window.group_plan)} "
+              f"- in that order")
+
+        window._choose_basic()
+        check(rank(window.group_hardware) < rank(window.group_detected)
+              < rank(window.group_target) < rank(window.group_plan),
+              "a basic card reads hardware, disks, card, plan")
+
+        window._set_quick_screen("choices")
+        check(window.group_choices.get_visible()
+              and not window.back_button.get_visible(),
+              "Back returns to the three choices")
+
+        #  One Back, doing whatever going back means where you are - and
+        #  always to the choice itself, never to the screen last open.
+        window._choose_basic()
+        window._go_back()
+        check(window.group_choices.get_visible()
+              and not window.back_button.get_visible(),
+              "Back from a quick screen returns to the choices")
+        window._choose_basic()
+        window._set_customising(True)
+        window._go_back()
+        check(not window._customising and window.group_choices.get_visible()
+              and not window.back_button.get_visible(),
+              "Back from the workflow returns to the choices, not the last screen")
+
+        #  Settings belong on the page they are about.
+        window._set_customising(True)
+        for group, page_name in ((window.group_hardware, "amiga"),
+                                 (window.group_primary, "source"),
+                                 (window.group_sizes, "storage")):
+            holder = group.get_ancestor(Adw.PreferencesPage)
+            found = holder is window.stack.get_child_by_name(page_name)
+            check(found, f"a group lives on the {page_name} page")
+
+        #  Writing needs more than a valid configuration: a card written with
+        #  no Kickstart boots into nothing.
+        window._set_customising(True)
+        window.file_row.set_path(str(SCRATCH / "gate.img"))
+        window.rom_row.set_path("")
+        window._update_summary()
+        check(not window.apply_button.get_sensitive()
+              and "Kickstart" in window.apply_note.get_text(),
+              f"Apply waits for a Kickstart ({window.apply_note.get_text()})")
+
+        rom = Path(__file__).resolve().parent.parent / "samples" / "kickstart"
+        roms = sorted(rom.glob("*.rom"))
+        if roms:
+            window.rom_row.set_path(str(roms[0]))
+        from pistorm_imager.core import emu68 as _e
+        window.releases = [_e.Release(                # as if the list had loaded
+            tag="v1.0.7", name="1.0.7", prerelease=False, published="2024-01-01",
+            assets=[f"v1.0.7-Emu68-{v.key}.zip" for v in _e.VARIANTS])]
+        window._update_summary()
+        check(not window.write_button.get_sensitive(),
+              "Write is off until the setup is applied")
+        check(window.apply_button.get_sensitive(),
+              f"Apply is offered once the choices are made "
+              f"({window.apply_note.get_text()})")
+        window._on_apply_quick(None)
+        check(window.write_button.get_sensitive(),
+              "applying enables Write")
+        window.partition_rows[0].volume_row.set_text("ChangedAfterApply")
+        window._update_summary()
+        check(not window.write_button.get_sensitive(),
+              "changing anything afterwards disables Write again")
+        window._on_apply_quick(None)
+        check(window.write_button.get_sensitive(),
+              "and applying again re-enables it")
+
+        #  The same block finishes every route: what it will build, with the
+        #  button that accepts it underneath.
+        check(window.group_plan.get_ancestor(Adw.PreferencesPage)
+              is window.page_target,
+              "customising finishes on the Target page")
+        window._set_customising(False)
+        window._choose_basic()
+        check(window.group_plan.get_ancestor(Adw.PreferencesPage)
+              is window.page_quick,
+              "and a quick option finishes on its own screen")
+        #  The strip is the last thing in the summary card, under the text.
+        card = window.quick_plan.get_parent()
+        order, child = [], card.get_first_child()
+        while child is not None:
+            order.append(child)
+            child = child.get_next_sibling()
+        check(order and order[0] is window.quick_plan
+              and order[-1] is window.apply_row,
+              "Apply sits at the end of the summary, underneath it")
+        #  Reconsidering the choice withdraws the setup with it.
+        window._go_back()
+        window._update_summary()
+        check(not window.write_button.get_sensitive(),
+              "going back withdraws the accepted setup")
+
+        #  Editing storage has to show up in the plan the user reads before
+        #  pressing Write; it used to describe the quick settings alone.
+        window.file_row.set_path(str(SCRATCH / "plan.img"))
+        window._update_summary()
+        before = window.quick_plan.get_text()
+        window.partition_rows[0].volume_row.set_text("PlanCheck")
+        window._update_summary()
+        after = window.quick_plan.get_text()
+        check(before != after and "PlanCheck" in after,
+              "a storage change shows up in the plan")
+
+        #  Software ticked on the Amiga page has to reach the build.  It used
+        #  to be carried only by the quick setup, so ticking a package and
+        #  pressing Write from the pages themselves built a card without it.
+        window.mode_row.set_selected(0)                   # a fresh card
+        window.quick_system_source.set_selected(0)        # from floppies
+        window.adf_row.set_path(str(ADF_FOLDER))
+        window._refresh_packages()
+        for key in ("whdload", "fblit"):
+            if key in window.package_rows:
+                window.package_rows[key].set_active(True)
+        chosen = window._chosen_packages()
+        config = window.gather()
+        check(set(config.package_keys) == set(chosen) and bool(chosen),
+              f"chosen software reaches the build ({chosen})")
+        check(config.package_chipset and config.package_display,
+              "the machine and display travel with it")
 
         #  A folder is genuinely hard to pick in the GTK dialog - you have to
         #  highlight it from its parent, and once inside it nothing is
@@ -438,9 +916,17 @@ def on_activate(app: ImagerApplication) -> None:
         #  Every menu item must be reachable as an action, or choosing it does
         #  nothing and the menu stays open.
         for name in ("save-settings", "load-settings", "forget-session",
-                     "inspect-target", "about"):
+                     "inspect-target", "check-updates", "about"):
             check(window.lookup_action(name) is not None,
                   f"menu action {name} exists")
+
+        #  The answer is shown without asking GitHub anything in a test.
+        from pistorm_imager.core import updates as _u  # noqa: PLC0415
+        window._updates_answered(None)
+        window._updates_answered(_u.Release("v0.0.1", "Ancient", "old", "u"))
+        window._updates_answered(_u.Release("v99.0.0", "Future",
+                                            "It flies now", "u"))
+        check(True, "every update answer renders without error")
 
         hdf_index = next(i for i, m in enumerate(MODES)
                          if m[1] is builder.BuildMode.HDF)
@@ -451,6 +937,48 @@ def on_activate(app: ImagerApplication) -> None:
               "HDF mode hides the partition editor (the RDB comes from the image)")
         problems = window.gather().validate()
         check(problems == [], f"HDF mode config is valid ({problems})")
+
+        #  A card built from floppies has to be able to be pointed at the
+        #  floppies.  The quick start reported what it had found and offered
+        #  no way to correct it, because the choosers live on pages it does
+        #  not show - so "build a new card, install from my floppy images"
+        #  led to a screen with nowhere to select them.
+        from gi.repository import Adw as _Adw
+        from pistorm_imager.ui.window import FRESH_SOURCES as _SOURCES
+
+        def group_of(row):
+            g = row.get_ancestor(_Adw.PreferencesGroup)
+            return g.get_title() if g is not None else "nowhere"
+
+        window._choose_basic()
+        pump()
+        on_quick = group_of(window.adf_row)
+        check(on_quick == group_of(window.quick_found_adf),
+              f"the basic screen offers the ADF chooser (it is on {on_quick!r})")
+        check(group_of(window.rom_row) == on_quick,
+              "the basic screen offers the Kickstart chooser")
+        check(group_of(window.quick_system_source) == on_quick,
+              "the basic screen offers the install-from-floppies choice")
+        #  An earlier check left an .hdf selected, and an .hdf source
+        #  correctly rules a floppy install out - so start from a clean one.
+        window.quick_hdf.set_path("")
+        window.quick_system_source.set_selected(_SOURCES.index("adf"))
+        pump()
+        check(window.adf_row.get_visible(),
+              "choosing a floppy install shows the folder chooser")
+
+        #  And the workflow must get them back, or its own pages come up
+        #  with nothing to choose a Kickstart or the disks with.
+        window._set_customising(True)
+        pump()
+        check(group_of(window.rom_row) == "Kickstart ROM",
+              f"the Kickstart chooser returns to its page "
+              f"(it is on {group_of(window.rom_row)!r})")
+        check(group_of(window.adf_row) == "Workbench floppy images",
+              f"the ADF chooser returns to its page "
+              f"(it is on {group_of(window.adf_row)!r})")
+        window._set_customising(False)
+        pump()
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()

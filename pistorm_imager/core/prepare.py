@@ -9,7 +9,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from . import builder, emu68
+from . import builder
 from .util import Progress
 
 

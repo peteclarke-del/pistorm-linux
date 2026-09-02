@@ -17,7 +17,6 @@ Four tasks, all ending with the same boot-partition customisation pass:
 | **Build a new card** | Writes an MBR with a FAT32 boot partition (Emu68 + Raspberry Pi firmware + your Kickstart) and a type `0x76` Amiga partition carrying a Rigid Disk Block. Optionally installs AmigaOS onto it from a set of Workbench floppy images, so the card boots straight to Workbench. |
 | **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
 | **Import an Amiga hard disk image** | Takes a WinUAE/FS-UAE/HstWB `.hdf` — the Amiga drive on its own, with no partition table — and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
-
 | **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
 
 It can also produce a bare **Amiga hard disk image** instead of a card, which
@@ -65,8 +64,57 @@ or install it and use the desktop entry:
 
 ```
 pip install --user .
-cp pistorm-imager.desktop ~/.local/share/applications/
+install -Dm644 data/icons/hicolor/scalable/apps/pistorm-imager.svg \
+        ~/.local/share/icons/hicolor/scalable/apps/pistorm-imager.svg
+install -Dm644 pistorm-imager.desktop ~/.local/share/applications/
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
 ```
+
+The icon is a scalable SVG in `data/icons`, laid out the way GTK expects a
+theme to be, so running from a checkout finds it without installing anything.
+
+## The window
+
+It opens on a choice of three, and nothing else, because a choice with a page of
+settings under it is not a choice — the settings are the thing being chosen
+between:
+
+| | |
+| --- | --- |
+| **A basic PiStorm card** | Emu68 and an empty Amiga drive, partitioned and formatted, ready to install Workbench onto from floppies. Leads to which Amiga it is for, what was found to install from, the card and its size, and the plan. |
+| **Write a prepared system** | A finished image you have downloaded — CaffeineOS, an Emu68 Hatcher image, or a backup of a card. Leads to the image chooser and the card, and nothing about the machine, because the image brings its own answer to that. |
+| **Customise an installation** | The full workflow: sources, storage, the software to add, boot options. Everything the other two decide for you. |
+
+Each screen is laid out in the order its decisions are made, and ends with the
+same block: **what this will build**, and `Apply this setup` beneath it. That
+block finishes whichever route was taken — the last thing on a quick screen, or
+the last thing on the Target page when customising — so the same decision reads
+the same way whichever way it was reached.
+
+Nothing is written until that Apply has been pressed. Write stays off before it,
+and goes off again whenever something changes what would actually be written —
+a partition renamed two pages away puts the setup back to needing another look,
+and says so beside the summary. Apply itself is offered only once enough has been
+chosen for a card to boot: not merely a configuration that will write, but one
+with a Kickstart for Emu68 to map and floppies for an install from floppies. What
+is still wanted is named where the button is —
+
+> Still needed: a Kickstart ROM, and 1 more
+
+— and a prepared image is exempt, because the image and a card are the whole
+requirement.
+
+`Back` sits bottom left, in the same bar as `Write`, and always returns to the
+choice. It withdraws the acceptance with it, so reconsidering the choice that led
+to a setup does not leave Write lit while you do.
+
+**Check for updates…** in the menu asks GitHub for this project's releases and
+says what it found — the newest with its notes and a way to go and get it, or
+that this is already the newest. It is asked for rather than done at startup: a
+tool that prepares a card should not reach out to the internet unless someone has
+asked it a question. No network, a changed API or a repository with no releases
+yet are all reported as the question going unanswered, because none of them mean
+anything is wrong with the copy in front of you.
 
 ## Privileges
 
@@ -115,6 +163,10 @@ pistorm_imager/
     machines.py  target machine profiles: chipset, board, Kickstart, display
     presets.py   turns a machine and a source into a complete build
     packages.py  optional software taken from a system you already have
+    content.py   what a games or demos tree is divided into, and what runs here
+    distributions.py  recognising a prepared system and what it expects
+    postwrite.py adapting a prepared system after it has been written
+    updates.py   asking GitHub whether there is a newer release of this tool
     devices.py   finding and describing removable drives
     prepare.py   partitioning and formatting the target
     util.py      sizes, progress reporting, stream copying
@@ -122,13 +174,15 @@ pistorm_imager/
     jobs.py      job serialisation across the privilege boundary
   ui/            the GTK4 interface
   cli.py         command line front end and privileged writer
+  app.py         the GTK application itself
+data/icons/      the application icon, in the hicolor theme layout
 tests/           unit tests plus a real end-to-end image build
 ```
 
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 230 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 374 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -157,7 +211,9 @@ Emu68 installation, Kickstart handling, `config.txt`/`cmdline.txt`, RDB
 creation, image writing (including compressed sources), and expansion into
 unused space. On top of that: PFS3 and FFS volumes created and filled, PiMiga
 and `.hdf` drives imported and adapted, per-machine presets, the display
-handling described above, and optional software copied from a donor system.
+handling described above, optional software copied from a donor system or
+fetched from Aminet, prepared systems recognised and adapted after writing, and
+per-category exclusions followed through into iGame's list.
 
 Validated against real material: a full Workbench 3.1 install built from the
 original floppy images (643 files, verified in `xdftool`), a 106 GiB HstWB
@@ -171,11 +227,17 @@ covers the parts every build shares — the MBR, the FAT32 boot partition, the
 Emu68 and firmware payload, `config.txt` and `cmdline.txt`, the `0x76`
 partition, the Rigid Disk Block inside it and the AmigaOS install on top.
 
-**Not yet tried on hardware:** everything past that. Importing PiMiga or an
-`.hdf`; the RTG and dual-output display handling, including the switcher
-scripts; optional software copied from a donor system; multi-partition layouts.
-Those are checked against the format specifications and against independent
-tools, which is not the same as an Amiga booting from them.
+**Booted in an emulator:** a card built here from PiMiga — its System drive on a
+multi-gigabyte PFS3 partition — has been lifted out as an `.hdf` and booted in
+FS-UAE, which runs the real PFS3 19.2 handler out of the RDB rather than this
+project's own reader. That is what found and then settled five PFS3 writer bugs
+that were silent at build time and fatal at mount.
+
+**Not yet tried on hardware:** everything past the basic card. The RTG and
+dual-output display handling, including the switcher scripts; optional software
+copied from a donor system; multi-partition layouts; adapting a written prepared
+system. Those are checked against the format specifications, against independent
+tools and in an emulator, which is not the same as an Amiga booting from them.
 
 ## One primary source, not several
 
@@ -214,6 +276,60 @@ The one field the two share is **Additional cmdline.txt options**: the trapdoor
 switch puts `move_slow_to_chip` there and anything else in the box was typed by
 hand. Both survive, and turning the switch off removes only its own option.
 
+## How big is the card, and which gigabyte do you mean
+
+A size typed for a card is a guess at what the card holds, and the two meanings
+of "GB" make it a bad guess. `125G` is 125 GiB - **9.22 GB more** than a card
+sold as 125 GB - so an image built from it does not fit the card it was built
+for. The parser has always distinguished the two (`125GB` decimal, `125GiB` and
+a bare `125G` binary, a bare number MiB), but that only helps someone who knows
+to ask.
+
+So the size is not typed at all when it can be known instead. **Writing to a
+card, its capacity is read from the card**, the box is closed, and the title
+says which card and both readings of its size:
+
+> Card size - taken from mmcblk0, which holds 116.42 GiB (125.00 GB as cards
+> are sold)
+
+The configuration takes it from the device rather than from any box, so a
+number left in one from an earlier session cannot reach a build.
+
+**Writing an image file** there is no card to ask, so the box stays open and
+the size line says which reading it took: `125G` is answered with *"is binary;
+write 125GB for a card sold as that size"*. An explicit `GB` or `GiB` is left
+alone, having said what it meant.
+
+Whichever way, the drives have to fit what was asked for. Nothing checked, so a
+16 GiB image asked to hold 40 GiB of partitions was accepted and laid out past
+its own end; now it is refused, counting the boot partition and the alignment
+before it - except on a bare `.hdf`, which has neither.
+
+### What a saved setup carries, and what it must not
+
+A setup is saved as a configuration plus the interface state, and the second is
+for **what a BuildConfig cannot express**: the machine, the display, the folders
+that were browsed to. Anything the configuration already carries must not be
+written there as well. The target and the card size were, taken from the quick
+screen's own copy, which goes stale the moment either is set on its own page -
+and the interface state is applied *after* the configuration, so the stale copy
+won. A setup naming a 125 GiB image came back as a 59 GiB SD card.
+
+The same omission in the other direction lost the rest: the partitions, the
+software and the donor it came from, the Emu68 release and the board were all
+saved faithfully and never put back. Each was found only when somebody noticed
+it missing, so the GUI test now saves a setup, scrambles the widgets, loads it
+again and compares **every field** of the configuration. That check found the
+last two by itself: the board, which the machine reset after the configuration
+had restored it, and the card size, which was written back into the box as
+"37.25G" and read out again a little smaller each time.
+
+Putting a loaded setup back is therefore one method rather than a sequence
+repeated at each call site, because the order is the whole of it: the machine
+and the display arrive with the interface state, and they decide which software
+suits the card and which board the Source page shows, so both of those are
+restored from the configuration afterwards.
+
 ## Installing AmigaOS from floppy images
 
 Point the tool at a folder of ADFs and it identifies them by volume name -
@@ -237,6 +353,57 @@ Put your own Workbench disks and Kickstart in `samples/` and they are found
 automatically - see `samples/README.md`. None of that material is kept in this
 repository, and the tests that use it skip when it is absent.
 
+## Prepared systems
+
+Several people distribute a whole, finished AmigaOS installation as an image,
+and basing a card on one is far quicker than installing Workbench from six
+floppies. Download it from its author, point the **Pre-built image** source at
+the file, and the tool names what it found and says what that system expects of
+the machine.
+
+**CaffeineOS** is recognised: AmigaOS 3.9 built for Emu68 and the PiStorm, with
+Dopus Magellan as its Workbench replacement, its own custom Kickstart on the
+boot partition, and its own Emu68 kernel and command line. It wants a 64 GB
+card or larger. The detail worth knowing before committing a card to it is that
+its Workbench opens on an **RTG screen only** — its own WinUAE configuration
+sets `rtg_nocustom=true` — so on a machine watched on the Amiga's own 15 kHz
+video there is a desktop nobody can see. The tool says so, and says it more
+loudly when the display is set to native.
+
+**PiMiga** is in the catalogue as well, not because it can be used this way but
+because it cannot: it is a Raspberry Pi system running the Amiberry emulator,
+and its Amiga drives are ordinary folders inside its Linux root partition.
+Pointing the image chooser at it explains that, rather than reporting an empty
+list of drives.
+
+Recognition is by volume label, which is the one thing that survives an author
+repartitioning between releases. An unknown image is never guessed at.
+
+### Adapting one after it has been written
+
+Writing a prepared image copies raw sectors, so none of the file-by-file
+compatibility work described below happens to it — which is right, because a
+system built for Emu68 already has the drivers it needs. What it cannot know is
+which *screen* this machine is watched on. CaffeineOS's startup already branches
+on the board it finds and applies `ENVARC:Sys/screenmode.prefs.PI` on a PiStorm;
+with no monitor on the Pi's HDMI output, that opens Workbench where nobody can
+see it.
+
+An optional pass after writing blanks the saved mode, so the machine keeps the
+native screen it started on and a mode can be chosen in Prefs and saved there. It
+only ever *removes* a saved choice and never installs one, because which mode
+suits a monitor is not something this can know. Blanking a file's data touches no
+metadata — the extents are already allocated — which is what makes it safe on a
+finished volume, where deleting a file would not be.
+
+### A rev 6A A500 is not necessarily OCS
+
+Fitting a Super Denise to a rev 6A board makes it a full **ECS** machine, and
+that is a common enough upgrade that offering only a plain OCS A500 gets the
+chipset wrong for a real machine. The chipset decides which game collections
+are worth copying and which screen modes exist, so there is a separate
+**Amiga 500 with ECS** to choose, and the plain A500's note points at it.
+
 ## Checking an image against the machine
 
 Plenty of ready-made drives are built for an A1200 and say so only by the
@@ -251,8 +418,31 @@ says:
 `STORAGE:Monitors` is deliberately ignored - AmigaOS ships the whole set there
 uninstalled, so its contents say nothing about what a system expects.
 
-Chipset-specific game collections are handled separately: on a machine without
-AGA, the `WHDLOAD/AGA` and `WHDLOAD/CD32` categories are simply not copied.
+### What to leave out of a games or demos drive
+
+A WHDLoad collection is arranged by category, and not every category suits every
+Amiga: the AGA games on an OCS A500 waste gigabytes on titles that cannot run and
+leave iGame offering them. The categories are **discovered from the tree itself**
+rather than fixed here, because collections differ and grow — PiMiga's Games
+drawer has ten (ARCADIA, BETA, CD32, CDTV, Cinemaware, Foreign, Mags, NTSC, OCS
+and AGA) and its Demos drawer four, one of which appears in no other collection
+this project has seen.
+
+Each is a switch on the partition, with the count of titles in it. What is fixed
+is what a handful of well-known names *mean*, which is enough to propose a
+default: AGA and CD32 need AGA, ECS needs ECS, and CDTV does not — it is an A500
+with a CD drive, which is easy to assume otherwise. A name nothing is known about
+is offered with nothing assumed, so it is never excluded by default. The default
+follows the machine and moves with it, and every switch stays changeable, because
+"this machine cannot run it" is a sensible default and not a rule.
+
+Leaving a collection out is followed through to **iGame's list**, which keeps an
+absolute path to every slave it knows about; entries whose slave will not be on
+the card are dropped, honouring the same exclusions the copy uses. On PiMiga's
+real list that is 4,201 entries in and 3,886 out. Matching ignores case, because
+the list was written on a case-insensitive Amiga volume and is checked against a
+Linux tree where `WHDLoad` and `WHDLOAD` are two different directories, and an
+entry on a volume nothing here fills is kept rather than dropped unchecked.
 
 ## Software to add to a floppy install
 
@@ -376,12 +566,173 @@ IBrowse and MiamiDx among them — is only ever **copied out of a donor system
 you already have**, which is what pointing at a PiMiga installation is for. A
 donor is always preferred over a download.
 
-Not everything can be installed by copying files. VisualPrefs, MCP, NewIcons,
-MagicWB and Picasso96 patch the system or run their own script; those are
-unpacked into `Storage/Install` on the card, ready to be installed on the Amiga
-itself, and say so. Where a package needs a line to take effect — PeterK's
+Whatever can be installed outright is installed, and `Storage/Install` is a last
+resort rather than the default: a tick box that produces an installer you have to
+find and run has not delivered what it promised. MagicWB's fonts and patterns go
+straight into `Fonts:` and `Prefs/Presets`, and its icon set is what gives this
+build's own drawers their icons. What still needs running on the Amiga is the
+part that *replaces* icons already on the card, because the file system here
+creates files and never overwrites them — so VisualPrefs, MCP, NewIcons and
+Picasso96, which patch the system or restyle what is already there, are unpacked
+into `Storage/Install` and say so in the log. Where a package needs a line to take effect — PeterK's
 `icon.library` has to be soft-kicked over the one in ROM, FBlit has to be
 started — the build writes `S:User-Startup` to do it.
+
+### What a package needs to actually run
+
+Copying a program's drawer onto the card is not the same as installing it. A
+great deal of Amiga software draws itself with **MUI**, and iGame, AmFTP,
+WookieChat and NetSurf all do: copied on their own they land on the card, appear
+on Workbench, and then do nothing whatsoever when clicked, because
+`muimaster.library` is not there. So packages declare what they need, and a
+dependency is pulled in whether or not it was ticked — MUI is copied to
+`SYS:System/MUI` and given its `MUI:` assign in `S:User-Startup`, which is how a
+real MUI install is arranged and how the donor systems carry it.
+
+The same goes for the shared libraries a program draws through, which are kept
+apart from the package itself because a program fetched from Aminet still needs
+them off the donor: `guigfx.library` and `render.library` for iGame's
+screenshots, `codesets.library` and `openurl.library` for the browsers, and the
+ReAction classes — `Classes/Gadgets` plus `window.class` and its companions —
+without which AWeb opens no window at all. A library wanted by three packages is
+copied once; the file system here creates files and refuses to overwrite them, so
+a second copy would not merely be wasteful, it would end the build.
+
+### Why half the icons were blank
+
+A modern Amiga icon keeps its picture in an **OS3.5 colour chunk appended after
+the classic one**, and often leaves the classic planar image at 0x0 - iGame's
+does exactly that. Kickstart 3.1's `icon.library` 40.1 knows nothing about that
+chunk, so it draws nothing at all, and a card full of perfectly good icons comes
+up with half of them blank. PeterK's `icon.library` reads them, which is why the
+systems these files come from show them.
+
+Copying the replacement into `LIBS:` is not enough, and neither is soft-kicking
+it from `S:User-Startup`: by the time that file runs, `IPrefs` has already
+opened the one in ROM, and a library in the system list cannot be replaced.
+Booted and asked directly, the Amiga answered `icon.library 40.1` while 51.4 sat
+unused in `LIBS:`.
+
+So it is installed with **`LoadModule`, inserted above `IPrefs` at the top of
+`S:Startup-Sequence`** - which is what the donor systems themselves do on the
+third line of their own startup. The file cannot be rewritten afterwards,
+because this file system creates files and never overwrites them, so it is
+edited in flight on its way off the floppy image. Asked again after that change,
+the Amiga answers `icon.library 51.4`.
+
+### Updates and patches, and why they are off
+
+Installing from the original floppies gives you exactly what shipped in 1994.
+A PiStorm is a **68040-class accelerator**, and Workbench 3.1's idea of a 68040
+is `SetPatch 40.16` from February 1994 and `68040.library 37.30` — both older
+than the CPU they are meant to set up. Replacing them looks like an obvious
+improvement.
+
+**It stops every WHDLoad game from running.** Either one is enough on its own:
+`SetPatch 44.38` leaves a game hanging on a black screen, and MMULib's
+libraries give a yellow screen — a CPU exception, with no operating system left
+to draw a Guru. This was established by building the same card four times,
+changing one thing at a time, against a card proven to run the game.
+
+So they are offered and **not taken by default**, and neither is required by
+anything. They are worth having on a machine used for applications, where the
+newer CPU support is the point and no game is going to take the hardware over.
+On a card built around a WHDLoad collection, leave them alone.
+
+Two updates are offered:
+
+| | |
+| --- | --- |
+| **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
+| **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
+
+The floppies' `C:SetPatch` is **refused during the install** rather than
+overwritten afterwards, because this file system creates files and never
+replaces them; the newer one is then copied into its place.
+
+### What a program needs is read out of it
+
+Declaring dependencies by hand caught MUI and a handful of libraries and missed
+twenty more, each of which copied onto the card perfectly and then would not
+run: `ixemul` and `netinfo.device` for NetSurf, `Picasso96API` for AWeb,
+`screennotify` for Birdie, `popupmenu` and `vapor_toolkit` for the MUI
+applications.
+
+Amiga binaries name what they open as plain strings, so the answer is in the
+files themselves. Everything a copied program mentions, that will not be on the
+card and that the donor system has, is copied too - and then the same question
+is asked of *those*, because a library brings its own needs with it
+(`mmu.library` wants `68030.library`, `ixemul` wants `ixnet`, `xpkmaster` wants
+`xfdmaster`). One round left seven behind; repeating until a round finds nothing
+new brought the real card down from nineteen missing files to three, and those
+three are optional (`narrator.device` is speech synthesis).
+
+The scan over-matches where two strings abut in a binary, which costs nothing: a
+name that is really a fragment of another resolves to nothing in the donor and
+is dropped.
+
+**Key files travel with what they unlock.** Registered Amiga software looks for
+`<name>.key` beside the system rather than in its own drawer, so copying
+`xadmaster.library` without `S:xadmaster.key` leaves it crippled in a way that
+reads as the copy having failed. Anything being copied that has a matching key
+in `S:`, `L:` or `DEVS:keyfiles` takes it along — which picks up MUI's key too.
+
+**Some things no scan can find.** A WHDLoad slave asks for the Kickstart the
+game expects, and those are ROM images, not code: nothing names them inside a
+binary. Without `DEVS:Kickstarts` iGame launches a game and the machine falls
+over on the spot, so WHDLoad asks for that drawer outright. It is 6.8 MB. Settings are carried too, since files alone are not a working
+install - `ENVARC:mui`, `ENVARC:AWeb3` and `ENVARC:ClassAct`, and the
+`AWEB_APL:` assign that AWeb is found through.
+
+### Drawers you can actually see
+
+A drawer with no `.info` beside it does not appear on Workbench — it can only be
+reached from a Shell or by turning on **Window/Show/All Files**. That is correct
+for `C:` and `LIBS:`, which is why Commodore ships them without icons, but this
+tool also creates drawers of its own — `Programs`, `Internet`, `AmiTCP` — and
+gave them none either, so every browser and launcher that was installed could
+not be found from the desktop. It looked exactly like the software never having
+been installed. `Storage` had the same problem: the real Commodore installer
+creates that drawer *and* its icon, and installing from the ADFs creates only the
+drawer.
+
+Every drawer this build makes now gets an icon, taken from a real Amiga icon
+rather than invented — the chosen icon set, or the donor system — matched on the
+drawer's own name and otherwise any drawer icon among them. Two things decide
+which one is usable:
+
+* **It must be a drawer icon.** Icons are typed, and only a drawer icon opens a
+  drawer; a project icon tells Workbench to run its default tool, so a drawer
+  wearing one answers *unable to open script* on a double click. Matching purely
+  on the name gave the `Storage/Install` drawer MagicWB's `Install.info`, which
+  is the project icon for MagicWB's own installer script.
+* **Its remembered position is cleared.** An icon copied from elsewhere brings
+  that drawer's snapshotted coordinates with it, so several drawers given the
+  same fallback icon all claim one square of the window and land on top of each
+  other.
+
+### Making a stock Workbench pleasant
+
+Workbench 3.1 out of the box is sparse in ways that are easy to forget until
+you use it. Two of these are on by default because their absence is the first
+thing anyone notices:
+
+* **DefIcons** gives every file an icon chosen from what it actually is.
+  Without it a window shows programs and nothing else, which is most of why a
+  stock desktop looks so bare.
+* **FreeWheel** makes the mouse wheel scroll the window under the pointer.
+
+Beyond those, offered rather than assumed: **ClickToFront**, the **backdrops
+and boot pictures** from the system you are copying from (several megabytes of
+them, so worth a thought on a small system partition), a **Dock-It** dock along
+the screen edge, **Visage** for pictures, **SnoopDos** for when something will
+not start and you need to see what it is looking for, and **Directory Opus 4**
+as a real file manager.
+
+For music there is **AMPlifier** (modules, MP3, skins) and **DigiBooster 1.7**
+as an eight channel tracker, both from Aminet; **HippoPlayer** is the classic
+lightweight player but is not freely distributable, so it is copied from a
+donor or not at all.
 
 **Suggested load** picks a set from the machine and the display, because the
 right answer genuinely differs:
@@ -395,6 +746,51 @@ right answer genuinely differs:
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
 VisualPrefs. Networking — the PiStorm's `vlink.device`, a TCP/IP stack, AmiSSL
 and NetSurf — is suggested when a WiFi network has been configured.
+
+## A socket library belongs to its stack, not to the card
+
+`bsdsocket.library` is the one library that must never be copied because a
+program mentions it. Every browser and FTP client on a donor system names it,
+so the dependency scanner copied it onto every card - including cards built
+only for games. The file on the donor turned out to be an **AmiTCP 4.1 stub
+from 1996** with no AmiTCP daemon anywhere behind it, and its mere presence in
+`LIBS:` killed every WHDLoad game: a yellow screen, then nothing. Bisecting a
+card down to that single file, against a card proven to run the game, is what
+found it. It is now in `NEVER_SCAVENGE` along with `usergroup` and `ixnet`.
+
+A stack puts its own socket library in place, so nothing is lost by refusing to
+guess at one:
+
+- **MiamiDx**, which the PiMiga donor carries, publishes `bsdsocket.library` in
+  memory when it goes online and ships no copy on disk. The `network` package
+  installs it with the `Miami:` assign and MUI that it needs - though Miami
+  arrives unregistered and unconfigured, and has to be set up on the Amiga.
+- **Roadshow** installs a real `bsdsocket.library` into `LIBS:`. On a card that
+  also runs games, `C:NetShutdown` in `S:WHDLoad-Startup` takes the stack down
+  while a game runs, which is what those WHDLoad hooks are for.
+
+APC&TCP serve the Roadshow demo only to a browser, so the `roadshow` package is
+declared as a download this tool cannot make: put `Roadshow-Demo-1.15.lha` in
+`~/.cache/pistorm-imager/packages` and the build uses it, and when it is absent
+the build says where to get it instead of leaving the card silently stackless.
+
+The archive is an installer distribution, not a Workbench disk: the part that
+is shaped like one sits in a `Workbench` drawer beside the documentation, the
+`Install_Roadshow` script and the publisher's `Installer`. So the merge looks
+one level in, places `C`, `Libs`, `Devs`, `S`, `Locale` and `Storage` from
+there, and stages the rest in `Storage/Install/Roadshow`. Two details matter:
+
+- **`S/User-Startup` is never placed.** Roadshow's copy is four lines meant to
+  be *added* to the card's, and placing it as a file would either overwrite
+  everything the build wrote there or be skipped, leaving the stack unstarted.
+  The lines go in through the same `startup` mechanism every other package
+  uses.
+- **The card is given an interface for the machine it is being built for.**
+  Every one of the fifty-odd templates in `Storage/NetInterfaces` is for
+  somebody else's hardware - A2065, X-Surf, Ariadne - so the build writes
+  `DEVS:NetInterfaces/vlink` naming `vlink.device`, which is what a PiStorm
+  has, and asks for DHCP. Without it `AddNetInterface` has nothing to bring
+  up and the stack installs but never runs.
 
 ## Two outputs at once
 
@@ -464,16 +860,33 @@ Scalos and a Kickstart ROM all behave the same on a PiStorm. What does not carry
 over is the *emulator's own drivers*, and a graphics driver for a card that does
 not exist leaves Workbench with nowhere to appear.
 
-Give a partition a **content folder** — a directory-based drive from an emulator,
-such as PiMiga's `disks/System` — and it is copied into a real Amiga partition
-with these fixes applied automatically:
+These fixes apply to **everything that goes on the system drive** - the floppies,
+the packages, and a directory-based drive from an emulator such as PiMiga's
+`disks/System`. Two details make that work, and both were wrong for a long time:
+the pass is shown the path a file will have *on the card* rather than where it
+sits in the thing being copied, so a rule naming `Storage` or `Libs/Picasso96`
+can match at all; and it decides once, when the volume is full, rather than
+after each tree copied - deciding after the first meant deciding before any
+package had been installed. The fixes are:
 
 * the emulator's RTG driver (`uaegfx.card`) is dropped and Emu68's
   `VideoCore.card` installed in `LIBS:Picasso96/` in its place;
-* the Picasso96 monitor icon in `DEVS:Monitors` is rewritten with
-  `BOARDTYPE=VideoCore`, which is how Picasso96 chooses its board;
+* the Picasso96 monitor in `DEVS:Monitors` is written out as `VideoCore`, with
+  `BOARDTYPE=VideoCore` in its icon, which is how Picasso96 chooses its board.
+  Every Picasso96 monitor is the same loader named differently, so the
+  emulator's is what gets renamed - and where there is no emulator to take one
+  from, the Picasso96 package supplies it. Without a monitor file the board's
+  screen modes cannot be selected at all, driver or no driver;
+* a Picasso96 that was *chosen as a package* counts as installed even before
+  anything is copied, while a copy merely staged in `Storage/Install` for you
+  to install later does not - staging is not installing;
 * startup scripts have emulator-only commands (`uae-configuration` and friends)
-  commented out, so they cannot fail the boot.
+  commented out, so they cannot fail the boot;
+* `S:WHDLoad.prefs` is cleaned the same way. This is where WHDLoad's settings
+  actually live — the quit key, whether it forces PAL, and the hooks it runs
+  around every game — and PiMiga's copy sets `ExecuteStartup` and
+  `ExecuteCleanup` to `uae-configuration`, Amiberry's own control program. Carried
+  over unedited, a card runs a missing command before and after every single game.
 
 Every change is reported in the log, and none of them touch your files. Turn the
 whole thing off with `fix_compatibility=False` if you would rather do it by hand.

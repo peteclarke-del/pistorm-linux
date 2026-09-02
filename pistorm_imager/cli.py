@@ -16,7 +16,7 @@ if __package__ in (None, ""):  # allow "python3 cli.py", which pkexec needs
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import (builder, devices, emu68, hdfcheck, jobs,  # noqa: E402
-                                 kickstart, rdb)
+                                 kickstart)
 from pistorm_imager.core.util import Cancelled, Progress, console_progress, human_size  # noqa: E402
 
 

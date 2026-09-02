@@ -1,5 +1,4 @@
 """Tests for hard disk image import/export and the PiStorm compatibility repair."""
-import os
 import shutil
 import sys
 import tempfile
@@ -9,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import builder, hdfcheck, mbr, rdb  # noqa: E402
-from pistorm_imager.core.util import GIB, MIB, Progress  # noqa: E402
+from pistorm_imager.core.util import MIB, Progress  # noqa: E402
 
 QUIET = Progress()
 
@@ -141,6 +140,212 @@ class TestCompatibilityChecks(_Scratch):
         self.assertTrue(hdfcheck.unresolved(findings))
 
 
+class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
+    """The rules have to fire on the paths the build actually produces.
+
+    Both of these were written and tested by calling the pass directly with a
+    full path - "S/WHDLoad.prefs", "Programs/iGame/gameslist.csv" - which is
+    not what a copy hands it.  The unit tests passed and the card came out
+    unchanged.
+    """
+
+    UAE_PREFS = (b"ExecuteStartup=uae-configuration cachesize 0\n"
+                 b"ExecuteCleanup=uae-configuration cpu_speed max\n"
+                 b"QuitKey=$59\n")
+
+    def build(self, overlay_dir, exclude=None):
+        out = self.scratch() / "card.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            image_size=200 * MIB, install_emu68=False, fix_compatibility=True,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0, volume_name="Sys",
+                content_folder=str(overlay_dir),
+                exclude=list(exclude or []))]), QUIET)
+        return out
+
+    def read(self, image, path):
+        from pistorm_imager.core import amigaos           # noqa: PLC0415
+        volume, _label = amigaos.open_amiga_volume(image)
+        entry = volume.find(path)
+        return volume.read_file(entry).decode("latin-1") if entry else ""
+
+    UAE_PREFS_PAL = (b";WHDLoad preferences\n"
+                     b"PAL           ;force PAL video mode\n"
+                     b"QuitKey=$59   ;rawkey code to quit\n"
+                     b"ExecuteStartup=uae-configuration cachesize 0\n"
+                     b";NTSC         ;already commented, leave alone\n")
+
+    def test_a_forced_display_mode_is_taken_out(self):
+        """This killed every game on every card the tool has ever built.
+
+        A donor's WHDLoad preferences carry "PAL", asking WHDLoad to force
+        that mode before handing over.  On a PiStorm the machine dies on the
+        spot - a yellow screen, which is a CPU exception with no OS left to
+        draw a Guru, then black.  Not one game ran.  The same game runs from
+        Commodore's own floppy, and runs off this card the moment the line
+        is gone.
+        """
+        source = self.scratch() / "tree"
+        (source / "S").mkdir(parents=True)
+        (source / "S" / "WHDLoad.prefs").write_bytes(self.UAE_PREFS_PAL)
+        body = self.read(self.build(source), "S/WHDLoad.prefs")
+        live = [l.strip() for l in body.splitlines()
+                if l.strip() and not l.strip().startswith(";")]
+        self.assertFalse([l for l in live if l.lower().startswith("pal")],
+                         f"PAL is still in force: {live}")
+        self.assertTrue([l for l in live if l.startswith("QuitKey")],
+                        "the rest of the file should be left alone")
+
+    def test_an_already_commented_mode_is_not_commented_twice(self):
+        source = self.scratch() / "tree2"
+        (source / "S").mkdir(parents=True)
+        (source / "S" / "WHDLoad.prefs").write_bytes(self.UAE_PREFS_PAL)
+        body = self.read(self.build(source), "S/WHDLoad.prefs")
+        self.assertNotIn(";;NTSC", body)
+
+    def test_whdload_prefs_are_cleaned_when_copied_as_a_tree(self):
+        source = self.scratch() / "tree"
+        (source / "S").mkdir(parents=True)
+        (source / "S" / "WHDLoad.prefs").write_bytes(self.UAE_PREFS)
+        body = self.read(self.build(source), "S/WHDLoad.prefs")
+        self.assertIn(";ExecuteStartup=uae-configuration", body)
+        self.assertIn(";ExecuteCleanup=uae-configuration", body)
+        self.assertIn("QuitKey=$59", body)
+
+    def test_the_games_list_is_filtered_when_copied_as_a_tree(self):
+        source = self.scratch() / "tree"
+        games = source / "WHDLOAD" / "OCS" / "Driller"
+        games.mkdir(parents=True)
+        (games / "Driller.slave").write_bytes(b"x")
+        igame = source / "Programs" / "iGame"
+        igame.mkdir(parents=True)
+        (igame / "gameslist.csv").write_text(
+            "0;Driller;x;Sys:WHDLOAD/OCS/Driller/Driller.slave;0;0;0;0\n"
+            "0;Gone;x;Sys:WHDLOAD/OCS/Missing/missing.slave;0;0;0;0\n")
+        body = self.read(self.build(source), "Programs/iGame/gameslist.csv")
+        self.assertIn("Driller", body)
+        self.assertNotIn("Missing", body)
+
+    def test_the_repository_list_is_filtered_too(self):
+        """Filtering the games list was only half of the job.
+
+        iGame also keeps the list of drawers it scans, and that still named
+        every collection the donor had, so a card with the AGA games left out
+        still sent iGame looking through a drawer that is not on it.
+        """
+        source = self.scratch() / "tree"
+        for category in ("OCS", "AGA"):
+            (source / "WHDLOAD" / category).mkdir(parents=True)
+        igame = source / "Programs" / "iGame"
+        igame.mkdir(parents=True)
+        (igame / "repos.prefs").write_text(
+            "Sys:WHDLOAD/OCS/\n"
+            "Sys:WHDLOAD/AGA/\n"
+            "Sys:WHDLOAD/Nowhere/\n")
+        body = self.read(self.build(source, exclude=["WHDLOAD/AGA"]),
+                         "Programs/iGame/repos.prefs")
+        self.assertIn("WHDLOAD/OCS/", body)
+        self.assertNotIn("WHDLOAD/AGA/", body)
+        self.assertNotIn("Nowhere", body)
+
+
+class TestUserStartupOnBothFileSystems(_Scratch):
+    """The generated S:User-Startup has to work on either system drive.
+
+    The lookup used to write it existed only on the PFS3 writer, so a build
+    onto an FFS system drive got all the way through installing Workbench and
+    every package before failing at the last step.
+    """
+
+    ADFS = Path(__file__).resolve().parent.parent / "samples" / "workbench"
+
+    def build_with_startup(self, dostype: str) -> Path:
+        out = self.scratch() / f"{dostype}.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            image_size=400 * MIB, install_emu68=False,
+            install_amigaos=True, adf_folder=str(self.ADFS),
+            amiga_volume_name="Workbench", fix_compatibility=False,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            #  fblit contributes a line to S:User-Startup, which is what
+            #  makes that file get written at all; iconlib goes into
+            #  S:Startup-Sequence instead, so both routes are covered here.
+            package_keys=["fblit", "iconlib"],
+            package_chipset="OCS", package_display="native",
+            amiga_partitions=[
+                builder.AmigaPartitionSpec("DH0", None, dostype, True, 0,
+                                           volume_name="Workbench")],
+        ), QUIET)
+        return out
+
+    def check(self, dostype: str) -> None:
+        from pistorm_imager.core import amigaos          # noqa: PLC0415
+        out = self.build_with_startup(dostype)
+        self.assertEqual(builder.list_drives(out)[0].volume, "Workbench")
+        volume, _label = amigaos.open_amiga_volume(out)
+        entry = volume.find("S/User-Startup")
+        self.assertIsNotNone(entry, f"{dostype}: no S:User-Startup written")
+        body = volume.read_file(entry).decode("latin-1")
+        self.assertIn("FBlit", body)
+
+        #  icon.library cannot be soft-kicked from User-Startup - IPrefs has
+        #  already opened the ROM one - so it goes in above IPrefs instead.
+        startup = volume.find("S/Startup-Sequence")
+        self.assertIsNotNone(startup, f"{dostype}: no S:Startup-Sequence")
+        boot = volume.read_file(startup).decode("latin-1")
+        lines = [line.strip() for line in boot.splitlines()]
+        kick = next(i for i, line in enumerate(lines) if "LoadModule" in line)
+        iprefs = next(i for i, line in enumerate(lines)
+                      if line.lower().startswith("c:iprefs"))
+        self.assertLess(kick, iprefs,
+                        "the replacement must load before IPrefs opens the "
+                        "ROM icon.library")
+        volume.f.close()
+
+    @unittest.skipUnless(ADFS.is_dir(), "no Workbench disks available")
+    def test_ffs_system_drive(self):
+        self.check("FFS-INTL")
+
+    @unittest.skipUnless(ADFS.is_dir(), "no Workbench disks available")
+    def test_pfs3_system_drive(self):
+        self.check("PFS3")
+
+
+class TestEmptyPartitionsAreFormatted(_Scratch):
+    """A drive with nothing to put in it should still mount."""
+
+    def build(self, partitions):
+        out = self.scratch() / "card.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            image_size=300 * MIB, install_emu68=False,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            amiga_partitions=partitions), QUIET)
+        return out
+
+    def test_an_empty_drive_is_formatted_and_named(self):
+        """Left raw, AmigaOS shows it as NDOS and it has to be formatted by
+        hand - which for PFS3 means the handler has to be running first."""
+        out = self.build([
+            builder.AmigaPartitionSpec("DH0", 100 * MIB, "FFS-INTL", True, 0,
+                                       volume_name="Boot"),
+            builder.AmigaPartitionSpec("DH1", 80 * MIB, "PFS3", False, -128,
+                                       volume_name="Apps"),
+            builder.AmigaPartitionSpec("DH2", None, "PFS3", False, -128,
+                                       volume_name="Work"),
+        ])
+        drives = builder.list_drives(out)
+        self.assertEqual([d.volume for d in drives], ["Boot", "Apps", "Work"])
+
+    def test_a_drive_falls_back_to_its_device_name(self):
+        out = self.build([
+            builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0),
+        ])
+        self.assertEqual(builder.list_drives(out)[0].volume, "DH0")
+
+
 class TestListDrives(_Scratch):
     """What a partition's drive chooser is offered."""
 
@@ -168,6 +373,30 @@ class TestListDrives(_Scratch):
         drives = builder.list_drives(path)
         self.assertEqual(len(drives), 1)
         self.assertEqual(drives[0].volume, "")
+
+    def test_an_ffs_drive_inside_an_image_reports_its_label(self):
+        """FFS keeps its root block in the middle of the partition.
+
+        Sizing that from the file rather than the partition lands on the wrong
+        block, and a perfectly good Workbench reads back as an empty volume.
+        """
+        from pistorm_imager.core import amigaos, amigafs      # noqa: PLC0415
+        path = self.scratch() / "card.hdf"
+        table = make_hdf(path, 40 * MIB, [
+            rdb.Partition("DH0", 1, 10, rdb.DOSTYPE_FFS_INTL, bootable=True),
+            rdb.Partition("DH1", 11, 30, rdb.DOSTYPE_FFS_INTL, bootable=False),
+        ])
+        with open(path, "r+b") as handle:
+            for part, label in ((table.partitions[0], "Workbench"),
+                                (table.partitions[1], "Extras")):
+                volume = amigaos.make_volume(
+                    handle, part.byte_offset(table.geometry),
+                    part.blocks(table.geometry), label,
+                    amigafs.DOSTYPE_FFS_INTL)
+                volume.close()
+        drives = builder.list_drives(path)
+        self.assertEqual([d.volume for d in drives], ["Workbench", "Extras"])
+        self.assertIn('"Workbench"', drives[0].label)
 
     def test_a_bare_file_system_is_offered_as_the_whole_image(self):
         """ClassicWB and plenty of older .hdf files have no partition table.
@@ -350,3 +579,199 @@ class TestCardImageAsSource(_Scratch):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class DrawerIcons(_Scratch):
+    """A drawer with no icon does not exist as far as Workbench is concerned."""
+
+    def _volume(self, handle):
+        from pistorm_imager.core import amigaos, amigafs      # noqa: PLC0415
+        handle.truncate(8 * MIB)
+        return amigaos.make_volume(handle, 0, (8 * MIB) // amigafs.BLOCK,
+                                   "Workbench", amigafs.DOSTYPE_FFS_INTL)
+
+    def read(self, image, path):
+        """The file's bytes, so an icon can be compared exactly."""
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        volume, _label = amigaos.open_amiga_volume(image)
+        entry = volume.find(path)
+        return volume.read_file(entry) if entry else b""
+
+    @staticmethod
+    def drawer_icon(marker: int) -> bytes:
+        """A real drawer icon, tagged so the copy can be identified.
+
+        Fake bytes will not do: only genuine drawer icons are accepted now,
+        because handing a drawer a project icon is what produced "unable to
+        open script" on a double click.
+        """
+        import struct                                        # noqa: PLC0415
+        from pistorm_imager.core import amigainfo            # noqa: PLC0415
+        raw = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">H", raw, 0, amigainfo.MAGIC)
+        raw[amigainfo.TYPE_OFFSET] = amigainfo.WBDRAWER
+        struct.pack_into(">I", raw, amigainfo.DRAWER_DATA, 0x1234)
+        struct.pack_into(">I", raw, 74, marker)              # do_StackSize
+        return bytes(raw)
+
+    @staticmethod
+    def marker_of(data: bytes) -> int:
+        import struct                                        # noqa: PLC0415
+        return struct.unpack_from(">I", data, 74)[0] if data else 0
+
+    STORAGE, GENERIC = 0xA1, 0xB2
+
+    def _icons(self):
+        """A folder of drawer icons, as an icon set or a donor provides."""
+        folder = self.scratch() / "icons"
+        folder.mkdir()
+        (folder / "Storage.info").write_bytes(self.drawer_icon(self.STORAGE))
+        (folder / "Utilities.info").write_bytes(self.drawer_icon(self.GENERIC))
+        #  A project icon under a name a drawer might have: it must never be
+        #  chosen, however well the name matches.
+        import struct                                        # noqa: PLC0415
+        from pistorm_imager.core import amigainfo            # noqa: PLC0415
+        bad = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">H", bad, 0, amigainfo.MAGIC)
+        bad[amigainfo.TYPE_OFFSET] = 4                       # WBPROJECT
+        (folder / "Install.info").write_bytes(bytes(bad))
+        return folder
+
+    def test_a_drawer_this_tool_made_is_given_an_icon(self):
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "icons.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            for drawer in ("Programs", "Internet", "Storage"):
+                volume.makedirs(drawer)
+            written = amigaos.ensure_drawer_icons(
+                volume, ["Programs", "Internet", "Storage"],
+                [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 3)
+        #  Storage gets its own; the other two fall back to a real drawer icon
+        #  rather than being left invisible.
+        self.assertEqual(self.marker_of(self.read(path, "Storage.info")),
+                         self.STORAGE)
+        self.assertEqual(self.marker_of(self.read(path, "Programs.info")),
+                         self.GENERIC)
+        self.assertEqual(self.marker_of(self.read(path, "Internet.info")),
+                         self.GENERIC)
+
+    def test_an_icon_that_is_already_there_is_left_alone(self):
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "keep.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            volume.makedirs("Programs")
+            volume.write_file(volume.root, "Programs.info",
+                              self.drawer_icon(0xDEAD))
+            written = amigaos.ensure_drawer_icons(volume, ["Programs"],
+                                                  [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 0)
+        self.assertEqual(self.marker_of(self.read(path, "Programs.info")),
+                         0xDEAD)
+
+    def test_the_drawers_workbench_hides_stay_hidden(self):
+        """C: and LIBS: have no icons because Commodore chose that."""
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "hidden.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            for drawer in ("C", "Libs", "Devs", "S"):
+                volume.makedirs(drawer)
+            written = amigaos.ensure_drawer_icons(
+                volume, ["C", "Libs", "Devs", "S"], [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 0)
+
+    def test_a_drawer_that_is_not_there_gets_nothing(self):
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "absent.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            written = amigaos.ensure_drawer_icons(volume, ["Programs"],
+                                                  [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 0)
+
+    def test_a_drawer_inside_a_hidden_one_is_left_alone(self):
+        """An icon in CLASSES: is only seen by someone showing all files."""
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "nested.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            volume.makedirs("Classes/Gadgets")
+            volume.makedirs("Programs/iGame")
+            written = amigaos.ensure_drawer_icons(
+                volume, ["Classes/Gadgets", "Programs", "Programs/iGame"],
+                [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 2)
+        self.assertEqual(self.read(path, "Classes/Gadgets.info"), b"")
+
+    def test_a_drawer_never_wears_a_project_icon(self):
+        """MagicWB's Install.info is its installer script's icon.
+
+        Matching on the name alone gave it to the Storage/Install drawer, and
+        double-clicking that answered "unable to open script" instead of
+        opening a window.
+        """
+        from pistorm_imager.core import amigaos               # noqa: PLC0415
+        path = self.scratch() / "project.hdf"
+        with open(path, "w+b") as handle:
+            volume = self._volume(handle)
+            volume.makedirs("Storage/Install")
+            written = amigaos.ensure_drawer_icons(
+                volume, ["Storage/Install"], [self._icons()], QUIET)
+            volume.close()
+        self.assertEqual(written, 1)
+        #  It fell back to a real drawer icon rather than the project icon
+        #  that happened to share the name.
+        self.assertEqual(self.marker_of(self.read(path,
+                                                  "Storage/Install.info")),
+                         self.GENERIC)
+
+
+class DuplicateOverlayFile(_Scratch):
+    """One duplicate file must not end a whole build.
+
+    A tree copied as an overlay has always skipped what is already there; a
+    single file raised instead, and a real build died at
+    "colorwheel.gadget already exists" after installing Workbench and most of
+    the software - because the dependency scan offered a file the floppies
+    had already put in CLASSES:Gadgets.
+    """
+
+    def test_a_file_already_on_the_card_is_left_alone(self):
+        from pistorm_imager.core import amigaos, amigafs      # noqa: PLC0415
+        path = self.scratch() / "dupe.hdf"
+        source = self.scratch() / "again"
+        source.mkdir()
+        (source / "thing.gadget").write_bytes(b"second")
+
+        spec = builder.AmigaPartitionSpec(
+            "DH0", None, "FFS-INTL", True, 0, volume_name="Sys",
+            overlays=[(str(source / "thing.gadget"), "Classes/Gadgets")])
+
+        with open(path, "w+b") as handle:
+            handle.truncate(8 * MIB)
+            volume = amigaos.make_volume(handle, 0, (8 * MIB) // amigafs.BLOCK,
+                                         "Sys", amigafs.DOSTYPE_FFS_INTL)
+            parent = volume.makedirs("Classes/Gadgets")
+            volume.write_file(parent, "thing.gadget", b"first")
+            #  This raised before, and took the whole build with it.
+            builder._apply_overlays(volume, spec, None, QUIET)
+            volume.close()
+
+        volume, _label = amigaos.open_amiga_volume(path)
+        kept = volume.read_file(volume.find("Classes/Gadgets/thing.gadget"))
+        volume.f.close()
+        self.assertEqual(kept, b"first", "the existing file was replaced")
+
+    def test_the_classes_workbench_installs_are_not_hunted_for(self):
+        from pistorm_imager.core import packages               # noqa: PLC0415
+        for name in ("colorwheel", "gradientslider", "tapedeck"):
+            self.assertIn(name, packages.STOCK,
+                          f"{name}.gadget comes with Workbench 3.1")

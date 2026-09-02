@@ -90,7 +90,17 @@ MACHINES: list[Machine] = [
     Machine("a500", "Amiga 500", Chipset.OCS, "pistorm", "PiStorm (classic)",
             ((40, 68), (40, 63), (37, 175)), trapdoor_ram=True,
             notes="The classic PiStorm replaces the 68000. The chipset is "
-                  "untouched, so the Amiga's own video output stays OCS."),
+                  "untouched, so the Amiga's own video output stays OCS. If "
+                  "a Super Denise has been fitted, choose \"Amiga 500 with "
+                  "ECS\" instead."),
+    Machine("a500ecs", "Amiga 500 with ECS", Chipset.ECS, "pistorm",
+            "PiStorm (classic)", ((40, 68), (40, 63), (37, 175)),
+            trapdoor_ram=True,
+            notes="A rev 6A board with a Super Denise fitted is a full ECS "
+                  "machine, not an OCS one - a common enough upgrade that "
+                  "picking the plain A500 would quietly get the chipset "
+                  "wrong, and with it which game collections are worth "
+                  "copying and which screen modes exist."),
     Machine("a500plus", "Amiga 500+", Chipset.ECS, "pistorm", "PiStorm (classic)",
             ((40, 68), (40, 63), (37, 175)), trapdoor_ram=True,
             notes="ECS chipset; otherwise identical to an A500 for our purposes."),
@@ -186,9 +196,13 @@ def boot_options(machine: Machine, display: Display,
     #  Software written for OCS/ECS machines often busy-waits on the chipset,
     #  which a JIT runs straight past.
     options.chip_slowdown = machine.chipset in (Chipset.OCS, Chipset.ECS)
-    #  Moving the vector base into fast RAM is quicker but, in Emu68's own
-    #  words, hurts floppy-loaded games and demos badly - the wrong trade on
-    #  a machine that exists to run them.
+    #  Moving the vector base into fast RAM is quicker, but it takes the
+    #  interrupt vectors away from address 0 - where software that takes the
+    #  machine over installs its own.  Emu68 puts it as hurting floppy-loaded
+    #  games and demos badly, and that phrase is about how the software was
+    #  written rather than where it is loaded from: WHDLoad exists to run
+    #  exactly that software off a hard drive, and the code inside still
+    #  pokes the vectors at 0.  The wrong trade on a machine kept for games.
     options.vbr_move = False
 
     if machine.trapdoor_ram and trapdoor_to_chip:

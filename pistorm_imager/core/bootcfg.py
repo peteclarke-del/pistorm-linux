@@ -150,9 +150,10 @@ class BootOptions:
     swap_df0_with_df1: bool = False
     chip_slowdown: bool = False
     #  Emu68's other two timing brakes.  A PiStorm runs the 68k far faster than
-    #  any real Amiga, and OCS-era software that times itself against the
-    #  hardware - a DBF delay loop, a blitter it never waits for - breaks on
-    #  speed alone.  Emu68 accepts "dbf_slowdown" (DBF) and "blitwait" (BW)
+    #  any real Amiga, and OCS and ECS era software that times itself against
+    #  the hardware - a DBF delay loop, a blitter it never waits for - breaks
+    #  on speed alone.  ECS is not exempt: an A500+ or an A600 runs the same
+    #  software the same way.  Emu68 accepts "dbf_slowdown" (DBF) and "blitwait" (BW)
     #  for exactly that, alongside "chip_slowdown" (SC).
     dbf_slowdown: bool = False
     blitwait: bool = False

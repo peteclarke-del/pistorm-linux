@@ -4,7 +4,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -17,9 +16,12 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from .. import __version__  # noqa: E402
-from ..core import (amigaos, bootcfg, builder, devices, emu68, hdfcheck, jobs,  # noqa: E402
-                    kickstart, machines, packages, prepare, presets, rdb)
-from ..core.util import (GIB, MIB, Progress, describe_size, human_size,  # noqa: E402
+from ..core import (amigaos, bootcfg, builder, content, devices,  # noqa: E402
+                    distributions,
+                    emu68, hdfcheck, jobs, kickstart, machines, packages,
+                    prepare, presets, updates)
+from ..core.util import (GIB, Progress, describe_size,  # noqa: E402
+                         exact_size_text, human_size,  # noqa: E402
                          parse_size)
 from .widgets import FileRow, SaveRow, combo, show_full_value  # noqa: E402
 
@@ -105,6 +107,15 @@ def merge_cmdline(from_machine: str, typed: str) -> str:
     return " ".join(words)
 
 
+#  What each quick-start screen shows, in the order it shows it.  Reading down
+#  a screen should follow the order of the decisions: what the card is for,
+#  what goes on it, where it is going, and finally what that adds up to.
+QUICK_SCREENS = {
+    "choices": ("group_choices",),
+    "basic": ("group_hardware", "group_detected", "group_target", "group_plan"),
+    "prepared": ("image_group", "group_target", "group_plan"),
+}
+
 FIRST_DRIVE = "The first bootable drive"
 NO_IMAGE = "Choose an image first"
 #  An image can be chosen and still have nothing to offer.  Saying "choose an
@@ -115,9 +126,13 @@ NO_DRIVES = "No Amiga drive could be read from this image"
 class PartitionRow(Adw.ExpanderRow):
     """Editor for one Amiga partition inside the RDB."""
 
-    def __init__(self, spec: builder.AmigaPartitionSpec, on_remove, on_change):
+    def __init__(self, spec: builder.AmigaPartitionSpec, on_remove, on_change,
+                 machine=None):
         super().__init__()
         self._on_change = on_change
+        #  What the card is for decides which categories are worth copying, so
+        #  the row asks rather than being told once at construction.
+        self._machine = machine or (lambda: machines.MACHINES[0])
         #  Everything the editor does not show - where the contents come from,
         #  what to leave out, files to overlay - has to survive being edited.
         #  Rebuilding the spec from the widgets alone silently discarded it.
@@ -155,6 +170,15 @@ class PartitionRow(Adw.ExpanderRow):
         #  Which drive to take is a choice between the ones the image actually
         #  holds, named as Workbench names them - not a device name typed from
         #  memory and silently wrong.
+        #  Categories found in whatever this partition is filled from, each
+        #  a switch.  Built when a folder is chosen, because until then there
+        #  is nothing to divide up.
+        self.exclude_group = Adw.ExpanderRow(
+            title="Leave out", subtitle="Choose a folder to see what it holds")
+        self._category_rows: dict[str, Adw.SwitchRow] = {}
+        #  Anything already excluded that the tree does not explain is kept
+        #  rather than quietly dropped.
+        self._extra_excludes: list[str] = list(spec.exclude or ())
         self.hdf_part_row = Adw.ComboRow(title="Which drive to import",
                                          model=combo([FIRST_DRIVE]))
         self._drive_keys: list[str] = [""]
@@ -165,7 +189,7 @@ class PartitionRow(Adw.ExpanderRow):
 
         for row in (self.name_row, self.volume_row, self.size_row, self.fs_row,
                     self.boot_row, self.priority_row, self.content_row,
-                    self.hdf_row, self.hdf_part_row):
+                    self.hdf_row, self.hdf_part_row, self.exclude_group):
             self.add_row(row)
         for row in (self.name_row, self.volume_row, self.size_row):
             row.connect("changed", lambda _r: self._refresh())
@@ -199,7 +223,55 @@ class PartitionRow(Adw.ExpanderRow):
 
     def _on_hdf_chosen(self) -> None:
         self._reload_drives(self._source.content_hdf_partition)
+        self.reload_categories()
         self._refresh()
+
+    def _excluded(self) -> list[str]:
+        """Category paths switched off, plus anything we could not explain."""
+        chosen = [path for path, row in self._category_rows.items()
+                  if row.get_active()]
+        return chosen + [p for p in self._extra_excludes
+                         if p not in self._category_rows]
+
+    def reload_categories(self) -> None:
+        """List what the chosen folder holds, defaulting to what runs here.
+
+        A category the machine cannot use starts switched off - the AGA games
+        on an A500 - but every one stays changeable, because "cannot run it"
+        is a sensible default and not a rule.
+        """
+        for row in self._category_rows.values():
+            self.exclude_group.remove(row)
+        self._category_rows.clear()
+
+        path = self.hdf_row.path
+        folder = bool(path) and Path(path).is_dir()
+        found = content.discover(path) if folder else []
+        if not folder:
+            self.exclude_group.set_subtitle("Choose a folder to see what it holds")
+        elif not found:
+            self.exclude_group.set_subtitle("Nothing in here is divided into "
+                                            "categories")
+        else:
+            machine = self._machine()
+            unsuitable = set(content.unsuitable(found, machine))
+            already = set(self._extra_excludes)
+            for category in found:
+                #  A choice already made wins over the default.
+                off = (category.path in already if already
+                       else category.path in unsuitable)
+                note = category.note or "No hardware requirement known"
+                row = Adw.SwitchRow(
+                    title=f"{category.label}  ({category.entries})",
+                    subtitle=note + ("" if category.suits(machine)
+                                     else f"  -  not for the {machine.label}"))
+                row.set_active(off)
+                row.connect("notify::active", lambda *_a: self._refresh())
+                self._category_rows[category.path] = row
+                self.exclude_group.add_row(row)
+            self.exclude_group.set_subtitle(
+                f"{len(found)} categories, {len(unsuitable)} of them not for "
+                f"this machine")
 
     def choose_drive(self, name: str) -> bool:
         """Select a drive by device name; False if the image has no such drive."""
@@ -304,6 +376,7 @@ class PartitionRow(Adw.ExpanderRow):
             content_folder=(chosen if chosen and is_folder
                             else "" if chosen
                             else self._source.content_folder),
+            exclude=self._excluded(),
         )
 
 
@@ -348,6 +421,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.connect("close-request", self._on_close)
         self._load_releases_async()
         self._sync_visibility()
+        #  Start on the quick start with nothing else in the way.  A restored
+        #  session that was in the middle of customising reopens there.
+        self._set_customising(getattr(self, "_restored_customising", False))
 
     # ------------------------------------------------------------ setup UI
 
@@ -366,6 +442,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                    ("Load settings…", "load-settings", self._on_load_settings),
                    ("Forget saved setup", "forget-session", self._on_forget_session),
                    ("Inspect the target", "inspect-target", self._on_inspect),
+                   ("Check for updates…", "check-updates", self._on_check_updates),
                    ("About", "about", self._on_about))
         model = Gio.Menu()
         for label, name, handler in entries:
@@ -386,6 +463,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         amiga_page = self._page_amiga()
         self.stack.add_titled_with_icon(self._page_storage(), "storage", "Storage",
                                         "drive-harddisk-symbolic")
+        #  Everything past the quick start is the customising workflow, and is
+        #  hidden until it is asked for.
         self.stack.add_titled_with_icon(amiga_page, "amiga", "Amiga",
                                         "applications-system-symbolic")
         self.stack.add_titled_with_icon(self._page_options(), "options", "Options",
@@ -394,8 +473,19 @@ class ImagerWindow(Adw.ApplicationWindow):
                                         "media-flash-symbolic")
         view.set_content(self.stack)
 
+        #  The quick start is a choice of three things to do, not a page among
+        #  equals: it is all there is until "Customise" is chosen, and this
+        #  button is how to get back to it afterwards.
+        self._customising = False
+
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
                          margin_top=10, margin_bottom=10, margin_start=12, margin_end=12)
+        #  Back sits with Write, at the other end of the same bar: they are
+        #  the two things you do when you have finished reading the page.
+        self.back_button = Gtk.Button(label="Back")
+        self.back_button.add_css_class("pill")
+        self.back_button.connect("clicked", lambda _b: self._go_back())
+        bottom.append(self.back_button)
         self.summary = Gtk.Label(xalign=0.0, wrap=True, hexpand=True)
         self.summary.add_css_class("dim-label")
         bottom.append(self.summary)
@@ -404,11 +494,231 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.write_button.add_css_class("pill")
         self.write_button.connect("clicked", self._on_write)
         bottom.append(self.write_button)
+        self.bottom_bar = bottom
         view.add_bottom_bar(bottom)
         return view
 
+    def _go_back(self) -> None:
+        """Back to the choice, from wherever going back makes sense.
+
+        Always to the choice itself, not to whichever screen was last open:
+        coming out of the workflow onto the basic-card screen looks like the
+        first screen with a Back button on it, which is not a place that
+        exists.
+
+        Going back also withdraws the setup.  It had been accepted, and Write
+        stayed lit while the choice that led to it was being reconsidered -
+        which is the one moment it should not be.
+        """
+        self._applied_config = None
+        self._quick_screen = "choices"
+        if getattr(self, "_customising", False):
+            self._set_customising(False)
+        else:
+            self._set_quick_screen("choices")
+
+    def _update_back(self) -> None:
+        """Back is only shown where there is somewhere to go.
+
+        The whole bar goes with it on the first screen: nothing has been
+        chosen yet, so there is nothing to summarise, nothing to go back to
+        and nothing to write.  A choice is all that screen is.
+        """
+        if not hasattr(self, "back_button"):
+            return
+        beyond_the_choice = (getattr(self, "_customising", False)
+                             or getattr(self, "_quick_screen", "choices")
+                             != "choices")
+        self.back_button.set_visible(beyond_the_choice)
+        if hasattr(self, "bottom_bar"):
+            self.bottom_bar.set_visible(beyond_the_choice)
+
+    def _move_group(self, group, page) -> None:
+        """Put a group on a page, taking it off whatever page it is on.
+
+        Two screens genuinely need the same settings - the Amiga model matters
+        to a basic card and to a customised one - and a widget has one parent,
+        so it is moved rather than duplicated.  Duplicating would mean two
+        controls for one setting, which is worse than either.
+        """
+        current = group.get_ancestor(Adw.PreferencesPage)
+        if current is page:
+            return
+        if current is not None:
+            current.remove(group)
+        page.add(group)
+
+    @staticmethod
+    def _move_row(row, group) -> None:
+        """Put one row in ``group``, taking it off wherever it was.
+
+        The same idea as _move_group, for the choosers the quick start needs
+        to borrow: the Kickstart and the Workbench disks are chosen on the
+        Amiga and Source pages, and a quick screen that shows neither still
+        has to let someone say where they are.
+        """
+        current = row.get_ancestor(Adw.PreferencesGroup)
+        if current is group:
+            return
+        if current is not None:
+            current.remove(row)
+        group.add(row)
+
+    def _set_quick_screen(self, name: str) -> None:
+        """Which of the quick start's three screens is showing.
+
+        The first is the choice and nothing else: a page of settings under it
+        is not a choice, it is the thing being chosen between.
+        """
+        self._quick_screen = name
+        wanted = QUICK_SCREENS.get(name, QUICK_SCREENS["choices"])
+
+        #  Everything the quick start can show, taken off the page so it can
+        #  go back on in the order this screen wants.  add() appends, so a
+        #  group moved here from another page landed last - which is how the
+        #  image chooser ended up underneath the summary that describes it.
+        movable = ("group_choices", "group_hardware", "group_detected",
+                   "image_group", "group_target", "group_plan")
+        for attribute in movable:
+            group = getattr(self, attribute, None)
+            if group is not None and group.get_ancestor(Adw.PreferencesPage) \
+                    is self.page_quick:
+                self.page_quick.remove(group)
+        for attribute in wanted:
+            group = getattr(self, attribute)
+            self._move_group(group, self.page_quick)
+            group.set_visible(True)
+
+        #  The quick start told people what it had found to install from and
+        #  gave them no way to correct it - the choosers live on the Amiga and
+        #  Source pages, which a quick screen does not show.  So a card built
+        #  from floppies could not be pointed at the floppies.
+        if name == "basic":
+            self._move_row(self.rom_row, self.group_detected)
+            self._move_row(self.quick_system_source, self.group_detected)
+            self._move_row(self.adf_row, self.group_detected)
+        else:
+            self._move_row(self.rom_row, self.group_kickstart)
+            self._move_row(self.quick_system_source, self.group_primary)
+            self._move_row(self.adf_row, self.os_group)
+
+        #  What this screen does not want goes home, so the workflow finds it
+        #  where it belongs rather than missing.
+        if "group_hardware" not in wanted:
+            self._move_group(self.group_hardware, self.page_amiga)
+            self.group_hardware.set_visible(True)
+        if "image_group" not in wanted:
+            self._move_group(self.image_group, self.page_source)
+        for attribute in movable:
+            if attribute not in wanted and attribute in ("group_choices",
+                                                         "group_detected",
+                                                         "group_target",
+                                                         "group_plan"):
+                getattr(self, attribute).set_visible(False)
+        self._update_back()
+        self._update_summary()
+
+    def _choose_basic(self) -> None:
+        """Emu68 and an empty Amiga drive, ready for a floppy install."""
+        self.quick_primary.set_selected(PRIMARY_SOURCES.index("default"))
+        #  If Workbench disks have been found, install them: a card with an
+        #  empty drive is not what most people mean by a basic PiStorm card,
+        #  and the choice can still be changed on the screen itself.
+        detected = getattr(self, "detected", None)
+        wants = "adf" if (detected and detected.adf_folder) else "none"
+        self.quick_system_source.set_selected(FRESH_SOURCES.index(wants))
+        self.image_row.set_path("")
+        self.quick_hdf.set_path("")
+        self.quick_pimiga.set_path("")
+        self.mode_row.set_selected(0)            # a fresh card
+        self._on_source_changed()
+        self._applied_config = None
+        self._set_quick_screen("basic")
+
+    def _choose_prepared(self) -> None:
+        """Write a finished system somebody else built."""
+        self.quick_primary.set_selected(PRIMARY_SOURCES.index("image"))
+        for index, mode in enumerate(MODES):
+            if "image" in mode[0].lower():
+                self.mode_row.set_selected(index)
+                break
+        self._on_source_changed()
+        self._applied_config = None
+        self._set_quick_screen("prepared")
+
+    def _set_customising(self, on: bool) -> None:
+        """Switch between the quick start and the full workflow.
+
+        The quick start is not a page among equals - it is the whole window
+        until someone asks for more - so the others are hidden rather than
+        merely unselected, and the switcher has nothing to offer but the one
+        thing there is to do.
+        """
+        self._customising = bool(on)
+        for name in ("source", "storage", "amiga", "options", "target"):
+            page = self.stack.get_page(self.stack.get_child_by_name(name))
+            if page is not None:
+                page.set_visible(self._customising)
+        quick = self.stack.get_page(self.stack.get_child_by_name("quick"))
+        if quick is not None:
+            quick.set_visible(not self._customising)
+        self._update_back()
+        if self._customising:
+            #  The full workflow owns these again.
+            self._move_group(self.group_hardware, self.page_amiga)
+            self._move_group(self.image_group, self.page_source)
+            self.group_hardware.set_visible(True)
+            #  And the choosers the quick start borrowed, or the Amiga and
+            #  Source pages come up without a way to pick a Kickstart or the
+            #  Workbench disks at all.
+            self._move_row(self.rom_row, self.group_kickstart)
+            self._move_row(self.quick_system_source, self.group_primary)
+            self._move_row(self.adf_row, self.os_group)
+            #  Finishing happens on Target, so that is where the summary and
+            #  the button that accepts it belong.
+            self._move_group(self.group_plan, self.page_target)
+            self.group_plan.set_visible(True)
+        else:
+            self._set_quick_screen(getattr(self, "_quick_screen", "choices"))
+        self.stack.set_visible_child_name("source" if self._customising
+                                          else "quick")
+
     def _page_quick(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_quick = page
+
+
+        #  Three things anyone actually wants to do, rather than a page of
+        #  settings that happens to be first.
+        choices = Adw.PreferencesGroup(
+            title="What would you like to do?",
+            #  Nothing is below it any more - this screen is the choice
+            #  and nothing else - so it can no longer promise settings here.
+            description="Each one leads to what it needs, and back here if "
+                        "you change your mind.")
+        for title, subtitle, label, handler in (
+            ("A basic PiStorm card",
+             "Emu68 and an empty Amiga drive, partitioned and formatted, ready "
+             "to install Workbench onto from floppies.",
+             "Set up", self._choose_basic),
+            ("Write a prepared system",
+             "A finished image you have downloaded - CaffeineOS, an Emu68 "
+             "Hatcher image, or a backup of a card.",
+             "Choose image", self._choose_prepared),
+            ("Customise an installation",
+             "The full workflow: sources, storage, the software to add, boot "
+             "options. Everything the other two decide for you.",
+             "Customise", lambda: self._set_customising(True)),
+        ):
+            row = Adw.ActionRow(title=title, subtitle=subtitle)
+            button = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+            button.add_css_class("suggested-action")
+            button.connect("clicked", lambda _b, h=handler: h())
+            row.add_suffix(button)
+            row.set_activatable_widget(button)
+            choices.add(row)
+        self.group_choices = choices
+        page.add(choices)
 
         group = Adw.PreferencesGroup(
             title="Quick setup",
@@ -429,6 +739,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         rescan.add_css_class("flat")
         rescan.connect("clicked", lambda _b: self._detect_material())
         group.set_header_suffix(rescan)
+        self.group_detected = group
         page.add(group)
 
         group = Adw.PreferencesGroup(
@@ -468,7 +779,9 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Trapdoor 512K fitted, use it as chip RAM",
             subtitle="A500 and A500+ only")
         group.add(self.quick_trapdoor)
-        page.add(group)
+        #  What the machine is belongs with the machine; the Amiga
+        #  page adds this.
+        self.group_hardware = group
 
         group = Adw.PreferencesGroup(
             title="Primary installation",
@@ -516,7 +829,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                      "built around RTG.")
         self.quick_os_hint.set_sensitive(False)
         group.add(self.quick_os_hint)
-        page.add(group)
+        #  Where the system comes from belongs with the other
+        #  sources; the Source page adds this.
+        self.group_primary = group
 
         group = Adw.PreferencesGroup(title="Choices")
         self.quick_system = Adw.EntryRow(title="System drive size")
@@ -536,7 +851,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             "Looking for one…", filters=HDF_FILTERS,
             on_change=lambda _p: self._quick_preview())
         group.add(self.quick_donor)
-        page.add(group)
+        #  Sizes are a storage question; the Storage page adds this.
+        self.group_sizes = group
 
         group = Adw.PreferencesGroup(
             title="Where to write it",
@@ -569,27 +885,49 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_size_info = Adw.ActionRow(title="Size", subtitle="")
         self.quick_size_info.set_sensitive(False)
         group.add(self.quick_size_info)
+        self.group_target = group
         page.add(group)
 
+        #  The same block wherever the setup is finished: what it adds up to,
+        #  and the button that accepts it, at the bottom of the last thing
+        #  read.  It moves to the Target page when customising.
         group = Adw.PreferencesGroup(
             title="What this will build",
-            description="Choose the card or image file on the Target page first; "
-                        "the sizes below follow from it.")
+            description="Everything chosen so far, and what it comes to.")
         self.quick_plan = Gtk.Label(xalign=0.0, wrap=True, selectable=True,
                                     margin_top=6, margin_bottom=6,
                                     margin_start=12, margin_end=12)
         self.quick_plan.add_css_class("dim-label")
-        holder = Adw.PreferencesGroup()
+
+        #  All one box.  A preferences group keeps plain widgets and rows in
+        #  separate places, so adding the summary and then an ActionRow does
+        #  not put the row after the summary - it puts it wherever the group
+        #  keeps rows, which was above it.
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(self.quick_plan)
         box.add_css_class("card")
+        box.append(self.quick_plan)
+
+        strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
+                        margin_top=6, margin_bottom=12,
+                        margin_start=12, margin_end=12)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        heading = Gtk.Label(xalign=0.0, label="Apply this setup")
+        self.apply_note = Gtk.Label(xalign=0.0, wrap=True)
+        self.apply_note.add_css_class("dim-label")
+        self.apply_note.add_css_class("caption")
+        titles.append(heading)
+        titles.append(self.apply_note)
+        strip.append(titles)
+        self.apply_button = Gtk.Button(label="Apply", valign=Gtk.Align.CENTER)
+        self.apply_button.add_css_class("suggested-action")
+        self.apply_button.connect("clicked", self._on_apply_quick)
+        strip.append(self.apply_button)
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        box.append(strip)
         group.add(box)
-        apply_button = Gtk.Button(label="Apply this setup", halign=Gtk.Align.CENTER,
-                                  margin_top=12)
-        apply_button.add_css_class("suggested-action")
-        apply_button.add_css_class("pill")
-        apply_button.connect("clicked", self._on_apply_quick)
-        group.add(apply_button)
+        #  Kept under the old name so callers still have something to ask.
+        self.apply_row = strip
+        self.group_plan = group
         page.add(group)
         return page
 
@@ -606,7 +944,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         if system.needs_floppies:
             text += ("  -  choose \u201cinstall Workbench from my floppy "
                      "images\u201d as well, or the card will not boot.")
-        self.quick_hdf_info.set_subtitle(text)
+        #  A ready-made drive built for an A1200 says so only by the display
+        #  modes it installs. This check was written to say that and then
+        #  never called, so nobody was ever warned.
+        for warning in presets.check_image_for_machine(path, self._machine()):
+            text += f"  -  {warning}"
+        self.quick_hdf_info.set_subtitle(GLib.markup_escape_text(text))
         self._relayout_partitions()
         self._quick_preview()
 
@@ -656,11 +999,36 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.file_size_row.set_text(self.quick_card_size.get_text())
             self.quick_device.set_visible(self.quick_target.get_selected() == 0)
             self.quick_file.set_visible(self.quick_target.get_selected() == 1)
+            self._follow_the_card()
             self._show_size()
         finally:
             self._mirroring = False
         self._sync_visibility()
         self._relayout_partitions()
+
+    def _follow_the_card(self) -> None:
+        """Show the card's own size when writing to one, and lock the box.
+
+        A size typed for a card is a guess at what the card holds, and the two
+        meanings of "GB" make it a bad one: "125G" is 125 GiB, nine gigabytes
+        more than a card sold as 125 GB. When there is a card in front of us
+        its capacity is known exactly, so it is shown and the box is closed.
+        """
+        card = self._selected_device()
+        for row in (self.quick_card_size, self.file_size_row):
+            if card is not None and card.size:
+                if row.get_text() != human_size(card.size):
+                    row.set_text(human_size(card.size))
+                row.set_sensitive(False)
+            else:
+                row.set_sensitive(True)
+        if card is not None and card.size:
+            self.quick_card_size.set_title(
+                f"Card size - taken from {card.name}, which holds "
+                f"{describe_size(card.size)}")
+        else:
+            self.quick_card_size.set_title(
+                "Card or image size - 32GB as cards are sold, 32GiB binary")
 
     def _boot_size(self) -> int:
         """The boot partition size, as typed on the Target page."""
@@ -685,7 +1053,15 @@ class ImagerWindow(Adw.ApplicationWindow):
         card = size / 1000 ** 3
         if self.quick_target.get_selected() == 1:
             note += f" - needs a card of at least {card:.0f} GB"
-        self.quick_size_info.set_subtitle(note)
+        #  A bare G is binary, and that is the reading people do not expect: a
+        #  card sold as 125 GB is 9 GB smaller than the 125 GiB "125G" asks
+        #  for, and the image simply will not fit it.
+        bare = text.strip().upper().rstrip()
+        if bare and bare[-1] in "KMGT":
+            decimal = f"{bare[:-1]}{bare[-1]}B"
+            note += (f" - \u201c{text.strip()}\u201d is binary; write "
+                     f"\u201c{decimal}\u201d for a card sold as that size")
+        self.quick_size_info.set_subtitle(GLib.markup_escape_text(note))
 
     def _machine(self) -> machines.Machine:
         return machines.MACHINES[self.quick_machine.get_selected()]
@@ -712,6 +1088,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_machine_hint.set_subtitle(
             f"{machine.board_label} - {machine.chipset.value} chipset "
             f"({machine.chipset.native_colours})")
+        #  Which content categories are worth copying follows the machine.
+        self._refresh_categories()
         #  Keep the Source page's board in step with the model.
         for index, variant in enumerate(emu68.VARIANTS):
             if variant.key == machine.board:
@@ -818,8 +1196,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._relayout_partitions()
         self._quick_preview()
 
-    #  Kept for the source rows, which also refresh their own descriptions.
-    _on_source_changed = _on_layout_changed
+    def _on_source_changed(self) -> None:
+        """A source changed, so the layout follows - and so does what is shown.
+
+        Choosing "install Workbench from my floppy images" has to reveal the
+        folder chooser, and only _sync_visibility ever sets that.  Sharing
+        _on_layout_changed meant the choice was recorded, the partitions were
+        redrawn, and the row that says where the disks are stayed hidden: the
+        card could be told to install from floppies with no way to point at
+        any.
+        """
+        self._on_layout_changed()
+        self._sync_visibility()
 
     def _relayout_partitions(self) -> None:
         """Replace the partition rows with the layout the choices imply.
@@ -890,29 +1278,159 @@ class ImagerWindow(Adw.ApplicationWindow):
         detected = dataclasses.replace(
             getattr(self, "detected", presets.Detected()),
             pfs3_donor=self.quick_donor.path)
+        self._describe_plan(detected)
+
+    def _describe_plan(self, detected=None) -> None:
+        """Describe what will actually be written, not what was asked for.
+
+        The plan used to come from the quick settings alone, so a partition
+        edited on the Storage page changed the card and not a word of the
+        description - which is the wrong way round, because this is the thing
+        the user reads before pressing Write.  The real configuration is used
+        when there is one, and the quick settings only stand in before a
+        target has been chosen.
+        """
+        if detected is None:
+            detected = dataclasses.replace(
+                getattr(self, "detected", presets.Detected()),
+                pfs3_donor=self.quick_donor.path)
         try:
-            config = self._quick_config()
-        except Exception as error:  # noqa: BLE001 - no target chosen yet, usually
-            self.quick_plan.set_text(str(error))
-            return
+            config = self.gather()
+        except Exception:                        # noqa: BLE001 - no target yet
+            try:
+                config = self._quick_config()
+            except Exception as error:           # noqa: BLE001
+                self.quick_plan.set_text(str(error))
+                return
         self.quick_plan.set_text(presets.describe_machine_setup(
             config, self._machine(), self._display(), detected))
 
+    def _show_readiness(self, missing: list[str]) -> None:
+        """Say what is still wanted, and only offer Apply when nothing is.
+
+        Both Apply rows are kept in step: the one on the quick start's plan
+        and the one at the end of the workflow are the same decision reached
+        two ways.
+        """
+        if missing:
+            first = missing[0]
+            note = ("Still needed: " + first if len(missing) == 1
+                    else f"Still needed: {first}, and {len(missing) - 1} more")
+        else:
+            note = "Accepts the setup above and enables Write"
+        if getattr(self, "apply_note", None) is not None:
+            self.apply_note.set_text(note)
+            self.apply_button.set_sensitive(not missing)
+
+    def _missing_choices(self) -> list[str]:
+        """What still has to be decided before writing makes sense.
+
+        validate() covers what would make the build fail outright; this is the
+        rest - the things without which a card would be written and then not
+        boot.  A Kickstart it has no ROM for, an install from floppies with no
+        floppies.
+        """
+        try:
+            config = self.gather()
+        except Exception:                        # noqa: BLE001
+            return ["a target to write to"]
+        missing = [problem.rstrip(".") for problem in config.validate()]
+
+        if config.mode is builder.BuildMode.IMAGE:
+            #  A prepared system brings its own everything; the image and a
+            #  card is the whole of it.
+            return missing
+
+        if not config.kickstart_path:
+            missing.append("a Kickstart ROM")
+        if config.install_emu68 and not config.emu68_archive \
+                and not config.emu68_prepared_dir and not self.releases:
+            missing.append("an Emu68 release - still looking, or choose a "
+                           "local archive on the Source page")
+        if config.install_amigaos:
+            if not config.adf_folder:
+                missing.append("a folder of Workbench floppy images")
+            else:
+                disks = getattr(self, "_adf_disks", None) or []
+                if not disks:
+                    missing.append("Workbench disks in that folder")
+                else:
+                    chosen = amigaos.choose_set(disks, config.adf_version)
+                    gaps = amigaos.missing_roles(chosen)
+                    if gaps:
+                        missing.append("the "
+                                       + ", ".join(r.label for r in gaps)
+                                       + " disk")
+        return missing
+
     def _on_apply_quick(self, _button) -> None:
+        #  In the full workflow the pages *are* the configuration, so applying
+        #  accepts what is there.  Regenerating it from the quick settings
+        #  would undo the very customising that was asked for.
+        if getattr(self, "_customising", False):
+            try:
+                self._applied_config = repr(self.gather())
+            except Exception as error:           # noqa: BLE001
+                self._toast(str(error))
+                return
+            self._update_summary()
+            self._remember_session()
+            self._toast("Setup accepted - Write is ready")
+            return
         try:
             config = self._quick_config()
         except Exception as error:  # noqa: BLE001
             self._toast(str(error))
             return
-        self.apply(config)
+        #  The layout is redrawn from the quick settings as they change, but
+        #  only while nobody has touched it: once the partitions have been
+        #  edited by hand, that stops.  Applying used to ignore the same rule
+        #  and throw the edits away, so a carefully arranged set of drives
+        #  reverted the moment the button was pressed.
+        kept = self._hand_edited_partitions()
+        if kept is not None:
+            config = dataclasses.replace(config, amiga_partitions=kept)
+        self.apply(config, keep_partitions=kept is not None)
+        try:
+            self._applied_config = repr(self.gather())
+        except Exception:                        # noqa: BLE001
+            self._applied_config = None
+        self._update_summary()
+        if kept is not None:
+            self._toast("Quick setup applied; your own partitions were kept")
+        else:
+            self._toast("Quick setup applied and remembered for next time")
         #  Remember it now, not only on a clean exit: this is the point at
         #  which the setup is worth keeping.
         self._remember_session()
-        self.stack.set_visible_child_name("target")
-        self._toast("Quick setup applied and remembered for next time")
+
+    def _quick_layout(self):
+        """The layout the quick settings describe, for comparing against.
+
+        An empty list when they cannot be read yet, which no real layout
+        matches, so a loaded one is left alone rather than redrawn from
+        settings that were not ready to say anything.
+        """
+        try:
+            return list(self._quick_config().amiga_partitions)
+        except Exception:                        # noqa: BLE001 - not ready
+            return []
+
+    def _hand_edited_partitions(self):
+        """The partitions if they have been edited, else None.
+
+        Compared against what was last derived from the quick settings, which
+        is what the automatic relayout records for exactly this purpose.
+        """
+        derived = getattr(self, "_derived_partitions", None)
+        if derived is None:
+            return None
+        current = [row.spec() for row in self.partition_rows]
+        return current if current != derived else None
 
     def _page_source(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_source = page
 
         group = Adw.PreferencesGroup(title="What do you want to do?")
         self.mode_row = Adw.ComboRow(title="Task",
@@ -926,16 +1444,31 @@ class ImagerWindow(Adw.ApplicationWindow):
 
         self.image_group = Adw.PreferencesGroup(
             title="Pre-built image",
-            description="PiMiga, Emu68 Hatcher, or any .img backup. Compressed "
-                        "images (.xz, .gz, .zip, .7z) are streamed straight to the "
-                        "card, so no scratch space is needed.")
+            description="A finished system such as CaffeineOS, an Emu68 "
+                        "Hatcher image, or any .img backup of a card. "
+                        "Download it from its author and point at the file; a "
+                        "system this tool recognises is named, along with what "
+                        "it expects of the machine. Compressed images (.xz, "
+                        ".gz, .zip, .7z) are streamed straight to the card, so "
+                        "no scratch space is needed.")
         self.image_row = FileRow("Image file", filters=IMAGE_FILTERS,
                                  on_change=lambda _p: self._on_image_chosen())
         self.image_group.add(self.image_row)
         self.image_info = Adw.ActionRow(title="Image details", subtitle="No image selected")
         self.image_info.set_sensitive(False)
         self.image_group.add(self.image_info)
+        self.patch_display_row = Adw.SwitchRow(
+            title="Adapt the display after writing",
+            subtitle="A finished system keeps its own drivers, which are "
+                     "right for it, but not its saved screen mode. Where "
+                     "there is no RTG display, clear it so Workbench opens on "
+                     "the Amiga's own screen instead of one that is not there.")
+        self.patch_display_row.connect("notify::active",
+                                       lambda *_a: self._update_summary())
+        self.image_group.add(self.patch_display_row)
         page.add(self.image_group)
+
+        page.add(self.group_primary)
 
         self.hdf_group = Adw.PreferencesGroup(
             title="Amiga hard disk image",
@@ -992,12 +1525,19 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _page_amiga(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_amiga = page
+        #  Which Amiga this is, and how it is being looked at, decides most of
+        #  what follows on this page.
+        page.add(self.group_hardware)
 
         group = Adw.PreferencesGroup(
             title="Kickstart ROM",
             description="Emu68 maps a Kickstart from the boot partition. An A1200 "
                         "(AGA) ROM is expected. Cloanto-encrypted ROMs are decrypted "
                         "automatically when rom.key sits beside them.")
+        #  Kept, because the quick start borrows rom_row and has to be able
+        #  to give it back.
+        self.group_kickstart = group
         self.rom_row = FileRow("Kickstart ROM file", filters=ROM_FILTERS,
                                on_change=lambda _p: self._on_rom_chosen())
         group.add(self.rom_row)
@@ -1086,6 +1626,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         page = Adw.PreferencesPage()
 
+        page.add(self.group_sizes)
+
         self.partition_group = Adw.PreferencesGroup(
             title="Amiga partitions",
             description="Written as a Rigid Disk Block inside the 0x76 partition. "
@@ -1157,22 +1699,28 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.vc4_row)
         self.vbr_row = Adw.SwitchRow(
             title="Move the vector base register to fast RAM",
-            subtitle="Faster, but breaks many floppy-loaded games and demos")
+            subtitle="Faster, but it moves the interrupt vectors away from "
+                     "address 0, where games and demos that take over the "
+                     "machine expect to install their own. That includes "
+                     "WHDLoad titles run from the hard drive - it is how the "
+                     "software was written, not where it is loaded from")
         group.add(self.vbr_row)
         self.slowdown_row = Adw.SwitchRow(
             title="Chip RAM slowdown",
-            subtitle="Improves compatibility with software that busy-waits")
+            subtitle="For OCS and ECS software that busy-waits on the "
+                     "chipset, which a PiStorm otherwise runs straight past. "
+                     "Set for you on an A500, A500+, A600, A1000 or A2000")
         group.add(self.slowdown_row)
         self.dbf_row = Adw.SwitchRow(
             title="DBF loop slowdown",
-            subtitle="For OCS-era software that times itself with a delay "
-                     "loop and runs far too fast on a PiStorm")
+            subtitle="For OCS and ECS era software that times itself with a "
+                     "delay loop and runs far too fast on a PiStorm")
         group.add(self.dbf_row)
         self.blitwait_row = Adw.SwitchRow(
             title="Wait for the blitter",
-            subtitle="For software that starts a blit and reads the result "
-                     "without waiting, which only worked because the real "
-                     "chipset was slower")
+            subtitle="For OCS and ECS software that starts a blit and reads "
+                     "the result without waiting, which only worked because "
+                     "the real chipset was slower")
         group.add(self.blitwait_row)
         self.swapdf_row = Adw.SwitchRow(title="Swap DF0: with DF1:")
         group.add(self.swapdf_row)
@@ -1200,6 +1748,7 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _page_target(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_target = page
 
         group = Adw.PreferencesGroup(title="Where should the result go?")
         self.target_row = Adw.ComboRow(
@@ -1220,7 +1769,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         refresh.connect("clicked", lambda _b: self._refresh_devices())
         self.device_group.set_header_suffix(refresh)
         self.device_row = Adw.ComboRow(title="Card", model=combo(["No cards found"]))
-        self.device_row.connect("notify::selected", lambda *_a: self._update_summary())
+        self.device_row.connect("notify::selected",
+                                lambda *_a: (self._follow_the_card(),
+                                             self._update_summary()))
         self.device_group.add(self.device_row)
         page.add(self.device_group)
 
@@ -1302,6 +1853,15 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _writing_to_device(self) -> bool:
         return self.target_row.get_selected() == 0
 
+    def _selected_device(self):
+        """The card chosen to be written to, or None if none is."""
+        if not self._writing_to_device():
+            return None
+        index = self.device_row.get_selected() - 1   # row 0 is the placeholder
+        if not self.device_list or index < 0 or index >= len(self.device_list):
+            return None
+        return self.device_list[index]
+
     def _making_hdf(self) -> bool:
         """True when the output is a bare Amiga drive rather than a card."""
         return self.target_row.get_selected() == 2
@@ -1321,7 +1881,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_workbench_screen.set_visible(
             self._display().has_choice_of_screen)
         self.mode_hint.set_subtitle(MODES[self.mode_row.get_selected()][2])
-        self.image_group.set_visible(mode is builder.BuildMode.IMAGE)
+        #  On the quick start the screen decides what is on show, not the
+        #  task mode; letting both set it made the image chooser flicker in
+        #  and out as the mode was adjusted underneath.
+        if getattr(self, "_customising", True):
+            self.image_group.set_visible(mode is builder.BuildMode.IMAGE)
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
         self.os_group.set_visible(mode is builder.BuildMode.FRESH)
@@ -1396,6 +1960,19 @@ class ImagerWindow(Adw.ApplicationWindow):
                                  if emu68.has_variant(r, variant)]
         labels = [f"{r.display()} - {r.published}" for r in self._release_choices]
         self.release_row.set_model(combo(labels or ["No build for this board"]))
+        #  A setup that was loaded asked for a particular build, and the list
+        #  it has to be found in arrives from GitHub after the setup does.
+        #  Falling straight to the newest stable one quietly swapped a card
+        #  built against a beta onto a different Emu68 altogether.
+        wanted = getattr(self, "_wanted_release", "")
+        if wanted:
+            for index, release in enumerate(self._release_choices):
+                if release.tag == wanted:
+                    self.release_row.set_selected(index)
+                    #  Honoured once: choosing another board afterwards should
+                    #  offer that board's newest build, not this tag for ever.
+                    self._wanted_release = ""
+                    return
         for index, release in enumerate(self._release_choices):
             if not release.prerelease:
                 self.release_row.set_selected(index)
@@ -1409,7 +1986,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             index = len(self.partition_rows)
             spec = builder.AmigaPartitionSpec(f"DH{index}", None, "PFS3", index == 0,
                                               0 if index == 0 else -128)
-        row = PartitionRow(spec, self._remove_partition, self._update_summary)
+        row = PartitionRow(spec, self._remove_partition,
+                           self._update_summary, machine=self._machine)
         self.partition_rows.append(row)
         self.partition_group.add(row)
         self._update_summary()
@@ -1424,7 +2002,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         if spec is None:
             index = len(self.extra_rows) + 1
             spec = builder.AmigaPartitionSpec(f"DH{index}", None, "PFS3", False, -128)
-        row = PartitionRow(spec, self._remove_extra_partition, self._update_summary)
+        row = PartitionRow(spec, self._remove_extra_partition,
+                           self._update_summary, machine=self._machine)
         self.extra_rows.append(row)
         self.expand_group.add(row)
         row.set_visible(self.expand_row.get_active())
@@ -1461,6 +2040,11 @@ class ImagerWindow(Adw.ApplicationWindow):
                 row.set_active(key in wanted)
         self._refresh_packages()
 
+    def _refresh_categories(self) -> None:
+        """Re-default every partition's categories for the machine now chosen."""
+        for row in list(self.partition_rows) + list(self.extra_rows):
+            row.reload_categories()
+
     def _refresh_packages(self) -> None:
         """Offer only the software that can actually be obtained and used."""
         if not self._ready:
@@ -1485,14 +2069,21 @@ class ImagerWindow(Adw.ApplicationWindow):
             elif key in found:
                 note += "  -  from your donor system."
             elif downloadable:
-                note += ("  -  will be fetched from Aminet."
-                         if not package.manual else
-                         f"  -  fetched from Aminet; {package.note}")
+                where = package.download.source or "Aminet"
+                if package.download.manual:
+                    #  Nothing here can fetch it; the build uses a copy the
+                    #  user has put in the cache, so say so before the build
+                    #  rather than in the log afterwards.
+                    note += f"  -  supply the archive yourself, from {where}."
+                else:
+                    note += f"  -  will be fetched from {where}."
+                if package.note:
+                    note += f" {package.note}"
             else:
                 note += ("  -  needs a donor system that has it."
                          if donor else
                          "  -  choose where to take it from first.")
-            row.set_subtitle(note)
+            row.set_subtitle(GLib.markup_escape_text(note))
             if not usable:
                 row.set_active(False)
         self._on_layout_changed()
@@ -1523,6 +2114,13 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.quick_device.set_selected(0)
         self._update_summary()
 
+    def _known_card_size(self) -> int:
+        """The card size if one has been said, for a "is it big enough" check."""
+        try:
+            return parse_size(self.quick_card_size.get_text())
+        except Exception:                        # noqa: BLE001 - not set yet
+            return 0
+
     def _on_image_chosen(self) -> None:
         from ..core import imgsrc
         if not self.image_row.path:
@@ -1531,9 +2129,22 @@ class ImagerWindow(Adw.ApplicationWindow):
             return
         try:
             source = imgsrc.inspect(self.image_row.path)
-            self.image_info.set_subtitle(source.description)
+            description = source.description
         except Exception as error:  # noqa: BLE001
             self.image_info.set_subtitle(f"Cannot read this file: {error}")
+            self._update_summary()
+            return
+        #  Naming the system, and saying what it expects, is worth more than
+        #  the file's dimensions: a card gets committed to one of these.
+        found = distributions.identify(self.image_row.path)
+        if found is not None:
+            notes = distributions.describe(found, self._known_card_size())
+            if found.rtg_only and not self._display().uses_rtg:
+                notes.append("The display is set to the Amiga's own video "
+                             "output, where this system shows nothing.")
+            description = f"{found.label} - " + description + "\n" + "\n".join(
+                "- " + line for line in notes)
+        self.image_info.set_subtitle(description)
         self._update_summary()
 
     def _scan_adfs(self) -> None:
@@ -1647,17 +2258,25 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _update_summary(self) -> None:
         if not self._ready:
             return
+        #  The plan reads from the same configuration, so a partition edited
+        #  on the Storage page shows up in it.
+        self._describe_plan()
+        missing = self._missing_choices()
+        self._show_readiness(missing)
         try:
             config = self.gather()
         except Exception as error:  # noqa: BLE001 - partial input while typing
             self.summary.set_text(str(error))
             self.write_button.set_sensitive(False)
             return
-        problems = config.validate()
-        if problems:
-            self.summary.set_text(problems[0])
+        if missing:
+            self.summary.set_text("Still needed: " + missing[0])
             self.write_button.set_sensitive(False)
             return
+        #  Comparing the configuration itself, rather than trying to notice
+        #  every widget that could change it: anything that alters what would
+        #  be written puts the setup back to needing another look.
+        applied = repr(config) == getattr(self, "_applied_config", None)
         target = config.target
         if config.mode is builder.BuildMode.IMAGE:
             what = f"Write {Path(config.source_image).name}"
@@ -1669,8 +2288,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             what = "Partition and build"
         else:
             what = "Update the boot partition of"
-        self.summary.set_text(f"{what} → {target}")
-        self.write_button.set_sensitive(True)
+        if applied:
+            self.summary.set_text(f"{what} → {target}")
+        else:
+            self.summary.set_text(f"{what} → {target}"
+                                  "   -   Apply this setup to enable Write")
+        self.write_button.set_sensitive(applied)
         self._quick_preview()
 
     # ------------------------------------------------------- config gather
@@ -1711,10 +2334,17 @@ class ImagerWindow(Adw.ApplicationWindow):
             index = min(self.release_row.get_selected(), len(choices) - 1)
             release_tag = choices[index].tag
 
-        try:
-            image_size = parse_size(self.file_size_row.get_text())
-        except ValueError:
-            image_size = 8 * GIB
+        card = self._selected_device()
+        if card is not None and card.size:
+            #  Writing to a card: its capacity is the size, whatever any box
+            #  says. Typing it invited "125G" for a card sold as 125 GB, which
+            #  is 125 GiB - 9 GB more than the card holds.
+            image_size = card.size
+        else:
+            try:
+                image_size = parse_size(self.file_size_row.get_text())
+            except ValueError:
+                image_size = 8 * GIB
         boot_size = self._boot_size()
 
         return builder.BuildConfig(
@@ -1731,6 +2361,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             hdf_image=self.hdf_row.path,
             output_hdf=self._making_hdf(),
             repair_rdb=self.repair_row.get_active(),
+            patch_display=self.patch_display_row.get_active(),
             boot_size=boot_size,
             amiga_partitions=[row.spec() for row in self.partition_rows],
             pfs3_binary=self.quick_donor.path,
@@ -1743,6 +2374,13 @@ class ImagerWindow(Adw.ApplicationWindow):
             adf_folder=self.adf_row.path,
             adf_version=self._selected_adf_version(),
             amiga_volume_name=self.volume_row.get_text().strip() or "Workbench",
+            #  The software chosen on the Amiga page.  These only used to be
+            #  set by the quick setup, so ticking a package and pressing Write
+            #  from the pages themselves quietly built a card without it.
+            package_donor=self._package_donor(),
+            package_keys=self._chosen_packages(),
+            package_chipset=self._machine().chipset.value,
+            package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
             #  what happens to a copied system's graphics setup, so it has to
             #  reach every build - not only one started from that page.
@@ -1939,7 +2577,14 @@ class ImagerWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------ saved sessions
 
     def interface_state(self) -> dict:
-        """The choices a BuildConfig cannot express, so they can be restored."""
+        """The choices a BuildConfig cannot express, so they can be restored.
+
+        Only those. Anything the configuration already carries - the target,
+        the card size - must not be written here as well: the quick screen
+        keeps its own copy of both, that copy goes stale the moment either is
+        set on its own page, and this state is applied after the
+        configuration, so the stale copy is the one that wins.
+        """
         return {
             "machine": self._machine().key,
             "display": self._display().name,
@@ -1953,11 +2598,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             "kickstart_key": self.rom_key_row.path,
             "adf_folder": self.adf_row.path,
             "trapdoor": self.quick_trapdoor.get_active(),
-            "card_size": self.quick_card_size.get_text(),
             "system_size": self.quick_system.get_text(),
             "boot_size": self.boot_size_row.get_text(),
-            "target_kind": self.quick_target.get_selected(),
-            "image_path": self.quick_file.path,
         }
 
     def apply_interface_state(self, state: dict) -> None:
@@ -1995,18 +2637,14 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.rom_key_row.set_path(state.get("kickstart_key", ""))
             self.adf_row.set_path(state.get("adf_folder", ""))
             self.quick_trapdoor.set_active(bool(state.get("trapdoor")))
-            for row, key in ((self.quick_card_size, "card_size"),
-                             (self.quick_system, "system_size"),
+            for row, key in ((self.quick_system, "system_size"),
                              (self.boot_size_row, "boot_size")):
                 if state.get(key):
                     row.set_text(str(state[key]))
-            #  Default to whatever the build itself implies, rather than to
-            #  "SD card": restoring a card that is not plugged in would leave
-            #  the whole page in an error state.
-            if "target_kind" in state:
-                self.quick_target.set_selected(int(state["target_kind"]))
-            if state.get("image_path"):
-                self.quick_file.set_path(state["image_path"])
+            #  The target and the card size come from the configuration, which
+            #  apply() has already put in place.  Sessions saved before this
+            #  also carry them here, and honouring those would undo it: a card
+            #  built to a 125 GiB image came back as a 59 GiB SD card.
         finally:
             self._ready = was_ready
         self._on_machine_changed()
@@ -2023,8 +2661,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._append_log(f"Could not restore the last session: {error}")
             return
         try:
-            self.apply(config)
-            self.apply_interface_state(state)
+            self._apply_saved(config, state)
         except Exception as error:  # noqa: BLE001
             self._toast(f"Could not restore the last session: {error}")
             return
@@ -2079,8 +2716,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 return
             try:
                 config, state, _reduced = jobs.load_session(file.get_path())
-                self.apply(config)
-                self.apply_interface_state(state)
+                self._apply_saved(config, state)
                 self._toast("Settings loaded")
             except Exception as error:  # noqa: BLE001
                 self._toast(f"Could not load: {error}")
@@ -2122,6 +2758,51 @@ class ImagerWindow(Adw.ApplicationWindow):
 
         dialog.save(self, None, done)
 
+    def _on_check_updates(self, _button) -> None:
+        """Ask GitHub whether there is a newer release, off the UI thread."""
+        self._toast("Checking for updates…")
+
+        def work() -> None:
+            release = updates.latest()
+            GLib.idle_add(self._updates_answered, release)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _updates_answered(self, release) -> None:
+        if release is None:
+            self._update_dialog(
+                "Could not check for updates",
+                "GitHub could not be reached, or it has no published releases "
+                "yet. Nothing is wrong with this copy - the question simply "
+                "could not be answered.", None)
+            return False
+        if not updates.is_newer(release.tag):
+            self._update_dialog(
+                "No newer version available",
+                f"This is version {__version__}, and {release.name} is the "
+                f"newest release. You are up to date.", None)
+            return False
+        notes = release.notes or "No release notes were published."
+        if len(notes) > 2000:
+            notes = notes[:2000].rstrip() + "\n\n(continues on GitHub)"
+        self._update_dialog(
+            f"{release.name} is available",
+            f"You have version {__version__}.\n\n{notes}", release.url)
+        return False
+
+    def _update_dialog(self, heading: str, body: str, url: str | None) -> None:
+        dialog = Adw.AlertDialog(heading=heading, body=body)
+        dialog.add_response("close", "Close")
+        if url:
+            dialog.add_response("open", "Go to GitHub")
+            dialog.set_response_appearance("open",
+                                           Adw.ResponseAppearance.SUGGESTED)
+            dialog.connect("response", lambda _d, name, link=url:
+                           Gtk.UriLauncher(uri=link).launch(self, None, None)
+                           if name == "open" else None)
+        dialog.set_default_response("close")
+        dialog.present(self)
+
     def _on_about(self, _button) -> None:
         about = Adw.AboutDialog(
             application_name="PiStorm Imager",
@@ -2137,7 +2818,8 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------ applying config
 
-    def apply(self, config: builder.BuildConfig) -> None:
+    def apply(self, config: builder.BuildConfig, *,
+              keep_partitions: bool = False) -> None:
         """Push a loaded BuildConfig back into the widgets."""
         was_ready, self._ready = self._ready, False
         for index, (_label, mode, _hint) in enumerate(MODES):
@@ -2180,7 +2862,14 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._add_partition(spec)
         if not self.partition_rows:
             self._add_partition()
-        self._derived_partitions = [row.spec() for row in self.partition_rows]
+        #  What the quick settings *would* have produced, not what was just
+        #  loaded.  The relayout tells a layout somebody arranged from one it
+        #  derived itself by comparing the rows against this, so recording the
+        #  loaded rows here told it they were its own to redraw - and four
+        #  saved drives came back as the generic layout.
+        self._derived_partitions = (
+            self._quick_layout() if keep_partitions
+            else [row.spec() for row in self.partition_rows])
 
         options = config.boot_options
         for index, (_label, group, mode_id) in enumerate(bootcfg.HDMI_MODES):
@@ -2199,6 +2888,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.unit0_row.set_active(options.sd_unit0_rw)
         self.extra_row.set_text(options.extra_cmdline)
 
+        self.patch_display_row.set_active(config.patch_display)
         self.expand_row.set_active(config.expand_to_fill)
         for row in list(self.extra_rows):
             self.expand_group.remove(row)
@@ -2215,10 +2905,57 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_target.set_selected(0 if config.target_is_device else 1)
         if not config.target_is_device and config.target:
             self.quick_file.set_path(config.target)
-        self.quick_card_size.set_text(
-            human_size(config.image_size).replace(" GiB", "G")
-            .replace(" MiB", "M").replace(".00", ""))
+        self.quick_card_size.set_text(exact_size_text(config.image_size))
         if not config.target_is_device:
             self.file_row.set_path(config.target)
+        self._restore_package_choices(config)
+        #  The list of Emu68 builds is fetched from GitHub in the background,
+        #  so the one this setup was built against may not be offered yet.
+        self._wanted_release = config.release_tag or ""
+        self._populate_releases()
         self._ready = was_ready
         self._sync_visibility()
+
+    def _apply_saved(self, config: builder.BuildConfig, state: dict) -> None:
+        """Everything a loaded setup has to put back, in the order that works.
+
+        Order is the whole of it. The interface state carries the machine and
+        the display, which decide which software suits the card and which
+        board the Source page shows, so both of those go back after it - and
+        the configuration, not the state, is what says which they were.
+        """
+        self.apply(config, keep_partitions=True)
+        self.apply_interface_state(state)
+        self._restore_package_choices(config)
+        self._restore_board(config)
+
+    def _restore_board(self, config: builder.BuildConfig) -> None:
+        """Put the board back after the machine has had its say.
+
+        The Source page's board follows the model, which is right while the
+        model is being chosen and wrong when a setup is being loaded: the
+        machine arrives with the interface state, after the configuration, and
+        set a PiStorm32-Lite card back to a plain PiStorm without a word.
+        """
+        for index, variant in enumerate(emu68.VARIANTS):
+            if variant.key == config.variant:
+                self.variant_row.set_selected(index)
+                return
+
+    def _restore_package_choices(self, config: builder.BuildConfig) -> None:
+        """Put the software choices, and where they come from, back.
+
+        gather() has always saved these; nothing ever put them back, so
+        loading a setup returned a card with the donor forgotten and every
+        tick cleared, however carefully the list had been chosen.
+        """
+        if config.package_donor:
+            self.package_donor.set_path(config.package_donor)
+        #  The rows have to be worked out against this donor before they can
+        #  be ticked: refreshing afterwards would clear anything it thought
+        #  unusable, including choices that are perfectly usable.
+        self._refresh_packages()
+        wanted = set(config.package_keys)
+        for key, row in self.package_rows.items():
+            if row.get_sensitive() or key in wanted:
+                row.set_active(key in wanted)
