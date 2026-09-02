@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 386 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 389 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -751,6 +751,38 @@ right answer genuinely differs:
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
 VisualPrefs. Networking — the PiStorm's `vlink.device`, a TCP/IP stack, AmiSSL
 and NetSurf — is suggested when a WiFi network has been configured.
+
+## The newest release wins, and the donor fills in
+
+A published release is the newest there is. A donor's copy is whatever its
+author installed, which may be years old. So where a package has both, the
+**download goes on first and the donor fills in around it** - keys, catalogues,
+Kickstarts, anything the archive does not carry. The writer keeps the first copy
+of a file it is given, so first is what wins.
+
+Thirteen packages have both sources. WHDLoad is the shape of it: the program
+comes from Aminet, and the donor still supplies `DEVS:Kickstarts` and the
+`WHDLoad.prefs` that no archive contains.
+
+Where a donor's older copy is used instead, the build **says so**:
+
+> WARNING: WHDLoad is being taken from the donor, which is older than the
+> release published on Aminet
+
+which happens when downloads are turned off, or when a fetch fails. And a
+download that **stops early is no longer kept** - it is still a file, and
+caching a truncated archive means every build afterwards fails to unpack
+something that looks like it is already there. The length is checked against
+what the server said while the answer is still at hand; this was found when a
+real download arrived 170 KB short and the failure only surfaced two steps
+later.
+
+### Ticking something ticks what it needs
+
+A package that names what it requires had those installed anyway - the build
+expands the list before it copies anything - but the page showed them switched
+off, so a card arrived carrying software nobody remembered choosing. Switching
+one on now switches on what it needs, so the list says what will be installed.
 
 ## iGame comes from its own release, and builds its own list
 

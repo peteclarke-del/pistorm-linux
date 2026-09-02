@@ -1623,7 +1623,8 @@ class ImagerWindow(Adw.ApplicationWindow):
                                     subtitle=package.description)
                 row.set_active(package.default)
                 row.connect("notify::active",
-                            lambda *_a: self._on_layout_changed())
+                            lambda *_a, key=package.key:
+                            self._on_package_toggled(key))
                 self.package_rows[package.key] = row
                 group.add(row)
             self.package_groups.append(group)
@@ -2102,6 +2103,22 @@ class ImagerWindow(Adw.ApplicationWindow):
             row.set_subtitle(GLib.markup_escape_text(note))
             if not usable:
                 row.set_active(False)
+        self._on_layout_changed()
+
+    def _on_package_toggled(self, key: str) -> None:
+        """Switching something on switches on what it needs.
+
+        A package that names what it requires had those installed anyway -
+        the build expands the list before it copies anything - but the page
+        showed them switched off, so the card arrived with software nobody
+        remembered choosing. Now the list says what will be installed.
+        """
+        row = self.package_rows.get(key)
+        if row is not None and row.get_active():
+            for needed in packages.expand([key]):
+                other = self.package_rows.get(needed)
+                if other is not None and needed != key and not other.get_active():
+                    other.set_active(True)
         self._on_layout_changed()
 
     def _chosen_packages(self) -> list[str]:

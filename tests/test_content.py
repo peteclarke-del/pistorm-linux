@@ -1080,3 +1080,43 @@ class ABareDriveHasNoBootPartition(unittest.TestCase):
     def test_a_card_still_is(self):
         problems = self._config(output_hdf=False).validate()
         self.assertTrue([p for p in problems if "boot partition must" in p])
+
+
+class TheNewestReleaseWins(unittest.TestCase):
+    """A published release is the newest there is; a donor's copy is whatever
+    its author installed. The release goes on first and the donor fills in
+    what the archive does not carry."""
+
+    def test_a_truncated_download_is_not_kept(self):
+        """It is still a file, and caching it means every build afterwards
+        fails to unpack an archive that looks like it is already there."""
+        import io
+        import urllib.request
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cache = Path(tmp.name)
+        package = packages.CATALOGUE_BY_KEY["newinstaller"]
+
+        class Short(io.BytesIO):
+            headers = {"Content-Length": "1000"}
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        with unittest.mock.patch.object(packages, "cache_dir", lambda: cache), \
+                unittest.mock.patch.object(urllib.request, "urlopen",
+                                           lambda *a, **k: Short(b"x" * 10)):
+            log = _Recorder()
+            self.assertIsNone(packages.download_archive(package, log))
+            self.assertIn("stopped early", " ".join(log.lines))
+        self.assertEqual(list(cache.glob("*.lha")), [])
+
+    def test_newinstaller_is_offered(self):
+        package = packages.CATALOGUE_BY_KEY["newinstaller"]
+        self.assertIsNotNone(package.download)
+        places = {dest for _src, dest in package.download.items}
+        self.assertIn("C", places)
+        self.assertIn("Libs", places)
+
+    def test_where_a_download_comes_from_is_named(self):
+        self.assertEqual(
+            packages.CATALOGUE_BY_KEY["newinstaller"].download.where, "Aminet")
