@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 377 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 380 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -273,8 +273,13 @@ its default and then save the session in that state, so they could not be kept
 at all.
 
 The one field the two share is **Additional cmdline.txt options**: the trapdoor
-switch puts `move_slow_to_chip` there and anything else in the box was typed by
-hand. Both survive, and turning the switch off removes only its own option.
+switch owns `move_slow_to_chip` and anything else in the box was typed by hand.
+Both survive, and turning the switch off removes only its own option. The switch
+is asked when the configuration is gathered rather than only when a quick setup
+is applied - the two were separate records of one fact, so a setup loaded with
+the switch on and the option missing built a card without it: 512K of chip RAM
+on a machine that had been told to give it a megabyte, with the switch on screen
+still saying it was on.
 
 ## How big is the card, and which gigabyte do you mean
 

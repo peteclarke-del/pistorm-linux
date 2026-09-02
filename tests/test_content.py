@@ -969,3 +969,41 @@ class NoMonitorIsInventedForACard(unittest.TestCase):
         fixer.offer("Devs/Monitors/uaegfx", b"monitor")
         self.assertTrue(fixer.skip("Devs/Monitors/uaegfx"))
         self.assertEqual(fixer.monitor_file, b"monitor")
+
+
+class TheTrapdoorSwitchReachesTheCard(unittest.TestCase):
+    """The switch and the cmdline option are one fact, not two.
+
+    ``move_slow_to_chip`` is what turns a 512K trapdoor expansion into the
+    second half of a megabyte of chip RAM. It used to reach cmdline.txt only
+    when the quick setup was applied, so a setup loaded with the switch on and
+    the option missing built a card without it - and the switch on screen
+    still said it was on.
+    """
+
+    def test_the_machine_option_is_added_and_removed_by_the_switch(self):
+        from pistorm_imager.ui.window import merge_cmdline
+        self.assertEqual(merge_cmdline("move_slow_to_chip", ""),
+                         "move_slow_to_chip")
+        #  Turned off, it goes; anything typed by hand stays.
+        self.assertEqual(merge_cmdline("", "move_slow_to_chip sd.verbose=1"),
+                         "sd.verbose=1")
+        self.assertEqual(
+            merge_cmdline("move_slow_to_chip", "sd.verbose=1").split(),
+            ["move_slow_to_chip", "sd.verbose=1"])
+
+    def test_a_machine_with_no_trapdoor_never_gets_it(self):
+        from pistorm_imager.core import machines
+        for machine in machines.MACHINES:
+            options = machines.boot_options(machine, machines.Display.NATIVE,
+                                            trapdoor_to_chip=True)
+            if not machine.trapdoor_ram:
+                self.assertNotIn("move_slow_to_chip", options.extra_cmdline,
+                                 f"{machine.key} has no trapdoor RAM")
+
+    def test_the_ecs_a500_does_get_it(self):
+        from pistorm_imager.core import machines
+        machine = next(m for m in machines.MACHINES if m.key == "a500ecs")
+        options = machines.boot_options(machine, machines.Display.NATIVE,
+                                        trapdoor_to_chip=True)
+        self.assertIn("move_slow_to_chip", options.extra_cmdline)
