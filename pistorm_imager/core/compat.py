@@ -251,6 +251,15 @@ class Compatibility:
             if self.rtg:
                 self.monitor_icon = self._pending_data
             return True
+        if Path(relative).name.lower() == GAMES_LIST:
+            #  iGame's list holds an absolute path to every slave, written on
+            #  somebody else's machine. Editing it to match this card was
+            #  half-guessing at another program's data; iGame builds the list
+            #  itself from what is actually here, which cannot be wrong.
+            self.note("removed",
+                      f"{relative} (iGame builds its own from the card - "
+                      f"Actions > Scan Repositories, once)")
+            return True
         if not self.workbench_on_rtg \
                 and relative.replace("\\", "/").lower() in SCREENMODE_PREFS:
             if self.rtg:
@@ -289,8 +298,6 @@ class Compatibility:
         name = Path(posix).name.lower()
         if name in WHDLOAD_PREFS:
             return self._clean_whdload_prefs(posix, data)
-        if name == GAMES_LIST:
-            return self._filter_games_list(posix, data)
         if name == GAMES_REPOS:
             return self._filter_repositories(posix, data)
         return data
@@ -339,34 +346,6 @@ class Compatibility:
             if skip and (lowered == skip or lowered.startswith(skip + "/")):
                 return False
         return self._resolve(root, rest)
-
-    def _filter_games_list(self, relative: str, data: bytes) -> bytes:
-        """Drop entries whose game will not be on the card.
-
-        iGame stores an absolute path to each slave.  Leave out a collection -
-        the AGA games on a machine that cannot run them - and every one of its
-        entries stays in the list, offering games that are not there.
-        """
-        if not self.content:
-            return data
-        out: list[str] = []
-        dropped = 0
-        for line in data.decode("latin-1").splitlines(keepends=True):
-            fields = line.split(";")
-            if len(fields) < 4 or not fields[3].strip():
-                out.append(line)
-                continue
-            present = self._on_the_card(fields[3].strip())
-            if present is False:
-                dropped += 1
-                continue
-            out.append(line)
-        if dropped:
-            self.note("edited",
-                      f"{relative}: dropped {dropped} game"
-                      f"{'s' if dropped != 1 else ''} that will not be on the "
-                      f"card, so iGame does not offer what it cannot launch")
-        return "".join(out).encode("latin-1")
 
     def _filter_repositories(self, relative: str, data: bytes) -> bytes:
         """Drop the drawers iGame is told to scan that will not be there.

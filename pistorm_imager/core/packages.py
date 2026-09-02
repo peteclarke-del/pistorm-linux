@@ -101,6 +101,10 @@ class Download:
     #  archive that ships templates for other people's hardware still needs
     #  one for the machine being built.
     write: tuple[tuple[str, str, str], ...] = ()
+    #  (path inside the archive, destination, name on the card). For an
+    #  archive that ships one binary per processor: the card wants the one
+    #  its machine has, under the name the icon launches.
+    rename: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def url(self) -> str:
@@ -152,6 +156,10 @@ class Package:
     #  taken from a donor, never downloaded, and a missing one is not fatal.
     support: tuple[tuple[str, str], ...] = ()
     note: str = ""
+    #  True when the download is simply newer than whatever a donor has, so
+    #  it goes on first and the donor fills in around it - the writer keeps
+    #  the first copy of a file, so first is what wins.
+    download_first: bool = False
 
     @property
     def manual(self) -> bool:
@@ -226,7 +234,19 @@ CATALOGUE: list[Package] = [
     Package(
         "igame", "iGame",
         "A launcher that lists WHDLoad games with their screenshots.",
-        items=(("Programs/iGame", "Programs/iGame"),),
+        #  Nothing from a donor. A donor's copy is whatever its author
+        #  installed - PiMiga's is v2.1 from 2022 - and it arrives with that
+        #  person's games list, their screenshots and their settings, all
+        #  written against their machine. The release from Aminet is the whole
+        #  package and starts empty, which is what a program that scans your
+        #  own drives should do.
+        items=(),
+        download=Download(
+            "util/misc/iGame.lha",
+            items=(("iGame-v2.6.1", "Programs/iGame"),),
+            #  One binary per processor is shipped; Emu68 gives a PiStorm a
+            #  68040, and the icon launches whatever is called "iGame".
+            rename=(("iGame-v2.6.1/iGame.040", "Programs/iGame", "iGame"),)),
         #  iGame draws its screenshots through these two.
         support=(("Libs/guigfx.library", "Libs"),
                  ("Libs/render.library", "Libs")),
@@ -1198,6 +1218,17 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
         source = inner[0] if len(inner) == 1 else root
         return [(str(source), download.stage)]
     out: list[tuple[str, str]] = []
+    for inside, destination, newname in download.rename:
+        source = root / inside
+        if not source.exists():
+            progress.log(f"  {package.label}: {inside} is not in the archive")
+            continue
+        staged = cache_dir() / f"{package.key}-renamed" / destination
+        staged.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, staged / newname)
+        out.append((str(staged / newname), destination))
+        progress.log(f"  {package.label}: {Path(inside).name} installed as "
+                     f"{destination}/{newname}")
     for inside, destination in download.items:
         path = root / inside
         if path.exists():
@@ -1252,7 +1283,11 @@ def overlays_for(donor: str | Path | None, keys: list[str],
                 path = system / source
                 if path.exists():
                     from_donor.append((str(path), destination))
-        if from_donor:
+        if package.download_first and allow_download \
+                and package.download is not None:
+            add(fetch(package, progress))
+            add(from_donor)          # whatever the archive did not bring
+        elif from_donor:
             add(from_donor)
         elif allow_download and package.download is not None:
             add(fetch(package, progress))

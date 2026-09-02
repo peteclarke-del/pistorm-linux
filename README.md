@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 383 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 386 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -751,6 +751,40 @@ right answer genuinely differs:
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
 VisualPrefs. Networking — the PiStorm's `vlink.device`, a TCP/IP stack, AmiSSL
 and NetSurf — is suggested when a WiFi network has been configured.
+
+## iGame comes from its own release, and builds its own list
+
+A donor's copy of a program is whatever its author installed. PiMiga's iGame is
+v2.1 from June 2022, and it arrives with that person's `gameslist.csv` - an
+absolute path to every slave on *their* machine - their screenshots and their
+settings. Editing that list to match this card, which is what this tool used to
+do, is guessing at another program's database.
+
+So iGame is installed standalone from its current Aminet release: nothing from a
+donor at all. The archive ships one binary per processor, and since Emu68 gives
+a PiStorm a 68040, the `.040` build is installed under the name the icon
+launches. The card gets an iGame with **no games list**, and the first thing to
+do on the Amiga is *Settings > Game Repositories*, then *Actions > Scan
+Repositories*: the paths are then ones iGame resolved from the drives in front
+of it, and cannot disagree with what is there.
+
+It still needs **MUI**, which no download here supplies - its window is built
+from MUI classes (`NList`, `NListview`, `Guigfx`, `TextEditor`) that come with a
+donor's MUI installation.
+
+**A caution, stated because it is not fixed.** On the machine this was developed
+against, iGame lists games correctly and then does nothing when one is clicked:
+its window closes and WHDLoad never starts. That was reproduced with v2.1 and
+v2.6.1, with the donor's list and with one iGame scanned for itself, with and
+without WHDLoad requesters, on the full package set and on a card carrying
+almost nothing. SnoopDos shows iGame reading the game's drawer successfully and
+never asking the system to execute anything. It is not understood.
+
+Games launch perfectly from **their own Workbench icons** in the Games drawer -
+each is a project icon whose default tool is WHDLoad, and Workbench sets the
+current directory to the game's drawer, which is the condition a WHDLoad slave
+needs. `WHDLoad` given a full path from a shell, without that directory, fails
+with `DOS-Error #205`.
 
 ## An installer that edits the boot script is not worth the icons
 
