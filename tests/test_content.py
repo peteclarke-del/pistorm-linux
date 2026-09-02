@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager.core import amigainfo, amigaos, content, machines, packages  # noqa: E402
+from pistorm_imager.core import (amigainfo, amigaos, compat, content,  # noqa: E402
+                                 machines, packages, rdb)
 from pistorm_imager.core.util import Progress  # noqa: E402
 
 
@@ -737,3 +738,55 @@ class RoadshowsRealLayout(unittest.TestCase):
         self.assertIn("Documentation", staged)
         #  The Workbench drawer is placed, so it must not be staged as well.
         self.assertNotIn("Workbench", staged)
+
+
+class FinishRunsOncePerBuild(unittest.TestCase):
+    """finish() is called for every tree a build copies, and a build copies
+    many. Writing the same file twice does not warn - it ends the build."""
+
+    class _Target:
+        def __init__(self):
+            self.written: list[str] = []
+
+        def makedirs(self, path):
+            return path
+
+        def write_file(self, parent, name, data, *, protect=0,
+                       check_existing=True, **kw):
+            where = f"{parent}/{name}"
+            if check_existing and where in self.written:
+                raise RuntimeError(f"{name} already exists")
+            self.written.append(where)
+
+    def _fixer(self):
+        fixer = compat.Compatibility(Progress(), enabled=True)
+        fixer.native = True
+        fixer.rtg = True
+        fixer._rtg_screenmode = None
+        fixer._stored_monitors = {}
+        return fixer
+
+    def test_the_display_scripts_are_written_once(self):
+        fixer, target = self._fixer(), self._Target()
+        for _ in range(4):                       # as many trees as a card has
+            fixer.finish(target, Progress())
+        self.assertEqual(
+            [w for w in target.written if "PiStorm-Use-HDMI" in w],
+            ["S/PiStorm-Use-HDMI"])
+
+
+class TheFfsWarningIsAboutFfs(unittest.TestCase):
+    """A PFS3 volume is meant to be larger than FFS can manage; saying it is
+    unsafe sends people shrinking a partition that was right all along."""
+
+    def test_pfs3_is_not_warned_about(self):
+        """PFS3's flag byte reads as FFS, so the family has to be checked."""
+        from pistorm_imager.core import amigafs
+        pfs3 = rdb.parse_dostype("PFS3")
+        self.assertTrue(amigafs.is_ffs(pfs3))
+        self.assertFalse(amigafs.is_dos_family(pfs3))
+
+    def test_ffs_still_is(self):
+        from pistorm_imager.core import amigafs
+        self.assertTrue(amigafs.is_dos_family(amigafs.DOSTYPE_FFS_INTL))
+        self.assertTrue(amigafs.is_ffs(amigafs.DOSTYPE_FFS_INTL))
