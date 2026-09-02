@@ -538,7 +538,7 @@ def partitions_from_image(path: str | Path, machine: machines.Machine,
     so the scheme is taken from the source rather than imposed. Sizes are
     scaled to whatever space is actually available.
     """
-    from . import amigaos, builder as builder_module, rdb
+    from . import builder as builder_module, rdb
 
     path = Path(path)
     with open(path, "rb") as handle:

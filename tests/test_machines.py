@@ -30,7 +30,7 @@ class TestProfiles(unittest.TestCase):
 
     def test_only_the_a500_family_has_trapdoor_ram(self):
         trapdoor = {m.key for m in machines.MACHINES if m.trapdoor_ram}
-        self.assertEqual(trapdoor, {"a500", "a500plus"})
+        self.assertEqual(trapdoor, {"a500", "a500ecs", "a500plus"})
 
 
 class TestBootOptions(unittest.TestCase):
@@ -653,3 +653,34 @@ class TestBothOutputs(unittest.TestCase):
                                               machines.Display.BOTH,
                                               presets.Detected())
         self.assertIn("Workbench opens on", text)
+
+
+class EcsUpgrades(unittest.TestCase):
+    """A rev 6A A500 with a Super Denise is ECS, not OCS.
+
+    Common enough an upgrade that offering only a plain OCS A500 gets the
+    chipset wrong for a real machine - and the chipset decides which game
+    collections are worth copying and which screen modes exist.
+    """
+
+    def test_an_ecs_a500_can_be_chosen(self):
+        by_key = {m.key: m for m in machines.MACHINES}
+        self.assertIn("a500ecs", by_key)
+        self.assertIs(by_key["a500ecs"].chipset, machines.Chipset.ECS)
+
+    def test_it_is_still_a_classic_pistorm_with_trapdoor_ram(self):
+        machine = next(m for m in machines.MACHINES if m.key == "a500ecs")
+        self.assertEqual(machine.board, "pistorm")
+        self.assertTrue(machine.trapdoor_ram)
+
+    def test_the_plain_a500_points_at_it(self):
+        #  Otherwise someone with the upgrade has no way of knowing.
+        machine = next(m for m in machines.MACHINES if m.key == "a500")
+        self.assertIn("Super Denise", machine.notes)
+
+    def test_ecs_still_gets_the_chipset_slowdown(self):
+        #  ECS software busy-waits on the chipset just as OCS does.
+        machine = next(m for m in machines.MACHINES if m.key == "a500ecs")
+        options = machines.boot_options(machine, machines.Display.NATIVE)
+        self.assertTrue(options.chip_slowdown)
+        self.assertTrue(options.enable_slow_ram)
