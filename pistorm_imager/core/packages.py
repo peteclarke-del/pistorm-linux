@@ -234,6 +234,39 @@ CATALOGUE: list[Package] = [
         default=True,
     ),
     Package(
+        "mcc_nlist", "MUI NList classes",
+        "The list classes a great deal of MUI software is built on - iGame's "
+        "games list among them. Not part of MUI itself.",
+        category=Category.SYSTEM,
+        download=Download(
+            "dev/mui/MCC_NList-0.128.lha",
+            (("MCC_NList/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
+        requires=("mui",),
+    ),
+    Package(
+        "mcc_texteditor", "MUI TextEditor class",
+        "The editable text class MUI software uses for anything longer than "
+        "a line. Not part of MUI itself.",
+        category=Category.SYSTEM,
+        download=Download(
+            "dev/mui/MCC_TextEditor-15.56.lha",
+            (("MCC_TextEditor/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
+        requires=("mui",),
+    ),
+    Package(
+        "mcc_guigfx", "MUI Guigfx class",
+        "Draws pictures inside a MUI window, scaled and remapped to the "
+        "screen's palette - which is how iGame shows a game's screenshot. "
+        "Brings guigfx.library and render.library with it.",
+        category=Category.SYSTEM,
+        download=Download(
+            "dev/mui/MCC_Guigfx.lha",
+            (("MCC_Guigfx/Libs/MUI/Guigfx.mcc", "System/MUI/Libs/mui"),
+             ("MCC_Guigfx/Libs/guigfx.library", "Libs"),
+             ("MCC_Guigfx/Libs/render.library", "Libs"))),
+        requires=("mui",),
+    ),
+    Package(
         "newinstaller", "NewInstaller",
         "Makes the Commodore Installer's script windows look like something "
         "from this century, and can stand in for it entirely. Installer "
@@ -272,10 +305,9 @@ CATALOGUE: list[Package] = [
             #  One binary per processor is shipped; Emu68 gives a PiStorm a
             #  68040, and the icon launches whatever is called "iGame".
             rename=(("iGame-v2.6.1/iGame.040", "Programs/iGame", "iGame"),)),
-        #  iGame draws its screenshots through these two.
-        support=(("Libs/guigfx.library", "Libs"),
-                 ("Libs/render.library", "Libs")),
-        requires=("mui",),
+        #  Its window is built from MUI classes that MUI itself does not
+        #  carry, so a card with no donor still has everything it opens.
+        requires=("mui", "mcc_nlist", "mcc_texteditor", "mcc_guigfx"),
     ),
     Package(
         "mmulib", "68k CPU libraries (MMULib)",
@@ -323,6 +355,11 @@ CATALOGUE: list[Package] = [
         #  and locale added to the system's.  This is how a real MUI install
         #  is arranged, and how the donor systems carry it.
         items=(("System/MUI", "System/MUI"),),
+        #  MUI 3.8 as published. A donor's MUI is usually richer - PiMiga's
+        #  carries 84 classes against this archive's 36 - so the release goes
+        #  on first and the donor fills in the extra classes behind it.
+        download=Download("util/libs/mui38usr.lha",
+                          (("MUI", "System/MUI"),)),
         #  MUI reads its configuration from ENV:MUI, which Workbench fills
         #  from ENVARC: at boot.  Without it every MUI application starts on
         #  built-in defaults and loses whatever the donor had set up.

@@ -1120,3 +1120,32 @@ class TheNewestReleaseWins(unittest.TestCase):
     def test_where_a_download_comes_from_is_named(self):
         self.assertEqual(
             packages.CATALOGUE_BY_KEY["newinstaller"].download.where, "Aminet")
+
+
+class IgameNeedsNoDonor(unittest.TestCase):
+    """Everything iGame opens can be fetched, so a card built from floppies
+    and Aminet alone has a working iGame. Its window is MUI, and the classes
+    it uses are not part of MUI itself."""
+
+    def test_it_declares_the_classes_it_opens(self):
+        needs = set(packages.CATALOGUE_BY_KEY["igame"].requires)
+        self.assertEqual(needs, {"mui", "mcc_nlist", "mcc_texteditor",
+                                 "mcc_guigfx"})
+
+    def test_each_of_those_can_be_downloaded(self):
+        for key in packages.CATALOGUE_BY_KEY["igame"].requires:
+            package = packages.CATALOGUE_BY_KEY[key]
+            self.assertIsNotNone(package.download,
+                                 f"{key} has no download, so a card with no "
+                                 f"donor cannot have iGame")
+
+    def test_the_classes_land_where_mui_looks_for_them(self):
+        for key in ("mcc_nlist", "mcc_texteditor", "mcc_guigfx"):
+            places = {dest for _src, dest
+                      in packages.CATALOGUE_BY_KEY[key].download.items}
+            self.assertIn("System/MUI/Libs/mui", places, key)
+
+    def test_ticking_igame_brings_them_all(self):
+        self.assertEqual(
+            packages.expand(["igame"]),
+            ["mui", "mcc_nlist", "mcc_texteditor", "mcc_guigfx", "igame"])
