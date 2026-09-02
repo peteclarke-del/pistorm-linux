@@ -348,6 +348,32 @@ class Pfs3Volume:
                 f"[{', '.join(mode_names(self.options))}]")
 
 
+def clear_file_data(volume: "Pfs3Volume", path: str) -> int:
+    """Blank a file's contents in place, leaving everything else alone.
+
+    The writer here is create-and-fill: it cannot delete a file or change a
+    directory once written.  Overwriting the data of an existing file needs
+    none of that - the extents are already allocated and stay exactly as they
+    are - so a file can be neutralised on a finished volume without touching a
+    single piece of metadata.
+
+    Returns the number of bytes blanked, or 0 if the file was not found.  The
+    handle must have been opened for writing.
+    """
+    entry = volume.find(path)
+    if entry is None or entry.is_dir:
+        return 0
+    blanked = 0
+    for node in volume.anode_chain(entry.anode):
+        if not node.blocknr or not node.clustersize:
+            continue
+        volume.f.seek(volume.base + node.blocknr * SECTOR)
+        volume.f.write(b"\0" * (node.clustersize * SECTOR))
+        blanked += node.clustersize * SECTOR
+    volume.f.flush()
+    return min(blanked, entry.size)
+
+
 # ---------------------------------------------------------------- writing
 
 VERNUM, REVNUM = 19, 2              # the handler version we claim compatibility with
@@ -808,11 +834,8 @@ class Pfs3Writer:
 
     def _add_entry(self, dir_anode: int, entry: bytes) -> None:
         """Append a directory entry, extending the directory if it is full."""
-        chain = self._chain(dir_anode)
-        last_anode = dir_anode
         number = dir_anode
         while True:
-            seqnr, offset = number >> 16, number & 0xFFFF
             block_sector = self._read_anode(number).blocknr
             block = bytearray(self._read_reserved(block_sector))
             used = SIZEOF_DIRBLOCK_HEADER
@@ -825,7 +848,6 @@ class Pfs3Writer:
             nxt = self._read_anode(number).next
             if not nxt:
                 break
-            last_anode = number
             number = nxt
 
         #  Directory is full: chain another block onto it.

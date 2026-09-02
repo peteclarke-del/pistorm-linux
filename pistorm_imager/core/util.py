@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 SECTOR = 512
 KIB = 1024
@@ -56,6 +56,20 @@ def parse_size(text: str) -> int:
     if value < 0:
         raise ValueError("a size cannot be negative")
     return int(value * table.get(unit, MIB))
+
+
+def exact_size_text(count: int) -> str:
+    """The shortest text ``parse_size`` turns back into exactly this size.
+
+    Writing a size back into the box as "37.25G" and reading it again is not
+    the size it started as, so a card drifted a little smaller every time a
+    setup was saved and loaded.
+    """
+    for suffix, unit in (("GB", 1000 ** 3), ("G", GIB),
+                         ("MB", 1000 ** 2), ("M", MIB)):
+        if count and count % unit == 0:
+            return f"{count // unit}{suffix}"
+    return f"{count}B"
 
 
 def describe_size(count: int) -> str:

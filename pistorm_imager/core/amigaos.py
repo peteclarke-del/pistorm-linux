@@ -19,6 +19,7 @@ import os
 import re
 import time
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
 
 from . import amigafs, amigainfo, compat as compat_module, pfs3, rdb
@@ -259,6 +260,33 @@ def open_amiga_volume(path: str | Path, partition: str = ""):
     return Volume(handle, offset, blocks), label
 
 
+def _excluded(lowered: str, skip: list[str]) -> bool:
+    """Whether ``lowered`` is inside one of the excluded paths.
+
+    A drawer's icon is its *sibling*, not its child: excluding
+    ``WHDLOAD/AGA`` has to take ``WHDLOAD/AGA.info`` with it, or Workbench
+    draws an icon for a drawer that is not on the card and opening it fails.
+    Matching only the drawer and its contents left exactly that behind.
+    """
+    for entry in skip:
+        if lowered == entry or lowered.startswith(entry + "/"):
+            return True
+        if lowered == entry + ".info":
+            return True
+    return False
+
+
+def landed_path(destination: str, relative: str) -> str:
+    """Where a file being copied will live on the card.
+
+    Every compatibility rule is written about the card - Storage/Monitors/PAL,
+    Libs/Picasso96 - while a copy knows only where a file sits in the thing
+    being copied from. Asking about the source path meant no rule naming a
+    destination drawer could ever match.
+    """
+    return f"{destination}/{relative}".lstrip("/") if destination else relative
+
+
 def copy_volume(source, target, destination: str, progress: Progress,
                  skip_existing: bool = True, compat=None,
                  exclude: list[str] | None = None) -> tuple[int, int]:
@@ -277,7 +305,7 @@ def copy_volume(source, target, destination: str, progress: Progress,
     for index, (path, entry) in enumerate(entries, start=1):
         progress.check_cancelled()
         lowered = path.lower()
-        if any(lowered == e or lowered.startswith(e + "/") for e in skip):
+        if _excluded(lowered, skip):
             skipped += 1
             continue
         parent_path, _, name = path.rpartition("/")
@@ -294,8 +322,9 @@ def copy_volume(source, target, destination: str, progress: Progress,
                 continue
             data = source.read_file(entry)
             if compat is not None:
-                data = compat.offer(path, data)
-                if compat.skip(path):
+                landed = landed_path(destination, path)
+                data = compat.offer(landed, data)
+                if compat.skip(landed):
                     skipped += 1
                     continue
             target.write_file(parent, name, data, protect=entry.protect,
@@ -304,7 +333,7 @@ def copy_volume(source, target, destination: str, progress: Progress,
             copied += 1
         if index % 200 == 0 or index == len(entries):
             progress.fraction(index / len(entries))
-    if compat is not None:
+    if compat is not None and getattr(compat, "finish_with_each_tree", True):
         #  Without this the emulator's driver is removed and nothing put back.
         compat.finish(target, progress)
     return copied, skipped
@@ -810,7 +839,7 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
             continue
         relative = str(path.relative_to(source)).replace(os.sep, "/")
         lowered = relative.lower()
-        if any(lowered == e or lowered.startswith(e + "/") for e in skip):
+        if _excluded(lowered, skip):
             skipped_paths += 1
             continue
         entries.append((path, relative, path.is_dir()))
@@ -867,8 +896,9 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
             else:
                 data = _read_source(path, relative, compat, progress)
                 if compat is not None:
-                    data = compat.offer(relative, data)
-                    if compat.skip(relative):
+                    landed = landed_path(destination, relative)
+                    data = compat.offer(landed, data)
+                    if compat.skip(landed):
                         continue
                 if placed.name.lower().endswith(ICON_SUFFIX):
                     data, repointed = _repoint_icon(
@@ -921,7 +951,7 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
     if changes.get("merged"):
         progress.log(f"  {changes['merged']} drawer(s) differing from another "
                      f"only in case were merged into one")
-    if compat is not None:
+    if compat is not None and getattr(compat, "finish_with_each_tree", True):
         compat.finish(target, progress)
     return copied, renamed
 
@@ -942,7 +972,7 @@ def tree_size(source: str | Path) -> tuple[int, int]:
 def install(handle, offset: int, total_blocks: int, chosen: dict[str, DiskMatch],
             progress: Progress, *, volume_name: str = "Workbench",
             dostype: int = amigafs.DOSTYPE_FFS_INTL,
-            close: bool = True) -> VolumeWriter:
+            close: bool = True, edit=None) -> VolumeWriter:
     """Format a partition and copy the chosen Workbench disks into it."""
     missing = missing_roles(chosen)
     if missing:
@@ -966,7 +996,8 @@ def install(handle, offset: int, total_blocks: int, chosen: dict[str, DiskMatch]
         with open(match.path, "rb") as source_handle:
             source = Volume(source_handle)
             copied, skipped = copy_volume(source, target,
-                                           match.role.destination, progress)
+                                           match.role.destination, progress,
+                                           compat=edit)
         total_copied += copied
         progress.log(f"  {copied} files copied"
                      + (f", {skipped} already present" if skipped else ""))
@@ -981,3 +1012,193 @@ def install(handle, offset: int, total_blocks: int, chosen: dict[str, DiskMatch]
     progress.log(f"{total_copied} files installed; "
                  f"{human_size(target.free_bytes)} free on {volume_name}:")
     return target
+
+
+#  Drawers Workbench 3.1 deliberately leaves without an icon.  These are the
+#  system's working parts, not places a person browses to, and giving them
+#  icons would clutter the desktop with drawers Commodore chose to hide.
+HIDDEN_DRAWERS = {
+    "c", "l", "s", "libs", "devs", "fonts", "locale", "classes", "t",
+    "rexxc", "expansion", "prefs/env-archive",
+}
+
+
+def _is_hidden(path: str) -> bool:
+    """Whether Workbench would never show this drawer anyway.
+
+    A drawer inside a hidden one is hidden too: an icon on ``Classes/Gadgets``
+    can only be seen by someone who has already turned on Show All Files to
+    get into ``Classes`` at all, so writing one is just a file nobody sees.
+    """
+    lowered = path.lower()
+    parts = lowered.split("/")
+    for depth in range(1, len(parts) + 1):
+        if "/".join(parts[:depth]) in HIDDEN_DRAWERS:
+            return True
+    return False
+
+
+def _drawer_icon_sources(folders: Iterable[str | Path]) -> dict[str, bytes]:
+    """Every drawer icon found in ``folders``, keyed on the drawer's name.
+
+    MagicWB keeps its drawer icons beside a one-byte stub of the drawer they
+    are for, so the ``.info`` files alone are what is wanted.  A donor system
+    simply has them next to the real drawers.
+    """
+    found: dict[str, bytes] = {}
+    for folder in folders:
+        base = Path(folder)
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.info")):
+            stem = path.name[:-5]
+            if not stem:
+                continue
+            data = path.read_bytes()
+            #  Only a drawer icon opens a drawer.  Matching purely on the name
+            #  handed the Storage/Install drawer MagicWB's Install.info, which
+            #  is the project icon for MagicWB's own installer script, and a
+            #  double click answered "unable to open script".
+            if not amigainfo.is_drawer_icon(data):
+                continue
+            #  First one wins, so the order folders are passed in is the
+            #  order of preference.
+            found.setdefault(stem.lower(), data)
+    return found
+
+
+def ensure_drawer_icons(volume, drawers: Iterable[str],
+                        sources: Iterable[str | Path],
+                        progress: Progress) -> int:
+    """Give a drawer an icon when nothing else was going to.
+
+    A drawer with no ``.info`` beside it does not appear on Workbench at all -
+    it can only be reached from a Shell, or by turning on Show All Files.  That
+    is correct for ``C:`` and ``LIBS:``, which is why Commodore ships them
+    without icons, but this tool also creates drawers of its own to hold the
+    software the user chose - ``Programs``, ``Internet``, ``AmiTCP`` - and gave
+    them no icons either.  Every one of iGame, NetSurf, IBrowse and the rest
+    was written to the card and then left unreachable from the desktop, which
+    looks exactly like the software never having been installed.
+
+    Icons are taken from real Amiga icons rather than invented: the chosen icon
+    set or the donor system, matched on the drawer's own name where possible
+    and otherwise any drawer icon among them, because one drawer icon is as
+    good as another and having one is what matters.
+    """
+    icons = _drawer_icon_sources(sources)
+    if not icons:
+        return 0
+    #  A stand-in for a drawer whose name nothing matched.  Preferring the
+    #  plain Workbench drawers keeps it looking like a drawer.
+    generic = next((icons[name] for name in ("drawer", "tools", "utilities",
+                                             "storage", "system")
+                    if name in icons), None)
+    written = 0
+    for drawer in drawers:
+        path = drawer.strip("/")
+        if not path or _is_hidden(path):
+            continue
+        parent_path, _, name = path.rpartition("/")
+        try:
+            parent = (volume.makedirs(parent_path) if parent_path
+                      else volume.root)
+        except Exception:
+            continue
+        if volume._entry_exists(parent, name) is None:
+            continue                    # the drawer itself is not there
+        if volume._entry_exists(parent, name + ".info") is not None:
+            continue                    # it already has one
+        data = icons.get(name.lower(), generic)
+        if data is not None:
+            #  Otherwise every drawer given the same fallback icon inherits
+            #  that icon's snapshotted position and they all pile up.
+            data = amigainfo.clear_position(data)
+        if data is None:
+            progress.log(f"  {path} has no icon and none was available; it "
+                         f"will only show under Window/Show/All Files")
+            continue
+        volume.write_file(parent, name + ".info", data, check_existing=True)
+        progress.log(f"  gave {path} an icon, so Workbench can show it")
+        written += 1
+    return written
+
+
+class StartupSequenceEditor:
+    """Insert lines into ``S:Startup-Sequence`` as it comes off the ADF.
+
+    Some things have to be done before Workbench opens its first icon, and
+    ``S:User-Startup`` is too late for them.  The clearest case is PeterK's
+    ``icon.library``: a modern Amiga icon keeps its picture in an appended
+    OS3.5 colour chunk and leaves the classic planar image empty, and the
+    40.1 icon.library in Kickstart 3.1 cannot read that - it draws nothing at
+    all, so a card full of perfectly good icons comes up with half of them
+    blank.  The replacement on disk handles them, but soft-kicking it from
+    ``S:User-Startup`` does nothing, because ``IPrefs`` has already opened the
+    ROM one by then and a library in use cannot be flushed.  Asked which was
+    live, the Amiga answered 40.1 while 51.4 sat unused in ``LIBS:``.
+
+    The file cannot be rewritten after the fact - this file system creates
+    files and never overwrites them - so it is edited in flight, on its way
+    from the floppy image onto the card.
+
+    It carries the same ``offer``/``skip`` pair the compatibility pass uses,
+    so it can be handed to ``copy_volume`` in exactly the same way.
+    """
+
+    #  Insert above the first of these that appears.  IPrefs is the one that
+    #  matters; SetPatch is the fallback for a Startup-Sequence that does not
+    #  run IPrefs at all.
+    ANCHORS = ("c:iprefs", "iprefs", "c:conclip")
+
+    def __init__(self, lines: Iterable[str], progress: Progress,
+                 replace: Iterable[str] = ()):
+        self.lines = [line for line in lines if line.strip()]
+        self.progress = progress
+        self.inserted = False
+        #  Files the floppies would install that something better is going to
+        #  supply afterwards.  They have to be refused here rather than
+        #  overwritten later, because this file system creates files and never
+        #  replaces them.
+        self.replace = {name.replace("\\", "/").lower() for name in replace}
+        self.replaced: list[str] = []
+
+    def skip(self, relative: str) -> bool:
+        posix = relative.replace("\\", "/").lower()
+        if posix in self.replace:
+            self.replaced.append(relative)
+            return True
+        return False
+
+    def finish(self, target, progress) -> None:
+        """Nothing to do at the end; the whole edit happens in ``offer``.
+
+        Part of the same trio ``copy_volume`` calls on the compatibility pass,
+        so it has to be here even though it does nothing.
+        """
+
+    def offer(self, relative: str, data: bytes) -> bytes:
+        posix = relative.replace("\\", "/").lower()
+        if not self.lines or posix != "s/startup-sequence":
+            return data
+        text = data.decode("latin-1")
+        out: list[str] = []
+        done = False
+        for line in text.splitlines(keepends=True):
+            if not done and line.strip().lower().split()[:1] \
+                    and line.strip().lower().split()[0] in self.ANCHORS:
+                out.append("; Added by the PiStorm imager: this has to happen "
+                           "before IPrefs opens\n")
+                out.append("; the ROM icon.library, or the one on disk can "
+                           "never replace it.\n")
+                out += [entry + "\n" for entry in self.lines]
+                done = True
+            out.append(line)
+        if not done:
+            #  Nothing recognisable to sit in front of: put it after SetPatch,
+            #  which is always the first line that matters.
+            return data
+        self.inserted = True
+        self.progress.log(f"  S:Startup-Sequence: added {len(self.lines)} "
+                          f"line(s) before IPrefs")
+        return "".join(out).encode("latin-1")
