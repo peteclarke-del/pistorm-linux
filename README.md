@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 393 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 396 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -776,6 +776,28 @@ something that looks like it is already there. The length is checked against
 what the server said while the answer is still at hand; this was found when a
 real download arrived 170 KB short and the failure only surfaced two steps
 later.
+
+### Nothing on the card may need an FPU
+
+Emu68 gives a PiStorm a **68040 with no FPU**. A floating point instruction on
+such a machine raises a line-F exception - **guru 8000000B** - and iGame's own
+site warns about exactly that guru for exactly these libraries.
+
+Counting F-line opcodes in the binaries settles it, with the published no-FPU
+build of `guigfx` as the control:
+
+| Library | FPU instructions |
+| --- | --- |
+| `guigfx.library` (standard) | 41 |
+| `guigfx.library` (no-FPU build) | 0 |
+| `render.library` | **153** |
+
+There is a no-FPU `guigfx` on Aminet and **no no-FPU `render` anywhere**, and
+`guigfx.library` opens `render.library`, so the whole stack is unusable here.
+iGame lists all three as optional, so the card does without them and iGame is
+installed with `no_guigfx=1` in its own preferences. It loses the screenshots
+and keeps working. PiMiga's copy of that preferences file had the same line in
+it, which suggests somebody else met this years ago.
 
 ### MUI, and the classes that are not in MUI
 

@@ -254,17 +254,46 @@ CATALOGUE: list[Package] = [
         requires=("mui",),
     ),
     Package(
-        "mcc_guigfx", "MUI Guigfx class",
-        "Draws pictures inside a MUI window, scaled and remapped to the "
-        "screen's palette - which is how iGame shows a game's screenshot. "
-        "Brings guigfx.library and render.library with it.",
+        "mcc_urltext", "MUI UrlText class",
+        "Draws a clickable web address inside a MUI window. iGame lists it "
+        "as optional; without it the window still opens.",
         category=Category.SYSTEM,
-        download=Download(
-            "dev/mui/MCC_Guigfx.lha",
-            (("MCC_Guigfx/Libs/MUI/Guigfx.mcc", "System/MUI/Libs/mui"),
-             ("MCC_Guigfx/Libs/guigfx.library", "Libs"),
-             ("MCC_Guigfx/Libs/render.library", "Libs"))),
+        download=Download("dev/mui/MCC_Urltext.lha",
+                          (("MCC_Urltext/MUI/Urltext.mcc",
+                            "System/MUI/Libs/mui"),)),
         requires=("mui",),
+    ),
+    Package(
+        "kingcon", "KingCON",
+        "A console handler with a command history, filename completion and "
+        "an editable command line - what the Shell should always have been. "
+        "The handler goes into L: and the mountfile into DEVS:DOSDrivers.",
+        category=Category.EXTRAS,
+        download=Download(
+            "util/shell/KingCON_1.3.lha",
+            (("KingCON1.3/Handler/KingCON-handler.020", "L"),
+             ("KingCON1.3/Docs", STAGING + "/KingCON/Docs"),
+             ("KingCON1.3/Installation", STAGING + "/KingCON"))),
+        note="The 68020 build of the handler is installed. Its own "
+             "Installation script, in Storage/Install, mounts it as the "
+             "console and can make it the default - which changes how every "
+             "Shell on the card behaves, so it is left for you to decide.",
+    ),
+    Package(
+        "blazewcp", "BlazeWCP",
+        "A 32-bit chunky-to-planar patch for the OS chunky functions, which "
+        "is what anything drawing a chunky picture on a planar screen goes "
+        "through.",
+        category=Category.SPEED,
+        download=Download("util/boot/BlazeWCP178.lha",
+                          (("BlazeWCP", "C"),
+                           ("BlazeWCP.guide", STAGING + "/BlazeWCP"))),
+        startup=("IF EXISTS C:BlazeWCP",
+                 "   C:BlazeWCP >NIL:",
+                 "EndIF"),
+        note="Started from S:User-Startup. It patches the operating "
+             "system's chunky drawing, so if anything draws oddly, take that "
+             "line out and reboot.",
     ),
     Package(
         "newinstaller", "NewInstaller",
@@ -304,10 +333,28 @@ CATALOGUE: list[Package] = [
             items=(("iGame-v2.6.1", "Programs/iGame"),),
             #  One binary per processor is shipped; Emu68 gives a PiStorm a
             #  68040, and the icon launches whatever is called "iGame".
-            rename=(("iGame-v2.6.1/iGame.040", "Programs/iGame", "iGame"),)),
+            rename=(("iGame-v2.6.1/iGame.040", "Programs/iGame", "iGame"),),
+            #  guigfx.library and render.library draw its screenshots, and
+            #  both are compiled for a processor with an FPU: render.library
+            #  alone carries 153 floating point instructions, and no build
+            #  without them exists. Emu68 gives a PiStorm a 68040 with no
+            #  FPU, so calling one is a line-F exception - which is the guru
+            #  8000000B that iGame's own site warns about. They are optional,
+            #  so the card does without them and says so here.
+            write=(("igame.prefs", "Programs/iGame",
+                    "no_guigfx=1\n"
+                    "filter_use_enter=0\n"
+                    "hide_side_panel=0\n"
+                    "start_with_favorites=0\n"
+                    "save_stats_on_exit=0\n"
+                    "no_smart_spaces=0\n"
+                    "titles_from_dirs=1\n"
+                    "hide_screenshots=1\n"
+                    "screenshot_width=320\n"
+                    "screenshot_height=256\n"),)),
         #  Its window is built from MUI classes that MUI itself does not
         #  carry, so a card with no donor still has everything it opens.
-        requires=("mui", "mcc_nlist", "mcc_texteditor", "mcc_guigfx"),
+        requires=("mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext"),
     ),
     Package(
         "mmulib", "68k CPU libraries (MMULib)",
