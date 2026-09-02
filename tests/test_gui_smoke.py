@@ -154,6 +154,48 @@ def on_activate(app: ImagerApplication) -> None:
         window._sync_visibility()
         check(window.gather().mode is builder.BuildMode.FRESH, "mode switch takes effect")
 
+        #  A layout that arrived with a saved setup is the user's own. It used
+        #  to be recorded as though the quick settings had derived it, so the
+        #  next relayout replaced the drives someone had arranged - four
+        #  partitions saved, one generic layout loaded.
+        #  apply() writes every row from the config it is given, so anything a
+        #  later check depends on has to be put back afterwards.
+        kept_hdf = window.hdf_row.get_path() if hasattr(
+            window.hdf_row, "get_path") else window.hdf_row.path
+        saved = builder.BuildConfig(
+            target=str(SCRATCH / "restored.img"),
+            amiga_partitions=[
+                builder.AmigaPartitionSpec(name="DH0", volume_name="Workbench",
+                                      size=10 * 1024 ** 3, bootable=True),
+                builder.AmigaPartitionSpec(name="DH1", volume_name="Games",
+                                      size=20 * 1024 ** 3),
+                builder.AmigaPartitionSpec(name="DH2", volume_name="Demos",
+                                      size=10 * 1024 ** 3),
+                builder.AmigaPartitionSpec(name="DH3", volume_name="Work",
+                                      size=None),
+            ])
+        window.apply(saved, keep_partitions=True)
+        check([r.spec().volume_name for r in window.partition_rows]
+              == ["Workbench", "Games", "Demos", "Work"],
+              "a loaded layout reaches the rows")
+        #  Anything that would normally redraw the layout must now leave it be.
+        window._relayout_partitions()
+        names = [r.spec().volume_name for r in window.partition_rows]
+        check(names == ["Workbench", "Games", "Demos", "Work"],
+              f"a loaded layout survives a relayout ({names})")
+        window.quick_pimiga.set_path(str(SCRATCH / "pimiga"))
+        names = [r.spec().volume_name for r in window.partition_rows]
+        check(names == ["Workbench", "Games", "Demos", "Work"],
+              f"a loaded layout survives a quick-setting change ({names})")
+        check(window._hand_edited_partitions() is not None,
+              "a loaded layout counts as the user's when Apply is pressed")
+        window.quick_pimiga.set_path("")
+        #  Hand the layout back to the quick settings, or every check after
+        #  this one is testing a deliberately protected layout.
+        window._derived_partitions = [r.spec() for r in window.partition_rows]
+        window._relayout_partitions()
+        window.hdf_row.set_path(kept_hdf)
+
         #  The PiMiga summary must update even before a target is chosen: it
         #  used to sit after an early return and so never ran.
         window.target_row.set_selected(0)          # SD card, none selected
