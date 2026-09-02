@@ -4,6 +4,7 @@ This runs a genuine GTK application (it needs a display), builds every page,
 flips through the task modes and checks that a configuration survives being
 written into the widgets and read back out.
 """
+import dataclasses
 import os
 import sys
 import tempfile as _tempfile
@@ -192,6 +193,28 @@ def on_activate(app: ImagerApplication) -> None:
         window.quick_pimiga.set_path("")
         #  Hand the layout back to the quick settings, or every check after
         #  this one is testing a deliberately protected layout.
+        #  The software choices and the donor they come from were saved by
+        #  gather() and never put back, so loading a setup cleared every tick.
+        donor = SCRATCH / "donor"
+        (donor / "Libs").mkdir(parents=True, exist_ok=True)
+        with_packages = dataclasses.replace(
+            saved, package_donor=str(donor), package_keys=["whdload", "lha"])
+        window.apply(with_packages, keep_partitions=True)
+        check(window.package_donor.path == str(donor),
+              f"the donor is restored ({window.package_donor.path!r})")
+        ticked = {k for k, r in window.package_rows.items() if r.get_active()}
+        check({"whdload", "lha"} <= ticked,
+              f"the chosen software is restored ({sorted(ticked)})")
+        check("magicwb" not in ticked,
+              "software that was not chosen stays off")
+        back = window.gather()
+        check(set(back.package_keys) >= {"whdload", "lha"},
+              f"and survives a round trip ({back.package_keys})")
+        window.package_donor.set_path("")
+        for row in window.package_rows.values():
+            row.set_active(False)
+        #  Hand the layout back to the quick settings and put the hard disk
+        #  chooser back: every check after this one depends on both.
         window._derived_partitions = [r.spec() for r in window.partition_rows]
         window._relayout_partitions()
         window.hdf_row.set_path(kept_hdf)
