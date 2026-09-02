@@ -2594,6 +2594,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         try:
             self.apply(config, keep_partitions=True)
             self.apply_interface_state(state)
+            self._restore_package_choices(config)
         except Exception as error:  # noqa: BLE001
             self._toast(f"Could not restore the last session: {error}")
             return
@@ -2650,6 +2651,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 config, state, _reduced = jobs.load_session(file.get_path())
                 self.apply(config, keep_partitions=True)
                 self.apply_interface_state(state)
+                self._restore_package_choices(config)
                 self._toast("Settings loaded")
             except Exception as error:  # noqa: BLE001
                 self._toast(f"Could not load: {error}")
@@ -2843,5 +2845,24 @@ class ImagerWindow(Adw.ApplicationWindow):
             .replace(" MiB", "M").replace(".00", ""))
         if not config.target_is_device:
             self.file_row.set_path(config.target)
+        self._restore_package_choices(config)
         self._ready = was_ready
         self._sync_visibility()
+
+    def _restore_package_choices(self, config: builder.BuildConfig) -> None:
+        """Put the software choices, and where they come from, back.
+
+        gather() has always saved these; nothing ever put them back, so
+        loading a setup returned a card with the donor forgotten and every
+        tick cleared, however carefully the list had been chosen.
+        """
+        if config.package_donor:
+            self.package_donor.set_path(config.package_donor)
+        #  The rows have to be worked out against this donor before they can
+        #  be ticked: refreshing afterwards would clear anything it thought
+        #  unusable, including choices that are perfectly usable.
+        self._refresh_packages()
+        wanted = set(config.package_keys)
+        for key, row in self.package_rows.items():
+            if row.get_sensitive() or key in wanted:
+                row.set_active(key in wanted)
