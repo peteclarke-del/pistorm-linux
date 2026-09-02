@@ -3,11 +3,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import amigainfo, amigaos, content, machines, packages  # noqa: E402
+from pistorm_imager.core.util import Progress  # noqa: E402
 
 
 class TestDiscover(unittest.TestCase):
@@ -220,7 +222,7 @@ class ResolvedFromTheBinaries(unittest.TestCase):
         self.system = self.donor / "System"
         for drawer in ("C", "Libs", "Devs", "Classes", "Internet/Thing"):
             (self.system / drawer).mkdir(parents=True)
-        for name in ("bsdsocket.library", "ixemul.library"):
+        for name in ("codesets.library", "ixemul.library"):
             (self.system / "Libs" / name).write_bytes(b"L" * 4096)
         (self.system / "Devs" / "netinfo.device").write_bytes(b"D" * 4096)
 
@@ -235,16 +237,16 @@ class ResolvedFromTheBinaries(unittest.TestCase):
         return [(str(self.system / "Internet" / "Thing"), "Internet/Thing")]
 
     def test_a_library_a_program_names_is_found_and_copied(self):
-        pairs = self._program("bsdsocket.library", "netinfo.device")
+        pairs = self._program("codesets.library", "netinfo.device")
         extra = packages.resolve_dependencies(pairs, self.donor)
         got = {Path(s).name for s, _d in extra}
-        self.assertEqual(got, {"bsdsocket.library", "netinfo.device"})
+        self.assertEqual(got, {"codesets.library", "netinfo.device"})
 
     def test_each_lands_where_the_donor_keeps_it(self):
         extra = packages.resolve_dependencies(
-            self._program("bsdsocket.library", "netinfo.device"), self.donor)
+            self._program("codesets.library", "netinfo.device"), self.donor)
         where = {Path(s).name: d for s, d in extra}
-        self.assertEqual(where["bsdsocket.library"], "Libs")
+        self.assertEqual(where["codesets.library"], "Libs")
         self.assertEqual(where["netinfo.device"], "Devs")
 
     def test_a_rom_library_is_not_copied(self):
@@ -272,21 +274,21 @@ class ResolvedFromTheBinaries(unittest.TestCase):
 
     def test_no_donor_means_no_guessing(self):
         self.assertEqual(packages.resolve_dependencies(
-            self._program("bsdsocket.library"), None), [])
+            self._program("codesets.library"), None), [])
 
     def test_a_dependency_of_a_dependency_is_found_too(self):
         """One round left seven behind: mmu wants 68030, ixemul wants ixnet."""
-        (self.system / "Libs" / "ixnet.library").write_bytes(
+        (self.system / "Libs" / "middle.library").write_bytes(
             b"PAD\x00" * 400 + b"deeper.library\x00")
         (self.system / "Libs" / "deeper.library").write_bytes(b"z" * 4096)
-        #  ixemul names ixnet, which names deeper.  Only ixemul is referenced
-        #  by the program itself.
+        #  ixemul names middle, which names deeper.  Only ixemul is
+        #  referenced by the program itself.
         (self.system / "Libs" / "ixemul.library").write_bytes(
-            b"PAD\x00" * 400 + b"ixnet.library\x00")
+            b"PAD\x00" * 400 + b"middle.library\x00")
         extra = packages.resolve_dependencies(
             self._program("ixemul.library"), self.donor)
         got = {Path(s).name for s, _d in extra}
-        self.assertEqual(got, {"ixemul.library", "ixnet.library",
+        self.assertEqual(got, {"ixemul.library", "middle.library",
                                "deeper.library"})
 
     def test_resolution_terminates_when_libraries_name_each_other(self):
@@ -317,7 +319,7 @@ class ResolvedFromTheBinaries(unittest.TestCase):
         (self.system / "S").mkdir(exist_ok=True)
         (self.system / "S" / "SomethingElse.key").write_bytes(b"key")
         extra = packages.resolve_dependencies(
-            self._program("bsdsocket.library"), self.donor)
+            self._program("codesets.library"), self.donor)
         self.assertNotIn("SomethingElse.key",
                          {Path(s).name for s, _d in extra})
 
@@ -325,7 +327,7 @@ class ResolvedFromTheBinaries(unittest.TestCase):
         #  The writer refuses to overwrite, so one duplicate ends a build.
         (self.system / "S").mkdir(exist_ok=True)
         (self.system / "S" / "ixemul.key").write_bytes(b"key")
-        pairs = self._program("ixemul.library", "bsdsocket.library")
+        pairs = self._program("ixemul.library", "codesets.library")
         extra = packages.resolve_dependencies(pairs, self.donor)
         both = pairs + extra
         self.assertEqual(len(both), len(set(both)))
@@ -536,6 +538,40 @@ class NeverScavengeCpuLibraries(unittest.TestCase):
         (self.system / "Programs" / "Thing" / "thing").write_bytes(body)
         return [(str(self.system / "Programs" / "Thing"), "Programs/Thing")]
 
+    def test_networking_brings_the_stack_not_the_socket_stub(self):
+        """The stack publishes the socket library; the card never carries it.
+
+        MiamiDx creates bsdsocket.library in memory once it is online, so a
+        networked card needs no copy in LIBS: - and the copy the donor has is
+        an AmiTCP stub with no stack behind it that stops every WHDLoad game.
+        A card can have both networking and games because of this.
+        """
+        (self.system / "Libs" / "bsdsocket.library").write_bytes(b"S" * 4096)
+        (self.system / "Libs" / "miamipcap.library").write_bytes(b"M" * 4096)
+        (self.system / "Internet" / "MiamiDx").mkdir(parents=True, exist_ok=True)
+        (self.system / "Internet" / "MiamiDx" / "MiamiDx").write_bytes(b"M" * 64)
+        chosen = packages.overlays_for(str(self.donor), ["network"],
+                                       allow_download=False)
+        names = {Path(s).name for s, _d in chosen}
+        self.assertIn("MiamiDx", names)
+        self.assertNotIn("bsdsocket.library", names)
+
+    def test_stack_provided_libraries_are_never_taken(self):
+        """bsdsocket is put in LIBS: by a running TCP/IP stack.
+
+        Copied as a file it is a stub with nothing behind it, and it stops
+        every WHDLoad game: yellow screen, then nothing.  Bisected to this
+        one library, alone, against a card proven to run the game.
+        """
+        for name in ("bsdsocket.library", "usergroup.library",
+                     "ixnet.library"):
+            (self.system / "Libs" / name).write_bytes(b"S" * 4096)
+        extra = packages.resolve_dependencies(
+            self._program("bsdsocket.library", "usergroup.library",
+                          "ixnet.library"), self.donor)
+        self.assertEqual(extra, [],
+                         f"scavenged: {[Path(s).name for s, _ in extra]}")
+
     def test_cpu_libraries_are_never_taken(self):
         pairs = self._program("mmu.library", "68040.library",
                               "68030.library", "680x0.library",
@@ -553,3 +589,77 @@ class NeverScavengeCpuLibraries(unittest.TestCase):
         #  Off by default and warned about, but not unreachable.
         mmulib = packages.CATALOGUE_BY_KEY["mmulib"]
         self.assertEqual(dict(mmulib.download.items)["MMULib/Libs"], "Libs")
+
+
+class _Recorder(Progress):
+    """A progress sink that keeps what it was told, so a test can read it."""
+
+    def __init__(self):
+        super().__init__()
+        self.lines: list[str] = []
+
+    def log(self, text: str = "") -> None:
+        self.lines.append(text)
+
+    def step(self, text: str = "") -> None:
+        self.lines.append(text)
+
+
+class ANetworkStackThatCanBeInstalled(unittest.TestCase):
+    """Roadshow: an archive no code can fetch, laid out by drawer."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self.tmp.name) / "cache"
+        self.cache.mkdir()
+        self.addCleanup(self.tmp.cleanup)
+        patch = unittest.mock.patch.object(packages, "cache_dir",
+                                           lambda: self.cache)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.package = packages.CATALOGUE_BY_KEY["roadshow"]
+
+    def test_a_missing_archive_says_where_to_get_it(self):
+        """Silence would leave a card with no stack and no explanation."""
+        log = _Recorder()
+        self.assertIsNone(packages.download_archive(self.package, log))
+        said = " ".join(log.lines)
+        self.assertIn("Roadshow-Demo-1.15.lha", said)
+        self.assertIn("roadshow.apc-tcp.de", said)
+        self.assertIn(str(self.cache), said)
+
+    def test_nothing_is_downloaded_for_a_manual_package(self):
+        """The publisher serves a web page to anything but a browser, and
+        caching that as though it were the archive would be worse than
+        having no stack at all."""
+        with unittest.mock.patch.object(packages.urllib.request, "urlopen",
+                                        side_effect=AssertionError("fetched")):
+            self.assertIsNone(packages.download_archive(self.package,
+                                                        _Recorder()))
+
+    def test_a_cached_archive_is_used(self):
+        (self.cache / "Roadshow-Demo-1.15.lha").write_bytes(b"x" * 32)
+        found = packages.download_archive(self.package, _Recorder())
+        self.assertEqual(found, self.cache / "Roadshow-Demo-1.15.lha")
+
+    def test_the_archive_is_laid_out_by_drawer(self):
+        """Placed by drawer name, because this code cannot read the archive
+        in advance to learn where each file belongs."""
+        root = Path(self.tmp.name) / "unpacked" / "Roadshow"
+        for drawer in ("C", "Libs", "Devs/NetInterfaces", "S"):
+            (root / drawer).mkdir(parents=True)
+        (root / "C" / "AddNetInterface").write_bytes(b"x")
+        (root / "Libs" / "bsdsocket.library").write_bytes(b"x")
+        (root / "Roadshow.guide").write_bytes(b"x")
+        (root / "Install-Roadshow").write_bytes(b"x")
+        log = _Recorder()
+        pairs = packages._merged(self.package, root.parent, log)
+        placed = {Path(s).name: d for s, d in pairs}
+        self.assertEqual(placed["C"], "C")
+        self.assertEqual(placed["Libs"], "Libs")
+        self.assertEqual(placed["Devs"], "Devs")
+        #  Nothing is dropped: the documentation and the publisher's own
+        #  installer are staged where they can be found, and reported.
+        self.assertEqual(placed["Roadshow.guide"], "Storage/Install/Roadshow")
+        self.assertEqual(placed["Install-Roadshow"], "Storage/Install/Roadshow")
+        self.assertIn("staged", " ".join(log.lines))
