@@ -1,5 +1,4 @@
 """Tests for hard disk image import/export and the PiStorm compatibility repair."""
-import os
 import shutil
 import sys
 import tempfile
@@ -9,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import builder, hdfcheck, mbr, rdb  # noqa: E402
-from pistorm_imager.core.util import GIB, MIB, Progress  # noqa: E402
+from pistorm_imager.core.util import MIB, Progress  # noqa: E402
 
 QUIET = Progress()
 

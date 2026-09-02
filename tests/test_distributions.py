@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager.core import amigaos, amigafs, builder, distributions, rdb  # noqa: E402
+from pistorm_imager.core import amigaos, amigafs, distributions, rdb  # noqa: E402
 from pistorm_imager.core.util import GIB, MIB  # noqa: E402
 
 

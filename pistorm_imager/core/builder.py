@@ -38,10 +38,13 @@ from . import (amigafs, amigaos, bootcfg, compat, devices, emu68, hdfcheck,
                imgsrc, kickstart, mbr, packages, pfs3, postwrite,
                rdb)
 from .fat32 import Fat32
-from .util import (MIB, Cancelled, Progress, align_up, copy_stream, human_size,
+from .util import (MIB, Progress, align_up, copy_stream, human_size,
                    require_tool, run)
 
 SECTOR = 512
+#  Below this a 'use the remaining space' drive is not worth
+#  formatting, and PFS3 has too few reserved blocks to work with.
+MIN_DRIVE = 16 * MIB
 DEFAULT_BOOT_START = 8192          # 4 MiB in - the usual SD alignment
 DEFAULT_BOOT_SIZE = 256 * MIB
 RDB_RESERVED_BLOCKS = 2016
@@ -195,6 +198,44 @@ class BuildConfig:
             if len(flexible) > 1:
                 problems.append(
                     "Only one Amiga partition can be set to 'use remaining space'.")
+            #  Everything has to fit the card that was asked for. Nothing
+            #  checked, so a layout larger than the image was accepted and
+            #  the drives were simply laid out past the end of it.
+            overhead = 0 if self.output_hdf else (
+                (DEFAULT_BOOT_START * SECTOR) + self.boot_size)
+            fixed = sum(p.size or 0 for p in self.amiga_partitions)
+            flexible = any(p.size is None for p in self.amiga_partitions)
+            if overhead + fixed > self.image_size:
+                over = overhead + fixed - self.image_size
+                with_boot = ("" if self.output_hdf else
+                             f", which with the {human_size(self.boot_size)} "
+                             f"boot partition")
+                problems.append(
+                    f"The drives add up to {human_size(fixed)}{with_boot} is "
+                    f"{human_size(over)} more than the "
+                    f"{human_size(self.image_size)} asked for. Note that "
+                    f"'125G' means 125 GiB; a card sold as 125 GB is "
+                    f"'125GB'.")
+            elif flexible and (self.image_size - overhead - fixed) < MIN_DRIVE:
+                left = self.image_size - overhead - fixed
+                problems.append(
+                    f"The drives with a fixed size leave only "
+                    f"{human_size(max(left, 0))} of the "
+                    f"{human_size(self.image_size)} for the one set to use "
+                    f"the remaining space, which is too small to be a drive.")
+            #  AmigaOS is installed onto the bootable drive, and a drive given
+            #  content is formatted before it is filled. Asking for both puts
+            #  the second over the first and the floppy install is gone, with
+            #  nothing said - so it is refused here instead.
+            if self.install_amigaos:
+                clash = [p.name for p in self.amiga_partitions
+                         if p.bootable and (p.content_folder or p.content_hdf)]
+                if clash:
+                    problems.append(
+                        f"{', '.join(clash)} is set to boot and to be filled "
+                        f"from elsewhere, but Workbench is also being installed "
+                        f"onto it from floppies. Choose one: the content would "
+                        f"format the drive again and the install would be lost.")
         if self.output_hdf:
             if self.mode is not BuildMode.FRESH:
                 problems.append(
@@ -798,7 +839,7 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
                 continue
             data = source.read_bytes()
             if fixer is not None:
-                relative = f"{destination}/{source.name}".lstrip("/")
+                relative = amigaos.landed_path(destination, source.name)
                 data = fixer.offer(relative, data)
                 #  A tree's files have always been able to be refused - an
                 #  emulator's monitor is kept back and written out again under

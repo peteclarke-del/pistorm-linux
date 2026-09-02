@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 SECTOR = 512
 KIB = 1024

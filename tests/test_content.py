@@ -853,3 +853,94 @@ class RulesAreAboutWhereAFileLands(unittest.TestCase):
         fixer = compat.Compatibility(Progress(), enabled=True, native=True)
         fixer.offer("Monitors/PAL", b"PAL" * 64)
         self.assertEqual(fixer._stored_monitors, {})
+
+
+class StagingIsNotInstalling(unittest.TestCase):
+    """A copy waiting in Storage/Install has not been installed."""
+
+    def test_the_installed_driver_counts(self):
+        fixer = compat.Compatibility(Progress(), enabled=True, rtg=True)
+        fixer.offer("Libs/Picasso96/rtg.library", b"x")
+        self.assertTrue(fixer._picasso_installed)
+
+    def test_the_staged_archive_does_not(self):
+        fixer = compat.Compatibility(Progress(), enabled=True, rtg=True)
+        fixer.offer("Storage/Install/Picasso96/Install-Picasso96", b"x")
+        self.assertFalse(fixer._picasso_installed)
+
+    def test_a_chosen_package_still_does(self):
+        """Which is how a build knows before anything has been copied."""
+        fixer = compat.Compatibility(Progress(), enabled=True, rtg=True)
+        fixer.expect_picasso()
+        self.assertTrue(fixer._picasso_installed)
+
+
+class TwoWaysToFillOneDrive(unittest.TestCase):
+    """Installing from floppies and filling from a folder both target the
+    bootable drive, and the second formats it: the install would vanish."""
+
+    def _config(self, **kw):
+        from pistorm_imager.core import builder
+        spec = builder.AmigaPartitionSpec(name="DH0", bootable=True,
+                                          size=1024 ** 3, **kw)
+        return builder.BuildConfig(target="/tmp/card.img", install_amigaos=True,
+                                   amiga_partitions=[spec])
+
+    def test_the_clash_is_refused(self):
+        problems = self._config(content_folder="/somewhere").validate()
+        self.assertTrue(any("Choose one" in p for p in problems), problems)
+
+    def test_a_content_drive_that_does_not_boot_is_fine(self):
+        from pistorm_imager.core import builder
+        config = builder.BuildConfig(
+            target="/tmp/card.img", install_amigaos=True,
+            amiga_partitions=[
+                builder.AmigaPartitionSpec(name="DH0", bootable=True,
+                                           size=1024 ** 3),
+                builder.AmigaPartitionSpec(name="DH1", size=1024 ** 3,
+                                           content_folder="/somewhere")])
+        self.assertFalse([p for p in config.validate() if "Choose one" in p])
+
+
+class TheLayoutMustFitTheCard(unittest.TestCase):
+    """Nothing checked that the drives fit the size asked for, so a layout
+    larger than the image was accepted and laid out past the end of it."""
+
+    def _config(self, image_gib, sizes):
+        from pistorm_imager.core import builder
+        from pistorm_imager.core.util import GIB
+        parts = []
+        for index, size in enumerate(sizes):
+            parts.append(builder.AmigaPartitionSpec(
+                name=f"DH{index}", bootable=index == 0,
+                size=None if size is None else int(size * GIB)))
+        return builder.BuildConfig(target="/tmp/card.img",
+                                   image_size=int(image_gib * GIB),
+                                   boot_size=512 * 1024 ** 2,
+                                   amiga_partitions=parts)
+
+    def _fit_problems(self, config):
+        return [p for p in config.validate()
+                if "more than the" in p or "too small to be a drive" in p]
+
+    def test_a_layout_larger_than_the_card_is_refused(self):
+        problems = self._fit_problems(self._config(16, [10, 30]))
+        self.assertTrue(problems, "an over-sized layout was accepted")
+        self.assertIn("24.50 GiB more", problems[0])
+
+    def test_the_units_trap_is_explained(self):
+        """125G is 125 GiB; a card sold as 125 GB is smaller than that."""
+        self.assertIn("'125GB'", self._fit_problems(self._config(16, [10, 30]))[0])
+
+    def test_a_layout_that_fits_is_accepted(self):
+        self.assertEqual(self._fit_problems(self._config(64, [10, 20, 10])), [])
+
+    def test_the_boot_partition_counts(self):
+        """A card exactly filled by its drives has no room for the boot
+        partition, which is where Emu68 itself lives."""
+        self.assertTrue(self._fit_problems(self._config(16, [16])))
+
+    def test_no_room_left_for_the_flexible_drive(self):
+        problems = self._fit_problems(self._config(16, [15.49, None]))
+        self.assertTrue(problems)
+        self.assertIn("too small to be a drive", problems[0])

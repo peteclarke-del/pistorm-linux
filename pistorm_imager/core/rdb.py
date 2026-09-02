@@ -199,7 +199,6 @@ class Rdb:
 
     def to_bytes(self) -> bytes:
         """Serialise the whole RDB area (block 0 .. rdb_blocks_hi)."""
-        geom = self.geometry
         area = bytearray(BLOCK * (self.rdb_blocks_hi + 1))
 
         def put(block_no: int, data: bytes) -> None:
