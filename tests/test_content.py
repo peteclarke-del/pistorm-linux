@@ -1007,3 +1007,22 @@ class TheTrapdoorSwitchReachesTheCard(unittest.TestCase):
         options = machines.boot_options(machine, machines.Display.NATIVE,
                                         trapdoor_to_chip=True)
         self.assertIn("move_slow_to_chip", options.extra_cmdline)
+
+
+class MagicWbShipsNoInstaller(unittest.TestCase):
+    """Its Installer edits S:User-Startup and stopped a machine booting."""
+
+    def test_the_installer_is_not_staged(self):
+        package = packages.CATALOGUE_BY_KEY["magicwb"]
+        destinations = [dest for _src, dest in package.download.items]
+        self.assertFalse([d for d in destinations if "Install" in d],
+                         f"the Installer is being staged again: {destinations}")
+
+    def test_the_fonts_and_patterns_are_still_installed(self):
+        package = packages.CATALOGUE_BY_KEY["magicwb"]
+        destinations = {dest for _src, dest in package.download.items}
+        self.assertIn("Fonts", destinations)
+        self.assertIn("Prefs/Presets", destinations)
+
+    def test_the_note_says_why(self):
+        self.assertIn("booting", packages.CATALOGUE_BY_KEY["magicwb"].note)

@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 380 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 383 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -751,6 +751,26 @@ right answer genuinely differs:
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
 VisualPrefs. Networking — the PiStorm's `vlink.device`, a TCP/IP stack, AmiSSL
 and NetSurf — is suggested when a WiFi network has been configured.
+
+## An installer that edits the boot script is not worth the icons
+
+MagicWB is an eight-colour icon set, and eight colours is exactly why it suits
+an ECS machine - it needs no AGA. Its **Installer** is another matter. It
+prepends two lines to `S:User-Startup`, one of which runs `MagicWB-Demon` to
+claim pens 4 to 8, and it adds commodities to `WBStartup`. A card it had been
+run on stopped booting: a software error before Workbench appeared.
+
+That could not be reproduced in an emulator - the same lines and the same
+Demon boot perfectly in FS-UAE - which is a reason to keep it off a card
+rather than a reason to doubt it. So the package installs the fonts and the
+desktop patterns, which are files and nothing more, and the Installer is not
+put on the card at all. The icons stay as they were.
+
+The general rule this belongs to: **anything that edits `S:User-Startup` or
+`S:Startup-Sequence` on the Amiga can stop the card booting, and the user is
+then a long way from a keyboard that can fix it.** Where this tool can do the
+same work itself it does, and writes those lines with the rest of the startup
+it already manages.
 
 ## A socket library belongs to its stack, not to the card
 
