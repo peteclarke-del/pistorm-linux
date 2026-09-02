@@ -663,3 +663,77 @@ class ANetworkStackThatCanBeInstalled(unittest.TestCase):
         self.assertEqual(placed["Roadshow.guide"], "Storage/Install/Roadshow")
         self.assertEqual(placed["Install-Roadshow"], "Storage/Install/Roadshow")
         self.assertIn("staged", " ".join(log.lines))
+
+
+class RoadshowsRealLayout(unittest.TestCase):
+    """The archive is an installer distribution, not a Workbench disk."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cache = Path(self.tmp.name) / "cache"
+        self.cache.mkdir()
+        patch = unittest.mock.patch.object(packages, "cache_dir",
+                                           lambda: self.cache)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.package = packages.CATALOGUE_BY_KEY["roadshow"]
+        #  As it really unpacks: one drawer, its icon beside it, and the
+        #  system-shaped part another level down.
+        self.root = Path(self.tmp.name) / "unpacked"
+        dist = self.root / "Roadshow-Demo-1.15"
+        (self.root / "Roadshow-Demo-1.15.info").parent.mkdir(parents=True,
+                                                             exist_ok=True)
+        for drawer in ("Workbench/C", "Workbench/Libs", "Workbench/S",
+                       "Workbench/Devs/Internet", "Workbench/Storage"):
+            (dist / drawer).mkdir(parents=True)
+        (self.root / "Roadshow-Demo-1.15.info").write_bytes(b"i")
+        (dist / "Workbench/Libs/bsdsocket.library").write_bytes(b"x")
+        (dist / "Workbench/C/NetShutdown").write_bytes(b"x")
+        (dist / "Workbench/S/Network-Startup").write_bytes(b"x")
+        (dist / "Workbench/S/User-Startup").write_bytes(b";BEGIN Roadshow")
+        (dist / "Install_Roadshow").write_bytes(b"x")
+        (dist / "Documentation").mkdir()
+
+    def _placed(self):
+        return packages._merged(self.package, self.root, _Recorder())
+
+    def test_the_system_drawers_are_found_below_the_installer(self):
+        placed = {Path(s).name: d for s, d in self._placed()}
+        self.assertEqual(placed["C"], "C")
+        self.assertEqual(placed["Libs"], "Libs")
+        self.assertEqual(placed["Devs"], "Devs")
+
+    def test_the_socket_library_is_the_one_from_the_stack(self):
+        """The whole point: Roadshow's own, not the donor's dead stub."""
+        libs = [s for s, d in self._placed() if d == "Libs"]
+        self.assertTrue(any((Path(s) / "bsdsocket.library").exists()
+                            or Path(s).name == "bsdsocket.library"
+                            for s in libs), libs)
+
+    def test_the_cards_user_startup_is_never_replaced(self):
+        """Roadshow's copy is four lines meant to be appended to the card's.
+        Placing it as a file would either overwrite everything the build
+        wrote there or be skipped, leaving the stack unstarted."""
+        placed = self._placed()
+        names = [Path(s).name for s, d in placed if d == "S"]
+        self.assertIn("Network-Startup", names)
+        self.assertNotIn("User-Startup", names)
+        #  The lines are added the way every other package adds them.
+        self.assertIn("   Execute S:Network-Startup", self.package.startup)
+
+    def test_an_interface_for_this_machine_is_written(self):
+        """Every template in the archive is for other people's hardware."""
+        written = [s for s, d in self._placed() if d == "Devs/NetInterfaces"]
+        self.assertEqual(len(written), 1)
+        text = Path(written[0]).read_text()
+        self.assertIn("device=vlink.device", text)
+        self.assertIn("configure=dhcp", text)
+
+    def test_the_installer_and_docs_are_staged_once(self):
+        staged = [Path(s).name for s, d in self._placed()
+                  if d.startswith("Storage/Install")]
+        self.assertIn("Install_Roadshow", staged)
+        self.assertIn("Documentation", staged)
+        #  The Workbench drawer is placed, so it must not be staged as well.
+        self.assertNotIn("Workbench", staged)
