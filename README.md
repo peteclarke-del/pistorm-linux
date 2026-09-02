@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 359 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 374 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -275,6 +275,60 @@ at all.
 The one field the two share is **Additional cmdline.txt options**: the trapdoor
 switch puts `move_slow_to_chip` there and anything else in the box was typed by
 hand. Both survive, and turning the switch off removes only its own option.
+
+## How big is the card, and which gigabyte do you mean
+
+A size typed for a card is a guess at what the card holds, and the two meanings
+of "GB" make it a bad guess. `125G` is 125 GiB - **9.22 GB more** than a card
+sold as 125 GB - so an image built from it does not fit the card it was built
+for. The parser has always distinguished the two (`125GB` decimal, `125GiB` and
+a bare `125G` binary, a bare number MiB), but that only helps someone who knows
+to ask.
+
+So the size is not typed at all when it can be known instead. **Writing to a
+card, its capacity is read from the card**, the box is closed, and the title
+says which card and both readings of its size:
+
+> Card size - taken from mmcblk0, which holds 116.42 GiB (125.00 GB as cards
+> are sold)
+
+The configuration takes it from the device rather than from any box, so a
+number left in one from an earlier session cannot reach a build.
+
+**Writing an image file** there is no card to ask, so the box stays open and
+the size line says which reading it took: `125G` is answered with *"is binary;
+write 125GB for a card sold as that size"*. An explicit `GB` or `GiB` is left
+alone, having said what it meant.
+
+Whichever way, the drives have to fit what was asked for. Nothing checked, so a
+16 GiB image asked to hold 40 GiB of partitions was accepted and laid out past
+its own end; now it is refused, counting the boot partition and the alignment
+before it - except on a bare `.hdf`, which has neither.
+
+### What a saved setup carries, and what it must not
+
+A setup is saved as a configuration plus the interface state, and the second is
+for **what a BuildConfig cannot express**: the machine, the display, the folders
+that were browsed to. Anything the configuration already carries must not be
+written there as well. The target and the card size were, taken from the quick
+screen's own copy, which goes stale the moment either is set on its own page -
+and the interface state is applied *after* the configuration, so the stale copy
+won. A setup naming a 125 GiB image came back as a 59 GiB SD card.
+
+The same omission in the other direction lost the rest: the partitions, the
+software and the donor it came from, the Emu68 release and the board were all
+saved faithfully and never put back. Each was found only when somebody noticed
+it missing, so the GUI test now saves a setup, scrambles the widgets, loads it
+again and compares **every field** of the configuration. That check found the
+last two by itself: the board, which the machine reset after the configuration
+had restored it, and the card size, which was written back into the box as
+"37.25G" and read out again a little smaller each time.
+
+Putting a loaded setup back is therefore one method rather than a sequence
+repeated at each call site, because the order is the whole of it: the machine
+and the display arrive with the interface state, and they decide which software
+suits the card and which board the Source page shows, so both of those are
+restored from the configuration afterwards.
 
 ## Installing AmigaOS from floppy images
 
@@ -806,14 +860,26 @@ Scalos and a Kickstart ROM all behave the same on a PiStorm. What does not carry
 over is the *emulator's own drivers*, and a graphics driver for a card that does
 not exist leaves Workbench with nowhere to appear.
 
-Give a partition a **content folder** — a directory-based drive from an emulator,
-such as PiMiga's `disks/System` — and it is copied into a real Amiga partition
-with these fixes applied automatically:
+These fixes apply to **everything that goes on the system drive** - the floppies,
+the packages, and a directory-based drive from an emulator such as PiMiga's
+`disks/System`. Two details make that work, and both were wrong for a long time:
+the pass is shown the path a file will have *on the card* rather than where it
+sits in the thing being copied, so a rule naming `Storage` or `Libs/Picasso96`
+can match at all; and it decides once, when the volume is full, rather than
+after each tree copied - deciding after the first meant deciding before any
+package had been installed. The fixes are:
 
 * the emulator's RTG driver (`uaegfx.card`) is dropped and Emu68's
   `VideoCore.card` installed in `LIBS:Picasso96/` in its place;
-* the Picasso96 monitor icon in `DEVS:Monitors` is rewritten with
-  `BOARDTYPE=VideoCore`, which is how Picasso96 chooses its board;
+* the Picasso96 monitor in `DEVS:Monitors` is written out as `VideoCore`, with
+  `BOARDTYPE=VideoCore` in its icon, which is how Picasso96 chooses its board.
+  Every Picasso96 monitor is the same loader named differently, so the
+  emulator's is what gets renamed - and where there is no emulator to take one
+  from, the Picasso96 package supplies it. Without a monitor file the board's
+  screen modes cannot be selected at all, driver or no driver;
+* a Picasso96 that was *chosen as a package* counts as installed even before
+  anything is copied, while a copy merely staged in `Storage/Install` for you
+  to install later does not - staging is not installing;
 * startup scripts have emulator-only commands (`uae-configuration` and friends)
   commented out, so they cannot fail the boot;
 * `S:WHDLoad.prefs` is cleaned the same way. This is where WHDLoad's settings

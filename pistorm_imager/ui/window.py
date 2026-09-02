@@ -20,7 +20,8 @@ from ..core import (amigaos, bootcfg, builder, content, devices,  # noqa: E402
                     distributions,
                     emu68, hdfcheck, jobs, kickstart, machines, packages,
                     prepare, presets, updates)
-from ..core.util import (GIB, Progress, describe_size, human_size,  # noqa: E402
+from ..core.util import (GIB, Progress, describe_size,  # noqa: E402
+                         exact_size_text, human_size,  # noqa: E402
                          parse_size)
 from .widgets import FileRow, SaveRow, combo, show_full_value  # noqa: E402
 
@@ -2660,9 +2661,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._append_log(f"Could not restore the last session: {error}")
             return
         try:
-            self.apply(config, keep_partitions=True)
-            self.apply_interface_state(state)
-            self._restore_package_choices(config)
+            self._apply_saved(config, state)
         except Exception as error:  # noqa: BLE001
             self._toast(f"Could not restore the last session: {error}")
             return
@@ -2717,9 +2716,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 return
             try:
                 config, state, _reduced = jobs.load_session(file.get_path())
-                self.apply(config, keep_partitions=True)
-                self.apply_interface_state(state)
-                self._restore_package_choices(config)
+                self._apply_saved(config, state)
                 self._toast("Settings loaded")
             except Exception as error:  # noqa: BLE001
                 self._toast(f"Could not load: {error}")
@@ -2908,9 +2905,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_target.set_selected(0 if config.target_is_device else 1)
         if not config.target_is_device and config.target:
             self.quick_file.set_path(config.target)
-        self.quick_card_size.set_text(
-            human_size(config.image_size).replace(" GiB", "G")
-            .replace(" MiB", "M").replace(".00", ""))
+        self.quick_card_size.set_text(exact_size_text(config.image_size))
         if not config.target_is_device:
             self.file_row.set_path(config.target)
         self._restore_package_choices(config)
@@ -2920,6 +2915,32 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._populate_releases()
         self._ready = was_ready
         self._sync_visibility()
+
+    def _apply_saved(self, config: builder.BuildConfig, state: dict) -> None:
+        """Everything a loaded setup has to put back, in the order that works.
+
+        Order is the whole of it. The interface state carries the machine and
+        the display, which decide which software suits the card and which
+        board the Source page shows, so both of those go back after it - and
+        the configuration, not the state, is what says which they were.
+        """
+        self.apply(config, keep_partitions=True)
+        self.apply_interface_state(state)
+        self._restore_package_choices(config)
+        self._restore_board(config)
+
+    def _restore_board(self, config: builder.BuildConfig) -> None:
+        """Put the board back after the machine has had its say.
+
+        The Source page's board follows the model, which is right while the
+        model is being chosen and wrong when a setup is being loaded: the
+        machine arrives with the interface state, after the configuration, and
+        set a PiStorm32-Lite card back to a plain PiStorm without a word.
+        """
+        for index, variant in enumerate(emu68.VARIANTS):
+            if variant.key == config.variant:
+                self.variant_row.set_selected(index)
+                return
 
     def _restore_package_choices(self, config: builder.BuildConfig) -> None:
         """Put the software choices, and where they come from, back.
