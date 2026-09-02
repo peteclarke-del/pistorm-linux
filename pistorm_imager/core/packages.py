@@ -113,6 +113,12 @@ class Download:
         return AMINET + self.path
 
     @property
+    def where(self) -> str:
+        """Where the archive is published, for saying so in the log."""
+        if self.manual or self.source:
+            return self.source or "its publisher"
+        return "Aminet" if not self.path.startswith("http") else self.path
+    @property
     def filename(self) -> str:
         return self.path.rsplit("/", 1)[-1]
 
@@ -156,10 +162,6 @@ class Package:
     #  taken from a donor, never downloaded, and a missing one is not fatal.
     support: tuple[tuple[str, str], ...] = ()
     note: str = ""
-    #  True when the download is simply newer than whatever a donor has, so
-    #  it goes on first and the donor fills in around it - the writer keeps
-    #  the first copy of a file, so first is what wins.
-    download_first: bool = False
 
     @property
     def manual(self) -> bool:
@@ -230,6 +232,29 @@ CATALOGUE: list[Package] = [
         download=Download("util/misc/Installer-43_3.lha",
                           (("Installer43_3/Installer", "C"),)),
         default=True,
+    ),
+    Package(
+        "newinstaller", "NewInstaller",
+        "Makes the Commodore Installer's script windows look like something "
+        "from this century, and can stand in for it entirely. Installer "
+        "scripts that other software ships then run through this instead.",
+        category=Category.LOOK,
+        #  Its own Install script copies the program into C: and its
+        #  libraries with copylib, which is what these two lines do. The
+        #  rest - its demos, its documentation, the tool that sets a theme -
+        #  is staged, because choosing a theme is a decision and this cannot
+        #  make it.
+        download=Download(
+            "util/wb/NewInstaller17.lha",
+            (("NewInstaller1_7/NewInstaller", "C"),
+             ("NewInstaller1_7/Libs", "Libs"),
+             ("NewInstaller1_7/Catalogs", "Locale/Catalogs"),
+             ("NewInstaller1_7/Defaults", STAGING + "/NewInstaller/Defaults"),
+             ("NewInstaller1_7/Tools", STAGING + "/NewInstaller/Tools"),
+             ("NewInstaller1_7/Docs", STAGING + "/NewInstaller/Docs"))),
+        note="Installed as C:NewInstaller. To have it replace the Commodore "
+             "Installer outright, run its own Install from Storage/Install "
+             "on the Amiga - it asks questions this cannot answer for you.",
     ),
     Package(
         "igame", "iGame",
@@ -1102,6 +1127,17 @@ def download_archive(package: Package, progress: Progress) -> Path | None:
         with urllib.request.urlopen(request, timeout=60) as response, \
                 open(temporary, "wb") as out:
             shutil.copyfileobj(response, out)
+            declared = response.headers.get("Content-Length")
+        #  A download that stops early is still a file, and caching it means
+        #  every build afterwards fails to unpack an archive that looks like
+        #  it is already there. Check the length while the answer is at hand.
+        written = temporary.stat().st_size
+        if declared is not None and written != int(declared):
+            temporary.unlink(missing_ok=True)
+            progress.log(f"  {package.label}: download stopped early "
+                         f"({human_size(written)} of {human_size(int(declared))}"
+                         f"), not kept")
+            return None
     except Exception as error:                    # noqa: BLE001 - reported
         temporary.unlink(missing_ok=True)
         progress.log(f"  {package.label}: download failed ({error}), skipped")
@@ -1253,8 +1289,11 @@ def overlays_for(donor: str | Path | None, keys: list[str],
                  allow_download: bool = False) -> list[tuple[str, str]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
-    A donor is preferred over a download: it is already on this machine, and
-    for the packages that are not freely distributable it is the only route.
+    Where a package has both, the download wins and the donor fills in what
+    the archive does not carry: a published release is the newest there is,
+    and a donor's copy is whatever its author installed. Where there is no
+    download - or no network - the donor is the only route, and supplies it
+    all.
     """
     if display is None:
         display = Display.RTG_HDMI if rtg else Display.NATIVE
@@ -1283,14 +1322,33 @@ def overlays_for(donor: str | Path | None, keys: list[str],
                 path = system / source
                 if path.exists():
                     from_donor.append((str(path), destination))
-        if package.download_first and allow_download \
-                and package.download is not None:
-            add(fetch(package, progress))
-            add(from_donor)          # whatever the archive did not bring
-        elif from_donor:
+        if allow_download and package.download is not None:
+            #  The published release is the newest there is, and a donor's
+            #  copy is whatever its author installed years ago. So the
+            #  release goes on first and the donor fills in around it - keys,
+            #  catalogues, anything the archive does not carry. The writer
+            #  keeps the first copy of a file, so first is what wins.
+            fetched = fetch(package, progress)
+            add(fetched)
+            if from_donor and progress is not None:
+                if fetched:
+                    progress.log(f"  {package.label}: the release from "
+                                 f"{package.download.where}; the donor fills "
+                                 f"in what it does not carry")
+                else:
+                    #  Nothing came back: no network, or a download this tool
+                    #  is not allowed to make. The donor's copy is older than
+                    #  what is published, and the card gets that instead.
+                    progress.log(f"  WARNING: {package.label} could not be "
+                                 f"fetched, so the donor's older copy is "
+                                 f"being used instead of the current release")
             add(from_donor)
-        elif allow_download and package.download is not None:
-            add(fetch(package, progress))
+        elif from_donor:
+            if package.download is not None and progress is not None:
+                progress.log(f"  WARNING: {package.label} is being taken from "
+                             f"the donor, which is older than the release "
+                             f"published on {package.download.where}")
+            add(from_donor)
         #  Support goes on whichever way the package itself arrived.
         if system is not None:
             for source, destination in package.support:
