@@ -214,6 +214,51 @@ def on_activate(app: ImagerApplication) -> None:
         for row in window.package_rows.values():
             row.set_active(False)
 
+        #  A size typed for a card is a guess, and "125G" means 125 GiB - nine
+        #  gigabytes more than a card sold as 125 GB. When a card is in front
+        #  of us its capacity is known, so it is used and the box is closed.
+        from pistorm_imager.core import devices as _devices
+        card = _devices.Device(path="/dev/nonexistent-test", name="mmcblk0",
+                               size=125_000_000_000, model="TestCard",
+                               vendor="", transport="sd", removable=True,
+                               hotplug=True, read_only=False, partitions=[])
+        window.device_list = [card]
+        from pistorm_imager.ui.window import combo as _combo
+        labels = _combo(["Select a card", card.description])
+        window.device_row.set_model(labels)
+        window.quick_device.set_model(_combo(["Select a card",
+                                              card.description]))
+        window.target_row.set_selected(0)
+        window.quick_target.set_selected(0)
+        window.quick_card_size.set_text("125G")          # the trap: 125 GiB
+        window.quick_device.set_selected(1)
+        check(not window.quick_card_size.get_sensitive(),
+              "the size box is closed while writing to a card")
+        check(window.gather().image_size == card.size,
+              f"the card's own capacity is the size "
+              f"({window.gather().image_size} vs {card.size})")
+        check("125" in window.quick_card_size.get_title()
+              and "GB" in window.quick_card_size.get_title(),
+              f"the card is named with both readings ({window.quick_card_size.get_title()!r})")
+        window.quick_device.set_selected(0)
+        window.target_row.set_selected(1)
+        window.quick_target.set_selected(1)
+        check(window.quick_card_size.get_sensitive(),
+              "and opens again for an image file")
+        check("32GB as cards are sold" in window.quick_card_size.get_title(),
+              f"which says which unit it means ({window.quick_card_size.get_title()!r})")
+        window.quick_card_size.set_text("125G")
+        window._show_size()
+        said = window.quick_size_info.get_subtitle()
+        check("binary" in said and "125GB" in said,
+              f"a bare G is called out as binary ({said!r})")
+        window.quick_card_size.set_text("125GB")
+        window._show_size()
+        said = window.quick_size_info.get_subtitle()
+        check("binary" not in said,
+              f"and an explicit GB is left alone ({said!r})")
+        window.device_list = []
+
         #  A saved setup names the Emu68 build it was made against, and the
         #  list it has to be found in arrives from GitHub after the setup
         #  does. Falling to the newest stable one swapped a card built on a
