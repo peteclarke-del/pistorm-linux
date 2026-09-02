@@ -564,11 +564,19 @@ CATALOGUE: list[Package] = [
         items=(("Libs/Picasso96", "Libs/Picasso96"),
                ("Prefs/Picasso96Mode", "Prefs"),
                ("Libs/rtg.library", "Libs")),
+        #  A Picasso96 board needs a monitor file in DEVS: before its screen
+        #  modes can be chosen, and the driver alone does not make one. Every
+        #  Picasso96 monitor is the same loader with the board named in its
+        #  icon, so the emulator's is taken and the compatibility pass writes
+        #  it back out as the board a PiStorm has. Building from floppies used
+        #  to leave the card with the driver and no way to select it.
+        support=(("Devs/Monitors/uaegfx", "Devs/Monitors"),
+                 ("Devs/Monitors/uaegfx.info", "Devs/Monitors")),
         download=Download("driver/video/Picasso96.lha",
                           stage=STAGING + "/Picasso96"),
         rtg_only=True,
-        note="Run its Installer from Storage/Install on the Amiga; Emu68 "
-             "supplies the VideoCore board driver itself.",
+        note="Emu68 supplies the VideoCore board driver itself. The full "
+             "Installer is in Storage/Install if the modes need changing.",
     ),
 
     # -------------------------------------------------------- networking
