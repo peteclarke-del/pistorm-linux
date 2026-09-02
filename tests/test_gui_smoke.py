@@ -213,6 +213,32 @@ def on_activate(app: ImagerApplication) -> None:
         window.package_donor.set_path("")
         for row in window.package_rows.values():
             row.set_active(False)
+
+        #  A saved setup names the Emu68 build it was made against, and the
+        #  list it has to be found in arrives from GitHub after the setup
+        #  does. Falling to the newest stable one swapped a card built on a
+        #  beta onto a different Emu68 without saying so.
+        from pistorm_imager.core import emu68 as _emu68
+        assets = ["v1.0.7-Emu68-pistorm.zip", "v1.1.0-beta.1-Emu68-pistorm.zip"]
+        window.releases = [
+            _emu68.Release(tag="v1.1.0-beta.1", name="1.1 beta 1",
+                           prerelease=True, published="2025-01-02",
+                           assets=assets),
+            _emu68.Release(tag="v1.0.7", name="1.0.7", prerelease=False,
+                           published="2024-01-01", assets=assets),
+        ]
+        window.variant_row.set_selected(
+            [v.key for v in _emu68.VARIANTS].index("pistorm"))
+        beta = dataclasses.replace(window.gather(), release_tag="v1.1.0-beta.1")
+        window.apply(beta, keep_partitions=True)
+        check(window.gather().release_tag == "v1.1.0-beta.1",
+              f"a saved Emu68 release is restored ({window.gather().release_tag!r})")
+        #  And a setup that named none still gets the newest stable build.
+        plain = dataclasses.replace(window.gather(), release_tag="")
+        window.apply(plain, keep_partitions=True)
+        check(window.gather().release_tag == "v1.0.7",
+              f"with none saved, the newest stable is chosen ({window.gather().release_tag!r})")
+        window.releases = []
         #  Hand the layout back to the quick settings and put the hard disk
         #  chooser back: every check after this one depends on both.
         window._derived_partitions = [r.spec() for r in window.partition_rows]
@@ -571,7 +597,10 @@ def on_activate(app: ImagerApplication) -> None:
         roms = sorted(rom.glob("*.rom"))
         if roms:
             window.rom_row.set_path(str(roms[0]))
-        window.releases = [object()]             # as if the list had loaded
+        from pistorm_imager.core import emu68 as _e
+        window.releases = [_e.Release(                # as if the list had loaded
+            tag="v1.0.7", name="1.0.7", prerelease=False, published="2024-01-01",
+            assets=[f"v1.0.7-Emu68-{v.key}.zip" for v in _e.VARIANTS])]
         window._update_summary()
         check(not window.write_button.get_sensitive(),
               "Write is off until the setup is applied")

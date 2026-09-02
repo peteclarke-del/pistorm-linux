@@ -1911,6 +1911,19 @@ class ImagerWindow(Adw.ApplicationWindow):
                                  if emu68.has_variant(r, variant)]
         labels = [f"{r.display()} - {r.published}" for r in self._release_choices]
         self.release_row.set_model(combo(labels or ["No build for this board"]))
+        #  A setup that was loaded asked for a particular build, and the list
+        #  it has to be found in arrives from GitHub after the setup does.
+        #  Falling straight to the newest stable one quietly swapped a card
+        #  built against a beta onto a different Emu68 altogether.
+        wanted = getattr(self, "_wanted_release", "")
+        if wanted:
+            for index, release in enumerate(self._release_choices):
+                if release.tag == wanted:
+                    self.release_row.set_selected(index)
+                    #  Honoured once: choosing another board afterwards should
+                    #  offer that board's newest build, not this tag for ever.
+                    self._wanted_release = ""
+                    return
         for index, release in enumerate(self._release_choices):
             if not release.prerelease:
                 self.release_row.set_selected(index)
@@ -2846,6 +2859,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         if not config.target_is_device:
             self.file_row.set_path(config.target)
         self._restore_package_choices(config)
+        #  The list of Emu68 builds is fetched from GitHub in the background,
+        #  so the one this setup was built against may not be offered yet.
+        self._wanted_release = config.release_tag or ""
+        self._populate_releases()
         self._ready = was_ready
         self._sync_visibility()
 
