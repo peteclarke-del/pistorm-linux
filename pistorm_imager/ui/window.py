@@ -1030,6 +1030,22 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.quick_card_size.set_title(
                 "Card or image size - 32GB as cards are sold, 32GiB binary")
 
+    def _extra_cmdline(self) -> str:
+        """The cmdline options: what was typed, plus what the switches decide.
+
+        The trapdoor switch owns ``move_slow_to_chip``. It used to reach the
+        box only when the quick setup was applied, so a setup loaded with the
+        switch on and the option missing built a card without it - 512K of
+        chip RAM on a machine told to give it a megabyte - while the switch on
+        screen still said it was on. Asking the switch here means the two
+        cannot disagree.
+        """
+        machine = self._machine()
+        owned = ("move_slow_to_chip"
+                 if machine.trapdoor_ram and self.quick_trapdoor.get_active()
+                 else "")
+        return merge_cmdline(owned, self.extra_row.get_text().strip()).strip()
+
     def _boot_size(self) -> int:
         """The boot partition size, as typed on the Target page."""
         try:
@@ -2325,7 +2341,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             blitwait=self.blitwait_row.get_active(),
             swap_df0_with_df1=self.swapdf_row.get_active(),
             sd_unit0_rw=self.unit0_row.get_active(),
-            extra_cmdline=self.extra_row.get_text().strip(),
+            extra_cmdline=self._extra_cmdline(),
         )
 
         release_tag = ""
