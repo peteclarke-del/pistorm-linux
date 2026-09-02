@@ -362,12 +362,19 @@ CATALOGUE: list[Package] = [
         #  ``icon_set_dirs``).  Only the parts that replace icons already on
         #  the card still need its Installer, because the file system this
         #  tool writes creates files and never overwrites them.
+        #  The fonts and the patterns, and not its Installer. That Installer
+        #  prepends two lines to S:User-Startup - one of them runs
+        #  MagicWB-Demon to claim pens 4 to 8 - and a card it had been run on
+        #  stopped booting with a software error before Workbench appeared.
+        #  It could not be reproduced in an emulator, which is a reason to
+        #  keep it off a card rather than a reason to doubt it.
         download=Download("util/wb/MagicWB21p.lha",
                           (("MagicWB2.1p/Fonts", "Fonts"),
-                           ("MagicWB2.1p/Patterns", "Prefs/Presets"),
-                           ("MagicWB2.1p", STAGING + "/MagicWB"))),
-        note="Fonts and patterns are installed; run its Installer from "
-             "Storage/Install to restyle the icons already on the card.",
+                           ("MagicWB2.1p/Patterns", "Prefs/Presets"))),
+        note="Its fonts and desktop patterns only. The Installer that "
+             "restyles the icons is deliberately not put on the card: it "
+             "edits S:User-Startup, and a machine it had been run on stopped "
+             "booting.",
     ),
     Package(
         "magicmenu", "MagicMenu",
