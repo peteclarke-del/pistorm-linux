@@ -998,11 +998,36 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.file_size_row.set_text(self.quick_card_size.get_text())
             self.quick_device.set_visible(self.quick_target.get_selected() == 0)
             self.quick_file.set_visible(self.quick_target.get_selected() == 1)
+            self._follow_the_card()
             self._show_size()
         finally:
             self._mirroring = False
         self._sync_visibility()
         self._relayout_partitions()
+
+    def _follow_the_card(self) -> None:
+        """Show the card's own size when writing to one, and lock the box.
+
+        A size typed for a card is a guess at what the card holds, and the two
+        meanings of "GB" make it a bad one: "125G" is 125 GiB, nine gigabytes
+        more than a card sold as 125 GB. When there is a card in front of us
+        its capacity is known exactly, so it is shown and the box is closed.
+        """
+        card = self._selected_device()
+        for row in (self.quick_card_size, self.file_size_row):
+            if card is not None and card.size:
+                if row.get_text() != human_size(card.size):
+                    row.set_text(human_size(card.size))
+                row.set_sensitive(False)
+            else:
+                row.set_sensitive(True)
+        if card is not None and card.size:
+            self.quick_card_size.set_title(
+                f"Card size - taken from {card.name}, which holds "
+                f"{describe_size(card.size)}")
+        else:
+            self.quick_card_size.set_title(
+                "Card or image size - 32GB as cards are sold, 32GiB binary")
 
     def _boot_size(self) -> int:
         """The boot partition size, as typed on the Target page."""
@@ -1027,7 +1052,15 @@ class ImagerWindow(Adw.ApplicationWindow):
         card = size / 1000 ** 3
         if self.quick_target.get_selected() == 1:
             note += f" - needs a card of at least {card:.0f} GB"
-        self.quick_size_info.set_subtitle(note)
+        #  A bare G is binary, and that is the reading people do not expect: a
+        #  card sold as 125 GB is 9 GB smaller than the 125 GiB "125G" asks
+        #  for, and the image simply will not fit it.
+        bare = text.strip().upper().rstrip()
+        if bare and bare[-1] in "KMGT":
+            decimal = f"{bare[:-1]}{bare[-1]}B"
+            note += (f" - \u201c{text.strip()}\u201d is binary; write "
+                     f"\u201c{decimal}\u201d for a card sold as that size")
+        self.quick_size_info.set_subtitle(GLib.markup_escape_text(note))
 
     def _machine(self) -> machines.Machine:
         return machines.MACHINES[self.quick_machine.get_selected()]
@@ -1735,7 +1768,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         refresh.connect("clicked", lambda _b: self._refresh_devices())
         self.device_group.set_header_suffix(refresh)
         self.device_row = Adw.ComboRow(title="Card", model=combo(["No cards found"]))
-        self.device_row.connect("notify::selected", lambda *_a: self._update_summary())
+        self.device_row.connect("notify::selected",
+                                lambda *_a: (self._follow_the_card(),
+                                             self._update_summary()))
         self.device_group.add(self.device_row)
         page.add(self.device_group)
 
@@ -1816,6 +1851,15 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _writing_to_device(self) -> bool:
         return self.target_row.get_selected() == 0
+
+    def _selected_device(self):
+        """The card chosen to be written to, or None if none is."""
+        if not self._writing_to_device():
+            return None
+        index = self.device_row.get_selected() - 1   # row 0 is the placeholder
+        if not self.device_list or index < 0 or index >= len(self.device_list):
+            return None
+        return self.device_list[index]
 
     def _making_hdf(self) -> bool:
         """True when the output is a bare Amiga drive rather than a card."""
@@ -2289,10 +2333,17 @@ class ImagerWindow(Adw.ApplicationWindow):
             index = min(self.release_row.get_selected(), len(choices) - 1)
             release_tag = choices[index].tag
 
-        try:
-            image_size = parse_size(self.file_size_row.get_text())
-        except ValueError:
-            image_size = 8 * GIB
+        card = self._selected_device()
+        if card is not None and card.size:
+            #  Writing to a card: its capacity is the size, whatever any box
+            #  says. Typing it invited "125G" for a card sold as 125 GB, which
+            #  is 125 GiB - 9 GB more than the card holds.
+            image_size = card.size
+        else:
+            try:
+                image_size = parse_size(self.file_size_row.get_text())
+            except ValueError:
+                image_size = 8 * GIB
         boot_size = self._boot_size()
 
         return builder.BuildConfig(
