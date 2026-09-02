@@ -58,6 +58,20 @@ def parse_size(text: str) -> int:
     return int(value * table.get(unit, MIB))
 
 
+def exact_size_text(count: int) -> str:
+    """The shortest text ``parse_size`` turns back into exactly this size.
+
+    Writing a size back into the box as "37.25G" and reading it again is not
+    the size it started as, so a card drifted a little smaller every time a
+    setup was saved and loaded.
+    """
+    for suffix, unit in (("GB", 1000 ** 3), ("G", GIB),
+                         ("MB", 1000 ** 2), ("M", MIB)):
+        if count and count % unit == 0:
+            return f"{count // unit}{suffix}"
+    return f"{count}B"
+
+
 def describe_size(count: int) -> str:
     """Both readings of a size, so neither can be mistaken for the other."""
     return f"{human_size(count)} ({count / 1000 ** 3:.2f} GB as cards are sold)"
