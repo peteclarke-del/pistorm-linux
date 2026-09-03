@@ -104,6 +104,55 @@ class TestDiscover(unittest.TestCase):
         (folder / "Real").mkdir()
         self.assertEqual([c.path for c in content.discover(folder)], ["Real"])
 
+    def test_a_loose_file_is_offered_when_its_name_says_what_it_needs(self):
+        """Turrican2AGA on a real drive is a launcher, not a drawer.
+
+        A rule about drawers alone missed the one title on the whole drive
+        that could be identified, while listing every file would have buried
+        it in save files and icons.
+        """
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-content-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "Turrican2AGA").write_bytes(b"launcher")
+        (folder / "Turrican2AGA.info").write_bytes(b"icon")
+        (folder / "T2SavedData.dat").write_bytes(b"save")
+        found = {c.path for c in content.discover(folder)}
+        self.assertEqual(found, {"Turrican2AGA"})
+
+    def test_an_image_offers_the_same_choices_as_a_folder(self):
+        """A drive imported from an .hdf was offered nothing at all."""
+        class FakeEntry:
+            def __init__(self, name, is_dir, anode=0):
+                self.name, self.is_dir, self.anode, self.size = (
+                    name, is_dir, anode, 0)
+
+        class FakeVolume:
+            def listdir(self, where=0):
+                if where == 0:
+                    return [FakeEntry("WHDLOAD", True, 1),
+                            FakeEntry("Doom", True, 2),
+                            FakeEntry("Turrican2AGA", False),
+                            FakeEntry("Turrican2AGA.info", False),
+                            FakeEntry(".backdrop", True, 3)]
+                if where == 1:
+                    return [FakeEntry("AGA", True, 4),
+                            FakeEntry("OCS", True, 5)]
+                return []
+
+        found = content.discover_volume(FakeVolume())
+        self.assertEqual([c.path for c in found],
+                         ["WHDLOAD/AGA", "WHDLOAD/OCS", "Doom",
+                          "Turrican2AGA"])
+        a500 = machines.MACHINES_BY_KEY["a500ecs"]
+        self.assertEqual(sorted(content.unsuitable(found, a500)),
+                         ["Turrican2AGA", "WHDLOAD/AGA"])
+
+    def test_an_unreadable_image_offers_nothing_rather_than_failing(self):
+        class Broken:
+            def listdir(self, where=0):
+                raise OSError("no")
+        self.assertEqual(content.discover_volume(Broken()), [])
+
     def test_a_folder_that_is_not_there(self):
         self.assertEqual(content.discover("/no/such/place"), [])
 
