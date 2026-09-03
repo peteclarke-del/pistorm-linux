@@ -788,23 +788,22 @@ class TheTrapdoorSwitchReachesTheCard(unittest.TestCase):
         self.assertIn("move_slow_to_chip", options.extra_cmdline)
 
 
-class MagicWbShipsNoInstaller(unittest.TestCase):
-    """Its Installer edits S:User-Startup and stopped a machine booting."""
+class MagicWbIsGone(unittest.TestCase):
+    """Unsupported, unregistrable, and its Installer broke a real machine.
 
-    def test_the_installer_is_not_staged(self):
-        package = packages.CATALOGUE_BY_KEY["magicwb"]
-        destinations = [dest for _src, dest in package.download.items]
-        self.assertFalse([d for d in destinations if "Install" in d],
-                         f"the Installer is being staged again: {destinations}")
+    Its fonts and patterns were kept for a while with the Installer withheld;
+    with the software no longer supported at all it left the catalogue.
+    """
 
-    def test_the_fonts_and_patterns_are_still_installed(self):
-        package = packages.CATALOGUE_BY_KEY["magicwb"]
-        destinations = {dest for _src, dest in package.download.items}
-        self.assertIn("Fonts", destinations)
-        self.assertIn("Prefs/Presets", destinations)
+    def test_it_is_not_in_the_catalogue(self):
+        self.assertNotIn("magicwb", packages.CATALOGUE_BY_KEY)
 
-    def test_the_note_says_why(self):
-        self.assertIn("booting", packages.CATALOGUE_BY_KEY["magicwb"].note)
+    def test_nothing_suggests_it(self):
+        from pistorm_imager.core.machines import Display      # noqa: PLC0415
+        for machine in machines.MACHINES:
+            for display in Display:
+                self.assertNotIn("magicwb",
+                                 packages.suggested(machine, display))
 
 
 class IgameIsInstalledStandalone(unittest.TestCase):

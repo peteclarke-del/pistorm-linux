@@ -20,7 +20,7 @@ import dataclasses
 import time
 from pathlib import Path
 
-from . import amigaos, builder, emu68, kickstart, machines, packages
+from . import amigaos, builder, emu68, kickstart, machines, packages, rdb
 from .util import GIB, MIB, human_size
 
 DEFAULT_BOOT_SIZE = 256 * MIB
@@ -245,6 +245,36 @@ def quick_config(target: str, target_is_device: bool, card_size: int,
     )
 
 
+def _describe_imported_drive(path: str) -> tuple[list[str], bool]:
+    """The drives inside an .hdf the card is being built around.
+
+    What goes on the card is the image's own layout, so that is what has to
+    be shown - reading the partition list instead announced an empty DH0 on a
+    card whose whole point was the drive in this file.
+    """
+    try:
+        info = builder.inspect_hdf(path)
+    except Exception as error:                   # noqa: BLE001 - report it
+        return [f"Amiga drive: {Path(path).name} - cannot be read: {error}"], False
+    lines = [f"Amiga drive: {info.description}"]
+    pfs3 = False
+    if info.table is not None:
+        for partition in info.table.partitions:
+            size = human_size(partition.size_bytes(info.table.geometry))
+            boot = ", bootable" if partition.bootable else ""
+            name = rdb.dostype_name(partition.dostype)
+            pfs3 |= name.startswith(("PFS", "PDS"))
+            lines.append(f"{partition.drive_name}: {size}, {name}{boot} - "
+                         f"copied from {Path(path).name}")
+    else:
+        name = (rdb.dostype_name(info.bare_dostype)
+                if info.bare_dostype is not None else "the file system in it")
+        pfs3 = name.startswith(("PFS", "PDS"))
+        lines.append(f"DH0: {human_size(info.size)}, {name} - the whole of "
+                     f"{Path(path).name}, with an RDB built around it")
+    return lines, pfs3
+
+
 def describe(config: builder.BuildConfig, detected: Detected) -> str:
     """A plain account of what the build will actually put on the card."""
     lines = [f"Boot partition: {human_size(config.boot_size)} FAT32 with Emu68"]
@@ -253,6 +283,30 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
         lines.append(f"Kickstart: {name}")
     else:
         lines.append("Kickstart: none found - Emu68 will not start without one")
+
+    #  Two of the three tasks do not use the partition list at all: the drive
+    #  comes out of the image, with its own layout. Walking the list anyway
+    #  described a card that was never going to be built, and described its
+    #  boot drive as empty - which is the opposite of what happens.
+    if config.mode is builder.BuildMode.HDF and config.hdf_image:
+        described, pfs3 = _describe_imported_drive(config.hdf_image)
+        lines.extend(described)
+        #  The RDB is the image's, but the handler still has to be in it or
+        #  nothing mounts, and the repair pass puts one there.
+        if pfs3 and not config.pfs3_binary:
+            lines.append("PFS3 handler: NOT FOUND - the PFS3 partitions will "
+                         "not mount until one is supplied, or added from "
+                         "HDToolBox")
+        elif pfs3:
+            lines.append(f"PFS3 handler: found "
+                         f"({Path(config.pfs3_binary).name})")
+        return "\n".join(lines)
+    if config.mode is builder.BuildMode.IMAGE and config.source_image:
+        lines = [f"Writing {Path(config.source_image).name} to the card as it "
+                 f"is, with its own partitions and everything on them"]
+        if config.patch_display:
+            lines.append("The saved screen mode will be adapted afterwards")
+        return "\n".join(lines)
 
     filled_system = False
     for spec in config.amiga_partitions:
@@ -487,6 +541,14 @@ def describe_machine_setup(config: builder.BuildConfig,
                            detected: Detected) -> str:
     source = getattr(config, "system_source", "adf")
     described = SYSTEM_SOURCE_LABELS.get(source, source)
+    #  These two tasks take the whole Amiga side from a file, whatever the
+    #  system source says - it belongs to building a card from parts, and
+    #  saying "installed from your floppy images" over an imported drive was
+    #  simply untrue.
+    if config.mode is builder.BuildMode.HDF:
+        described = "whatever is on the drive in the image"
+    elif config.mode is builder.BuildMode.IMAGE:
+        described = "whatever is on the prepared image"
     #  A drive can be imported *and* the Workbench disks installed to fill in
     #  what it does not carry. Saying only where the drive came from left the
     #  summary looking as though the disks had been ignored.

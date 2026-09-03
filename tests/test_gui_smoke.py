@@ -236,7 +236,7 @@ def on_activate(app: ImagerApplication) -> None:
         ticked = {k for k, r in window.package_rows.items() if r.get_active()}
         check({"whdload", "lha"} <= ticked,
               f"the chosen software is restored ({sorted(ticked)})")
-        check("magicwb" not in ticked,
+        check("newicons" not in ticked,
               "software that was not chosen stays off")
         back = window.gather()
         check(set(back.package_keys) >= {"whdload", "lha"},
@@ -1047,6 +1047,13 @@ def on_activate(app: ImagerApplication) -> None:
               "HDF mode hides the partition editor (the RDB comes from the image)")
         problems = window.gather().validate()
         check(problems == [], f"HDF mode config is valid ({problems})")
+        #  The plan used to walk the partition list, which this task does not
+        #  use, and so announced an empty DH0 on a card whose whole point was
+        #  the drive in the image.
+        window._describe_plan()
+        plan = window.quick_plan.get_text()
+        check("left empty" not in plan and HDF_IMAGE.name in plan,
+              "the plan describes the drives inside the image")
 
         #  A card built from floppies has to be able to be pointed at the
         #  floppies.  The quick start reported what it had found and offered

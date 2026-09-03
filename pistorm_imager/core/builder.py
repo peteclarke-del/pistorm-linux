@@ -939,14 +939,10 @@ def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
                 wanted.append(path)
             path = path.rpartition("/")[0]
 
-    #  Where to find real drawer icons: the icon set the user chose, or
-    #  failing that the Workbench disks.
+    #  Where to find real drawer icons: the Workbench disks, which is the
+    #  only source left now that no icon set is shipped.
     sources: list[Path] = []
-    if "magicwb" in (config.package_keys or []):
-        sources += packages.icon_set_dirs("magicwb")
-    if not sources and config.adf_folder:
-        #  No icon set chosen: the floppies have real drawer icons, and are
-        #  the only other thing this card was built from.
+    if config.adf_folder:
         borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drawer-icon-"))
         if amigaos.drawer_icon_from_disks(config.adf_folder, borrowed):
             sources.append(borrowed)
