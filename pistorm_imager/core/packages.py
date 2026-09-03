@@ -843,10 +843,21 @@ def download_archive(package: Package, progress: Progress) -> Path | None:
     if package.download is None:
         return None
     target = cache_dir() / package.download.filename
+    #  The cache is keyed on the file name, and two publishers can use the
+    #  same one: moving WHDLoad from Aminet to its author's site changed
+    #  nothing at all, because both serve "WHDLoad_usr.lha" - so cards went
+    #  on being built from a 2007 archive that was already in the cache.
+    #  Remember where a copy came from, and fetch again when that changes.
+    note = target.with_name(target.name + ".source")
     if target.exists() and target.stat().st_size:
-        progress.log(f"  {package.label}: using cached "
-                     f"{target.name} ({human_size(target.stat().st_size)})")
-        return target
+        came_from = note.read_text().strip() if note.exists() else ""
+        if came_from == package.download.url or package.download.manual:
+            progress.log(f"  {package.label}: using cached "
+                         f"{target.name} ({human_size(target.stat().st_size)})")
+            return target
+        progress.log(f"  {package.label}: the cached {target.name} came from "
+                     f"{came_from or 'somewhere unrecorded'}, so it is being "
+                     f"fetched again")
     if package.download.manual:
         progress.log(f"  {package.label}: {target.name} is not in the cache, "
                      f"and it cannot be downloaded automatically. Fetch it "
@@ -877,6 +888,7 @@ def download_archive(package: Package, progress: Progress) -> Path | None:
         progress.log(f"  {package.label}: download failed ({error}), skipped")
         return None
     temporary.replace(target)
+    note.write_text(package.download.url + "\n")
     progress.log(f"  {package.label}: {human_size(target.stat().st_size)}")
     return target
 

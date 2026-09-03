@@ -929,7 +929,13 @@ Three sources were wrong or second-best, and reading a built card is what
 showed it:
 
 - **WHDLoad** came from `dev/misc/WHDLoad_usr.lha`, which is a 2007 upload of
-  16.8 that has not moved since. The card being built against it came out
+  16.8 that has not moved since. **Changing the source was not enough**: the
+  cache is keyed on the file name and both publishers serve
+  `WHDLoad_usr.lha`, so cards went on being built from the archive already
+  downloaded while the catalogue said 20.0 — caught by reading the version
+  string off a finished card, not from the build log, which reported the
+  cache hit perfectly honestly. A cached archive now records the address it
+  came from, and one of unrecorded or different origin is fetched again. The card being built against it came out
   *older* than the ready-made distribution it was competing with (18.2). It now
   comes from the author's own site, which serves 20.0.
 - **LhA** was left in `Storage/Install` as a self-extracting Amiga program to
