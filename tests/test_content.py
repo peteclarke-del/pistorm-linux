@@ -984,6 +984,45 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
         c.displace(displace)
         return c
 
+    def test_the_package_can_still_write_the_file_it_claimed(self):
+        """The whole point, and it was broken end to end.
+
+        Displacing refuses a path while the drive is being filled so the
+        package that claimed it can have the name. The package's own files go
+        on through the same pass, so leaving it switched on refused those too
+        and the file landed nowhere. Whole drawers were unaffected, which is
+        what made a card look like a packaging problem rather than this.
+        """
+        from pistorm_imager.core import amigaos, builder, rdb  # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-claim-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "WHDLoad").write_bytes(b"the current release")
+
+        image = folder / "drive.hdf"
+        size = 8 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            fixer = compat.Compatibility(Progress())
+            fixer.displace(["C/WHDLoad"])
+            #  What the fill would have done: refuse the drive's older copy.
+            self.assertTrue(fixer.skip("C/WHDLoad"))
+            fixer.stop_displacing()
+            spec = builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0,
+                overlays=[(str(folder / "WHDLoad"), "C")])
+            builder._apply_overlays(volume, spec, fixer, Progress())
+            volume.close()
+
+        with open(image, "rb") as handle:
+            from pistorm_imager.core import pfs3               # noqa: PLC0415
+            back = pfs3.Pfs3Volume(handle, 0)
+            entry = back.find("C/WHDLoad")
+            self.assertIsNotNone(entry, "the package's own file never landed")
+            self.assertEqual(back.read_file(entry), b"the current release")
+
     def test_a_path_a_package_will_supply_is_refused(self):
         c = self.fixer(["C/WHDLoad"])
         self.assertTrue(c.skip("C/WHDLoad"))
