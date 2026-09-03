@@ -112,10 +112,8 @@ class BuildConfig:
     amiga_partitions: list[AmigaPartitionSpec] = dataclasses.field(
         default_factory=lambda: [AmigaPartitionSpec("DH0", None, "PFS3", True, 0)])
     pfs3_binary: str = ""              # optional pfs3aio to embed in the RDB
-    #  Optional software for a Workbench installed from floppies.  Anything a
-    #  donor system can supply is already resolved into the partition's
-    #  overlays; these are kept so the build can fetch what only Aminet has.
-    package_donor: str = ""
+    #  Optional software, fetched from its publisher while the card is built
+    #  and cached between builds.
     package_keys: list[str] = dataclasses.field(default_factory=list)
     package_chipset: str = ""          # a machines.Chipset value
     package_display: str = ""          # a machines.Display value
@@ -211,15 +209,17 @@ class BuildConfig:
                 "Nothing is being put on the Amiga drives: no Workbench, no "
                 "imported drive and no folder, so the card will boot to a "
                 "screen asking for a disk.")
-        donor_only = {key for key in keys
-                      if (packages.CATALOGUE_BY_KEY.get(key) is not None
-                          and packages.CATALOGUE_BY_KEY[key].items
-                          and packages.CATALOGUE_BY_KEY[key].download is None)}
-        if donor_only and not self.package_donor:
+        by_hand = sorted(key for key in keys
+                         if (packages.CATALOGUE_BY_KEY.get(key) is not None
+                             and packages.CATALOGUE_BY_KEY[key].download
+                             is not None
+                             and packages.CATALOGUE_BY_KEY[key]
+                             .download.manual))
+        if by_hand:
             said.append(
-                f"{', '.join(sorted(donor_only))} can only be copied from a "
-                f"system you already have, and none is set, so "
-                f"{'they' if len(donor_only) > 1 else 'it'} will be left out.")
+                f"{', '.join(by_hand)} cannot be downloaded here - its "
+                f"publisher serves it only to a browser - so put the archive "
+                f"in the cache first, or it will be left out.")
         return said
 
     def validate(self) -> list[str]:
@@ -776,26 +776,13 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
     live in ``S:User-Startup`` with the rest of the package startup lines.
     """
     chosen = packages.expand(config.package_keys)
-
-    #  What the floppies install that a donor is about to better.  Workbench
-    #  3.1's SetPatch is 40.16 from 1994 and knows nothing of the 68040, so on
-    #  a PiStorm it leaves the CPU half set up; the copy is refused here so
-    #  the newer one can take its place.
-    replace: list[str] = []
-    if "setpatch" in chosen and config.package_donor:
-        system = packages.donor_system(config.package_donor)
-        if system is not None and (system / "C/SetPatch").exists():
-            replace.append("C/SetPatch")
-
     if "iconlib" not in chosen:
-        if not replace:
-            return None
-        return amigaos.StartupSequenceEditor([], progress, replace=replace)
+        return None
     #  LoadModule, not LoadResident.  LoadResident cannot displace a library
     #  that is already in the system list, and icon.library is there from the
     #  moment the machine starts; LoadModule loads the replacement and soft
     #  resets so it is in place from the next boot onwards.  This is exactly
-    #  what the donor systems do, on the third line of their own startup.
+    #  what the ready-made distributions do, early in their own startup.
     #  AUTO, and a guard on LoadModule itself.
     #
     #  LoadModule installs the modules and soft resets so they are in place
@@ -814,7 +801,7 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
          "   IF EXISTS LIBS:icon.library",
          "      C:LoadModule AUTO LIBS:workbench.library LIBS:icon.library",
          "   EndIF",
-         "EndIF"], progress, replace=replace)
+         "EndIF"], progress)
 
 
 def _write_user_startup(volume, config: "BuildConfig",
@@ -854,8 +841,8 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
                       progress: Progress) -> list[tuple[str, str]]:
     """Resolve the chosen software into files to copy onto the drive.
 
-    A donor is preferred over a download; what no donor here can supply is
-    fetched from Aminet and cached between builds.
+    Each package is fetched from its publisher - Aminet, or the project that
+    makes it - and cached between builds.
     """
     if not config.package_keys:
         return []
@@ -865,27 +852,15 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     display = (machines.Display(config.package_display)
                if config.package_display else machines.Display.NATIVE)
     progress.step("Adding the software you chose")
-    resolved = packages.overlays_for(config.package_donor or None,
-                                     config.package_keys, chipset=chipset,
-                                     display=display, progress=progress,
-                                     allow_download=True)
-    #  The quick setup resolves what a donor can supply while it assembles the
-    #  configuration, so those pairs may already be on the partition.  Adding
+    resolved = packages.overlays_for(config.package_keys, chipset=chipset,
+                                     display=display, progress=progress)
+    #  The quick setup resolves the same packages while it assembles the
+    #  configuration, so those pairs may already be on the partition. Adding
     #  them twice would copy every file twice; leaving them out of this list
     #  would drop them entirely for a build driven from the pages, where
     #  nothing resolved them earlier.
     already = {(source, destination) for source, destination in existing}
-    chosen = [pair for pair in resolved if pair not in already]
-
-    #  What the chosen software needs but nothing named: read out of the
-    #  binaries themselves and taken from the donor.  Declaring dependencies
-    #  by hand caught MUI and a few libraries and missed twenty more, each of
-    #  which copied onto the card perfectly and then would not run.
-    extra = packages.resolve_dependencies(list(existing) + chosen,
-                                          config.package_donor or None,
-                                          progress)
-    seen = already | set(chosen)
-    return chosen + [pair for pair in extra if pair not in seen]
+    return [pair for pair in resolved if pair not in already]
 
 
 def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
@@ -952,18 +927,14 @@ def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
                 wanted.append(path)
             path = path.rpartition("/")[0]
 
-    #  Where to find real drawer icons, best first: the icon set the user
-    #  chose, then the system they are copying from.
+    #  Where to find real drawer icons: the icon set the user chose, or
+    #  failing that the Workbench disks.
     sources: list[Path] = []
     if "magicwb" in (config.package_keys or []):
         sources += packages.icon_set_dirs("magicwb")
-    donor = packages.donor_system(config.package_donor) \
-        if config.package_donor else None
-    if donor is not None:
-        sources.append(donor)
     if not sources and config.adf_folder:
-        #  No icon set and no donor: the floppies have real drawer icons and
-        #  are the only thing this card was built from.
+        #  No icon set chosen: the floppies have real drawer icons, and are
+        #  the only other thing this card was built from.
         borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drawer-icon-"))
         if amigaos.drawer_icon_from_disks(config.adf_folder, borrowed):
             sources.append(borrowed)

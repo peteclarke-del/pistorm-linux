@@ -774,13 +774,6 @@ class DuplicateOverlayFile(_Scratch):
         volume.f.close()
         self.assertEqual(kept, b"first", "the existing file was replaced")
 
-    def test_the_classes_workbench_installs_are_not_hunted_for(self):
-        from pistorm_imager.core import packages               # noqa: PLC0415
-        for name in ("colorwheel", "gradientslider", "tapedeck"):
-            self.assertIn(name, packages.STOCK,
-                          f"{name}.gadget comes with Workbench 3.1")
-
-
 class TestABootableDriveFilledFromAnImage(_Scratch):
     """The path that fills the boot drive from another drive: nothing
     exercised it, and a name that did not exist there ended a real build

@@ -217,8 +217,8 @@ Emu68 installation, Kickstart handling, `config.txt`/`cmdline.txt`, RDB
 creation, image writing (including compressed sources), and expansion into
 unused space. On top of that: PFS3 and FFS volumes created and filled, PiMiga
 and `.hdf` drives imported and adapted, per-machine presets, the display
-handling described above, optional software copied from a donor system or
-fetched from Aminet, prepared systems recognised and adapted after writing, and
+handling described above, optional software fetched from its publisher,
+prepared systems recognised and adapted after writing, and
 per-category exclusions followed through into iGame's list.
 
 Validated against real material: a full Workbench 3.1 install built from the
@@ -241,7 +241,7 @@ that were silent at build time and fatal at mount.
 
 **Not yet tried on hardware:** everything past the basic card. The RTG and
 dual-output display handling, including the switcher scripts; optional software
-copied from a donor system; multi-partition layouts; adapting a written prepared
+fetched and installed; multi-partition layouts; adapting a written prepared
 system. Those are checked against the format specifications, against independent
 tools and in an emulator, which is not the same as an Amiga booting from them.
 
@@ -453,7 +453,7 @@ anything is written, and then the build goes ahead:
   carry one
 * Workbench set to open on an RTG screen the card has not got
 * nothing at all going onto the Amiga drives
-* software chosen that only a donor system can supply, with no donor set
+* software chosen whose archive nobody can fetch on your behalf
 
 **Allowed silently** - everything else.
 
@@ -670,12 +670,36 @@ A Workbench installed from the original floppies is exactly what shipped in
 people add next are offered as a catalogue, grouped as System, Look and feel,
 Speed and Networking.
 
-Each one arrives by whichever route it can. Freely distributable software is
-**fetched from Aminet and cached** under `~/.cache/pistorm-imager/packages`, so
-a second card costs no download. Anything that is not freely distributable —
-IBrowse and MiamiDx among them — is only ever **copied out of a donor system
-you already have**, which is what pointing at a PiMiga installation is for. A
-donor is always preferred over a download.
+Every one of them comes **from whoever publishes it** — Aminet, or the project
+that makes it — and is cached under `~/.cache/pistorm-imager/packages`, so a
+second card costs no download.
+
+Software used to be able to come out of a *donor system* instead: a Workbench
+drive or a PiMiga folder the user pointed at, which the build mined for
+whatever it held. That is gone, along with the "Take it from" chooser. It meant
+a card was built from whatever some other installation happened to contain, at
+whatever age, and nothing said which. Everything in the catalogue now names its
+own source, and where a package once had only a donor it either found a real
+one or left the list:
+
+| Was donor-only | Now |
+| --- | --- |
+| ClickToFront | `util/mouse/ClickToFront.lha` |
+| Directory Opus 4 | `util/dopus/DirectoryOpus-4.18.22.lha`, the GPL 4.18 release |
+| HippoPlayer | `mus/play/hippoplayer.lha` |
+| Scalos | `util/wb/Scalos.lha` |
+| AmFTP | `comm/tcp/AmFTP191.lha` |
+| WookieChat | `comm/irc/WookieChat2.11_OS3.lha` |
+| MiamiDx (`network`) | **Replaced.** The device it needed was the donor's `vlink.device`, which nobody publishes. Emu68's own release carries `wifipi.device` for the wireless chip the Pi actually has, so that is the network card now, with the firmware for every Pi model, and Roadshow's interface file names it. |
+| IBrowse | **Dropped.** Commercial, and not distributable. NetSurf is the browser. |
+| AWeb | **Dropped.** Aminet's `AWeb.lha` is a 3.2 demo; the free APL release is a per-CPU build whose 68020 binary carries floating point instructions, and [a PiStorm has no FPU](#a-pistorm-has-no-fpu). |
+| A newer SetPatch | **Dropped.** Commodore's, from a later release, undistributable — and it stopped every WHDLoad game from starting. |
+| Backdrops and boot pictures | **Dropped.** They were another distribution's artwork. |
+
+One thing genuinely goes with the donor: **WHDLoad's `DEVS:Kickstarts`**. Those
+are Commodore ROM images, nobody publishes them, and most slaves will not start
+without the one the game expects. The package says so where it is chosen rather
+than letting a game launch and take the machine down.
 
 Whatever can be installed outright is installed, and `Storage/Install` is a last
 resort rather than the default: a tick box that produces an installer you have to
@@ -757,36 +781,20 @@ Two updates are offered:
 | **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
 | **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
 
-The floppies' `C:SetPatch` is **refused during the install** rather than
-overwritten afterwards, because this file system creates files and never
-replaces them; the newer one is then copied into its place.
+### What a program needs comes with it
 
-### What a program needs is read out of it
+Dependencies between packages are declared and pulled in: iGame, AmFTP, NetSurf
+and WookieChat are MUI applications, and copied on their own they land on the
+card, appear on Workbench and then do nothing at all when clicked.
 
-Declaring dependencies by hand caught MUI and a handful of libraries and missed
-twenty more, each of which copied onto the card perfectly and then would not
-run: `ixemul` and `netinfo.device` for NetSurf, `Picasso96API` for AWeb,
-`screennotify` for Birdie, `popupmenu` and `vapor_toolkit` for the MUI
-applications.
-
-Amiga binaries name what they open as plain strings, so the answer is in the
-files themselves. Everything a copied program mentions, that will not be on the
-card and that the donor system has, is copied too - and then the same question
-is asked of *those*, because a library brings its own needs with it
-(`mmu.library` wants `68030.library`, `ixemul` wants `ixnet`, `xpkmaster` wants
-`xfdmaster`). One round left seven behind; repeating until a round finds nothing
-new brought the real card down from nineteen missing files to three, and those
-three are optional (`narrator.device` is speech synthesis).
-
-The scan over-matches where two strings abut in a binary, which costs nothing: a
-name that is really a fragment of another resolves to nothing in the donor and
-is dropped.
-
-**Key files travel with what they unlock.** Registered Amiga software looks for
-`<name>.key` beside the system rather than in its own drawer, so copying
-`xadmaster.library` without `S:xadmaster.key` leaves it crippled in a way that
-reads as the copy having failed. Anything being copied that has a matching key
-in `S:`, `L:` or `DEVS:keyfiles` takes it along — which picks up MUI's key too.
+The shared libraries a program draws with come from the same archive that
+brings the program. There used to be a scanner for this: Amiga binaries name
+what they open as plain strings, so everything a copied program mentioned that
+the *donor* had was copied too, transitively. It found nineteen missing files
+where hand-written declarations had found three. It also only ever worked
+because there was a donor system to mine, and with everything coming from its
+publisher there is nothing to scan against — an archive that needs
+`codesets.library` ships it.
 
 **Some things no scan can find.** A WHDLoad slave asks for the Kickstart the
 game expects, and those are ROM images, not code: nothing names them inside a
@@ -808,8 +816,9 @@ creates that drawer *and* its icon, and installing from the ADFs creates only th
 drawer.
 
 Every drawer this build makes now gets an icon, taken from a real Amiga icon
-rather than invented — the chosen icon set, or the donor system — matched on the
-drawer's own name and otherwise any drawer icon among them. Two things decide
+rather than invented — the chosen icon set, or failing that the Workbench
+disks — matched on the drawer's own name and otherwise any drawer icon among
+them. Two things decide
 which one is usable:
 
 * **It must be a drawer icon.** Icons are typed, and only a drawer icon opens a
@@ -841,9 +850,8 @@ not start and you need to see what it is looking for, and **Directory Opus 4**
 as a real file manager.
 
 For music there is **AMPlifier** (modules, MP3, skins) and **DigiBooster 1.7**
-as an eight channel tracker, both from Aminet; **HippoPlayer** is the classic
-lightweight player but is not freely distributable, so it is copied from a
-donor or not at all.
+as an eight channel tracker, and **HippoPlayer**, the classic lightweight
+player - all three from Aminet.
 
 **Suggested load** picks a set from the machine and the display, because the
 right answer genuinely differs:
@@ -855,27 +863,33 @@ right answer genuinely differs:
 | Icons | MagicWB's eight colours suit a limited palette | a heavier desktop such as Scalos becomes affordable |
 
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
-VisualPrefs. Networking — the PiStorm's `vlink.device`, a TCP/IP stack, AmiSSL
-and NetSurf — is suggested when a WiFi network has been configured.
+VisualPrefs. Networking — the Pi's WiFi as an Amiga network card, Roadshow,
+AmiSSL and NetSurf — is suggested when a WiFi network has been configured.
 
-## The newest release wins, and the donor fills in
+**An RTG display brings Picasso96 with it, and holds it on.** Picasso96 *is*
+the RTG subsystem; Emu68's driver is a card for it, and without it a card set
+up for the Pi's HDMI output has no RTG screen modes to open on. It was an
+ordinary tick box beside the display choice, and nothing rebuilt the software
+list when the display changed — so choosing both outputs left it off, silently.
+Choosing a display that draws on the Pi now ticks it and locks it, and says
+why in the row.
 
-A published release is the newest there is. A donor's copy is whatever its
-author installed, which may be years old. So where a package has both, the
-**download goes on first and the donor fills in around it** - keys, catalogues,
-Kickstarts, anything the archive does not carry. The writer keeps the first copy
-of a file it is given, so first is what wins.
+## Every package names its source
 
-Thirteen packages have both sources. WHDLoad is the shape of it: the program
-comes from Aminet, and the donor still supplies `DEVS:Kickstarts` and the
-`WHDLoad.prefs` that no archive contains.
+A published release is the newest there is; a donor's copy was whatever its
+author installed, which may be years old, and there was no way to tell from the
+card which had happened. So there is one route now — the publisher's — and a
+package that cannot be fetched says so before the build rather than in the log
+afterwards:
 
-Where a donor's older copy is used instead, the build **says so**:
+> WARNING: Roadshow could not be fetched from http://roadshow.apc-tcp.de/, so
+> it is not on this card
 
-> WARNING: WHDLoad is being taken from the donor, which is older than the
-> release published on Aminet
-
-which happens when downloads are turned off, or when a fetch fails. And a
+One archive genuinely cannot be downloaded: APC&TCP serve Roadshow only to a
+browser. That is marked `manual`, the setup summary says so while there is
+still time to do something about it, and the build uses a copy put in
+`~/.cache/pistorm-imager/packages` by hand rather than caching a login page as
+though it were the archive. A
 download that **stops early is no longer kept** - it is still a file, and
 caching a truncated archive means every build afterwards fails to unpack
 something that looks like it is already there. The length is checked against
@@ -913,10 +927,10 @@ it, which suggests somebody else met this years ago.
 
 ### MUI, and the classes that are not in MUI
 
-MUI is published on Aminet too, so it follows the same rule: MUI 3.8 goes on
-first and a donor's MUI fills in behind it. That matters more here than
-elsewhere, because a donor's MUI is usually the richer one - PiMiga's carries
-84 classes against the archive's 36.
+MUI is published on Aminet, and what it publishes is MUI 3.8 with 36 classes.
+A ready-made distribution's MUI is usually the richer one - PiMiga's carries 84
+- which is what made mining one so tempting, and why the classes iGame needs
+are named and fetched individually instead.
 
 Those extra classes are not decoration. iGame's window is built from `NList`,
 `NListview`, `TextEditor` and `Guigfx`, **none of which are part of MUI**, and
