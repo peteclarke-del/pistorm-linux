@@ -140,16 +140,95 @@ def discover(folder: str | Path) -> list[Category]:
 
     #  The programs beside the collection, each one its own choice.
     try:
-        loose = [p for p in root.iterdir() if p.is_dir()]
+        loose = list(root.iterdir())
     except OSError:
         loose = []
     for entry in sorted(loose, key=lambda p: p.name.lower()):
         if entry.name.lower() in containers or entry.name.startswith("."):
             continue
         needs, note = needs_from_name(entry.name)
+        if not entry.is_dir() and (needs is None
+                                   or entry.name.lower().endswith(".info")):
+            continue
         found.append(Category(entry.name, entry.name, needs, note,
-                              _count(entry)))
+                              _count(entry) if entry.is_dir() else 0))
     return found
+
+
+def _locator(entry) -> int:
+    """Where a directory entry's contents live, whichever reader found it.
+
+    FFS calls it a block and PFS3 calls it an anode; both readers take that
+    number back in ``listdir``, so this is the whole of the difference.
+    """
+    return getattr(entry, "anode", None) or getattr(entry, "block", 0)
+
+
+def discover_volume(reader) -> list[Category]:
+    """The same, read out of an Amiga volume rather than a host folder.
+
+    A drive imported from an .hdf was offered nothing to leave out at all,
+    because the listing walked a real directory. The readers for FFS and PFS3
+    both list a directory by name, so the same question can be asked of them
+    - and it is asked one directory at a time rather than by walking the
+    drive, which on twenty gigabytes of games would take longer than the
+    build.
+    """
+    found: list[Category] = []
+    seen: set[str] = set()
+    containers: set[str] = set()
+    try:
+        top = reader.listdir()
+    except Exception:                            # noqa: BLE001 - unreadable
+        return []
+
+    for container in CONTAINERS:
+        entry = next((e for e in top if e.is_dir
+                      and e.name.lower() == container.lower()), None)
+        if entry is None:
+            continue
+        containers.add(entry.name.lower())
+        try:
+            inside = [e for e in reader.listdir(_locator(entry)) if e.is_dir]
+        except Exception:                        # noqa: BLE001
+            inside = []
+        for child in sorted(inside, key=lambda e: e.name.lower()):
+            key = _folder_key(child.name)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            needs, note = KNOWN.get(key, (None, ""))
+            if needs is None and not note:
+                needs, note = needs_from_name(child.name)
+            found.append(Category(f"{entry.name}/{child.name}", child.name,
+                                  needs, note, _volume_count(reader, child)))
+        if found:
+            break
+
+    for entry in sorted(top, key=lambda e: e.name.lower()):
+        if entry.name.lower() in containers or entry.name.startswith("."):
+            continue
+        needs, note = needs_from_name(entry.name)
+        #  Drawers always; a loose file only when its own name says what it
+        #  needs. Turrican2AGA on a real drive is a fourteen-byte launcher
+        #  rather than a drawer, so a rule about drawers missed the one title
+        #  on the whole drive that could be identified - while listing every
+        #  file would bury it in save files and icons.
+        if not entry.is_dir and needs is None:
+            continue
+        if not entry.is_dir and entry.name.lower().endswith(".info"):
+            continue
+        found.append(Category(entry.name, entry.name, needs, note,
+                              _volume_count(reader, entry) if entry.is_dir
+                              else 0))
+    return found
+
+
+def _volume_count(reader, entry) -> int:
+    try:
+        return len(reader.listdir(_locator(entry)))
+    except Exception:                            # noqa: BLE001
+        return 0
 
 
 def _count(folder: Path) -> int:

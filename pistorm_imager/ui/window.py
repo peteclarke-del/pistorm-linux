@@ -249,13 +249,16 @@ class PartitionRow(Adw.ExpanderRow):
         self._category_rows.clear()
 
         path = self.hdf_row.path
-        folder = bool(path) and Path(path).is_dir()
-        found = content.discover(path) if folder else []
-        if not folder:
-            self.exclude_group.set_subtitle("Choose a folder to see what it holds")
+        #  An image was offered nothing to leave out, because this only ever
+        #  listed a host directory - so a drive imported from an .hdf could
+        #  be taken whole or not at all.
+        found = self._what_is_in_there(path)
+        if not path:
+            self.exclude_group.set_subtitle("Choose a folder or image to see "
+                                            "what it holds")
         elif not found:
-            self.exclude_group.set_subtitle("Nothing in here is divided into "
-                                            "categories")
+            self.exclude_group.set_subtitle("Nothing in here can be listed "
+                                            "separately")
         else:
             machine = self._machine()
             unsuitable = set(content.unsuitable(found, machine))
@@ -274,8 +277,27 @@ class PartitionRow(Adw.ExpanderRow):
                 self._category_rows[category.path] = row
                 self.exclude_group.add_row(row)
             self.exclude_group.set_subtitle(
-                f"{len(found)} categories, {len(unsuitable)} of them not for "
+                f"{len(found)} item(s), {len(unsuitable)} of them not for "
                 f"this machine")
+
+    def _what_is_in_there(self, path: str) -> list:
+        """What can be left out of this source, folder or image alike."""
+        if not path:
+            return []
+        if Path(path).is_dir():
+            return content.discover(path)
+        try:
+            reader, _label = amigaos.open_amiga_volume(path,
+                                                       self._chosen_drive())
+        except Exception:                        # noqa: BLE001 - unreadable
+            return []
+        try:
+            return content.discover_volume(reader)
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                    # noqa: BLE001
+                pass
 
     def choose_drive(self, name: str) -> bool:
         """Select a drive by device name; False if the image has no such drive."""

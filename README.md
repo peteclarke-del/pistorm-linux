@@ -960,6 +960,19 @@ start switched off on an OCS or ECS machine while `Saga`, `Vagabond` and
 `AgaMemnon` are untouched. Everything else is listed with no requirement and
 left in, because the honest answer is that we do not know.
 
+**A folder and an image are asked the same question.** The listing used to walk
+a host directory, so a drive imported from an `.hdf` was offered nothing to
+leave out and could only be taken whole. The FFS and PFS3 readers both list a
+directory by name, so the same walk works on either — one directory at a time
+rather than over the whole drive, which on twenty gigabytes of games would take
+longer than the build.
+
+A loose *file* is listed only when its own name says what it needs. That is not
+fussiness: `Turrican2AGA` on a real drive is a fourteen-byte launcher rather
+than a drawer, so a rule about drawers alone missed the one title on the whole
+drive that could be identified — while listing every file would have buried it
+among save files and icons.
+
 **Reading the binaries was tried and abandoned.** FMODE and BPLCON4 are
 AGA-only registers, so scanning a program for them looks like a real test. It
 is not: matching 16-bit words finds "FMODE" 56 times inside `DOOM1.WAD` and 48
