@@ -15,6 +15,7 @@ nothing assumed about it.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable
 from pathlib import Path
 
 from .machines import Chipset, Machine
@@ -236,6 +237,71 @@ def _count(folder: Path) -> int:
         return sum(1 for _ in folder.iterdir())
     except OSError:
         return 0
+
+
+#  A launcher names what it runs; it is not the thing itself, so it is small.
+LAUNCHER_LIMIT = 512
+
+
+def _named_inside(data: bytes) -> list[str]:
+    """The item names a small text file mentions, if it is text at all."""
+    try:
+        text = data.decode("latin-1")
+    except ValueError:
+        return []
+    if any(ord(c) < 9 or 13 < ord(c) < 32 for c in text):
+        return []                                # not text: a program, a save
+    out = []
+    for line in text.splitlines():
+        #  "AmigaGame.exe", or ":Drawer/Program" from the volume root.
+        name = line.strip().lstrip(":").replace("\\", "/").split("/")[0].strip()
+        if name:
+            out.append(name)
+    return out
+
+
+def followed(excluded: Iterable[str], read_file, present: Iterable[str],
+             offered: Iterable[str] = ()) -> list[str]:
+    """What else to leave out because only an excluded launcher named it.
+
+    A title can be a few bytes naming the program that runs it - Turrican2AGA
+    on a real drive is fourteen bytes reading "AmigaGame.exe" - so leaving the
+    launcher out and keeping what it names wastes the space the exclusion was
+    meant to save, on something now unreachable.
+
+    Two things stop this doing harm. A launcher that is *kept* pins what it
+    names, so a shared engine survives as long as anything still runs it; and
+    anything the user was offered as a choice of its own is never taken away
+    behind their back.
+    """
+    excluded = list(excluded)
+    gone = {name.lower() for name in excluded}
+    offered = {name.lower() for name in offered}
+    here = {name.lower(): name for name in present}
+
+    def targets(name: str) -> list[str]:
+        data = read_file(name)
+        if data is None or len(data) > LAUNCHER_LIMIT:
+            return []
+        return [here[t.lower()] for t in _named_inside(data)
+                if t.lower() in here and t.lower() != name.lower()]
+
+    #  What the survivors still need.
+    pinned: set[str] = set()
+    for name in present:
+        if name.lower() in gone:
+            continue
+        pinned |= {t.lower() for t in targets(name)}
+
+    extra: list[str] = []
+    for name in excluded:
+        for target in targets(name):
+            key = target.lower()
+            if key in gone or key in pinned or key in offered:
+                continue
+            gone.add(key)
+            extra.append(target)
+    return extra
 
 
 def unsuitable(categories: list[Category], machine: Machine) -> list[str]:
