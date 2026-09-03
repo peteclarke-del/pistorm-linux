@@ -86,5 +86,45 @@ class TestLatest(unittest.TestCase):
         self.assertIsNone(self.call_with({"message": "Not Found"}))
 
 
+class EveryCacheKnowsWhereItCameFrom(unittest.TestCase):
+    """Three rebuilds were lost to one shape of bug: something kept from a
+    previous run and handed back although the thing it came from had changed.
+
+    The archive cache, the unpacked tree, the RTG driver and the Raspberry Pi
+    firmware were all keyed on a name or on mere existence. This walks the
+    code and asserts that anything reusing a cached file checks where it came
+    from, so the next one added has to as well.
+    """
+
+    def source_of(self, module):
+        import inspect                                        # noqa: PLC0415
+        return inspect.getsource(module)
+
+    def test_the_archive_cache_records_its_source(self):
+        from pistorm_imager.core import packages              # noqa: PLC0415
+        body = self.source_of(packages)
+        self.assertIn(".source", body)
+        self.assertIn("came_from", body)
+
+    def test_the_unpacked_tree_is_compared_with_its_archive(self):
+        from pistorm_imager.core import packages              # noqa: PLC0415
+        import inspect                                        # noqa: PLC0415
+        body = inspect.getsource(packages.unpack)
+        self.assertIn("st_mtime", body,
+                      "an unpacked tree must be checked against its archive")
+
+    def test_the_rtg_driver_records_which_release_it_came_from(self):
+        from pistorm_imager.core import compat                # noqa: PLC0415
+        import inspect                                        # noqa: PLC0415
+        body = inspect.getsource(compat.fetch_videocore_card)
+        self.assertIn("EMU68_TOOLS_URL", body.split("if cache.exists")[1][:400])
+
+    def test_the_firmware_checks_what_actually_arrived(self):
+        from pistorm_imager.core import emu68                 # noqa: PLC0415
+        body = self.source_of(emu68)
+        self.assertIn("Content-Length", body)
+        self.assertIn("declared", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
