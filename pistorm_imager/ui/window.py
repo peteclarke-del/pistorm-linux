@@ -1938,6 +1938,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  say where they are.
         installing = (self._system_source() == "adf"
                       or (self.quick_hdf.path and self._imported_needs_floppies()))
+        #  A drive that brings no Workbench needs the disks, and the chooser
+        #  for them lives on the Source page - which a quick screen does not
+        #  show. So it is brought to where the drive was chosen, beside it,
+        #  or there is simply no way to say where the disks are.
+        if self._imported_needs_floppies():
+            self._move_row(self.adf_row, self.group_primary)
+            self._move_row(self.os_version_row, self.group_primary)
         for row in (self.adf_row, self.os_version_row, self.volume_row, self.os_disks):
             row.set_visible(installing)
         self.expand_group.set_visible(mode is not builder.BuildMode.FRESH)

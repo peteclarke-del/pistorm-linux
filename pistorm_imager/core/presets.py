@@ -498,7 +498,7 @@ def best_rom_for_machine(roms: list[kickstart.RomInfo],
 
 
 SYSTEM_SOURCE_LABELS = {
-    "image": "an Amiga hard disk image, with its own partition scheme",
+    "image": "the files out of an Amiga hard disk image",
     "pimiga": "PiMiga's ready-made system (AmigaOS 3.9, Scalos)",
     "adf": "Workbench installed from your floppy images",
     "none": "none - the drive is left for HDToolBox on the Amiga",
