@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 401 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 403 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -410,6 +410,20 @@ are worth copying and which screen modes exist, so there is a separate
 **Amiga 500 with ECS** to choose, and the plain A500's note points at it.
 
 ## A boot script is not an operating system
+
+Such a drive can now be given the disks. The drive is written first and the
+floppies add only what it has not got - nothing its author put there is
+replaced - so a ClassicWB card can be built with `C:LoadWB` and the rest in
+place. Its own installer copies the same files with `copy DF0:C/... SYS:C
+CLONE` and then renames `S:Science` over the boot script; doing it here saves
+feeding it floppies on the Amiga.
+
+And software can be added to an imported drive at all. The list was shown only
+for a Workbench installed from floppies - "only a Workbench built from floppies
+needs anything added to it" - while the build applies package overlays to an
+imported drive exactly the same way. A card built around somebody's drive could
+not be given WHDLoad or iGame.
+
 
 An imported drive was called a complete system if it had `S:Startup-Sequence`.
 ClassicWB has one, and it is an **installer**: on the first boot it says
