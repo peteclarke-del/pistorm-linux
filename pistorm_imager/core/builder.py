@@ -990,6 +990,30 @@ def _format_empty_partitions(config: BuildConfig, handle,
                      f'{rdb.dostype_name(dostype)}, named "{label}"')
 
 
+def _check_the_system_can_boot(config: BuildConfig, progress: Progress) -> None:
+    """Refuse a card whose system drive brings no operating system.
+
+    A drive can boot and still have no Workbench: ClassicWB's carries no
+    C:LoadWB, no C:IPrefs and no Version, because those are Commodore's. Put
+    it on a card without the disks and the card stops at a Shell saying
+    "C:Version: Unknown command".
+    """
+    from . import presets                         # noqa: PLC0415 - circular
+
+    if config.install_amigaos:
+        return
+    for spec in config.amiga_partitions:
+        if not spec.bootable or not spec.content_hdf:
+            continue
+        if presets.inspect_image_system(
+                spec.content_hdf, spec.content_hdf_partition).needs_floppies:
+            raise RuntimeError(
+                f"{Path(spec.content_hdf).name} brings no Workbench of its "
+                f"own - it has no C:LoadWB - so a card made from it alone "
+                f"cannot boot. Choose the Workbench disk images as well and "
+                f"they will fill in what it does not have.")
+
+
 def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      table: rdb.Rdb, progress: Progress) -> None:
     """Fill partitions that were given a host directory or overlays."""
@@ -1007,8 +1031,13 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
 
         if spec.content_hdf:
             from . import presets                 # noqa: PLC0415 - circular
-            if spec.bootable and presets.finishable_install(
-                    spec.content_hdf, spec.content_hdf_partition):
+            #  Only when the Workbench disks are being installed as well:
+            #  its installer exists to copy Commodore's files off a floppy,
+            #  and taking it away without supplying them leaves a card that
+            #  cannot boot at all - which is worse than one that asks.
+            if (spec.bootable and config.install_amigaos
+                    and presets.finishable_install(
+                        spec.content_hdf, spec.content_hdf_partition)):
                 #  A distribution that would otherwise boot into its own
                 #  installer: it is carried out here instead.
                 fixer.finish_classicwb_install()
@@ -1722,6 +1751,7 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
                         _install_amigaos(config, handle, amiga_part, table, progress)
                     if any(p.content_folder or p.content_hdf
                            for p in config.amiga_partitions):
+                        _check_the_system_can_boot(config, progress)
                         _install_content(config, handle, amiga_part, table, progress)
                     _format_empty_partitions(config, handle, amiga_part, table,
                                              progress)

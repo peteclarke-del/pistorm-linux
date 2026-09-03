@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 404 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 407 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -411,12 +411,16 @@ are worth copying and which screen modes exist, so there is a separate
 
 ## A boot script is not an operating system
 
-Such a drive can now be given the disks. The drive is written first and the
-floppies add only what it has not got - nothing its author put there is
+Such a drive **must** be given the disks: a card made from it alone stops at a
+Shell saying `C:Version: Unknown command`, so building that combination is
+refused rather than written. The drive is written first and the floppies add
+only what it has not got - nothing its author put there is
 replaced - so a ClassicWB card can be built with `C:LoadWB` and the rest in
-place. Its own installer copies the same files with `copy DF0:C/... SYS:C
-CLONE` and then renames `S:Science` over the boot script; doing it here saves
-feeding it floppies on the Amiga.
+place. Its own installer copies the same files with `copy DF0:C/... SYS:C CLONE` and
+then puts the boot script it carries as `T:Science` in place of its own; doing
+that here saves feeding it floppies on the Amiga. It is only done when the disks
+are being installed too - taking an installer away without doing its work leaves
+a card that cannot boot at all, which is worse than one that asks for a disk.
 
 And software can be added to an imported drive at all. The list was shown only
 for a Workbench installed from floppies - "only a Workbench built from floppies
