@@ -702,5 +702,123 @@ class TheTrapdoorRamHasToBeMappedBeforeItCanBeMoved(unittest.TestCase):
             self.assertIn(word, text)
 
 
+class EveryOptionTheMachineDecidesReachesTheCard(unittest.TestCase):
+    """gather() builds the boot options, and it built them from widgets alone.
+
+    Two settings have no widget - the machine or the display decides them -
+    and both were therefore left at their dataclass default on every card
+    written from the pages: the slow RAM mapping, without which
+    ``move_slow_to_chip`` moves nothing and a machine told to give Workbench a
+    megabyte of chip RAM comes up with 512K, and the framethrower overlay,
+    without which choosing that display drives nothing.
+
+    A save/load round trip cannot catch this - a field never set at all is
+    consistently wrong in both directions - so the invariant is checked
+    directly: anything ``machines.boot_options()`` can decide must either be
+    passed by ``gather()`` or be owned by a widget it reads.
+    """
+
+    def gather_keywords(self) -> set:
+        """The BootOptions keywords gather() actually passes."""
+        import ast                                             # noqa: PLC0415
+        source = (Path(__file__).resolve().parent.parent
+                  / "pistorm_imager" / "ui" / "window.py").read_text()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.FunctionDef) and node.name == "gather":
+                for call in ast.walk(node):
+                    if isinstance(call, ast.Call):
+                        func = call.func
+                        name = (func.attr if isinstance(func, ast.Attribute)
+                                else getattr(func, "id", ""))
+                        if name == "BootOptions":
+                            return {kw.arg for kw in call.keywords if kw.arg}
+        self.fail("gather() no longer builds a BootOptions")
+        return set()
+
+    def test_gather_passes_everything_the_machine_can_decide(self):
+        import dataclasses                                     # noqa: PLC0415
+        from pistorm_imager.core import bootcfg                # noqa: PLC0415
+        passed = self.gather_keywords()
+        default = bootcfg.BootOptions()
+        dropped = {}
+        for machine in machines.MACHINES:
+            for display in machines.Display:
+                for trapdoor in (False, True):
+                    decided = machines.boot_options(
+                        machine, display, trapdoor_to_chip=trapdoor)
+                    for field in dataclasses.fields(decided):
+                        value = getattr(decided, field.name)
+                        if field.name in passed:
+                            continue
+                        if value != getattr(default, field.name):
+                            dropped.setdefault(field.name, set()).add(
+                                f"{machine.key}/{display.name}")
+        self.assertEqual(
+            dropped, {},
+            "gather() drops settings the machine decides, so a card written "
+            f"from the pages goes out without them: {dropped}")
+
+
+class TheEmulatorIsToldWhatTheCardWasBuiltFor(unittest.TestCase):
+    """Testing a card means describing the Amiga it is going into.
+
+    That description already exists - the model, the chipset, the board and
+    the trapdoor choice drive the build itself - and writing it a second time
+    by hand is how the two came apart: the harness used through one long
+    bisection emulated an A1200 (AGA) with an FPU at accuracy = 0, while the
+    card was built for an ECS A500 on a PiStorm that has no FPU.
+    """
+
+    def config(self, key: str, **kwargs) -> str:
+        from pistorm_imager.core import emulate                # noqa: PLC0415
+        return emulate.fsuae_config(machines.MACHINES_BY_KEY[key],
+                                    "/tmp/card.hdf", "/tmp/kick.rom", **kwargs)
+
+    def setting(self, text: str, name: str) -> str:
+        for line in text.splitlines():
+            if line.startswith("#"):
+                continue
+            if line.split("=")[0].strip() == name:
+                return line.split("=", 1)[1].strip()
+        return ""
+
+    def test_the_chipset_follows_the_machine(self):
+        self.assertEqual(self.setting(self.config("a500"), "amiga_model"),
+                         "A500")
+        self.assertEqual(self.setting(self.config("a1200"), "amiga_model"),
+                         "A1200")
+        #  An ECS A500 is not an OCS one, and emulating it as A500 would get
+        #  the chipset wrong for the very material this project converts.
+        self.assertNotEqual(self.setting(self.config("a500ecs"),
+                                         "amiga_model"), "A500")
+
+    def test_never_the_fast_inexact_cpu(self):
+        for machine in machines.MACHINES:
+            with self.subTest(machine.key):
+                self.assertEqual(
+                    self.setting(self.config(machine.key), "accuracy"), "1",
+                    "accuracy = 0 makes every WHDLoad game guru, which reads "
+                    "like a broken card and is not")
+
+    def test_the_trapdoor_choice_decides_the_chip_ram(self):
+        without = self.setting(self.config("a500ecs"), "chip_memory")
+        with_it = self.setting(self.config("a500ecs", trapdoor_to_chip=True),
+                               "chip_memory")
+        self.assertEqual(without, "512")
+        self.assertEqual(with_it, "1024")
+
+    def test_a_machine_with_no_trapdoor_is_unaffected(self):
+        self.assertEqual(
+            self.setting(self.config("a600", trapdoor_to_chip=True),
+                         "chip_memory"),
+            self.setting(self.config("a600"), "chip_memory"))
+
+    def test_every_machine_has_a_model_to_stand_in_for_it(self):
+        from pistorm_imager.core import emulate                # noqa: PLC0415
+        for machine in machines.MACHINES:
+            with self.subTest(machine.key):
+                self.assertTrue(emulate.fsuae_model(machine))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
