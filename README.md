@@ -188,7 +188,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 407 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 414 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -414,6 +414,29 @@ that is a common enough upgrade that offering only a plain OCS A500 gets the
 chipset wrong for a real machine. The chipset decides which game collections
 are worth copying and which screen modes exist, so there is a separate
 **Amiga 500 with ECS** to choose, and the plain A500's note points at it.
+
+## Refused, warned about, or allowed
+
+Three different things, and the tool now keeps them apart.
+
+**Refused** - it cannot work, so nothing is written. A card whose system drive
+brings no Workbench and no floppies to fill it in stops at a Shell saying
+`C:Version: Unknown command`; the drives adding up to more than the card holds;
+a bootable drive told to be filled two ways at once.
+
+**Warned about** - it will build, and probably is not what was meant. These are
+said in the summary where the setup is accepted, and again in the log before
+anything is written, and then the build goes ahead:
+
+* games or demos on the card with no WHDLoad to launch them
+* iGame installed with no drive being filled with games, so it opens empty
+* an RTG display chosen with no Picasso96 and no imported system that might
+  carry one
+* Workbench set to open on an RTG screen the card has not got
+* nothing at all going onto the Amiga drives
+* software chosen that only a donor system can supply, with no donor set
+
+**Allowed silently** - everything else.
 
 ## A boot script is not an operating system
 

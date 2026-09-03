@@ -168,6 +168,60 @@ class BuildConfig:
         default_factory=lambda: [AmigaPartitionSpec("DH1", None, "PFS3", False, -128)])
     extra_boot_files: list[str] = dataclasses.field(default_factory=list)
 
+    def concerns(self) -> list[str]:
+        """Choices that will build, and probably are not what was meant.
+
+        Distinct from validate(), which refuses. These are combinations that
+        produce a working card doing something other than what the settings
+        suggest - a games drive with nothing able to launch a game, a card
+        told to use an RTG screen with no RTG driver on it. They are said
+        before anything is written, and the build goes ahead anyway.
+        """
+        said: list[str] = []
+        keys = set(self.package_keys or ())
+        filled = [p for p in self.amiga_partitions
+                  if p.content_folder or p.content_hdf]
+        names = " ".join((p.volume_name or p.name) + " " + (p.content_folder or "")
+                         for p in filled).lower()
+
+        if ("whdload" not in keys
+                and any(word in names for word in ("game", "demo", "whdload"))):
+            said.append(
+                "There are games or demos on this card and WHDLoad is not "
+                "installed, so nothing on it can launch them.")
+        if "igame" in keys and not any(
+                "game" in (p.volume_name or p.name).lower() for p in filled):
+            said.append(
+                "iGame is installed and no drive is being filled with games, "
+                "so it will open on an empty list.")
+        if self.rtg_display and "picasso96" not in keys \
+                and not any(p.content_hdf or p.content_folder
+                            for p in self.amiga_partitions if p.bootable):
+            said.append(
+                "This card is set up for an RTG screen on the Pi's HDMI "
+                "output, but Picasso96 is not being installed and no system "
+                "is being imported that might carry it, so there will be no "
+                "RTG screen to open on.")
+        if self.workbench_on_rtg and not self.rtg_display:
+            said.append(
+                "Workbench is set to open on the RTG screen, and this card "
+                "has no RTG display configured.")
+        if not self.install_amigaos and not filled and self.mode is BuildMode.FRESH:
+            said.append(
+                "Nothing is being put on the Amiga drives: no Workbench, no "
+                "imported drive and no folder, so the card will boot to a "
+                "screen asking for a disk.")
+        donor_only = {key for key in keys
+                      if (packages.CATALOGUE_BY_KEY.get(key) is not None
+                          and packages.CATALOGUE_BY_KEY[key].items
+                          and packages.CATALOGUE_BY_KEY[key].download is None)}
+        if donor_only and not self.package_donor:
+            said.append(
+                f"{', '.join(sorted(donor_only))} can only be copied from a "
+                f"system you already have, and none is set, so "
+                f"{'they' if len(donor_only) > 1 else 'it'} will be left out.")
+        return said
+
     def validate(self) -> list[str]:
         """Return a list of problems; an empty list means the config is usable."""
         problems: list[str] = []
@@ -1685,6 +1739,10 @@ def _expand(handle, config: BuildConfig, target_size: int, progress: Progress) -
 
 
 def run_build(config: BuildConfig, progress: Progress) -> None:
+    for concern in config.concerns():
+        #  Said before anything is written, and the build goes ahead: these
+        #  are choices that work and probably were not meant.
+        progress.log(f"NOTE: {concern}")
     problems = config.validate()
     if problems:
         raise RuntimeError("; ".join(problems))

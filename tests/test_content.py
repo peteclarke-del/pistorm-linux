@@ -1298,3 +1298,52 @@ class ACardThatCannotBootIsRefused(unittest.TestCase):
                     found={"bootable": True, "workbench": True})):
             builder._check_the_system_can_boot(
                 self._config("/somewhere/System.hdf"), None)
+
+
+class ChoicesThatBuildAndMislead(unittest.TestCase):
+    """Distinct from what is refused: combinations that produce a working
+    card doing something other than the settings suggest. They are said
+    before anything is written, and the build goes ahead."""
+
+    def _config(self, **kw):
+        from pistorm_imager.core import builder
+        parts = kw.pop("partitions", None) or [
+            builder.AmigaPartitionSpec("DH0", 1024 ** 3, "PFS3", True, 0)]
+        return builder.BuildConfig(target="/tmp/card.img",
+                                   amiga_partitions=parts, **kw)
+
+    def _games_drive(self):
+        from pistorm_imager.core import builder
+        return [builder.AmigaPartitionSpec("DH0", 1024 ** 3, "PFS3", True, 0),
+                builder.AmigaPartitionSpec("DH1", None, "PFS3", False, -128,
+                                           volume_name="Games",
+                                           content_folder="/x/Games")]
+
+    def test_games_with_nothing_to_launch_them(self):
+        said = self._config(partitions=self._games_drive()).concerns()
+        self.assertTrue([s for s in said if "WHDLoad is not installed" in s])
+
+    def test_and_not_when_whdload_is_there(self):
+        said = self._config(partitions=self._games_drive(),
+                            package_keys=["whdload"]).concerns()
+        self.assertFalse([s for s in said if "WHDLoad is not installed" in s])
+
+    def test_igame_with_no_games(self):
+        said = self._config(package_keys=["igame", "whdload"]).concerns()
+        self.assertTrue([s for s in said if "empty list" in s])
+
+    def test_workbench_on_a_screen_the_card_has_not_got(self):
+        said = self._config(workbench_on_rtg=True, rtg_display=False).concerns()
+        self.assertTrue([s for s in said if "no RTG display" in s])
+
+    def test_an_rtg_card_with_no_rtg_driver(self):
+        said = self._config(rtg_display=True).concerns()
+        self.assertTrue([s for s in said if "no RTG screen to open on" in s])
+
+    def test_software_that_needs_a_donor_when_there_is_none(self):
+        said = self._config(package_keys=["ibrowse"], package_donor="").concerns()
+        self.assertTrue([s for s in said if "ibrowse" in s], said)
+
+    def test_a_card_with_nothing_on_its_drives(self):
+        said = self._config().concerns()
+        self.assertTrue([s for s in said if "Nothing is being put" in s])
