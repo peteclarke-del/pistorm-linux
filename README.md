@@ -287,6 +287,25 @@ the switch on and the option missing built a card without it: 512K of chip RAM
 on a machine that had been told to give it a megabyte, with the switch on screen
 still saying it was on.
 
+### Every option the machine decides has to reach the card
+
+The card is written from `gather()`, and `gather()` built its boot options
+from the widgets alone. Two settings have no widget — the machine or the
+display decides them — so both sat at their dataclass default on every card
+written from the pages:
+
+| Option | Decided by | What its absence did |
+| --- | --- | --- |
+| `enable_slow_ram` | an OCS/ECS machine | `move_slow_to_chip` had nothing to move: 512K of chip RAM on a machine told to give Workbench a megabyte |
+| `unicam`, `unicam_smooth` | the Framethrower display | choosing that display wrote no overlay to drive it |
+
+A save/load round trip cannot catch this: a field never set at all is
+consistently wrong in both directions, so it survives the comparison. The
+guard is an invariant instead —
+`EveryOptionTheMachineDecidesReachesTheCard` asserts that everything
+`machines.boot_options()` can decide is either passed by `gather()` or owned by
+a widget it reads. It was proved by putting the bug back and watching it fail.
+
 ### The trapdoor RAM has to be mapped before it can be moved
 
 `move_slow_to_chip` moves the trapdoor RAM at `0xC00000` into the chip range.
@@ -311,6 +330,32 @@ nothing at all and says nothing about it. `gather()` now asks
 one rule rather than two, and the same card reads:
 
     vc4.mem=64 chip_slowdown dbf_slowdown blitwait enable_c0_slow enable_c8_slow enable_d0_slow move_slow_to_chip
+
+## Testing a card in an emulator
+
+The Amiga to emulate is the one the card was built for, and that description
+already exists: `pistorm_imager/core/emulate.py` turns a `Machine` into an
+FS-UAE configuration so it is never written twice.
+
+That matters because the hand-written harness used through one long bisection
+had drifted into describing a different machine entirely — `amiga_model =
+A1200` (AGA, not the ECS A500 in question), `fpu = 68040` on an accelerator
+that has no FPU at all, and `accuracy = 0`, which runs a fast, inexact 68040 on
+which WHDLoad cannot start a single game. That last one cost hours of hunting a
+defect in the imager that was a flag in the emulator. The module fixes
+`accuracy = 1`, takes the model from the chipset, the chip RAM from the
+trapdoor choice, and asks for no FPU.
+
+One caveat is recorded rather than papered over: FS-UAE 3.0.3 accepts
+`fpu = none` silently and says nothing either way, so whether it takes effect
+is **unverified**. Assume floating point code may still run in the emulator and
+guru on the real machine.
+
+Attach **the whole `0x76` partition**, not the bootable drive alone, so that
+every drive mounts and can be checked — and copy it *exactly*. A copy one
+mebibyte short of the partition made the last drive come up as `NDOS`, because
+PFS3 keeps a copy of its root block at the end; that looked exactly like a
+formatting bug in this tool and was not.
 
 ## How big is the card, and which gigabyte do you mean
 
