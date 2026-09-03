@@ -876,31 +876,30 @@ class StagingIsNotInstalling(unittest.TestCase):
         self.assertTrue(fixer._picasso_installed)
 
 
-class TwoWaysToFillOneDrive(unittest.TestCase):
-    """Installing from floppies and filling from a folder both target the
-    bootable drive, and the second formats it: the install would vanish."""
+class TheDisksFillWhatAnImportedDriveLacks(unittest.TestCase):
+    """A drive can boot and still bring no operating system. ClassicWB's
+    carries no C:LoadWB, no C:IPrefs and no workbench.library, because those
+    are Commodore's, and its first boot asks for a Workbench disk to copy
+    them from. The two used to be refused together, which left no way to
+    build that card at all."""
 
     def _config(self, **kw):
         from pistorm_imager.core import builder
         spec = builder.AmigaPartitionSpec(name="DH0", bootable=True,
-                                          size=1024 ** 3, **kw)
-        return builder.BuildConfig(target="/tmp/card.img", install_amigaos=True,
-                                   amiga_partitions=[spec])
+                                          size=1024 ** 3,
+                                          content_hdf="/somewhere/System.hdf")
+        return builder.BuildConfig(target="/tmp/card.img",
+                                   amiga_partitions=[spec], **kw)
 
-    def test_the_clash_is_refused(self):
-        problems = self._config(content_folder="/somewhere").validate()
-        self.assertTrue(any("Choose one" in p for p in problems), problems)
+    def test_a_drive_and_the_disks_together_are_allowed(self):
+        problems = self._config(install_amigaos=True,
+                                adf_folder="/somewhere").validate()
+        self.assertFalse([p for p in problems if "Choose one" in p])
 
-    def test_a_content_drive_that_does_not_boot_is_fine(self):
-        from pistorm_imager.core import builder
-        config = builder.BuildConfig(
-            target="/tmp/card.img", install_amigaos=True,
-            amiga_partitions=[
-                builder.AmigaPartitionSpec(name="DH0", bootable=True,
-                                           size=1024 ** 3),
-                builder.AmigaPartitionSpec(name="DH1", size=1024 ** 3,
-                                           content_folder="/somewhere")])
-        self.assertFalse([p for p in config.validate() if "Choose one" in p])
+    def test_but_the_disks_have_to_be_somewhere(self):
+        problems = self._config(install_amigaos=True, adf_folder="").validate()
+        self.assertTrue([p for p in problems
+                         if "Workbench disk images" in p], problems)
 
 
 class TheLayoutMustFitTheCard(unittest.TestCase):
