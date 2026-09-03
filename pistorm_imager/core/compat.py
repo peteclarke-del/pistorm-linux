@@ -260,6 +260,18 @@ class Compatibility:
         self._displace |= {p.replace("\\", "/").strip("/").lower()
                            for p in paths}
 
+    def stop_displacing(self) -> None:
+        """The copying is over; the packages may now write their own files.
+
+        Displacing is a rule about *filling* a drive: it refuses a path so
+        that the package which claimed it can have the name. The package's
+        own files go on through the same pass, so leaving this switched on
+        refused those too - and the file landed nowhere at all. Whole drawers
+        were unaffected, which is what made it look like a packaging problem
+        rather than this.
+        """
+        self._displace.clear()
+
     def skip(self, relative: str) -> bool:
         """True when a file should not be copied to the target at all."""
         #  Checked before `enabled`, because this is not a compatibility fix
