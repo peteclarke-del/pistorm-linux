@@ -1251,3 +1251,50 @@ class DrawersAreVisibleWithoutADonor(unittest.TestCase):
         into = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, into, ignore_errors=True)
         self.assertIsNone(amigaos.drawer_icon_from_disks(into, into))
+
+
+class ACardThatCannotBootIsRefused(unittest.TestCase):
+    """ClassicWB's drive boots and carries no Workbench: no C:LoadWB, no
+    C:IPrefs, no Version, because those are Commodore's. Built without the
+    disks it stops at a Shell saying "C:Version: Unknown command" - and
+    taking its own installer away, which is what finishing the install does,
+    makes that worse rather than better."""
+
+    def _config(self, hdf, **kw):
+        from pistorm_imager.core import builder
+        return builder.BuildConfig(
+            target="/tmp/card.img",
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0, content_hdf=str(hdf))], **kw)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_a_drive_with_no_workbench_and_no_disks_is_refused(self):
+        from pistorm_imager.core import builder, presets
+        with unittest.mock.patch.object(
+                presets, "inspect_image_system",
+                lambda *a, **k: presets.ImageSystem(found={"bootable": True})):
+            with self.assertRaises(RuntimeError) as caught:
+                builder._check_the_system_can_boot(
+                    self._config("/somewhere/System.hdf"), None)
+        self.assertIn("cannot boot", str(caught.exception))
+
+    def test_with_the_disks_it_is_allowed(self):
+        from pistorm_imager.core import builder, presets
+        with unittest.mock.patch.object(
+                presets, "inspect_image_system",
+                lambda *a, **k: presets.ImageSystem(found={"bootable": True})):
+            builder._check_the_system_can_boot(
+                self._config("/somewhere/System.hdf", install_amigaos=True,
+                             adf_folder="/disks"), None)
+
+    def test_a_drive_that_brings_its_own_is_fine(self):
+        from pistorm_imager.core import builder, presets
+        with unittest.mock.patch.object(
+                presets, "inspect_image_system",
+                lambda *a, **k: presets.ImageSystem(
+                    found={"bootable": True, "workbench": True})):
+            builder._check_the_system_can_boot(
+                self._config("/somewhere/System.hdf"), None)
