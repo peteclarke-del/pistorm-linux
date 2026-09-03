@@ -46,14 +46,18 @@ FRESH_SOURCES = ["adf", "none"]
 
 MODES = [
     ("Build a new card", builder.BuildMode.FRESH,
-     "Partition the card, install Emu68 and create an empty Amiga drive "
-     "ready for HDToolBox or an AmigaOS install."),
+     "Partition the card yourself and fill the drives: Workbench from floppy "
+     "images, the files out of somebody's drive image or folder, and the "
+     "software you choose. This is the one that can combine them."),
     ("Write a pre-built image", builder.BuildMode.IMAGE,
      "Write PiMiga, an Emu68 Hatcher image or a backup of your own card, then "
      "apply your Emu68 build and settings on top."),
-    ("Import an Amiga hard disk image", builder.BuildMode.HDF,
-     "Take a WinUAE/FS-UAE/HstWB .hdf - the Amiga drive on its own - build the "
-     "boot partition around it and write it into the Amiga partition."),
+    ("Write a drive image unchanged", builder.BuildMode.HDF,
+     "Put a WinUAE/FS-UAE/HstWB .hdf on the card exactly as it is, keeping its "
+     "own partitions and file systems, with an Emu68 boot partition built "
+     "around it. Nothing can be added to it and nothing resized - to take the "
+     "files off a drive image and put them on a card of your own layout, use "
+     "Build a new card and give a partition that image as its contents."),
     ("Update an existing card", builder.BuildMode.CUSTOMISE,
      "Leave everything on the card alone and only refresh the boot partition."),
 ]
@@ -245,13 +249,16 @@ class PartitionRow(Adw.ExpanderRow):
         self._category_rows.clear()
 
         path = self.hdf_row.path
-        folder = bool(path) and Path(path).is_dir()
-        found = content.discover(path) if folder else []
-        if not folder:
-            self.exclude_group.set_subtitle("Choose a folder to see what it holds")
+        #  An image was offered nothing to leave out, because this only ever
+        #  listed a host directory - so a drive imported from an .hdf could
+        #  be taken whole or not at all.
+        found = self._what_is_in_there(path)
+        if not path:
+            self.exclude_group.set_subtitle("Choose a folder or image to see "
+                                            "what it holds")
         elif not found:
-            self.exclude_group.set_subtitle("Nothing in here is divided into "
-                                            "categories")
+            self.exclude_group.set_subtitle("Nothing in here can be listed "
+                                            "separately")
         else:
             machine = self._machine()
             unsuitable = set(content.unsuitable(found, machine))
@@ -270,8 +277,27 @@ class PartitionRow(Adw.ExpanderRow):
                 self._category_rows[category.path] = row
                 self.exclude_group.add_row(row)
             self.exclude_group.set_subtitle(
-                f"{len(found)} categories, {len(unsuitable)} of them not for "
+                f"{len(found)} item(s), {len(unsuitable)} of them not for "
                 f"this machine")
+
+    def _what_is_in_there(self, path: str) -> list:
+        """What can be left out of this source, folder or image alike."""
+        if not path:
+            return []
+        if Path(path).is_dir():
+            return content.discover(path)
+        try:
+            reader, _label = amigaos.open_amiga_volume(path,
+                                                       self._chosen_drive())
+        except Exception:                        # noqa: BLE001 - unreadable
+            return []
+        try:
+            return content.discover_volume(reader)
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                    # noqa: BLE001
+                pass
 
     def choose_drive(self, name: str) -> bool:
         """Select a drive by device name; False if the image has no such drive."""
@@ -931,6 +957,49 @@ class ImagerWindow(Adw.ApplicationWindow):
         page.add(group)
         return page
 
+    def _imported_drives(self) -> list[str]:
+        """Every hard disk image whose files land on the bootable drive.
+
+        The quick screen's chooser is not the only way in: the workflow fills
+        DH0 from an image on the Storage page, and a drive imported that way
+        needs the Workbench disks exactly as much.
+        """
+        paths = [self.quick_hdf.path] if self.quick_hdf.path else []
+        for row in getattr(self, "partition_rows", []):
+            try:
+                spec = row.spec()
+            except Exception:                    # noqa: BLE001 - half-typed row
+                continue
+            if spec.bootable and spec.content_hdf:
+                paths.append(spec.content_hdf)
+        return paths
+
+    def _imported_needs_floppies(self) -> bool:
+        """Whether the drive being imported brings no Workbench of its own."""
+        for path in self._imported_drives():
+            #  Asked on every redraw of the summary, and it reads the image
+            #  each time; the answer only changes when the file does.
+            try:
+                stamp = (path, os.stat(path).st_mtime_ns)
+            except OSError:
+                continue
+            cache = self.__dict__.setdefault("_floppy_need", {})
+            if stamp not in cache:
+                try:
+                    found = presets.inspect_image_system(path)
+                    #  Only when the drive was actually read and found to
+                    #  bring no Workbench. An image this reader cannot open
+                    #  says nothing either way, and treating that as "needs
+                    #  the disks" would demand floppies for a perfectly good
+                    #  drive on the strength of not having understood it.
+                    cache[stamp] = bool(not found.error
+                                        and found.needs_floppies)
+                except Exception:                # noqa: BLE001 - not fatal
+                    cache[stamp] = False
+            if cache[stamp]:
+                return True
+        return False
+
     def _on_quick_hdf(self) -> None:
         path = self.quick_hdf.path
         if not path:
@@ -950,6 +1019,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         for warning in presets.check_image_for_machine(path, self._machine()):
             text += f"  -  {warning}"
         self.quick_hdf_info.set_subtitle(GLib.markup_escape_text(text))
+        #  Whether the Workbench disks are needed follows from the drive that
+        #  was just chosen, and only _sync_visibility reveals that chooser -
+        #  so without this the option to add them never appeared.
+        self._sync_visibility()
         self._relayout_partitions()
         self._quick_preview()
 
@@ -1030,6 +1103,22 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.quick_card_size.set_title(
                 "Card or image size - 32GB as cards are sold, 32GiB binary")
 
+    def _extra_cmdline(self) -> str:
+        """The cmdline options: what was typed, plus what the switches decide.
+
+        The trapdoor switch owns ``move_slow_to_chip``. It used to reach the
+        box only when the quick setup was applied, so a setup loaded with the
+        switch on and the option missing built a card without it - 512K of
+        chip RAM on a machine told to give it a megabyte - while the switch on
+        screen still said it was on. Asking the switch here means the two
+        cannot disagree.
+        """
+        machine = self._machine()
+        owned = ("move_slow_to_chip"
+                 if machine.trapdoor_ram and self.quick_trapdoor.get_active()
+                 else "")
+        return merge_cmdline(owned, self.extra_row.get_text().strip()).strip()
+
     def _boot_size(self) -> int:
         """The boot partition size, as typed on the Target page."""
         try:
@@ -1078,6 +1167,11 @@ class ImagerWindow(Adw.ApplicationWindow):
                                          self._prefer_rtg_screen())
 
     def _on_display_changed(self) -> None:
+        #  Which software suits the card follows the screen it is watched on,
+        #  and nothing rebuilt the list when that changed: choosing a display
+        #  that draws on the Pi's HDMI left Picasso96 - the RTG subsystem the
+        #  choice depends on - sitting there unticked.
+        self._refresh_packages()
         self._sync_visibility()
         self._on_layout_changed()
 
@@ -1088,8 +1182,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_machine_hint.set_subtitle(
             f"{machine.board_label} - {machine.chipset.value} chipset "
             f"({machine.chipset.native_colours})")
-        #  Which content categories are worth copying follows the machine.
+        #  Which content categories are worth copying follows the machine,
+        #  and so does which software suits its chipset.
         self._refresh_categories()
+        self._refresh_packages()
         #  Keep the Source page's board in step with the model.
         for index, variant in enumerate(emu68.VARIANTS):
             if variant.key == machine.board:
@@ -1168,7 +1264,6 @@ class ImagerWindow(Adw.ApplicationWindow):
             system_source=self._system_source(),
             hdf_source=self.quick_hdf.path,
             work_partition=self.quick_work.get_active(),
-            package_donor=self._package_donor(),
             package_keys=self._chosen_packages(),
             prefer_rtg_screen=self._prefer_rtg_screen()), base)
 
@@ -1347,9 +1442,20 @@ class ImagerWindow(Adw.ApplicationWindow):
                 and not config.emu68_prepared_dir and not self.releases:
             missing.append("an Emu68 release - still looking, or choose a "
                            "local archive on the Source page")
-        if config.install_amigaos:
+        #  install_amigaos is only true once a folder has been chosen, so
+        #  asking about it alone meant a card that needs the disks and has
+        #  none said nothing at all - and built, unbootable. What decides it
+        #  is what the setup needs, which is known before any folder is.
+        needs_disks = (config.install_amigaos
+                       or self._system_source() == "adf"
+                       or self._imported_needs_floppies())
+        if needs_disks:
             if not config.adf_folder:
-                missing.append("a folder of Workbench floppy images")
+                missing.append("a folder of Workbench floppy images - the "
+                               "drive you are importing brings no Workbench "
+                               "of its own"
+                               if self._imported_needs_floppies() else
+                               "a folder of Workbench floppy images")
             else:
                 disks = getattr(self, "_adf_disks", None) or []
                 if not disks:
@@ -1457,15 +1563,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.image_info = Adw.ActionRow(title="Image details", subtitle="No image selected")
         self.image_info.set_sensitive(False)
         self.image_group.add(self.image_info)
-        self.patch_display_row = Adw.SwitchRow(
-            title="Adapt the display after writing",
-            subtitle="A finished system keeps its own drivers, which are "
-                     "right for it, but not its saved screen mode. Where "
-                     "there is no RTG display, clear it so Workbench opens on "
-                     "the Amiga's own screen instead of one that is not there.")
-        self.patch_display_row.connect("notify::active",
-                                       lambda *_a: self._update_summary())
-        self.image_group.add(self.patch_display_row)
         page.add(self.image_group)
 
         page.add(self.group_primary)
@@ -1530,6 +1627,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  what follows on this page.
         page.add(self.group_hardware)
 
+        #  This belongs with the display, not with the image chooser it used
+        #  to sit under: a drive imported onto a card this build partitions
+        #  carries a saved screen mode exactly as a whole prepared image
+        #  does, and there was no way to ask for it to be dealt with.
+        group = Adw.PreferencesGroup(
+            title="A system that was built elsewhere",
+            description="Anything ready-made - a prepared card image, or a "
+                        "drive imported from an .hdf - was set up on somebody "
+                        "else's machine, watched on somebody else's screen.")
+        self.patch_display_row = Adw.SwitchRow(
+            title="Adapt the display after writing",
+            subtitle="It keeps its own drivers, which are right for it, but "
+                     "not its saved screen mode. Where this card has no RTG "
+                     "display, clear it so Workbench opens on the Amiga's own "
+                     "screen instead of one that is not there.")
+        self.patch_display_row.connect("notify::active",
+                                       lambda *_a: self._update_summary())
+        group.add(self.patch_display_row)
+        self.display_group = group
+        page.add(group)
+
         group = Adw.PreferencesGroup(
             title="Kickstart ROM",
             description="Emu68 maps a Kickstart from the boot partition. An A1200 "
@@ -1574,14 +1692,26 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Software to add",
             description="A Workbench built from the original disks is exactly "
                         "what shipped in 1994: no archiver, no installer, no "
-                        "WHDLoad. Freely distributable pieces are fetched from "
-                        "Aminet and cached; anything that is not - IBrowse and "
-                        "the like - is only ever copied out of a system you "
-                        "already have, such as a PiMiga installation.")
-        self.package_donor = FileRow(
-            "Take it from", "A Workbench System drive, or a PiMiga folder",
-            folder=True, on_change=lambda _p: self._refresh_packages())
-        self.packages_group.add(self.package_donor)
+                        "WHDLoad. Everything here is fetched from its "
+                        "publisher - Aminet, or the project that makes it - "
+                        "and cached, so a card is built from the current "
+                        "release rather than from whatever another "
+                        "installation happened to hold.")
+        #  A drive imported from an image usually has its own copy of some of
+        #  this. The file system creates files and never overwrites them, so
+        #  one of the two wins by landing first - which is not a decision the
+        #  build should be making quietly on somebody's behalf.
+        self.replace_older_row = Adw.SwitchRow(
+            title="Replace older copies already on the imported drive",
+            subtitle="A ready-made drive often carries its own WHDLoad, "
+                     "icon.library and the like, sometimes years old. On, the "
+                     "release you ticked is installed in its place; off, "
+                     "whatever the drive already has is kept and the download "
+                     "is left out.")
+        self.replace_older_row.set_active(True)
+        self.replace_older_row.connect("notify::active",
+                                       lambda *_a: self._update_summary())
+        self.packages_group.add(self.replace_older_row)
         suggest = Adw.ActionRow(
             title="Suggested load",
             subtitle="Tick what suits this machine, chipset and display")
@@ -1607,13 +1737,15 @@ class ImagerWindow(Adw.ApplicationWindow):
                                     subtitle=package.description)
                 row.set_active(package.default)
                 row.connect("notify::active",
-                            lambda *_a: self._on_layout_changed())
+                            lambda *_a, key=package.key:
+                            self._on_package_toggled(key))
                 self.package_rows[package.key] = row
                 group.add(row)
             self.package_groups.append(group)
             page.add(group)
-
-
+        #  The defaults are set row by row above, which never goes through the
+        #  toggle, so what they need has to be ticked once they all exist.
+        self._tick_what_is_needed()
         return page
 
     def _page_storage(self) -> Adw.PreferencesPage:
@@ -1889,15 +2021,48 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
         self.os_group.set_visible(mode is builder.BuildMode.FRESH)
-        #  Only a Workbench built from floppies needs anything added to it.
-        show_packages = (mode is builder.BuildMode.FRESH
-                         and self._system_source() == "adf")
+        #  Anything this build lays out can have software added to it, not
+        #  only a Workbench installed from floppies: an imported drive gets
+        #  the same package overlays, and hiding the list meant a card built
+        #  around somebody's drive could not be given WHDLoad or iGame.
+        show_packages = mode is builder.BuildMode.FRESH
         for group in self.package_groups:
             group.set_visible(show_packages)
-        installing = (not self.quick_hdf.path
-                      and self._system_source() == "adf")
+        #  The floppies are offered alongside an imported drive too: a drive
+        #  can boot and still bring no Workbench of its own - ClassicWB's
+        #  asks for the disks on its first boot - and there was no way to
+        #  say where they are.
+        installing = (self._system_source() == "adf"
+                      or (self.quick_hdf.path and self._imported_needs_floppies()))
+        #  A drive that brings no Workbench needs the disks, and the chooser
+        #  for them lives on the Source page - which a quick screen does not
+        #  show. So it is brought to where the drive was chosen, beside it,
+        #  or there is simply no way to say where the disks are.
+        #  Only in the full workflow: a quick screen has already borrowed
+        #  these into the group it shows, and moving them onto the Source
+        #  page - which no quick screen shows - would take the chooser away
+        #  from the very person who has to answer it.
+        if self._imported_needs_floppies() and getattr(self, "_customising", True):
+            for row in (self.adf_row, self.os_version_row, self.os_disks):
+                self._move_row(row, self.group_primary)
+        elif getattr(self, "_customising", True):
+            for row in (self.adf_row, self.os_version_row, self.os_disks):
+                self._move_row(row, self.os_group)
         for row in (self.adf_row, self.os_version_row, self.volume_row, self.os_disks):
             row.set_visible(installing)
+        #  There is a saved screen mode to deal with only where a ready-made
+        #  system is involved: a whole card image, a drive written unchanged,
+        #  or a drive imported onto a card this build partitions. A Workbench
+        #  installed from floppies has never been watched on anything.
+        self.display_group.set_visible(
+            mode is not builder.BuildMode.FRESH
+            or any(row.spec().content_hdf for row in self.partition_rows)
+            or bool(self.quick_hdf.path))
+        #  Only a card that imports a drive can have the clash this settles.
+        self.replace_older_row.set_visible(
+            show_packages
+            and (any(row.spec().content_hdf for row in self.partition_rows)
+                 or bool(self.quick_hdf.path)))
         self.expand_group.set_visible(mode is not builder.BuildMode.FRESH)
         for row in self.extra_rows:
             row.set_visible(self.expand_row.get_active())
@@ -1944,12 +2109,17 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _releases_loaded(self, found: list[emu68.Release]) -> bool:
         self.releases = found
         self._populate_releases()
+        #  The list arrives from GitHub after the window is up, so the summary
+        #  was written while there was no build to offer and went on saying
+        #  "Still needed: an Emu68 release" long after one had been chosen.
+        self._update_summary()
         return False
 
     def _releases_failed(self, message: str) -> bool:
         self.release_row.set_model(combo(["Could not reach GitHub"]))
         self.release_row.set_subtitle(
             f"{message}. Choose a local Emu68 zip below instead.")
+        self._update_summary()
         return False
 
     def _populate_releases(self) -> None:
@@ -2025,19 +2195,15 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.partition_group.remove(row)
         self._update_summary()
 
-    def _package_donor(self) -> str:
-        """Where optional software is copied from."""
-        return self.package_donor.path or self.quick_pimiga.path
-
     def _apply_suggested_packages(self) -> None:
         """Tick the set that suits the machine and screen that are chosen."""
         wanted = set(packages.suggested(
             self._machine(), self._display(),
-            donor=self._package_donor() or None,
             networking=bool(self.wifi_ssid.get_text().strip())))
         for key, row in self.package_rows.items():
             if row.get_sensitive():
                 row.set_active(key in wanted)
+        self._tick_what_is_needed()
         self._refresh_packages()
 
     def _refresh_categories(self) -> None:
@@ -2046,19 +2212,19 @@ class ImagerWindow(Adw.ApplicationWindow):
             row.reload_categories()
 
     def _refresh_packages(self) -> None:
-        """Offer only the software that can actually be obtained and used."""
+        """Offer the software that suits this machine and this screen.
+
+        Everything in the list is fetched from its publisher, so what is on
+        offer no longer depends on what some other installation happened to
+        hold - only on whether it makes sense here.
+        """
         if not self._ready:
             return
-        donor = self._package_donor()
-        found = packages.available(donor) if donor else {}
         display = self._display()
         chipset = self._machine().chipset
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
             fits = package.suits(chipset, display)
-            downloadable = package.download is not None
-            usable = fits and (key in found or downloadable)
-            row.set_sensitive(usable)
             note = package.description
             if not fits and package.rtg_only:
                 note += "  -  only useful with an RTG display."
@@ -2066,9 +2232,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 note += "  -  only useful on the Amiga's own screen."
             elif not fits:
                 note += "  -  not a fit for this chipset."
-            elif key in found:
-                note += "  -  from your donor system."
-            elif downloadable:
+            else:
                 where = package.download.source or "Aminet"
                 if package.download.manual:
                     #  Nothing here can fetch it; the build uses a copy the
@@ -2079,18 +2243,92 @@ class ImagerWindow(Adw.ApplicationWindow):
                     note += f"  -  will be fetched from {where}."
                 if package.note:
                     note += f" {package.note}"
+            #  An essential package is part of the choice that brought it in,
+            #  not an extra beside it: choosing an RTG display and then being
+            #  handed a card with no RTG screen modes is not a choice anyone
+            #  made. So it comes on with that display and cannot be dropped
+            #  while it lasts.
+            if fits and package.essential:
+                row.set_active(True)
+                row.set_sensitive(False)
+                note += "  -  required by the display you chose."
             else:
-                note += ("  -  needs a donor system that has it."
-                         if donor else
-                         "  -  choose where to take it from first.")
+                row.set_sensitive(fits)
+                if not fits:
+                    row.set_active(False)
             row.set_subtitle(GLib.markup_escape_text(note))
-            if not usable:
-                row.set_active(False)
+        self._on_layout_changed()
+
+    def _needed_by_active(self, key: str, ignoring: str = "") -> bool:
+        """Whether anything still switched on requires this package."""
+        for other, row in self.package_rows.items():
+            if other in (key, ignoring) or not row.get_active():
+                continue
+            if key in packages.expand([other]):
+                return True
+        return False
+
+    def _tick_what_is_needed(self) -> None:
+        """Switch on whatever the ticked packages require.
+
+        Ticking one switches on what it needs, but a package ticked by
+        default - or by loading a setup, or by the suggested load - never
+        passed through that, so iGame arrived ticked with MUI and its classes
+        beside it switched off. They were installed anyway; the page simply
+        did not say so, and turning iGame off and on again "fixed" it.
+        """
+        for key, row in list(self.package_rows.items()):
+            if not row.get_active():
+                continue
+            for needed in packages.expand([key]):
+                other = self.package_rows.get(needed)
+                if other is not None and needed != key and not other.get_active():
+                    other.set_active(True)
+
+    def _on_package_toggled(self, key: str) -> None:
+        """Keep the page honest about what a choice drags along with it.
+
+        On: what it needs comes with it. Off: anything that needed *it* goes
+        too - a browser without MUI is not a browser - and so does anything
+        that was only ever there to satisfy something else and now satisfies
+        nothing. A package worth having on its own stays: turning off one MUI
+        program should not take MUI away from the rest.
+        """
+        if getattr(self, "_settling_packages", False):
+            return
+        row = self.package_rows.get(key)
+        self._settling_packages = True
+        try:
+            if row is not None and row.get_active():
+                for needed in packages.expand([key]):
+                    other = self.package_rows.get(needed)
+                    if other is not None and needed != key:
+                        other.set_active(True)
+            elif row is not None:
+                #  Whatever required it cannot work without it.
+                for other_key, other_row in list(self.package_rows.items()):
+                    if other_key == key or not other_row.get_active():
+                        continue
+                    if key in packages.expand([other_key]):
+                        other_row.set_active(False)
+                #  Then let go of anything that was only propping this up.
+                for gone in packages.expand([key]):
+                    package = packages.CATALOGUE_BY_KEY.get(gone)
+                    other = self.package_rows.get(gone)
+                    if (gone != key and package is not None and other is not None
+                            and package.support_only and other.get_active()
+                            and not self._needed_by_active(gone)):
+                        other.set_active(False)
+        finally:
+            self._settling_packages = False
         self._on_layout_changed()
 
     def _chosen_packages(self) -> list[str]:
+        #  Not "and sensitive": a package the display makes essential is
+        #  ticked and locked, and testing sensitivity here dropped it back
+        #  out of the build it had just been forced into.
         return [key for key, row in self.package_rows.items()
-                if row.get_active() and row.get_sensitive()]
+                if row.get_active()]
 
     def _refresh_devices(self) -> None:
         if not self._ready:
@@ -2288,11 +2526,17 @@ class ImagerWindow(Adw.ApplicationWindow):
             what = "Partition and build"
         else:
             what = "Update the boot partition of"
+        #  Choices that will build and probably are not what was meant: said
+        #  here, where the setup is accepted, rather than discovered on the
+        #  Amiga afterwards.
+        concerns = config.concerns()
+        note = ("\n\n" + "\n".join(f"\u2022 {c}" for c in concerns)) if concerns else ""
         if applied:
-            self.summary.set_text(f"{what} → {target}")
+            self.summary.set_text(f"{what} → {target}{note}")
         else:
             self.summary.set_text(f"{what} → {target}"
-                                  "   -   Apply this setup to enable Write")
+                                  "   -   Apply this setup to enable Write"
+                                  + note)
         self.write_button.set_sensitive(applied)
         self._quick_preview()
 
@@ -2325,7 +2569,20 @@ class ImagerWindow(Adw.ApplicationWindow):
             blitwait=self.blitwait_row.get_active(),
             swap_df0_with_df1=self.swapdf_row.get_active(),
             sd_unit0_rw=self.unit0_row.get_active(),
-            extra_cmdline=self.extra_row.get_text().strip(),
+            #  No switch decides this - the machine does - and it was set only
+            #  where a quick setup was assembled, never here, where the card
+            #  is actually written from. So every card went out without
+            #  enable_c0_slow, and move_slow_to_chip had nothing to move: a
+            #  machine told to give Workbench a megabyte of chip RAM came up
+            #  with 512K.
+            enable_slow_ram=machines.wants_slow_ram(self._machine()),
+            #  Same story for the framethrower overlay: the display decides
+            #  it, no widget does, and it was set only where a quick setup is
+            #  assembled - so choosing Framethrower and writing from the
+            #  pages produced a card with no overlay to drive it.
+            unicam=machines.wants_unicam(self._display()),
+            unicam_smooth=machines.wants_unicam(self._display()),
+            extra_cmdline=self._extra_cmdline(),
         )
 
         release_tag = ""
@@ -2366,19 +2623,23 @@ class ImagerWindow(Adw.ApplicationWindow):
             amiga_partitions=[row.spec() for row in self.partition_rows],
             pfs3_binary=self.quick_donor.path,
             #  Only a card we are partitioning ourselves can have an OS
-            #  installed onto it from floppies.
+            #  installed onto it from floppies - but a drive imported onto
+            #  such a card may need them as well. ClassicWB's brings no
+            #  Workbench of its own, and a card made from it alone stops at a
+            #  Shell, so the two go together rather than one excluding the
+            #  other.
             install_amigaos=(mode is builder.BuildMode.FRESH
-                             and not self.quick_hdf.path
-                             and self._system_source() == "adf"
-                             and bool(self.adf_row.path)),
+                             and bool(self.adf_row.path)
+                             and (self._system_source() == "adf"
+                                  or self._imported_needs_floppies())),
             adf_folder=self.adf_row.path,
             adf_version=self._selected_adf_version(),
             amiga_volume_name=self.volume_row.get_text().strip() or "Workbench",
             #  The software chosen on the Amiga page.  These only used to be
             #  set by the quick setup, so ticking a package and pressing Write
             #  from the pages themselves quietly built a card without it.
-            package_donor=self._package_donor(),
             package_keys=self._chosen_packages(),
+            replace_older_software=self.replace_older_row.get_active(),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
@@ -2724,12 +2985,58 @@ class ImagerWindow(Adw.ApplicationWindow):
         dialog.open(self, None, done)
 
     def _on_forget_session(self, _button) -> None:
-        """Stop restoring the last setup, for when it is no longer wanted."""
+        """Forget the saved setup and put the window back as it opened.
+
+        Deleting the file was all this did, so everything on screen stayed
+        exactly as it was and only the *next* launch differed - which is not
+        what anyone means by starting again. Clearing the widgets by hand was
+        not it either: the storage layout stayed behind, because the relayout
+        gives up when there is no target to lay anything out for.
+
+        So the reset goes through apply(), the same method a loaded setup
+        goes through, with a default configuration - which is every widget the
+        configuration reaches, in one place, rather than a list to keep in
+        step with the window.
+        """
         try:
             jobs.session_file().unlink(missing_ok=True)
-            self._toast("The saved setup has been forgotten")
         except OSError as error:
             self._toast(f"Could not remove it: {error}")
+            return
+        was_ready, self._ready = self._ready, False
+        try:
+            #  What the configuration does not carry: the choosers, the
+            #  machine, and the quick screen's own copies.
+            for row in (self.quick_pimiga, self.quick_hdf, self.quick_donor,
+                        self.quick_file):
+                row.set_path("")
+            self.quick_primary.set_selected(PRIMARY_SOURCES.index("default"))
+            self.quick_system_source.set_selected(0)
+            self.quick_machine.set_selected(0)
+            self.quick_display.set_selected(0)
+            self.quick_workbench_screen.set_selected(0)
+            self.quick_trapdoor.set_active(False)
+            self.quick_system.set_text("1G")
+            self.quick_work.set_active(True)
+            self.quick_target.set_selected(0)
+            self.device_row.set_selected(0)
+            self._applied_config = None
+            self._quick_screen = "choices"
+        finally:
+            self._ready = was_ready
+        self.apply(builder.BuildConfig(
+            target="",
+            package_keys=[p.key for p in packages.CATALOGUE if p.default]))
+        #  Whatever is lying about on this machine is found again, exactly as
+        #  it is at startup: a Kickstart, the Workbench disks, a PFS3 handler.
+        self._detect_material()
+        self._on_machine_changed()
+        self._mirror_target()
+        self._relayout_partitions()
+        self._set_customising(False)
+        self._sync_visibility()
+        self._update_summary()
+        self._toast("Forgotten - starting again")
 
     def _on_inspect(self, _button) -> None:
         try:
@@ -2888,6 +3195,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.unit0_row.set_active(options.sd_unit0_rw)
         self.extra_row.set_text(options.extra_cmdline)
 
+        self.replace_older_row.set_active(config.replace_older_software)
         self.patch_display_row.set_active(config.patch_display)
         self.expand_row.set_active(config.expand_to_fill)
         for row in list(self.extra_rows):
@@ -2943,19 +3251,19 @@ class ImagerWindow(Adw.ApplicationWindow):
                 return
 
     def _restore_package_choices(self, config: builder.BuildConfig) -> None:
-        """Put the software choices, and where they come from, back.
+        """Put the software choices back.
 
         gather() has always saved these; nothing ever put them back, so
-        loading a setup returned a card with the donor forgotten and every
-        tick cleared, however carefully the list had been chosen.
+        loading a setup returned a card with every tick cleared, however
+        carefully the list had been chosen.
         """
-        if config.package_donor:
-            self.package_donor.set_path(config.package_donor)
-        #  The rows have to be worked out against this donor before they can
-        #  be ticked: refreshing afterwards would clear anything it thought
-        #  unusable, including choices that are perfectly usable.
+        #  Which rows are on offer has to be worked out first: refreshing
+        #  afterwards would clear anything it thought unusable, including
+        #  choices that are perfectly usable. A row left insensitive is one
+        #  the display makes essential, and it keeps the tick it was given.
         self._refresh_packages()
         wanted = set(config.package_keys)
         for key, row in self.package_rows.items():
             if row.get_sensitive() or key in wanted:
                 row.set_active(key in wanted)
+        self._tick_what_is_needed()

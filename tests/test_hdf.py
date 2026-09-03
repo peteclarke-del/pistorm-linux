@@ -214,7 +214,10 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
         self.assertIn(";ExecuteCleanup=uae-configuration", body)
         self.assertIn("QuitKey=$59", body)
 
-    def test_the_games_list_is_filtered_when_copied_as_a_tree(self):
+    def test_the_games_list_is_left_off_when_copied_as_a_tree(self):
+        """Another program's data, written on somebody else's machine: iGame
+        builds its own from the card, which cannot name a game that is not
+        there."""
         source = self.scratch() / "tree"
         games = source / "WHDLOAD" / "OCS" / "Driller"
         games.mkdir(parents=True)
@@ -222,11 +225,12 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
         igame = source / "Programs" / "iGame"
         igame.mkdir(parents=True)
         (igame / "gameslist.csv").write_text(
-            "0;Driller;x;Sys:WHDLOAD/OCS/Driller/Driller.slave;0;0;0;0\n"
-            "0;Gone;x;Sys:WHDLOAD/OCS/Missing/missing.slave;0;0;0;0\n")
-        body = self.read(self.build(source), "Programs/iGame/gameslist.csv")
-        self.assertIn("Driller", body)
-        self.assertNotIn("Missing", body)
+            "0;Driller;x;Sys:WHDLOAD/OCS/Driller/Driller.slave;0;0;0;0\n")
+        (igame / "iGame").write_bytes(b"program")
+        volume = self.build(source)
+        self.assertEqual(self.read(volume, "Programs/iGame/gameslist.csv"), "")
+        #  The program itself is still copied.
+        self.assertEqual(self.read(volume, "Programs/iGame/iGame"), "program")
 
     def test_the_repository_list_is_filtered_too(self):
         """Filtering the games list was only half of the job.
@@ -770,8 +774,39 @@ class DuplicateOverlayFile(_Scratch):
         volume.f.close()
         self.assertEqual(kept, b"first", "the existing file was replaced")
 
-    def test_the_classes_workbench_installs_are_not_hunted_for(self):
-        from pistorm_imager.core import packages               # noqa: PLC0415
-        for name in ("colorwheel", "gradientslider", "tapedeck"):
-            self.assertIn(name, packages.STOCK,
-                          f"{name}.gadget comes with Workbench 3.1")
+class TestABootableDriveFilledFromAnImage(_Scratch):
+    """The path that fills the boot drive from another drive: nothing
+    exercised it, and a name that did not exist there ended a real build
+    after the partition table had already been written."""
+
+    def _source(self):
+        """A small Amiga drive to import."""
+        tree = self.scratch() / "source"
+        (tree / "S").mkdir(parents=True)
+        (tree / "S" / "Startup-Sequence").write_text("echo hello\n")
+        (tree / "C").mkdir()
+        (tree / "C" / "LoadWB").write_bytes(b"x" * 64)
+        made = self.scratch() / "source.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(made), output_hdf=True,
+            image_size=40 * MIB, install_emu68=False,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0, volume_name="Src",
+                content_folder=str(tree))]), QUIET)
+        return made
+
+    def test_a_card_can_be_built_around_an_imported_drive(self):
+        source = self._source()
+        out = self.scratch() / "card.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            image_size=80 * MIB, install_emu68=False, fix_compatibility=True,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0, volume_name="Sys",
+                content_hdf=str(source))]), QUIET)
+        from pistorm_imager.core import amigaos
+        volume, _label = amigaos.open_amiga_volume(str(out))
+        self.assertIsNotNone(volume.find("C/LoadWB"),
+                             "the imported drive's files are not on the card")

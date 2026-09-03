@@ -34,8 +34,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import (amigafs, amigaos, bootcfg, compat, devices, emu68, hdfcheck,
-               imgsrc, kickstart, mbr, packages, pfs3, postwrite,
+from . import (amigafs, amigaos, bootcfg, compat, content, devices, emu68,
+               hdfcheck, imgsrc, kickstart, mbr, packages, pfs3, postwrite,
                rdb)
 from .fat32 import Fat32
 from .util import (MIB, Progress, align_up, copy_stream, human_size,
@@ -112,11 +112,14 @@ class BuildConfig:
     amiga_partitions: list[AmigaPartitionSpec] = dataclasses.field(
         default_factory=lambda: [AmigaPartitionSpec("DH0", None, "PFS3", True, 0)])
     pfs3_binary: str = ""              # optional pfs3aio to embed in the RDB
-    #  Optional software for a Workbench installed from floppies.  Anything a
-    #  donor system can supply is already resolved into the partition's
-    #  overlays; these are kept so the build can fetch what only Aminet has.
-    package_donor: str = ""
+    #  Optional software, fetched from its publisher while the card is built
+    #  and cached between builds.
     package_keys: list[str] = dataclasses.field(default_factory=list)
+    #  What to do when a drive being imported already has a program that was
+    #  ticked here. The file system creates files and never overwrites them,
+    #  so whichever lands first wins - and that used to be settled by the
+    #  order the build happened to run in rather than by anybody's choice.
+    replace_older_software: bool = True
     package_chipset: str = ""          # a machines.Chipset value
     package_display: str = ""          # a machines.Display value
 
@@ -168,6 +171,74 @@ class BuildConfig:
         default_factory=lambda: [AmigaPartitionSpec("DH1", None, "PFS3", False, -128)])
     extra_boot_files: list[str] = dataclasses.field(default_factory=list)
 
+    def concerns(self) -> list[str]:
+        """Choices that will build, and probably are not what was meant.
+
+        Distinct from validate(), which refuses. These are combinations that
+        produce a working card doing something other than what the settings
+        suggest - a games drive with nothing able to launch a game, a card
+        told to use an RTG screen with no RTG driver on it. They are said
+        before anything is written, and the build goes ahead anyway.
+        """
+        said: list[str] = []
+        keys = set(self.package_keys or ())
+        filled = [p for p in self.amiga_partitions
+                  if p.content_folder or p.content_hdf]
+        names = " ".join((p.volume_name or p.name) + " " + (p.content_folder or "")
+                         for p in filled).lower()
+
+        if ("whdload" not in keys
+                and any(word in names for word in ("game", "demo", "whdload"))):
+            said.append(
+                "There are games or demos on this card and WHDLoad is not "
+                "installed, so nothing on it can launch them.")
+        if "igame" in keys and not any(
+                "game" in (p.volume_name or p.name).lower() for p in filled):
+            said.append(
+                "iGame is installed and no drive is being filled with games, "
+                "so it will open on an empty list.")
+        if self.rtg_display and "picasso96" not in keys \
+                and not any(p.content_hdf or p.content_folder
+                            for p in self.amiga_partitions if p.bootable):
+            said.append(
+                "This card is set up for an RTG screen on the Pi's HDMI "
+                "output, but Picasso96 is not being installed and no system "
+                "is being imported that might carry it, so there will be no "
+                "RTG screen to open on.")
+        if self.workbench_on_rtg and not self.rtg_display:
+            said.append(
+                "Workbench is set to open on the RTG screen, and this card "
+                "has no RTG display configured.")
+        if not self.install_amigaos and not filled and self.mode is BuildMode.FRESH:
+            said.append(
+                "Nothing is being put on the Amiga drives: no Workbench, no "
+                "imported drive and no folder, so the card will boot to a "
+                "screen asking for a disk.")
+        by_hand = sorted(key for key in keys
+                         if (packages.CATALOGUE_BY_KEY.get(key) is not None
+                             and packages.CATALOGUE_BY_KEY[key].download
+                             is not None
+                             and packages.CATALOGUE_BY_KEY[key]
+                             .download.manual))
+        if by_hand:
+            said.append(
+                f"{', '.join(by_hand)} cannot be downloaded here - its "
+                f"publisher serves it only to a browser - so put the archive "
+                f"in the cache first, or it will be left out.")
+        return said
+
+    def brings_a_system_from_elsewhere(self) -> bool:
+        """Whether a system somebody else set up is going onto this card.
+
+        A whole prepared image and a drive written unchanged both are one; so
+        is a drive imported onto a card this build partitions, which is what
+        was missed - its saved screen mode is just as much somebody else's as
+        the other two, and nothing was ever done about it.
+        """
+        if self.mode is not BuildMode.FRESH:
+            return True
+        return any(p.content_hdf for p in self.amiga_partitions)
+
     def validate(self) -> list[str]:
         """Return a list of problems; an empty list means the config is usable."""
         problems: list[str] = []
@@ -190,7 +261,7 @@ class BuildConfig:
         if self.emu68_archive and not Path(self.emu68_archive).is_file():
             problems.append(f"Emu68 archive not found: {self.emu68_archive}")
         if self.mode is BuildMode.FRESH:
-            if self.boot_size < 64 * MIB:
+            if self.boot_size < 64 * MIB and not self.output_hdf:
                 problems.append("The boot partition must be at least 64 MiB.")
             if not self.amiga_partitions:
                 problems.append("Define at least one Amiga partition.")
@@ -223,19 +294,13 @@ class BuildConfig:
                     f"{human_size(max(left, 0))} of the "
                     f"{human_size(self.image_size)} for the one set to use "
                     f"the remaining space, which is too small to be a drive.")
-            #  AmigaOS is installed onto the bootable drive, and a drive given
-            #  content is formatted before it is filled. Asking for both puts
-            #  the second over the first and the floppy install is gone, with
-            #  nothing said - so it is refused here instead.
-            if self.install_amigaos:
-                clash = [p.name for p in self.amiga_partitions
-                         if p.bootable and (p.content_folder or p.content_hdf)]
-                if clash:
-                    problems.append(
-                        f"{', '.join(clash)} is set to boot and to be filled "
-                        f"from elsewhere, but Workbench is also being installed "
-                        f"onto it from floppies. Choose one: the content would "
-                        f"format the drive again and the install would be lost.")
+            #  A drive filled from elsewhere may still need the Workbench
+            #  disks: ClassicWB's boots and asks for them, because Commodore's
+            #  files cannot be given away. The content is written first and
+            #  the disks fill in what it does not have, so both are allowed -
+            #  but a folder to find the disks in is not optional then.
+            if self.install_amigaos and not self.adf_folder:
+                problems.append("No folder of Workbench disk images was given.")
         if self.output_hdf:
             if self.mode is not BuildMode.FRESH:
                 problems.append(
@@ -570,6 +635,36 @@ def _filesystem_drivers(config: BuildConfig, parts: list[rdb.Partition],
     return out
 
 
+def _add_missing_system(config: BuildConfig, volume, fixer,
+                        progress: Progress) -> None:
+    """Put what the Workbench disks have, and an imported drive has not, on it.
+
+    A drive can boot and still bring no operating system: ClassicWB's carries
+    no C:LoadWB, no C:IPrefs and no workbench.library, because those are
+    Commodore's and cannot be given away, and its first boot asks for a
+    Workbench disk to copy them from. Nothing already on the drive is
+    replaced - what its author put there is what they meant.
+    """
+    disks = amigaos.scan(config.adf_folder, progress)
+    chosen = amigaos.choose_set(disks, config.adf_version)
+    if not chosen:
+        progress.log(f"WARNING: no Workbench disks in {config.adf_folder}, so "
+                     f"the drive keeps whatever it came with")
+        return
+    progress.step("Adding what the Workbench disks have and the drive has not")
+    added = 0
+    for match in sorted(chosen.values(), key=lambda m: m.role.order):
+        with open(match.path, "rb") as handle:
+            source = amigaos.Volume(handle)
+            copied, _skipped = amigaos.copy_volume(
+                source, volume, match.role.destination, progress,
+                skip_existing=True, compat=fixer)
+        added += copied
+        progress.log(f"  {match.role.label}: {copied} file(s) the drive "
+                     f"did not have")
+    progress.log(f"{added} file(s) added from the Workbench disks")
+
+
 def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      table: rdb.Rdb, progress: Progress) -> None:
     """Format the boot partition and copy Workbench onto it from ADFs."""
@@ -628,6 +723,16 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     #  no single one of them ever saw everything the card was given - and the
     #  floppies were seen by none of them.
     fixer = _make_fixer(config, progress)
+    #  Resolved before the disks are copied, not after: the file system here
+    #  creates files and never overwrites them, so whatever lands first wins.
+    #  Asked for afterwards, a package's current release lost to whatever
+    #  Workbench 3.1 shipped in 1994 - PeterK's icon.library among them.
+    spec = next((s for s in config.amiga_partitions
+                 if s.name.upper() == partition.drive_name.upper()), None)
+    extra = _package_overlays(config, list(spec.overlays), progress) \
+        if spec is not None else []
+    if extra and config.replace_older_software:
+        fixer.displace(_landing_paths(extra))
     volume = amigaos.install(handle, offset, partition.blocks(table.geometry),
                              chosen, progress,
                              volume_name=config.amiga_volume_name,
@@ -639,10 +744,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      "and OS3.5 colour icons will not be drawn")
     #  Overlays (WHDLoad and the like) go on while the volume is still open;
     #  reopening a finished volume would mean rebuilding its allocation state.
-    spec = next((s for s in config.amiga_partitions
-                 if s.name.upper() == partition.drive_name.upper()), None)
     if spec is not None:
-        extra = _package_overlays(config, list(spec.overlays), progress)
         if spec.overlays or extra:
             spec = dataclasses.replace(spec,
                                        overlays=list(spec.overlays) + extra)
@@ -698,26 +800,13 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
     live in ``S:User-Startup`` with the rest of the package startup lines.
     """
     chosen = packages.expand(config.package_keys)
-
-    #  What the floppies install that a donor is about to better.  Workbench
-    #  3.1's SetPatch is 40.16 from 1994 and knows nothing of the 68040, so on
-    #  a PiStorm it leaves the CPU half set up; the copy is refused here so
-    #  the newer one can take its place.
-    replace: list[str] = []
-    if "setpatch" in chosen and config.package_donor:
-        system = packages.donor_system(config.package_donor)
-        if system is not None and (system / "C/SetPatch").exists():
-            replace.append("C/SetPatch")
-
     if "iconlib" not in chosen:
-        if not replace:
-            return None
-        return amigaos.StartupSequenceEditor([], progress, replace=replace)
+        return None
     #  LoadModule, not LoadResident.  LoadResident cannot displace a library
     #  that is already in the system list, and icon.library is there from the
     #  moment the machine starts; LoadModule loads the replacement and soft
     #  resets so it is in place from the next boot onwards.  This is exactly
-    #  what the donor systems do, on the third line of their own startup.
+    #  what the ready-made distributions do, early in their own startup.
     #  AUTO, and a guard on LoadModule itself.
     #
     #  LoadModule installs the modules and soft resets so they are in place
@@ -736,7 +825,7 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
          "   IF EXISTS LIBS:icon.library",
          "      C:LoadModule AUTO LIBS:workbench.library LIBS:icon.library",
          "   EndIF",
-         "EndIF"], progress, replace=replace)
+         "EndIF"], progress)
 
 
 def _write_user_startup(volume, config: "BuildConfig",
@@ -772,12 +861,42 @@ def _write_user_startup(volume, config: "BuildConfig",
     progress.log(f"  S:User-Startup written ({len(lines)} lines)")
 
 
+def _landing_paths(pairs: list[tuple[str, str]]) -> list[str]:
+    """Where a set of overlays will put single files on the drive.
+
+    Only files: a whole drawer is merged into whatever is already there, and
+    refusing one during the copy would take out the drive's own contents
+    along with it.
+    """
+    out: list[str] = []
+    for source, destination in pairs:
+        path = Path(source)
+        if path.is_file():
+            out.append(f"{destination}/{path.name}" if destination
+                       else path.name)
+        elif destination:
+            #  A drawer going onto the card needs its name free. ClassicWB
+            #  keeps Visage as a *file* in Utilities, and this build wants a
+            #  drawer of that name there - which ended an hour-long build
+            #  outright. Only a file can ever be refused by this: the copy
+            #  asks about files and never about drawers, so a drawer of the
+            #  same name is merged into as before.
+            out.append(destination)
+    return out
+
+
+def _boot_drive_is_filled(config: "BuildConfig") -> bool:
+    """Whether the drive the machine boots from is filled from elsewhere."""
+    return any(spec.bootable and (spec.content_hdf or spec.content_folder)
+               for spec in config.amiga_partitions)
+
+
 def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
                       progress: Progress) -> list[tuple[str, str]]:
     """Resolve the chosen software into files to copy onto the drive.
 
-    A donor is preferred over a download; what no donor here can supply is
-    fetched from Aminet and cached between builds.
+    Each package is fetched from its publisher - Aminet, or the project that
+    makes it - and cached between builds.
     """
     if not config.package_keys:
         return []
@@ -787,27 +906,60 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     display = (machines.Display(config.package_display)
                if config.package_display else machines.Display.NATIVE)
     progress.step("Adding the software you chose")
-    resolved = packages.overlays_for(config.package_donor or None,
-                                     config.package_keys, chipset=chipset,
-                                     display=display, progress=progress,
-                                     allow_download=True)
-    #  The quick setup resolves what a donor can supply while it assembles the
-    #  configuration, so those pairs may already be on the partition.  Adding
+    resolved = packages.overlays_for(config.package_keys, chipset=chipset,
+                                     display=display, progress=progress)
+    #  The quick setup resolves the same packages while it assembles the
+    #  configuration, so those pairs may already be on the partition. Adding
     #  them twice would copy every file twice; leaving them out of this list
     #  would drop them entirely for a build driven from the pages, where
     #  nothing resolved them earlier.
     already = {(source, destination) for source, destination in existing}
-    chosen = [pair for pair in resolved if pair not in already]
+    out = [pair for pair in resolved if pair not in already]
+    out += _igame_repositories(config, progress)
+    return out
 
-    #  What the chosen software needs but nothing named: read out of the
-    #  binaries themselves and taken from the donor.  Declaring dependencies
-    #  by hand caught MUI and a few libraries and missed twenty more, each of
-    #  which copied onto the card perfectly and then would not run.
-    extra = packages.resolve_dependencies(list(existing) + chosen,
-                                          config.package_donor or None,
-                                          progress)
-    seen = already | set(chosen)
-    return chosen + [pair for pair in extra if pair not in seen]
+
+def _igame_repositories(config: "BuildConfig",
+                        progress: Progress) -> list[tuple[str, str]]:
+    """Tell iGame which drawers on this card hold games.
+
+    iGame keeps that list in ``repos.prefs``, and its Aminet archive ships
+    none: installed cleanly it comes up with nothing to scan and no way to
+    know where the games went, so "Scan Repositories" finds nothing and the
+    list stays empty. The build knows exactly which drives it filled, so it
+    says so.
+
+    Nothing is guessed. A drive is named only if this build put content on
+    it, and the WHDLoad drawer inside is named only if it is really there -
+    pointing iGame at a drawer that does not exist is how the donor's own
+    list behaved, and it is no better written by us.
+    """
+    if "igame" not in packages.expand(config.package_keys or []):
+        return []
+    boot = {spec.name.upper() for spec in config.amiga_partitions
+            if spec.bootable}
+    lines: list[str] = []
+    for spec in config.amiga_partitions:
+        if spec.name.upper() in boot or not spec.content_folder:
+            continue
+        volume = (spec.volume_name or spec.name).strip()
+        if not volume:
+            continue
+        folder = Path(spec.content_folder)
+        inside = ""
+        try:
+            inside = next((child.name for child in folder.iterdir()
+                           if child.is_dir()
+                           and child.name.lower() == "whdload"), "")
+        except OSError:
+            inside = ""
+        lines.append(f"{volume}:{inside}" if inside else f"{volume}:")
+    if not lines:
+        return []
+    written = Path(tempfile.mkdtemp(prefix="pistorm-igame-")) / "repos.prefs"
+    written.write_text("\n".join(lines) + "\n")
+    progress.log("iGame will scan: " + ", ".join(lines))
+    return [(str(written), "Programs/iGame")]
 
 
 def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
@@ -819,9 +971,18 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
             progress.log(f"  overlay missing, skipped: {source}")
             continue
         if source.is_dir():
-            copied, _renamed = amigaos.install_tree(volume, source, destination,
-                                                    progress, compat=fixer,
-                                                    merge=True)
+            try:
+                copied, _renamed = amigaos.install_tree(
+                    volume, source, destination, progress, compat=fixer,
+                    merge=True)
+            except (amigafs.AmigaFsError, pfs3.Pfs3Error) as error:
+                #  One package colliding with the drive is not a reason to
+                #  throw away a card that took an hour to build. Say which,
+                #  and go on with the rest.
+                progress.log(f"  WARNING: {source.name} could not be "
+                             f"installed into {destination or ':'} - {error}. "
+                             f"Everything else is unaffected.")
+                continue
             progress.log(f"  overlay: {source.name}/ -> {destination or ':'} "
                          f"({copied} files)")
         else:
@@ -874,15 +1035,13 @@ def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
                 wanted.append(path)
             path = path.rpartition("/")[0]
 
-    #  Where to find real drawer icons, best first: the icon set the user
-    #  chose, then the system they are copying from.
+    #  Where to find real drawer icons: the Workbench disks, which is the
+    #  only source left now that no icon set is shipped.
     sources: list[Path] = []
-    if "magicwb" in (config.package_keys or []):
-        sources += packages.icon_set_dirs("magicwb")
-    donor = packages.donor_system(config.package_donor) \
-        if config.package_donor else None
-    if donor is not None:
-        sources.append(donor)
+    if config.adf_folder:
+        borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drawer-icon-"))
+        if amigaos.drawer_icon_from_disks(config.adf_folder, borrowed):
+            sources.append(borrowed)
 
     written = amigaos.ensure_drawer_icons(volume, wanted, sources, progress)
     if written:
@@ -960,6 +1119,69 @@ def _format_empty_partitions(config: BuildConfig, handle,
                      f'{rdb.dostype_name(dostype)}, named "{label}"')
 
 
+def _check_the_system_can_boot(config: BuildConfig, progress: Progress) -> None:
+    """Refuse a card whose system drive brings no operating system.
+
+    A drive can boot and still have no Workbench: ClassicWB's carries no
+    C:LoadWB, no C:IPrefs and no Version, because those are Commodore's. Put
+    it on a card without the disks and the card stops at a Shell saying
+    "C:Version: Unknown command".
+    """
+    from . import presets                         # noqa: PLC0415 - circular
+
+    if config.install_amigaos:
+        return
+    for spec in config.amiga_partitions:
+        if not spec.bootable or not spec.content_hdf:
+            continue
+        if presets.inspect_image_system(
+                spec.content_hdf, spec.content_hdf_partition).needs_floppies:
+            raise RuntimeError(
+                f"{Path(spec.content_hdf).name} brings no Workbench of its "
+                f"own - it has no C:LoadWB - so a card made from it alone "
+                f"cannot boot. Choose the Workbench disk images as well and "
+                f"they will fill in what it does not have.")
+
+
+def _follow_launchers(spec: AmigaPartitionSpec, reader, source: Path | None,
+                      progress: Progress) -> list[str]:
+    """Leave out what an excluded launcher was the only thing running.
+
+    A title can be a few bytes naming the program that runs it. Leaving the
+    launcher out and keeping what it names wastes the very space the exclusion
+    was for, on something nothing can now reach.
+    """
+    if not spec.exclude:
+        return list(spec.exclude or [])
+    try:
+        if source is not None:
+            names = [p.name for p in source.iterdir()]
+            offered = [c.path for c in content.discover(source)]
+
+            def read(name: str):
+                path = source / name
+                return path.read_bytes() if path.is_file() else None
+        else:
+            top = reader.listdir()
+            names = [e.name for e in top]
+            offered = [c.path for c in content.discover_volume(reader)]
+            by_name = {e.name.lower(): e for e in top}
+
+            def read(name: str):
+                entry = by_name.get(name.lower())
+                return None if entry is None or entry.is_dir \
+                    else reader.read_file(entry)
+    except Exception as error:                   # noqa: BLE001 - not fatal
+        progress.log(f"  could not check what the exclusions run: {error}")
+        return list(spec.exclude)
+
+    extra = content.followed(spec.exclude, read, names, offered)
+    for name in extra:
+        progress.log(f"  {name} left out as well: only something you removed "
+                     f"ran it")
+    return list(spec.exclude) + extra
+
+
 def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      table: rdb.Rdb, progress: Progress) -> None:
     """Fill partitions that were given a host directory or overlays."""
@@ -974,8 +1196,26 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         capacity = partition.size_bytes(table.geometry)
         offset = partition.byte_offset(table.geometry, amiga.start_bytes)
         fixer = _make_fixer(config, progress)
+        #  The software goes on the drive the machine boots from, and it is
+        #  resolved before the drive is filled so it can take the place of an
+        #  older copy already in the image - if that is what was asked for.
+        extra = (_package_overlays(config, list(spec.overlays), progress)
+                 if spec.bootable else [])
+        if extra and config.replace_older_software:
+            fixer.displace(_landing_paths(extra))
 
         if spec.content_hdf:
+            from . import presets                 # noqa: PLC0415 - circular
+            #  Only when the Workbench disks are being installed as well:
+            #  its installer exists to copy Commodore's files off a floppy,
+            #  and taking it away without supplying them leaves a card that
+            #  cannot boot at all - which is worse than one that asks.
+            if (spec.bootable and config.install_amigaos
+                    and presets.finishable_install(
+                        spec.content_hdf, spec.content_hdf_partition)):
+                #  A distribution that would otherwise boot into its own
+                #  installer: it is carried out here instead.
+                fixer.finish_classicwb_install()
             reader, label = amigaos.open_amiga_volume(spec.content_hdf,
                                                       spec.content_hdf_partition)
             progress.step(f"Filling {partition.drive_name} from {label}")
@@ -985,7 +1225,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                          partition.dostype)
             copied, skipped = amigaos.copy_volume(
                 reader, volume, "", progress, skip_existing=False,
-                compat=fixer, exclude=spec.exclude)
+                compat=fixer,
+                exclude=_follow_launchers(spec, reader, None, progress))
             try:
                 reader.f.close()
             except Exception:  # noqa: BLE001
@@ -1006,16 +1247,26 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                          partition.blocks(table.geometry),
                                          spec.volume_name or partition.drive_name,
                                          partition.dostype)
-            copied, renamed = amigaos.install_tree(volume, source, "", progress,
-                                                   compat=fixer,
-                                                   exclude=spec.exclude)
+            copied, renamed = amigaos.install_tree(
+                volume, source, "", progress, compat=fixer,
+                exclude=_follow_launchers(spec, None, source, progress))
             progress.log(f"{copied} files copied"
                          + (f", {renamed} renamed for AmigaDOS" if renamed else ""))
         else:
             #  Overlay-only partitions are handled where they were installed.
             continue
+        if spec.bootable and config.install_amigaos:
+            _add_missing_system(config, volume, fixer, progress)
+        if extra:
+            spec = dataclasses.replace(spec,
+                                       overlays=list(spec.overlays) + extra)
         _apply_overlays(volume, spec, fixer, progress)
         if spec.bootable:
+            #  Everything the floppy install does once the files are on:
+            #  without these the software went on and had no icons, and
+            #  nothing that needed a startup line ever ran.
+            _give_drawers_icons(volume, spec, config, progress)
+            _write_user_startup(volume, config, progress)
             #  Only the drive the machine boots from: Games and Demos were
             #  each being given their own copy of the display-switching
             #  scripts, which belong in the system drive's S: and nowhere.
@@ -1435,7 +1686,7 @@ def _build_hdf_output(config: BuildConfig, handle, size: int,
     for line in table.describe().splitlines():
         progress.log(line)
     amiga = mbr.MbrPartition(0, 0, mbr.TYPE_AMIGA, 0, size // SECTOR)
-    if config.install_amigaos:
+    if config.install_amigaos and not _boot_drive_is_filled(config):
         _install_amigaos(config, handle, amiga, table, progress)
     if any(p.content_folder or p.content_hdf
                            for p in config.amiga_partitions):
@@ -1618,6 +1869,10 @@ def _expand(handle, config: BuildConfig, target_size: int, progress: Progress) -
 
 
 def run_build(config: BuildConfig, progress: Progress) -> None:
+    for concern in config.concerns():
+        #  Said before anything is written, and the build goes ahead: these
+        #  are choices that work and probably were not meant.
+        progress.log(f"NOTE: {concern}")
     problems = config.validate()
     if problems:
         raise RuntimeError("; ".join(problems))
@@ -1680,13 +1935,25 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
                     table.write(handle, amiga_part.start_bytes)
                     for line in table.describe().splitlines():
                         progress.log(line)
-                    if config.install_amigaos:
+                    if config.install_amigaos \
+                            and not _boot_drive_is_filled(config):
                         _install_amigaos(config, handle, amiga_part, table, progress)
                     if any(p.content_folder or p.content_hdf
                            for p in config.amiga_partitions):
+                        _check_the_system_can_boot(config, progress)
                         _install_content(config, handle, amiga_part, table, progress)
                     _format_empty_partitions(config, handle, amiga_part, table,
                                              progress)
+                    #  A drive imported onto a card built here carries a saved
+                    #  screen mode exactly as a whole prepared image does, and
+                    #  this ran only for those - so a card whose DH0 came from
+                    #  an .hdf opened Workbench on a screen it has not got.
+                    if config.patch_display \
+                            and config.brings_a_system_from_elsewhere():
+                        progress.step("Adapting the display setup on the card")
+                        postwrite.adapt_display(handle, amiga_part.start_bytes,
+                                                table, config.rtg_display,
+                                                progress)
             else:
                 parts = mbr.read_table(handle)
                 boot_part = _find_boot_partition(parts)

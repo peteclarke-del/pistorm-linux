@@ -16,6 +16,43 @@ QUIET = Progress()
 PREFS = b"FORM\x00\x00\x006PREFPRHD\x00\x00\x00\x06" + b"\x00" * 42
 
 
+class TestWhichCardsHaveADisplayToAdapt(unittest.TestCase):
+    """Adapting the display only ran for a whole image written as it was.
+
+    A drive imported onto a card this build partitions carries a saved screen
+    mode exactly as one of those does, and the switch that deals with it was
+    on the image chooser, where such a build never goes - so a card whose DH0
+    came from an .hdf opened Workbench on a screen it has not got.
+    """
+
+    def config(self, **fields):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        fields.setdefault("target", "/tmp/nowhere.img")
+        return builder.BuildConfig(**fields)
+
+    def test_a_workbench_from_floppies_has_nothing_to_adapt(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        spec = builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0)
+        self.assertFalse(
+            self.config(amiga_partitions=[spec])
+            .brings_a_system_from_elsewhere())
+
+    def test_a_drive_imported_into_dh0_does(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        spec = builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0,
+                                          content_hdf="/somewhere/System.hdf")
+        self.assertTrue(
+            self.config(amiga_partitions=[spec])
+            .brings_a_system_from_elsewhere())
+
+    def test_so_does_a_prepared_image_or_a_drive_written_unchanged(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        for mode in (builder.BuildMode.IMAGE, builder.BuildMode.HDF):
+            with self.subTest(mode.value):
+                self.assertTrue(
+                    self.config(mode=mode).brings_a_system_from_elsewhere())
+
+
 class TestAdaptDisplay(unittest.TestCase):
     def scratch(self) -> Path:
         folder = Path(tempfile.mkdtemp(prefix="pistorm-postwrite-"))

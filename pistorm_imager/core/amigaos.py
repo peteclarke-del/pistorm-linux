@@ -50,7 +50,6 @@ ROLES = [
     Role("backdrops", "Backdrops", "Backdrops", ("backdrops",), order=65),
     Role("install", "Install", "Install", ("install",), order=70),
 ]
-ROLES_BY_KEY = {r.key: r for r in ROLES}
 
 
 #  "Workbench3.1" / "Extras3.2" carry the release in the volume name; Fonts and
@@ -327,6 +326,11 @@ def copy_volume(source, target, destination: str, progress: Progress,
                 if compat.skip(landed):
                     skipped += 1
                     continue
+                #  A distribution can ship its finished boot script under
+                #  another name, to be renamed once its installer has run.
+                instead = getattr(compat, "rename_to", None)
+                if instead is not None:
+                    name = instead(landed) or name
             target.write_file(parent, name, data, protect=entry.protect,
                               comment=entry.comment, days=entry.days,
                               mins=entry.mins, ticks=entry.ticks)
@@ -349,7 +353,6 @@ ILLEGAL_AMIGA_CHARS = set(':/')
 #  launched from the tool types in its icon, so an orphaned icon is a game that
 #  no longer starts.
 ICON_SUFFIX = ".info"
-MAX_WITH_ICON = amigafs.MAX_NAME - len(ICON_SUFFIX)
 
 
 def _fold(char: str) -> str:
@@ -1067,6 +1070,43 @@ def _drawer_icon_sources(folders: Iterable[str | Path]) -> dict[str, bytes]:
     return found
 
 
+def drawer_icon_from_disks(folder: str | Path, into: Path) -> Path | None:
+    """Take one real drawer icon out of the Workbench floppies.
+
+    A card can now be built from floppies and Aminet alone, with no donor and
+    no icon set - and then nothing had a drawer icon to copy, so the drawers
+    this tool creates stayed invisible on Workbench. The floppies have real
+    ones; one of those is as good as any.
+    """
+    folder = Path(folder)
+    if not folder.is_dir():
+        return None
+    for disk in sorted(folder.glob("*.adf")):
+        try:
+            volume, _label = open_amiga_volume(str(disk), "")
+            entries = volume.listdir()
+        except Exception:                        # noqa: BLE001 - try the next
+            continue
+        names = {e.name.lower() for e in entries}
+        for entry in entries:
+            name = entry.name
+            if entry.is_dir or not name.lower().endswith(ICON_SUFFIX):
+                continue
+            if name[:-len(ICON_SUFFIX)].lower() not in names:
+                continue
+            try:
+                data = volume.read_file(entry)
+            except Exception:                    # noqa: BLE001
+                continue
+            if not amigainfo.is_drawer_icon(data):
+                continue
+            into.mkdir(parents=True, exist_ok=True)
+            made = into / f"drawer{ICON_SUFFIX}"
+            made.write_bytes(data)
+            return made
+    return None
+
+
 def ensure_drawer_icons(volume, drawers: Iterable[str],
                         sources: Iterable[str | Path],
                         progress: Progress) -> int:
@@ -1151,23 +1191,20 @@ class StartupSequenceEditor:
     #  run IPrefs at all.
     ANCHORS = ("c:iprefs", "iprefs", "c:conclip")
 
-    def __init__(self, lines: Iterable[str], progress: Progress,
-                 replace: Iterable[str] = ()):
+    def __init__(self, lines: Iterable[str], progress: Progress):
         self.lines = [line for line in lines if line.strip()]
         self.progress = progress
         self.inserted = False
-        #  Files the floppies would install that something better is going to
-        #  supply afterwards.  They have to be refused here rather than
-        #  overwritten later, because this file system creates files and never
-        #  replaces them.
-        self.replace = {name.replace("\\", "/").lower() for name in replace}
         self.replaced: list[str] = []
 
     def skip(self, relative: str) -> bool:
-        posix = relative.replace("\\", "/").lower()
-        if posix in self.replace:
-            self.replaced.append(relative)
-            return True
+        """Nothing here is refused.
+
+        This editor used to hold back files the floppies install so a donor's
+        newer copy could take their place - Commodore's SetPatch, which only
+        a donor could better. Everything is fetched from its publisher now,
+        and an archive that means to replace a system file says so itself.
+        """
         return False
 
     def finish(self, target, progress) -> None:

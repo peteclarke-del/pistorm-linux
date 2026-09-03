@@ -15,6 +15,7 @@ nothing assumed about it.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable
 from pathlib import Path
 
 from .machines import Chipset, Machine
@@ -67,40 +68,240 @@ def _folder_key(name: str) -> str:
     return name.strip().lower().removesuffix(".info")
 
 
-def discover(folder: str | Path) -> list[Category]:
-    """The categories a content folder is divided into.
+#  Markers a title puts in its own name to say which chipset it wants. Matched
+#  in UPPER CASE and only at a word boundary, which is what keeps "Saga" and
+#  "Vagabond" out of it - their "aga" is lower case and mid-word.
+NAME_MARKERS = (("CD32", Chipset.AGA, "the name says CD32, which is an AGA "
+                                      "machine"),
+                ("AGA", Chipset.AGA, "the name says AGA"))
 
-    Looks for a container drawer - WHDLOAD is the usual one - and lists what
-    is inside it. A tree with no such drawer has no categories to offer, which
-    is different from having none this machine can run.
+
+def needs_from_name(name: str) -> tuple[Chipset | None, str]:
+    """What a title's own name admits about the chipset it needs.
+
+    This is the only honest automatic judgement available. Scanning the
+    program for AGA-only registers was tried and abandoned: matching 16-bit
+    words finds FMODE inside DOOM1.WAD and inside an IFF picture, so it
+    labels data as code and would confidently condemn titles that run
+    perfectly well. A name is a weaker signal but it is never a guess.
+    """
+    stem = Path(name).stem
+    for marker, needs, why in NAME_MARKERS:
+        at = stem.upper().rfind(marker)
+        if at < 0 or stem[at:at + len(marker)] != marker:
+            continue
+        before = stem[at - 1] if at else ""
+        after = stem[at + len(marker):at + len(marker) + 1]
+        #  A boundary before it, and nothing lower-case run on after it.
+        if before.isupper() and before.isalpha():
+            continue
+        if after.islower():
+            continue
+        return needs, why
+    return None, ""
+
+
+def discover(folder: str | Path) -> list[Category]:
+    """What a content folder holds, as things that can be left out.
+
+    Two kinds. A collection keeps its titles in a container drawer - WHDLOAD
+    is the usual one - divided into categories whose names say what they
+    need, and those are listed as before. Everything *else* at the top of the
+    drive is a program in its own right, and those were never offered at all:
+    a Games drive with forty native titles sitting beside its WHDLOAD drawer
+    could only be taken whole, AGA titles and all, onto an ECS machine.
     """
     root = Path(folder)
     if not root.is_dir():
         return []
     found: list[Category] = []
     seen: set[str] = set()
+    containers: set[str] = set()
+
     for container in CONTAINERS:
+        here = root / container
         try:
-            entries = [p for p in (root / container).iterdir() if p.is_dir()]
+            entries = [p for p in here.iterdir() if p.is_dir()]
         except OSError:
             continue
-        #  The real name on disk, whatever its case, is what the copy matches.
-        actual = (root / container).name if (root / container).exists() else container
+        containers.add(here.name.lower())
+        actual = here.name
         for entry in sorted(entries, key=lambda p: p.name.lower()):
             key = _folder_key(entry.name)
             if not key or key in seen:
                 continue
             seen.add(key)
             needs, note = KNOWN.get(key, (None, ""))
-            try:
-                count = sum(1 for _ in entry.iterdir())
-            except OSError:
-                count = 0
+            if needs is None and not note:
+                needs, note = needs_from_name(entry.name)
             found.append(Category(f"{actual}/{entry.name}", entry.name,
-                                  needs, note, count))
+                                  needs, note, _count(entry)))
         if found:
             break
+
+    #  The programs beside the collection, each one its own choice.
+    try:
+        loose = list(root.iterdir())
+    except OSError:
+        loose = []
+    for entry in sorted(loose, key=lambda p: p.name.lower()):
+        if entry.name.lower() in containers or entry.name.startswith("."):
+            continue
+        needs, note = needs_from_name(entry.name)
+        if not entry.is_dir() and (needs is None
+                                   or entry.name.lower().endswith(".info")):
+            continue
+        found.append(Category(entry.name, entry.name, needs, note,
+                              _count(entry) if entry.is_dir() else 0))
     return found
+
+
+def _locator(entry) -> int:
+    """Where a directory entry's contents live, whichever reader found it.
+
+    FFS calls it a block and PFS3 calls it an anode; both readers take that
+    number back in ``listdir``, so this is the whole of the difference.
+    """
+    return getattr(entry, "anode", None) or getattr(entry, "block", 0)
+
+
+def discover_volume(reader) -> list[Category]:
+    """The same, read out of an Amiga volume rather than a host folder.
+
+    A drive imported from an .hdf was offered nothing to leave out at all,
+    because the listing walked a real directory. The readers for FFS and PFS3
+    both list a directory by name, so the same question can be asked of them
+    - and it is asked one directory at a time rather than by walking the
+    drive, which on twenty gigabytes of games would take longer than the
+    build.
+    """
+    found: list[Category] = []
+    seen: set[str] = set()
+    containers: set[str] = set()
+    try:
+        top = reader.listdir()
+    except Exception:                            # noqa: BLE001 - unreadable
+        return []
+
+    for container in CONTAINERS:
+        entry = next((e for e in top if e.is_dir
+                      and e.name.lower() == container.lower()), None)
+        if entry is None:
+            continue
+        containers.add(entry.name.lower())
+        try:
+            inside = [e for e in reader.listdir(_locator(entry)) if e.is_dir]
+        except Exception:                        # noqa: BLE001
+            inside = []
+        for child in sorted(inside, key=lambda e: e.name.lower()):
+            key = _folder_key(child.name)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            needs, note = KNOWN.get(key, (None, ""))
+            if needs is None and not note:
+                needs, note = needs_from_name(child.name)
+            found.append(Category(f"{entry.name}/{child.name}", child.name,
+                                  needs, note, _volume_count(reader, child)))
+        if found:
+            break
+
+    for entry in sorted(top, key=lambda e: e.name.lower()):
+        if entry.name.lower() in containers or entry.name.startswith("."):
+            continue
+        needs, note = needs_from_name(entry.name)
+        #  Drawers always; a loose file only when its own name says what it
+        #  needs. Turrican2AGA on a real drive is a fourteen-byte launcher
+        #  rather than a drawer, so a rule about drawers missed the one title
+        #  on the whole drive that could be identified - while listing every
+        #  file would bury it in save files and icons.
+        if not entry.is_dir and needs is None:
+            continue
+        if not entry.is_dir and entry.name.lower().endswith(".info"):
+            continue
+        found.append(Category(entry.name, entry.name, needs, note,
+                              _volume_count(reader, entry) if entry.is_dir
+                              else 0))
+    return found
+
+
+def _volume_count(reader, entry) -> int:
+    try:
+        return len(reader.listdir(_locator(entry)))
+    except Exception:                            # noqa: BLE001
+        return 0
+
+
+def _count(folder: Path) -> int:
+    try:
+        return sum(1 for _ in folder.iterdir())
+    except OSError:
+        return 0
+
+
+#  A launcher names what it runs; it is not the thing itself, so it is small.
+LAUNCHER_LIMIT = 512
+
+
+def _named_inside(data: bytes) -> list[str]:
+    """The item names a small text file mentions, if it is text at all."""
+    try:
+        text = data.decode("latin-1")
+    except ValueError:
+        return []
+    if any(ord(c) < 9 or 13 < ord(c) < 32 for c in text):
+        return []                                # not text: a program, a save
+    out = []
+    for line in text.splitlines():
+        #  "AmigaGame.exe", or ":Drawer/Program" from the volume root.
+        name = line.strip().lstrip(":").replace("\\", "/").split("/")[0].strip()
+        if name:
+            out.append(name)
+    return out
+
+
+def followed(excluded: Iterable[str], read_file, present: Iterable[str],
+             offered: Iterable[str] = ()) -> list[str]:
+    """What else to leave out because only an excluded launcher named it.
+
+    A title can be a few bytes naming the program that runs it - Turrican2AGA
+    on a real drive is fourteen bytes reading "AmigaGame.exe" - so leaving the
+    launcher out and keeping what it names wastes the space the exclusion was
+    meant to save, on something now unreachable.
+
+    Two things stop this doing harm. A launcher that is *kept* pins what it
+    names, so a shared engine survives as long as anything still runs it; and
+    anything the user was offered as a choice of its own is never taken away
+    behind their back.
+    """
+    excluded = list(excluded)
+    gone = {name.lower() for name in excluded}
+    offered = {name.lower() for name in offered}
+    here = {name.lower(): name for name in present}
+
+    def targets(name: str) -> list[str]:
+        data = read_file(name)
+        if data is None or len(data) > LAUNCHER_LIMIT:
+            return []
+        return [here[t.lower()] for t in _named_inside(data)
+                if t.lower() in here and t.lower() != name.lower()]
+
+    #  What the survivors still need.
+    pinned: set[str] = set()
+    for name in present:
+        if name.lower() in gone:
+            continue
+        pinned |= {t.lower() for t in targets(name)}
+
+    extra: list[str] = []
+    for name in excluded:
+        for target in targets(name):
+            key = target.lower()
+            if key in gone or key in pinned or key in offered:
+                continue
+            gone.add(key)
+            extra.append(target)
+    return extra
 
 
 def unsuitable(categories: list[Category], machine: Machine) -> list[str]:
