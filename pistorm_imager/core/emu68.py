@@ -226,11 +226,26 @@ def fetch_firmware(destination: Path, progress: Progress) -> list[Path]:
     for index, name in enumerate(FIRMWARE_FILES, start=1):
         progress.check_cancelled()
         cached = cache / name
-        if not cached.exists() or cached.stat().st_size == 0:
+        #  Kept only if it came from where this build is asking, and only if
+        #  all of it arrived: a download that stopped early is still a file,
+        #  and cached by existence alone it would go on every card built
+        #  afterwards.
+        note = cached.with_name(cached.name + ".source")
+        source = FIRMWARE_BASE + name
+        good = (cached.exists() and cached.stat().st_size > 0
+                and note.exists() and note.read_text().strip() == source)
+        if not good:
             try:
-                with _urlopen(FIRMWARE_BASE + name, timeout=60) as response:
-                    cached.write_bytes(response.read())
-            except urllib.error.URLError as error:
+                with _urlopen(source, timeout=60) as response:
+                    declared = int(response.headers.get("Content-Length") or 0)
+                    data = response.read()
+                if declared and len(data) != declared:
+                    raise RuntimeError(
+                        f"{name} arrived {len(data)} bytes long, not the "
+                        f"{declared} the server declared")
+                cached.write_bytes(data)
+                note.write_text(source + "\n")
+            except (urllib.error.URLError, RuntimeError) as error:
                 raise RuntimeError(
                     f"could not download Raspberry Pi firmware file {name}: {error}"
                 ) from error

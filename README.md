@@ -1003,6 +1003,30 @@ times inside an IFF picture. It labels data as code, and would have confidently
 condemned titles that run perfectly well. A name is a weaker signal, but it is
 never a guess.
 
+### Anything kept from a previous run has to say where it came from
+
+Three rebuilds were lost to one shape of bug, in three different places: a
+thing kept from an earlier run and handed back although what it came from had
+changed. Each one built a card that looked right and was not, and each was only
+found by reading the finished card rather than the build log — which reported
+the cache hit perfectly honestly every time.
+
+| Cache | Was keyed on | Now |
+| --- | --- | --- |
+| The downloaded archive | its file name — and Aminet and whdload.de both serve `WHDLoad_usr.lha` | the address it came from, recorded beside it |
+| The unpacked tree | the archive's name | discarded when the archive is newer than it |
+| Emu68's RTG driver | existence alone | the release URL it was extracted from |
+| The Raspberry Pi firmware | existence alone, with no check of what arrived | the source URL, and `Content-Length` |
+
+The unpacked tree is the one that stung most: every package was correctly
+re-downloaded and then installed from the tree unpacked hours earlier, so a
+card came out carrying WHDLoad 16.8 while the 20.0 archive sat beside it in the
+same directory.
+
+`EveryCacheKnowsWhereItCameFrom` in `tests/test_updates.py` walks the code and
+asserts each of these still checks its provenance, so the next cache added has
+to as well.
+
 ### iGame is told where the games are
 
 iGame keeps the drawers it scans in `repos.prefs`, and its Aminet archive

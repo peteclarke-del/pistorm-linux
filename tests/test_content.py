@@ -1,4 +1,5 @@
 """What a collection is divided into, and what a given Amiga can run."""
+import os
 import shutil
 import sys
 import tempfile
@@ -1174,6 +1175,48 @@ class TheCacheRemembersWhereItGotThings(unittest.TestCase):
             self.package("https://nowhere.invalid/Thing.lha", manual=True),
             Progress())
         self.assertEqual(got.read_bytes(), b"put here by the user")
+
+
+class TheUnpackedTreeFollowsTheArchive(unittest.TestCase):
+    """The same trap as the archive cache, one level down.
+
+    Fetching a newer archive is no use if what was unpacked from the old one
+    is handed back. Every package was correctly re-downloaded and then
+    installed from the tree unpacked hours earlier, so a card came out
+    carrying WHDLoad 16.8 while the archive sitting beside it was 20.0.
+    """
+
+    def setUp(self):
+        self.cache = Path(tempfile.mkdtemp(prefix="pistorm-unpack-"))
+        self.addCleanup(shutil.rmtree, self.cache, ignore_errors=True)
+        patch = unittest.mock.patch.object(packages, "cache_dir",
+                                           lambda: self.cache)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def prepared(self, archive_newer: bool):
+        archive = self.cache / "Thing.lha"
+        archive.write_bytes(b"an archive")
+        tree = self.cache / "Thing.unpacked"
+        tree.mkdir()
+        (tree / "from-the-old-archive").write_bytes(b"stale")
+        stamp = archive.stat().st_mtime
+        os.utime(archive, (stamp + 10, stamp + 10) if archive_newer
+                 else (stamp - 10, stamp - 10))
+        return archive, tree
+
+    def test_a_tree_older_than_its_archive_is_thrown_away(self):
+        archive, tree = self.prepared(archive_newer=True)
+        packages.unpack(archive, Progress())
+        self.assertFalse((tree / "from-the-old-archive").exists(),
+                         "the stale tree was handed back again")
+
+    def test_a_tree_newer_than_its_archive_is_kept(self):
+        #  The ordinary case: unpacking wrote the tree after the download.
+        archive, tree = self.prepared(archive_newer=False)
+        got = packages.unpack(archive, Progress())
+        self.assertEqual(got, tree)
+        self.assertTrue((tree / "from-the-old-archive").exists())
 
 
 class IgameIsToldWhereTheGamesAre(unittest.TestCase):
