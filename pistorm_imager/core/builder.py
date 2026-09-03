@@ -872,7 +872,52 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     #  would drop them entirely for a build driven from the pages, where
     #  nothing resolved them earlier.
     already = {(source, destination) for source, destination in existing}
-    return [pair for pair in resolved if pair not in already]
+    out = [pair for pair in resolved if pair not in already]
+    out += _igame_repositories(config, progress)
+    return out
+
+
+def _igame_repositories(config: "BuildConfig",
+                        progress: Progress) -> list[tuple[str, str]]:
+    """Tell iGame which drawers on this card hold games.
+
+    iGame keeps that list in ``repos.prefs``, and its Aminet archive ships
+    none: installed cleanly it comes up with nothing to scan and no way to
+    know where the games went, so "Scan Repositories" finds nothing and the
+    list stays empty. The build knows exactly which drives it filled, so it
+    says so.
+
+    Nothing is guessed. A drive is named only if this build put content on
+    it, and the WHDLoad drawer inside is named only if it is really there -
+    pointing iGame at a drawer that does not exist is how the donor's own
+    list behaved, and it is no better written by us.
+    """
+    if "igame" not in packages.expand(config.package_keys or []):
+        return []
+    boot = {spec.name.upper() for spec in config.amiga_partitions
+            if spec.bootable}
+    lines: list[str] = []
+    for spec in config.amiga_partitions:
+        if spec.name.upper() in boot or not spec.content_folder:
+            continue
+        volume = (spec.volume_name or spec.name).strip()
+        if not volume:
+            continue
+        folder = Path(spec.content_folder)
+        inside = ""
+        try:
+            inside = next((child.name for child in folder.iterdir()
+                           if child.is_dir()
+                           and child.name.lower() == "whdload"), "")
+        except OSError:
+            inside = ""
+        lines.append(f"{volume}:{inside}" if inside else f"{volume}:")
+    if not lines:
+        return []
+    written = Path(tempfile.mkdtemp(prefix="pistorm-igame-")) / "repos.prefs"
+    written.write_text("\n".join(lines) + "\n")
+    progress.log("iGame will scan: " + ", ".join(lines))
+    return [(str(written), "Programs/iGame")]
 
 
 def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,

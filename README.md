@@ -868,6 +868,20 @@ Two updates are offered:
 | **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
 | **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
 
+### iGame is told where the games are
+
+iGame keeps the drawers it scans in `repos.prefs`, and its Aminet archive
+ships none. Installed cleanly it came up with **nothing to scan**: "Scan
+Repositories" found nothing and the list stayed empty on a card whose drives
+were full of games. Found by booting a written card in an emulator and
+watching iGame open its repositories requester with nothing in it.
+
+The build knows exactly which drives it filled, so it says so — one line per
+drive it put content on, naming the `WHDLoad` drawer inside only when that
+drawer is really there. Nothing is guessed: a drive this build did not fill is
+not named, because pointing iGame at a drawer that does not exist is precisely
+what the donor's own list used to do.
+
 ### What a program needs comes with it
 
 Dependencies between packages are declared and pulled in: iGame, AmFTP, NetSurf
