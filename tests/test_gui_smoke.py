@@ -214,6 +214,29 @@ def on_activate(app: ImagerApplication) -> None:
         for row in window.package_rows.values():
             row.set_active(False)
 
+        #  Dependencies are linked both ways, and a package worth having on
+        #  its own is not dragged off with the thing that needed it.
+        rows = window.package_rows
+        for row in rows.values():
+            row.set_active(False)
+        rows["igame"].set_active(True)
+        check(all(rows[k].get_active() for k in
+                  ("mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext")),
+              "ticking iGame ticks everything it needs")
+        rows["mui"].set_active(False)
+        check(not rows["igame"].get_active(),
+              "turning MUI off turns off what cannot work without it")
+        check(not rows["mcc_nlist"].get_active(),
+              "and the classes that were only there for it")
+        rows["igame"].set_active(True)
+        rows["igame"].set_active(False)
+        check(not rows["mcc_nlist"].get_active(),
+              "dropping iGame drops the classes nothing else wants")
+        check(rows["mui"].get_active(),
+              "but MUI stays: it is worth having on its own")
+        for row in rows.values():
+            row.set_active(False)
+
         #  A size typed for a card is a guess, and "125G" means 125 GiB - nine
         #  gigabytes more than a card sold as 125 GB. When a card is in front
         #  of us its capacity is known, so it is used and the box is closed.
