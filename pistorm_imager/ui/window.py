@@ -2534,6 +2534,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  machine told to give Workbench a megabyte of chip RAM came up
             #  with 512K.
             enable_slow_ram=machines.wants_slow_ram(self._machine()),
+            #  Same story for the framethrower overlay: the display decides
+            #  it, no widget does, and it was set only where a quick setup is
+            #  assembled - so choosing Framethrower and writing from the
+            #  pages produced a card with no overlay to drive it.
+            unicam=machines.wants_unicam(self._display()),
+            unicam_smooth=machines.wants_unicam(self._display()),
             extra_cmdline=self._extra_cmdline(),
         )
 

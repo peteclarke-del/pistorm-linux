@@ -187,6 +187,17 @@ def workbench_on_rtg(display: Display, prefer_rtg: bool = True) -> bool:
 CMDLINE_OPTIONS = ("move_slow_to_chip",)
 
 
+def wants_unicam(display: Display) -> bool:
+    """Whether Emu68 should load the framethrower overlay.
+
+    Nothing on screen decides this beyond the display choice itself, and it
+    was set only where a quick setup is assembled - so a card written from
+    the pages went out with the Framethrower chosen and no overlay to drive
+    it, which is the same defect the slow RAM options had.
+    """
+    return display is Display.FRAMETHROWER
+
+
 def wants_slow_ram(machine: Machine) -> bool:
     """Whether Emu68 should map the slow RAM ranges for this machine.
 
@@ -236,9 +247,8 @@ def boot_options(machine: Machine, display: Display,
         else:
             options.hdmi_automatic = True
         options.vc4_mem = 64
-    if display is Display.FRAMETHROWER:
-        options.unicam = True
-        options.unicam_smooth = True
+    options.unicam = wants_unicam(display)
+    options.unicam_smooth = options.unicam
     return options
 
 
