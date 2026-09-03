@@ -895,6 +895,14 @@ provide for the gaps — and the packages, the drawer icons and `S:User-Startup`
 are applied there instead. Packages are resolved **before** the drive is
 filled, so they can take the place of an older copy.
 
+**Displacing stops when the filling does.** Refusing a path is a rule about
+copying a drive, and the package's own files go on through the same pass — so
+leaving it switched on refused those too, and the file landed nowhere at all.
+Whole drawers were unaffected, which is what made the resulting card look like
+a packaging problem rather than this: `Utilities/PowerWindows`, `Internet/
+NetSurf` and `Programs/iGame` were all present and correct while `C:WHDLoad`,
+`C:LhA`, `Libs:icon.library` and `Programs/iGame/iGame` were simply absent.
+
 A drawer claims its **name** as well. ClassicWB keeps `Visage` as a *file* in
 `Utilities:` and this build wants a drawer of that name there — a collision
 that ended an hour-long build outright with *"Visage already exists as a
