@@ -223,19 +223,13 @@ class BuildConfig:
                     f"{human_size(max(left, 0))} of the "
                     f"{human_size(self.image_size)} for the one set to use "
                     f"the remaining space, which is too small to be a drive.")
-            #  AmigaOS is installed onto the bootable drive, and a drive given
-            #  content is formatted before it is filled. Asking for both puts
-            #  the second over the first and the floppy install is gone, with
-            #  nothing said - so it is refused here instead.
-            if self.install_amigaos:
-                clash = [p.name for p in self.amiga_partitions
-                         if p.bootable and (p.content_folder or p.content_hdf)]
-                if clash:
-                    problems.append(
-                        f"{', '.join(clash)} is set to boot and to be filled "
-                        f"from elsewhere, but Workbench is also being installed "
-                        f"onto it from floppies. Choose one: the content would "
-                        f"format the drive again and the install would be lost.")
+            #  A drive filled from elsewhere may still need the Workbench
+            #  disks: ClassicWB's boots and asks for them, because Commodore's
+            #  files cannot be given away. The content is written first and
+            #  the disks fill in what it does not have, so both are allowed -
+            #  but a folder to find the disks in is not optional then.
+            if self.install_amigaos and not self.adf_folder:
+                problems.append("No folder of Workbench disk images was given.")
         if self.output_hdf:
             if self.mode is not BuildMode.FRESH:
                 problems.append(
@@ -568,6 +562,36 @@ def _filesystem_drivers(config: BuildConfig, parts: list[rdb.Partition],
         progress.log(f"Embedding {path.name} ({len(binary)} bytes) as "
                      f"{rdb.dostype_name(dostype)}{shown}")
     return out
+
+
+def _add_missing_system(config: BuildConfig, volume, fixer,
+                        progress: Progress) -> None:
+    """Put what the Workbench disks have, and an imported drive has not, on it.
+
+    A drive can boot and still bring no operating system: ClassicWB's carries
+    no C:LoadWB, no C:IPrefs and no workbench.library, because those are
+    Commodore's and cannot be given away, and its first boot asks for a
+    Workbench disk to copy them from. Nothing already on the drive is
+    replaced - what its author put there is what they meant.
+    """
+    disks = amigaos.scan(config.adf_folder, progress)
+    chosen = amigaos.choose_set(disks, config.adf_version)
+    if not chosen:
+        progress.log(f"WARNING: no Workbench disks in {config.adf_folder}, so "
+                     f"the drive keeps whatever it came with")
+        return
+    progress.step("Adding what the Workbench disks have and the drive has not")
+    added = 0
+    for match in sorted(chosen.values(), key=lambda m: m.role.order):
+        with open(match.path, "rb") as handle:
+            source = amigaos.Volume(handle)
+            copied, _skipped = amigaos.copy_volume(
+                source, volume, match.role.destination, progress,
+                skip_existing=True, compat=fixer)
+        added += copied
+        progress.log(f"  {match.role.label}: {copied} file(s) the drive "
+                     f"did not have")
+    progress.log(f"{added} file(s) added from the Workbench disks")
 
 
 def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
@@ -1020,6 +1044,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         else:
             #  Overlay-only partitions are handled where they were installed.
             continue
+        if spec.bootable and config.install_amigaos:
+            _add_missing_system(config, volume, fixer, progress)
         _apply_overlays(volume, spec, fixer, progress)
         if spec.bootable:
             #  Only the drive the machine boots from: Games and Demos were

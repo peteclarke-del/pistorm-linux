@@ -931,6 +931,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         page.add(group)
         return page
 
+    def _imported_needs_floppies(self) -> bool:
+        """Whether the drive being imported brings no Workbench of its own."""
+        path = self.quick_hdf.path
+        if not path:
+            return False
+        try:
+            return presets.inspect_image_system(path).needs_floppies
+        except Exception:                        # noqa: BLE001 - not fatal
+            return False
+
     def _on_quick_hdf(self) -> None:
         path = self.quick_hdf.path
         if not path:
@@ -1906,13 +1916,19 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
         self.os_group.set_visible(mode is builder.BuildMode.FRESH)
-        #  Only a Workbench built from floppies needs anything added to it.
-        show_packages = (mode is builder.BuildMode.FRESH
-                         and self._system_source() == "adf")
+        #  Anything this build lays out can have software added to it, not
+        #  only a Workbench installed from floppies: an imported drive gets
+        #  the same package overlays, and hiding the list meant a card built
+        #  around somebody's drive could not be given WHDLoad or iGame.
+        show_packages = mode is builder.BuildMode.FRESH
         for group in self.package_groups:
             group.set_visible(show_packages)
-        installing = (not self.quick_hdf.path
-                      and self._system_source() == "adf")
+        #  The floppies are offered alongside an imported drive too: a drive
+        #  can boot and still bring no Workbench of its own - ClassicWB's
+        #  asks for the disks on its first boot - and there was no way to
+        #  say where they are.
+        installing = (self._system_source() == "adf"
+                      or (self.quick_hdf.path and self._imported_needs_floppies()))
         for row in (self.adf_row, self.os_version_row, self.volume_row, self.os_disks):
             row.set_visible(installing)
         self.expand_group.set_visible(mode is not builder.BuildMode.FRESH)
