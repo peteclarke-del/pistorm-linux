@@ -1003,6 +1003,29 @@ times inside an IFF picture. It labels data as code, and would have confidently
 condemned titles that run perfectly well. A name is a weaker signal, but it is
 never a guess.
 
+### The drive's own S:User-Startup is kept, and added to
+
+A package that has to be *started* — FBlit, FText, Birdie, BlazeWCP — puts its
+line in `S:User-Startup`. A drive being imported brings its own, and this file
+system creates files and never overwrites them, so the build said
+
+    S:User-Startup already exists; left alone
+
+and those four went onto the card as programs that were never run. Read off a
+finished card, every one of their lines was absent; the only reason MUI's
+appeared was that ClassicWB's own file happens to carry identical assigns.
+
+The drive's file is now held back during the copy — the same trick that lets a
+distribution's real boot script replace its installer — and written out again
+whole with the packages' lines appended after it. Left whole deliberately: it
+is the distribution's own setup, and replacing it would break the system the
+card is built on.
+
+While there, the display-switching scripts were made tolerant of a drive that
+already carries them. They were written with `check_existing=True`, so a card
+built by this tool once before would end the *next* build at its last step,
+an hour in, over a script that was already correct.
+
 ### Anything kept from a previous run has to say where it came from
 
 Three rebuilds were lost to one shape of bug, in three different places: a
