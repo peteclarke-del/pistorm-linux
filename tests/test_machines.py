@@ -331,15 +331,19 @@ class TestMachineSetup(unittest.TestCase):
         self.assertNotIn("format it on the Amiga", text)
         self.assertIn("copied from Games", text)
 
-    def test_whdload_is_overlaid_onto_a_floppy_install(self):
-        """A Workbench built from floppies has no WHDLoad, so it is added."""
+    def test_whdload_is_chosen_for_a_floppy_install(self):
+        """A Workbench built from floppies has no WHDLoad, so it is added.
+
+        The files themselves are fetched from Aminet while the card is being
+        built, where there is a progress report to hang the download off, so
+        what the configuration carries is the choice.
+        """
         config = presets.machine_setup(
             machines.MACHINES_BY_KEY["a500"], Display.NATIVE,
             str(self.folder / "c.img"), False, 64 * GIB, self.detected(),
             pimiga_folder=str(self.pimiga), system_source="adf")
-        destinations = [dest for _src, dest in config.amiga_partitions[0].overlays]
-        self.assertIn("C", destinations)
-        self.assertIn("Expansion/WHDLoad", destinations)
+        self.assertIn("whdload", config.package_keys)
+        self.assertIn("lha", config.package_keys)
 
     def test_the_work_drive_switch_is_honoured(self):
         """It was passed nowhere, so turning it off changed nothing."""
@@ -422,15 +426,15 @@ class TestMachineSetup(unittest.TestCase):
             pimiga_folder=str(self.pimiga), system_source="adf")
         self.assertEqual(back.system_source, "adf")
 
-    def test_whdload_is_only_overlaid_when_installing_from_floppies(self):
-        """PiMiga's own system already has WHDLoad; a fresh Workbench does not."""
+    def test_software_is_only_chosen_when_installing_from_floppies(self):
+        """A ready-made system brings its own; a fresh Workbench does not."""
         from_floppies = presets.machine_setup(
             machines.MACHINES_BY_KEY["a500"], Display.NATIVE,
             str(self.folder / "c.img"), False, 64 * GIB, self.detected(),
             pimiga_folder=str(self.pimiga), system_source="adf")
-        self.assertTrue(from_floppies.amiga_partitions[0].overlays)
+        self.assertTrue(from_floppies.package_keys)
         self.assertFalse(self.setup_for("a1200", Display.RTG_HDMI)
-                         .amiga_partitions[0].overlays)
+                         .package_keys)
 
     def test_description_mentions_the_machine_and_display(self):
         config = self.setup_for("a500")
@@ -442,15 +446,15 @@ class TestMachineSetup(unittest.TestCase):
         self.assertIn("chip_slowdown", text)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 class TestOptionalSoftware(unittest.TestCase):
     """A Workbench from floppies has no archiver, installer or WHDLoad.
 
-    None of that is shipped here, so it is copied out of a system the user
-    already has - and only what that system actually holds is offered.
+    None of that is shipped here, so each piece is fetched from whoever
+    publishes it. It used to be copied out of a system the user already had,
+    which meant a card was built from whatever that installation happened to
+    hold, at whatever age it happened to be.
     """
 
     def scratch(self) -> Path:
@@ -458,54 +462,27 @@ class TestOptionalSoftware(unittest.TestCase):
         self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
         return folder
 
-    def donor(self, *present: str) -> Path:
-        system = self.scratch() / "System"
-        (system / "C").mkdir(parents=True)
-        (system / "S").mkdir()
-        for item in present:
-            path = system / item
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"x")
-        return system
-
-    def test_only_what_the_donor_has_is_offered(self):
+    def test_everything_offered_names_where_it_comes_from(self):
         from pistorm_imager.core import packages
-        system = self.donor("C/WHDLoad", "C/lha")
-        found = packages.available(system)
-        self.assertIn("whdload", found)
-        self.assertIn("lha", found)
-        self.assertNotIn("igame", found)
-
-    def test_nothing_is_offered_without_a_donor(self):
-        from pistorm_imager.core import packages
-        self.assertEqual(packages.available(None), {})
-        self.assertEqual(packages.available(self.scratch()), {})
-
-    def test_chosen_packages_become_overlays(self):
-        from pistorm_imager.core import packages
-        system = self.donor("C/WHDLoad", "C/lha", "C/Installer")
-        overlays = packages.overlays_for(system, ["whdload", "lha"], rtg=False)
-        destinations = sorted(dest for _src, dest in overlays)
-        self.assertEqual(destinations, ["C", "C"])
-        self.assertNotIn("Installer", " ".join(s for s, _d in overlays))
+        for package in packages.CATALOGUE:
+            self.assertIsNotNone(
+                package.download,
+                f"{package.key} has no source, so ticking it would do nothing")
 
     def test_rtg_only_software_is_withheld_without_rtg(self):
         from pistorm_imager.core import packages
-        system = self.donor("Libs/Picasso96/rtg.library")
-        self.assertEqual(packages.overlays_for(system, ["picasso96"], rtg=False), [])
-        self.assertTrue(packages.overlays_for(system, ["picasso96"], rtg=True))
+        self.assertEqual(
+            packages.overlays_for(["picasso96"], rtg=False,
+                                  allow_download=False), [])
 
-    def test_a_pimiga_folder_works_as_a_donor(self):
+    def test_nothing_is_fetched_when_downloads_are_not_allowed(self):
+        """The configuration stage resolves no files; the build fetches them."""
         from pistorm_imager.core import packages
-        root = self.scratch()
-        system = root / "disks" / "System"
-        (system / "C").mkdir(parents=True)
-        (system / "S").mkdir()
-        (system / "C" / "lha").write_bytes(b"x")
-        self.assertEqual(packages.donor_system(root), system)
+        self.assertEqual(
+            packages.overlays_for(["whdload", "lha"], rtg=False,
+                                  allow_download=False), [])
 
     def test_the_setup_adds_them_to_a_floppy_install(self):
-        system = self.donor("C/WHDLoad", "C/lha")
         folder = self.scratch()
         (folder / "adfs").mkdir()
         config = presets.machine_setup(
@@ -513,11 +490,8 @@ class TestOptionalSoftware(unittest.TestCase):
             str(folder / "c.img"), False, 32 * 10 ** 9,
             presets.Detected(adf_folder=str(folder / "adfs"), adf_version="3.1",
                              adf_complete=True),
-            system_source="adf", package_donor=str(system),
-            package_keys=["whdload", "lha"])
-        overlays = config.amiga_partitions[0].overlays
-        self.assertTrue(overlays)
-        self.assertTrue(any("WHDLoad" in src for src, _d in overlays))
+            system_source="adf", package_keys=["whdload", "lha"])
+        self.assertEqual(config.package_keys, ["whdload", "lha"])
 
 
 class TestPackageFit(unittest.TestCase):
@@ -543,12 +517,23 @@ class TestPackageFit(unittest.TestCase):
     def test_every_entry_is_obtainable_somehow(self):
         """A package nobody can supply would only ever be a dead switch."""
         for package in self.packages.CATALOGUE:
-            self.assertTrue(package.items or package.download, package.key)
+            self.assertTrue(package.download, package.key)
 
     def test_a_self_installing_download_says_where_it_lands(self):
+        """A package placed whole has to name the drawer it goes into.
+
+        "Placed whole" is the archive going somewhere as it is, which is what
+        happens when nothing says where its parts belong - so a package that
+        places files by `rename`, or writes its own, is not one of these. The
+        condition used to be `items` alone, and a package with only a rename
+        fell through to being placed whole at `stage`, which for such a
+        package is "" - the volume root.
+        """
         for package in self.packages.CATALOGUE:
             download = package.download
-            if download is not None and not download.items:
+            if download is None or download.merge:
+                continue
+            if not (download.items or download.rename or download.write):
                 self.assertTrue(download.stage, package.key)
                 self.assertTrue(package.note, package.key)
 
@@ -572,7 +557,7 @@ class TestPackageFit(unittest.TestCase):
     def test_the_suggestion_for_an_ocs_a500_on_its_own_screen(self):
         chosen = self.packages.suggested(self.a500, Display.NATIVE)
         for key in ("whdload", "lha", "installer", "iconlib",
-                    "fblit", "ftext", "fullpalette", "magicwb"):
+                    "fblit", "ftext", "fullpalette"):
             self.assertIn(key, chosen)
         self.assertNotIn("picasso96", chosen)
         self.assertNotIn("scalos", chosen)
@@ -584,13 +569,14 @@ class TestPackageFit(unittest.TestCase):
         self.assertNotIn("fblit", chosen)
 
     def test_a_suggestion_only_names_software_that_can_be_had(self):
-        """Scalos has no free download, so it needs a donor to be suggested."""
-        chosen = self.packages.suggested(self.a1200, Display.RTG_HDMI)
-        self.assertNotIn("scalos", chosen)
-        system = self.donor("C/WHDLoad", "System/Scalos/Scalos")
-        with_donor = self.packages.suggested(self.a1200, Display.RTG_HDMI,
-                                             donor=str(system))
-        self.assertIn("scalos", with_donor)
+        """Every suggestion has to be something this can actually install."""
+        for machine, display in ((self.a1200, Display.RTG_HDMI),
+                                 (self.a500, Display.NATIVE)):
+            for key in self.packages.suggested(machine, display,
+                                               networking=True):
+                self.assertIsNotNone(
+                    self.packages.CATALOGUE_BY_KEY[key].download,
+                    f"{key} is suggested and cannot be obtained")
 
     def test_networking_is_only_suggested_when_it_is_wanted(self):
         without = self.packages.suggested(self.a500, Display.NATIVE)
@@ -684,3 +670,166 @@ class EcsUpgrades(unittest.TestCase):
         options = machines.boot_options(machine, machines.Display.NATIVE)
         self.assertTrue(options.chip_slowdown)
         self.assertTrue(options.enable_slow_ram)
+
+
+class TheTrapdoorRamHasToBeMappedBeforeItCanBeMoved(unittest.TestCase):
+    """``move_slow_to_chip`` on its own moves nothing.
+
+    The RAM at 0xC00000 has to be mapped first, which is what
+    ``enable_c0_slow`` and its neighbours do. Sent without them the option is
+    inert, and a machine told to give Workbench a megabyte of chip RAM comes
+    up with 512K - which is what a real card did.
+    """
+
+    def cmdline(self, key: str, trapdoor: bool) -> str:
+        machine = machines.MACHINES_BY_KEY[key]
+        return machines.boot_options(machine, machines.Display.NATIVE,
+                                     trapdoor_to_chip=trapdoor).cmdline()
+
+    def test_the_two_travel_together(self):
+        for key in ("a500", "a500ecs"):
+            with self.subTest(key):
+                text = self.cmdline(key, True)
+                self.assertIn("move_slow_to_chip", text)
+                self.assertIn("enable_c0_slow", text)
+
+    def test_the_ranges_are_mapped_even_without_the_trapdoor_choice(self):
+        #  Enabling the ranges is right for any OCS/ECS machine; moving them
+        #  into chip RAM is the separate choice.
+        text = self.cmdline("a500ecs", False)
+        self.assertIn("enable_c0_slow", text)
+        self.assertNotIn("move_slow_to_chip", text)
+
+    def test_an_aga_machine_gets_neither(self):
+        text = self.cmdline("a1200", True)
+        self.assertNotIn("enable_c0_slow", text)
+
+    def test_the_option_names_are_the_ones_emu68_knows(self):
+        #  Checked against the strings in the Emu68 kernel binary rather than
+        #  from memory: a switch spelled wrongly does nothing at all, quietly.
+        text = self.cmdline("a500ecs", True)
+        for word in ("enable_c0_slow", "enable_c8_slow", "enable_d0_slow",
+                     "move_slow_to_chip"):
+            self.assertIn(word, text)
+
+
+class EveryOptionTheMachineDecidesReachesTheCard(unittest.TestCase):
+    """gather() builds the boot options, and it built them from widgets alone.
+
+    Two settings have no widget - the machine or the display decides them -
+    and both were therefore left at their dataclass default on every card
+    written from the pages: the slow RAM mapping, without which
+    ``move_slow_to_chip`` moves nothing and a machine told to give Workbench a
+    megabyte of chip RAM comes up with 512K, and the framethrower overlay,
+    without which choosing that display drives nothing.
+
+    A save/load round trip cannot catch this - a field never set at all is
+    consistently wrong in both directions - so the invariant is checked
+    directly: anything ``machines.boot_options()`` can decide must either be
+    passed by ``gather()`` or be owned by a widget it reads.
+    """
+
+    def gather_keywords(self) -> set:
+        """The BootOptions keywords gather() actually passes."""
+        import ast                                             # noqa: PLC0415
+        source = (Path(__file__).resolve().parent.parent
+                  / "pistorm_imager" / "ui" / "window.py").read_text()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.FunctionDef) and node.name == "gather":
+                for call in ast.walk(node):
+                    if isinstance(call, ast.Call):
+                        func = call.func
+                        name = (func.attr if isinstance(func, ast.Attribute)
+                                else getattr(func, "id", ""))
+                        if name == "BootOptions":
+                            return {kw.arg for kw in call.keywords if kw.arg}
+        self.fail("gather() no longer builds a BootOptions")
+        return set()
+
+    def test_gather_passes_everything_the_machine_can_decide(self):
+        import dataclasses                                     # noqa: PLC0415
+        from pistorm_imager.core import bootcfg                # noqa: PLC0415
+        passed = self.gather_keywords()
+        default = bootcfg.BootOptions()
+        dropped = {}
+        for machine in machines.MACHINES:
+            for display in machines.Display:
+                for trapdoor in (False, True):
+                    decided = machines.boot_options(
+                        machine, display, trapdoor_to_chip=trapdoor)
+                    for field in dataclasses.fields(decided):
+                        value = getattr(decided, field.name)
+                        if field.name in passed:
+                            continue
+                        if value != getattr(default, field.name):
+                            dropped.setdefault(field.name, set()).add(
+                                f"{machine.key}/{display.name}")
+        self.assertEqual(
+            dropped, {},
+            "gather() drops settings the machine decides, so a card written "
+            f"from the pages goes out without them: {dropped}")
+
+
+class TheEmulatorIsToldWhatTheCardWasBuiltFor(unittest.TestCase):
+    """Testing a card means describing the Amiga it is going into.
+
+    That description already exists - the model, the chipset, the board and
+    the trapdoor choice drive the build itself - and writing it a second time
+    by hand is how the two came apart: the harness used through one long
+    bisection emulated an A1200 (AGA) with an FPU at accuracy = 0, while the
+    card was built for an ECS A500 on a PiStorm that has no FPU.
+    """
+
+    def config(self, key: str, **kwargs) -> str:
+        from pistorm_imager.core import emulate                # noqa: PLC0415
+        return emulate.fsuae_config(machines.MACHINES_BY_KEY[key],
+                                    "/tmp/card.hdf", "/tmp/kick.rom", **kwargs)
+
+    def setting(self, text: str, name: str) -> str:
+        for line in text.splitlines():
+            if line.startswith("#"):
+                continue
+            if line.split("=")[0].strip() == name:
+                return line.split("=", 1)[1].strip()
+        return ""
+
+    def test_the_chipset_follows_the_machine(self):
+        self.assertEqual(self.setting(self.config("a500"), "amiga_model"),
+                         "A500")
+        self.assertEqual(self.setting(self.config("a1200"), "amiga_model"),
+                         "A1200")
+        #  An ECS A500 is not an OCS one, and emulating it as A500 would get
+        #  the chipset wrong for the very material this project converts.
+        self.assertNotEqual(self.setting(self.config("a500ecs"),
+                                         "amiga_model"), "A500")
+
+    def test_never_the_fast_inexact_cpu(self):
+        for machine in machines.MACHINES:
+            with self.subTest(machine.key):
+                self.assertEqual(
+                    self.setting(self.config(machine.key), "accuracy"), "1",
+                    "accuracy = 0 makes every WHDLoad game guru, which reads "
+                    "like a broken card and is not")
+
+    def test_the_trapdoor_choice_decides_the_chip_ram(self):
+        without = self.setting(self.config("a500ecs"), "chip_memory")
+        with_it = self.setting(self.config("a500ecs", trapdoor_to_chip=True),
+                               "chip_memory")
+        self.assertEqual(without, "512")
+        self.assertEqual(with_it, "1024")
+
+    def test_a_machine_with_no_trapdoor_is_unaffected(self):
+        self.assertEqual(
+            self.setting(self.config("a600", trapdoor_to_chip=True),
+                         "chip_memory"),
+            self.setting(self.config("a600"), "chip_memory"))
+
+    def test_every_machine_has_a_model_to_stand_in_for_it(self):
+        from pistorm_imager.core import emulate                # noqa: PLC0415
+        for machine in machines.MACHINES:
+            with self.subTest(machine.key):
+                self.assertTrue(emulate.fsuae_model(machine))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

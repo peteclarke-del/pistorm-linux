@@ -20,7 +20,7 @@ import dataclasses
 import time
 from pathlib import Path
 
-from . import amigaos, builder, emu68, kickstart, machines, packages
+from . import amigaos, builder, emu68, kickstart, machines, packages, rdb
 from .util import GIB, MIB, human_size
 
 DEFAULT_BOOT_SIZE = 256 * MIB
@@ -245,6 +245,36 @@ def quick_config(target: str, target_is_device: bool, card_size: int,
     )
 
 
+def _describe_imported_drive(path: str) -> tuple[list[str], bool]:
+    """The drives inside an .hdf the card is being built around.
+
+    What goes on the card is the image's own layout, so that is what has to
+    be shown - reading the partition list instead announced an empty DH0 on a
+    card whose whole point was the drive in this file.
+    """
+    try:
+        info = builder.inspect_hdf(path)
+    except Exception as error:                   # noqa: BLE001 - report it
+        return [f"Amiga drive: {Path(path).name} - cannot be read: {error}"], False
+    lines = [f"Amiga drive: {info.description}"]
+    pfs3 = False
+    if info.table is not None:
+        for partition in info.table.partitions:
+            size = human_size(partition.size_bytes(info.table.geometry))
+            boot = ", bootable" if partition.bootable else ""
+            name = rdb.dostype_name(partition.dostype)
+            pfs3 |= name.startswith(("PFS", "PDS"))
+            lines.append(f"{partition.drive_name}: {size}, {name}{boot} - "
+                         f"copied from {Path(path).name}")
+    else:
+        name = (rdb.dostype_name(info.bare_dostype)
+                if info.bare_dostype is not None else "the file system in it")
+        pfs3 = name.startswith(("PFS", "PDS"))
+        lines.append(f"DH0: {human_size(info.size)}, {name} - the whole of "
+                     f"{Path(path).name}, with an RDB built around it")
+    return lines, pfs3
+
+
 def describe(config: builder.BuildConfig, detected: Detected) -> str:
     """A plain account of what the build will actually put on the card."""
     lines = [f"Boot partition: {human_size(config.boot_size)} FAT32 with Emu68"]
@@ -253,6 +283,30 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
         lines.append(f"Kickstart: {name}")
     else:
         lines.append("Kickstart: none found - Emu68 will not start without one")
+
+    #  Two of the three tasks do not use the partition list at all: the drive
+    #  comes out of the image, with its own layout. Walking the list anyway
+    #  described a card that was never going to be built, and described its
+    #  boot drive as empty - which is the opposite of what happens.
+    if config.mode is builder.BuildMode.HDF and config.hdf_image:
+        described, pfs3 = _describe_imported_drive(config.hdf_image)
+        lines.extend(described)
+        #  The RDB is the image's, but the handler still has to be in it or
+        #  nothing mounts, and the repair pass puts one there.
+        if pfs3 and not config.pfs3_binary:
+            lines.append("PFS3 handler: NOT FOUND - the PFS3 partitions will "
+                         "not mount until one is supplied, or added from "
+                         "HDToolBox")
+        elif pfs3:
+            lines.append(f"PFS3 handler: found "
+                         f"({Path(config.pfs3_binary).name})")
+        return "\n".join(lines)
+    if config.mode is builder.BuildMode.IMAGE and config.source_image:
+        lines = [f"Writing {Path(config.source_image).name} to the card as it "
+                 f"is, with its own partitions and everything on them"]
+        if config.patch_display:
+            lines.append("The saved screen mode will be adapted afterwards")
+        return "\n".join(lines)
 
     filled_system = False
     for spec in config.amiga_partitions:
@@ -296,8 +350,6 @@ AGA_ONLY_CATEGORIES = ["WHDLOAD/AGA", "WHDLOAD/CD32"]
 
 #  PiMiga's System drive is around 9 GB, so give it headroom.
 PIMIGA_SYSTEM_SIZE = 11 * GIB
-#  Below this there is no point taking a 9 GB system and no room for games.
-PIMIGA_SYSTEM_MIN_CARD = 24 * GIB
 
 
 def choose_system_source(display: machines.Display, disks: "Path | None",
@@ -346,26 +398,6 @@ def excluded_for(machine: machines.Machine) -> list[str]:
     return [] if machine.aga else list(AGA_ONLY_CATEGORIES)
 
 
-def package_overlays(donor: str | Path | None, keys: list[str] | None,
-                     rtg: bool,
-                     chipset: machines.Chipset = machines.Chipset.AGA,
-                     display: machines.Display | None = None
-                     ) -> list[tuple[str, str]]:
-    """Optional software to lay on top of a Workbench built from floppies.
-
-    A Workbench installed from the original disks has no archiver, no installer
-    and no WHDLoad, so the pieces almost everyone adds next are offered here.
-    Only what a donor system on this machine can supply is resolved now;
-    anything that has to come from Aminet is fetched during the build, where
-    there is a progress report to hang the download off.
-    """
-    if donor is None:
-        return []
-    chosen = packages.default_keys(rtg) if keys is None else keys
-    return packages.overlays_for(donor, chosen, rtg, chipset=chipset,
-                                 display=display)
-
-
 def machine_setup(machine: machines.Machine, display: machines.Display,
                   target: str, target_is_device: bool, card_size: int,
                   detected: Detected, *, pimiga_folder: str = "",
@@ -376,7 +408,6 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
                   system_source: str = "auto",
                   hdf_source: str = "",
                   work_partition: bool = True,
-                  package_donor: str = "",
                   package_keys: list[str] | None = None,
                   prefer_rtg_screen: bool = True) -> builder.BuildConfig:
     """A complete card for one machine.
@@ -442,13 +473,10 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
         system.overlays = []
     else:
         #  A Workbench installed from floppies has never heard of WHDLoad, an
-        #  archiver, or the installer most software expects.
-        system.overlays = package_overlays(
-            package_donor or pimiga_folder or None, package_keys,
-            display.uses_rtg, machine.chipset, display)
-        #  Whatever no donor here can supply is fetched from Aminet during the
-        #  build, so the choice has to travel with the configuration.
-        config.package_donor = package_donor or pimiga_folder or ""
+        #  archiver, or the installer most software expects. Every package is
+        #  fetched from its publisher during the build, where there is a
+        #  progress report to hang the download off, so the choice is all that
+        #  travels with the configuration.
         config.package_keys = list(
             packages.default_keys(display.uses_rtg)
             if package_keys is None else package_keys)
@@ -498,7 +526,7 @@ def best_rom_for_machine(roms: list[kickstart.RomInfo],
 
 
 SYSTEM_SOURCE_LABELS = {
-    "image": "an Amiga hard disk image, with its own partition scheme",
+    "image": "the files out of an Amiga hard disk image",
     "pimiga": "PiMiga's ready-made system (AmigaOS 3.9, Scalos)",
     "adf": "Workbench installed from your floppy images",
     "none": "none - the drive is left for HDToolBox on the Amiga",
@@ -510,9 +538,24 @@ def describe_machine_setup(config: builder.BuildConfig,
                            display: machines.Display,
                            detected: Detected) -> str:
     source = getattr(config, "system_source", "adf")
+    described = SYSTEM_SOURCE_LABELS.get(source, source)
+    #  These two tasks take the whole Amiga side from a file, whatever the
+    #  system source says - it belongs to building a card from parts, and
+    #  saying "installed from your floppy images" over an imported drive was
+    #  simply untrue.
+    if config.mode is builder.BuildMode.HDF:
+        described = "whatever is on the drive in the image"
+    elif config.mode is builder.BuildMode.IMAGE:
+        described = "whatever is on the prepared image"
+    #  A drive can be imported *and* the Workbench disks installed to fill in
+    #  what it does not carry. Saying only where the drive came from left the
+    #  summary looking as though the disks had been ignored.
+    if config.install_amigaos and source != "adf":
+        described += ", with Workbench from your floppy images filling in " \
+                     "what it does not carry"
     lines = [f"{machine.label} with {machine.board_label}",
              f"Display: {display.label}",
-             f"System: {SYSTEM_SOURCE_LABELS.get(source, source)}"]
+             f"System: {described}"]
     if display.has_choice_of_screen:
         lines.append("Workbench opens on: "
                      + ("the RTG screen, leaving the Amiga's own output for "
@@ -622,8 +665,15 @@ class ImageSystem:
 
     @property
     def needs_floppies(self) -> bool:
-        """True when the image cannot supply an operating system itself."""
-        return not self.bootable
+        """True when the image cannot supply an operating system itself.
+
+        A Startup-Sequence is not an operating system. ClassicWB's drive has
+        one and it is an *installer*: on the first boot it asks for a
+        Workbench floppy and copies the copyright files off it, because
+        Workbench is still sold. Without ``C:LoadWB`` there is no Workbench
+        to start, whatever the boot script says.
+        """
+        return not (self.bootable and self.found.get("workbench"))
 
     def describe(self) -> str:
         if self.error:
@@ -631,6 +681,10 @@ class ImageSystem:
         if not self.bootable:
             return ("no operating system on this drive - install one from "
                     "floppy images, or it will not boot")
+        if not self.found.get("workbench"):
+            return ("boots, but brings no Workbench of its own: no C:LoadWB. "
+                    "A drive like this expects the Workbench disks and takes "
+                    "the copyright files from them, so add them as well")
         traits = [text for key, _path, text in SYSTEM_MARKERS
                   if key != "bootable" and self.found.get(key)]
         detail = f"; {', '.join(traits)}" if traits else ""
@@ -691,6 +745,31 @@ def check_image_for_machine(path: str | Path, machine: machines.Machine,
         except Exception:  # noqa: BLE001
             pass
     return warnings
+
+
+def finishable_install(path: str | Path, partition: str = "") -> bool:
+    """Whether an imported drive is a distribution waiting to install itself.
+
+    ClassicWB's drive boots into its own installer: it copies Commodore's
+    files off a Workbench floppy and then puts the boot script it carries as
+    T:Science in place of the installer's own. Both halves can be done while
+    the card is built, and then it boots into the system instead.
+    """
+    from . import amigaos
+
+    try:
+        volume, _label = amigaos.open_amiga_volume(path, partition)
+    except Exception:                            # noqa: BLE001 - not fatal
+        return False
+    try:
+        return bool(volume.find("T/Science") and volume.find("S/Activate"))
+    except Exception:                            # noqa: BLE001
+        return False
+    finally:
+        try:
+            volume.f.close()
+        except Exception:                        # noqa: BLE001
+            pass
 
 
 def inspect_image_system(path: str | Path, partition: str = "") -> ImageSystem:
