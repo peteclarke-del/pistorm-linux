@@ -1106,6 +1106,65 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
                         .replace_older_software)
 
 
+class TheDrivesUserStartupIsKeptAndAddedTo(unittest.TestCase):
+    """A drive being imported brings its own S:User-Startup.
+
+    This file system creates files and never overwrites them, so the lines
+    the chosen packages need could not be added: the build said
+    "S:User-Startup already exists; left alone" and FBlit, FText, Birdie and
+    BlazeWCP went onto the card as programs that were never run. Read off a
+    finished card, where every one of their lines was absent.
+    """
+
+    def test_the_drive_keeps_its_own_file_and_our_lines_follow(self):
+        from pistorm_imager.core import amigaos, builder, rdb, pfs3  # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-startup-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        theirs = b";ClassicWB User-Startup\nExecute S:Assign-Startup\n"
+
+        image = folder / "drive.hdf"
+        size = 8 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            fixer = compat.Compatibility(Progress())
+            fixer.keep_user_startup()
+            #  What the copy does when it meets the drive's own file.
+            fixer.offer("S/User-Startup", theirs)
+            self.assertTrue(fixer.skip("S/User-Startup"),
+                            "the drive's copy must be held back")
+            self.assertEqual(fixer.kept_user_startup, theirs)
+            config = builder.BuildConfig(target="/tmp/x",
+                                         package_keys=["fblit"])
+            builder._write_user_startup(volume, config, Progress(),
+                                        fixer.kept_user_startup)
+            volume.close()
+
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            entry = back.find("S/User-Startup")
+            self.assertIsNotNone(entry, "no S:User-Startup was written")
+            text = back.read_file(entry).decode("latin-1")
+        self.assertIn("Execute S:Assign-Startup", text,
+                      "the drive's own setup was lost")
+        self.assertIn("C:FBlit", text,
+                      "the package's line never reached the card")
+        self.assertLess(text.index("Assign-Startup"), text.index("C:FBlit"),
+                        "ours must come after theirs")
+
+    def test_nothing_is_held_back_when_no_package_needs_a_line(self):
+        fixer = compat.Compatibility(Progress())
+        fixer.offer("S/User-Startup", b"theirs")
+        self.assertFalse(fixer.skip("S/User-Startup"))
+
+    def test_a_card_with_no_drive_to_import_still_gets_its_lines(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/x", package_keys=["fblit"])
+        self.assertIn("C:FBlit >NIL:", builder._package_startup_lines(config))
+
+
 class TheCacheRemembersWhereItGotThings(unittest.TestCase):
     """Two publishers can serve the same file name.
 
