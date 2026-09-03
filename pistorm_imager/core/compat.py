@@ -145,7 +145,13 @@ class Fix:
 def fetch_videocore_card(progress: Progress) -> bytes | None:
     """Get Emu68's RTG driver, from the cache when we already have it."""
     cache = emu68.cache_dir() / EMU68_CARD
-    if cache.exists() and cache.stat().st_size > 0:
+    #  Remember which release it was taken out of. Cached on existence alone,
+    #  a card extracted from Emu68-tools v1.1 would be used for ever, however
+    #  the release this build wants changes - the same staleness that had
+    #  cards carrying a 2007 WHDLoad while the archive beside it was current.
+    note = cache.with_name(cache.name + ".source")
+    if cache.exists() and cache.stat().st_size > 0 \
+            and note.exists() and note.read_text().strip() == EMU68_TOOLS_URL:
         return cache.read_bytes()
     archive = emu68.cache_dir() / "Emu68-tools.zip"
     try:
@@ -157,6 +163,7 @@ def fetch_videocore_card(progress: Progress) -> bytes | None:
                 return None
             data = zf.read(member)
         cache.write_bytes(data)
+        note.write_text(EMU68_TOOLS_URL + "\n")
         return data
     except Exception as error:  # noqa: BLE001 - offline is not fatal
         progress.log(f"Could not obtain {EMU68_CARD}: {error}")
