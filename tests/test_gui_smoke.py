@@ -83,6 +83,12 @@ def on_activate(app: ImagerApplication) -> None:
     try:
         window = app.window
         check(window is not None, "window constructed")
+        #  How the window looks before anything is done to it, so "forget the
+        #  saved setup" can be held to putting it back exactly here.
+        pristine_rows = [dataclasses.asdict(r.spec())
+                         for r in window.partition_rows]
+        pristine_ticks = {k for k, r in window.package_rows.items()
+                          if r.get_active()}
 
         for index in range(len(MODES)):
             window.mode_row.set_selected(index)
@@ -192,18 +198,33 @@ def on_activate(app: ImagerApplication) -> None:
               "a loaded layout counts as the user's when Apply is pressed")
         window.quick_pimiga.set_path("")
 
-        #  Forgetting the saved setup puts the window back as it started;
-        #  deleting the file alone left everything on screen exactly as it was.
+        #  Forgetting the saved setup puts the window back as it started.
+        #  Deleting the file alone left everything on screen exactly as it
+        #  was, and clearing the widgets by hand left the storage behind.
         window.quick_hdf.set_path(str(HDF_IMAGE))
         window.quick_trapdoor.set_active(True)
         window.extra_row.set_text("sd.verbose=1")
+        window.vc4_row.set_value(64)
+        window._add_partition()
+        window._add_partition()
         window._on_forget_session(None)
         check(window.quick_hdf.path == "" and window.extra_row.get_text() == "",
               "forgetting clears what was chosen")
-        check(not window.quick_trapdoor.get_active(),
+        check(not window.quick_trapdoor.get_active()
+              and window.vc4_row.get_value() == 0,
               "and the switches go back to their defaults")
-        check(window.package_rows["whdload"].get_active(),
-              "while the software defaults come back")
+        after = [r.spec() for r in window.partition_rows]
+        #  Not "the same rows as a window that has just opened" - a target has
+        #  been chosen since, and the layout follows it. What matters is that
+        #  the two drives added by hand are gone and the settings own the
+        #  layout again, which is what leaving it alone got wrong.
+        check(after == window._quick_layout()
+              and window._hand_edited_partitions() is None,
+              f"the storage layout goes back to the settings ({len(after)} "
+              f"rows, {len(pristine_rows) + 2} before forgetting)")
+        check({k for k, r in window.package_rows.items() if r.get_active()}
+              == pristine_ticks,
+              "and the software ticks are the ones it opened with")
 
         #  Hand the layout back to the quick settings, or every check after
         #  this one is testing a deliberately protected layout.
@@ -1029,6 +1050,46 @@ def on_activate(app: ImagerApplication) -> None:
         check(group_of(window.adf_row) == "Workbench floppy images",
               f"the ADF chooser returns to its page "
               f"(it is on {group_of(window.adf_row)!r})")
+        #  A drive imported from an image can need the Workbench disks as
+        #  well - ClassicWB's brings no Workbench of its own - and nothing
+        #  asked for them: the demand was made only once a folder had already
+        #  been chosen, so a card that needs the disks and has none said
+        #  nothing at all and built, unbootable.
+        from pistorm_imager.core import presets as _presets
+        from pistorm_imager.ui.window import PRIMARY_SOURCES as _PRIMARY
+        real_inspect = _presets.inspect_image_system
+        _presets.inspect_image_system = lambda path, partition="": (
+            _presets.ImageSystem(label="Workbench", found={"bootable": True}))
+        try:
+            window._floppy_need = {}
+            window.adf_row.set_path("")
+            window.mode_row.set_selected(
+                next(i for i, m in enumerate(MODES)
+                     if m[1] is builder.BuildMode.FRESH))
+            window.quick_primary.set_selected(_PRIMARY.index("image"))
+            window.quick_hdf.set_path(str(HDF_IMAGE))
+            pump()
+            check(window._imported_needs_floppies(),
+                  "a drive that brings no Workbench is recognised")
+            wanted = [m for m in window._missing_choices()
+                      if "floppy images" in m]
+            check(bool(wanted),
+                  f"importing such a drive asks for the disks ({wanted})")
+            check(group_of(window.adf_row) == "Primary installation",
+                  "and the chooser is beside the drive that needs them "
+                  f"(it is on {group_of(window.adf_row)!r})")
+            window.adf_row.set_path(str(ADF_FOLDER))
+            pump()
+            check(not [m for m in window._missing_choices()
+                       if "floppy images" in m],
+                  "and stops asking once they are pointed at")
+        finally:
+            _presets.inspect_image_system = real_inspect
+            window._floppy_need = {}
+            window.quick_hdf.set_path("")
+            window.quick_primary.set_selected(_PRIMARY.index("default"))
+            pump()
+
         window._set_customising(False)
         pump()
     except Exception as error:  # noqa: BLE001
