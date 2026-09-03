@@ -725,7 +725,8 @@ class RoadshowsRealLayout(unittest.TestCase):
 
     def test_an_interface_for_this_machine_is_written(self):
         """Every template in the archive is for other people's hardware."""
-        written = [s for s, d in self._placed() if d == "Devs/NetInterfaces"]
+        pairs = packages._written(self.package, _Recorder())
+        written = [s for s, d in pairs if d == "Devs/NetInterfaces"]
         self.assertEqual(len(written), 1)
         text = Path(written[0]).read_text()
         self.assertIn("device=vlink.device", text)
@@ -1173,3 +1174,31 @@ class NothingOnTheCardNeedsAnFpu(unittest.TestCase):
                    in packages.CATALOGUE_BY_KEY["igame"].download.write}
         self.assertIn("igame.prefs", written)
         self.assertIn("no_guigfx=1", written["igame.prefs"])
+
+
+class FilesThisToolWritesItself(unittest.TestCase):
+    """Not only for an archive laid out drawer by drawer: a settings file
+    saying which of a program's optional pieces this machine can use belongs
+    to any download. It was only produced on the merge path, so iGame's
+    preferences were silently never written."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patch = unittest.mock.patch.object(packages, "cache_dir",
+                                           lambda: Path(self.tmp.name))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_plain_download_writes_them_too(self):
+        package = packages.CATALOGUE_BY_KEY["igame"]
+        self.assertFalse(package.download.merge, "iGame is not a merge")
+        pairs = packages._written(package, _Recorder())
+        names = {Path(source).name for source, _dest in pairs}
+        self.assertIn("igame.prefs", names)
+
+    def test_the_prefs_say_what_the_machine_cannot_do(self):
+        pairs = packages._written(packages.CATALOGUE_BY_KEY["igame"],
+                                  _Recorder())
+        text = Path(pairs[0][0]).read_text()
+        self.assertIn("no_guigfx=1", text)

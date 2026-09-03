@@ -1255,6 +1255,23 @@ def unpack(archive: Path, progress: Progress) -> Path | None:
     return destination
 
 
+def _written(package: Package, progress: Progress) -> list[tuple[str, str]]:
+    """The files this tool writes itself for a package.
+
+    Any download can have them, not only one laid out drawer by drawer: a
+    settings file that says which of a program's optional pieces this machine
+    can actually use is exactly that sort of thing.
+    """
+    out: list[tuple[str, str]] = []
+    for name, destination, text in package.download.write:
+        made = cache_dir() / f"{package.key}-written" / destination
+        made.mkdir(parents=True, exist_ok=True)
+        (made / name).write_text(text)
+        out.append((str(made / name), destination))
+        progress.log(f"  {package.label}: wrote {destination}/{name}")
+    return out
+
+
 def _merged(package: Package, root: Path,
             progress: Progress) -> list[tuple[str, str]]:
     """Place an archive laid out like a Workbench disk, drawer by drawer.
@@ -1293,12 +1310,6 @@ def _merged(package: Package, root: Path,
                 continue
             staged.append(entry.name)
             pairs.append((str(entry), package.download.stage or STAGING))
-    for name, destination, text in package.download.write:
-        made = cache_dir() / (package.key + "-written") / destination
-        made.mkdir(parents=True, exist_ok=True)
-        (made / name).write_text(text)
-        pairs.append((str(made / name), destination))
-        progress.log(f"  {package.label}: wrote {destination}/{name}")
     if staged:
         progress.log(f"  {package.label}: staged {', '.join(staged)}")
     return pairs
@@ -1331,13 +1342,13 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
         return []
     download = package.download
     if download.merge:
-        return _merged(package, root, progress)
+        return _merged(package, root, progress) + _written(package, progress)
     if not download.items:
         #  Self-installing: put the whole thing on the card to run there.
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
         return [(str(source), download.stage)]
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str]] = _written(package, progress)
     for inside, destination, newname in download.rename:
         source = root / inside
         if not source.exists():
