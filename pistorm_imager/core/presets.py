@@ -346,26 +346,6 @@ def excluded_for(machine: machines.Machine) -> list[str]:
     return [] if machine.aga else list(AGA_ONLY_CATEGORIES)
 
 
-def package_overlays(donor: str | Path | None, keys: list[str] | None,
-                     rtg: bool,
-                     chipset: machines.Chipset = machines.Chipset.AGA,
-                     display: machines.Display | None = None
-                     ) -> list[tuple[str, str]]:
-    """Optional software to lay on top of a Workbench built from floppies.
-
-    A Workbench installed from the original disks has no archiver, no installer
-    and no WHDLoad, so the pieces almost everyone adds next are offered here.
-    Only what a donor system on this machine can supply is resolved now;
-    anything that has to come from Aminet is fetched during the build, where
-    there is a progress report to hang the download off.
-    """
-    if donor is None:
-        return []
-    chosen = packages.default_keys(rtg) if keys is None else keys
-    return packages.overlays_for(donor, chosen, rtg, chipset=chipset,
-                                 display=display)
-
-
 def machine_setup(machine: machines.Machine, display: machines.Display,
                   target: str, target_is_device: bool, card_size: int,
                   detected: Detected, *, pimiga_folder: str = "",
@@ -376,7 +356,6 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
                   system_source: str = "auto",
                   hdf_source: str = "",
                   work_partition: bool = True,
-                  package_donor: str = "",
                   package_keys: list[str] | None = None,
                   prefer_rtg_screen: bool = True) -> builder.BuildConfig:
     """A complete card for one machine.
@@ -442,13 +421,10 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
         system.overlays = []
     else:
         #  A Workbench installed from floppies has never heard of WHDLoad, an
-        #  archiver, or the installer most software expects.
-        system.overlays = package_overlays(
-            package_donor or pimiga_folder or None, package_keys,
-            display.uses_rtg, machine.chipset, display)
-        #  Whatever no donor here can supply is fetched from Aminet during the
-        #  build, so the choice has to travel with the configuration.
-        config.package_donor = package_donor or pimiga_folder or ""
+        #  archiver, or the installer most software expects. Every package is
+        #  fetched from its publisher during the build, where there is a
+        #  progress report to hang the download off, so the choice is all that
+        #  travels with the configuration.
         config.package_keys = list(
             packages.default_keys(display.uses_rtg)
             if package_keys is None else package_keys)

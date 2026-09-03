@@ -78,7 +78,7 @@ class Dependencies(unittest.TestCase):
     """A package that cannot run alone must bring what it needs."""
 
     def test_mui_applications_pull_mui_in(self):
-        for key in ("igame", "netsurf", "amftp", "wookiechat", "ibrowse"):
+        for key in ("igame", "netsurf", "amftp", "wookiechat"):
             with self.subTest(key):
                 self.assertIn("mui", packages.expand([key]),
                               f"{key} is a MUI application and would open "
@@ -103,33 +103,21 @@ class Dependencies(unittest.TestCase):
         self.assertIn("ADD LIBS: MUI:Libs", lines)
 
     def test_a_shared_library_is_only_copied_once(self):
-        #  Three packages want codesets.library, and the writer refuses to
-        #  overwrite a file that is already there.
-        donor = Path(tempfile.mkdtemp(prefix="pistorm-donor-"))
-        self.addCleanup(shutil.rmtree, donor, True)
-        system = donor / "System"
-        #  A C drawer is what marks a folder as a system drive.
-        (system / "C").mkdir(parents=True)
-        (system / "Libs").mkdir(parents=True)
-        for name in ("codesets.library", "openurl.library"):
-            (system / "Libs" / name).write_bytes(b"x")
-        for drawer in ("Internet/WookieChat", "Internet/AWeb_APL",
-                       "Internet/IBrowse"):
-            (system / drawer).mkdir(parents=True)
-        pairs = packages.overlays_for(donor, ["wookiechat", "aweb", "ibrowse"],
-                                      allow_download=False)
+        #  Several packages want codesets.library, and the writer refuses to
+        #  overwrite a file that is already there, so a second copy would end
+        #  the build rather than merely waste time.
+        real = packages.fetch
+        packages.fetch = lambda package, progress: [
+            ("/nowhere/codesets.library", "Libs"),
+            (f"/nowhere/{package.key}", f"Internet/{package.key}")]
+        try:
+            pairs = packages.overlays_for(["wookiechat", "amftp"],
+                                          allow_download=True)
+        finally:
+            packages.fetch = real
         self.assertEqual(len(pairs), len(set(pairs)))
         codesets = [d for s, d in pairs if s.endswith("codesets.library")]
         self.assertEqual(len(codesets), 1, "copied more than once")
-
-    def test_support_survives_a_downloaded_payload(self):
-        #  NetSurf comes from Aminet, but its supporting libraries still have
-        #  to come off the donor.  Putting them in items made the donor look
-        #  like the source of NetSurf itself and skipped the download.
-        netsurf = packages.CATALOGUE_BY_KEY["netsurf"]
-        self.assertEqual(netsurf.items, ())
-        self.assertTrue(netsurf.download)
-        self.assertTrue(netsurf.support)
 
 
 class ExcludedDrawerIcons(unittest.TestCase):
@@ -210,130 +198,6 @@ class DrawerIconTypes(unittest.TestCase):
             bytes(amigainfo.DISKOBJECT_SIZE)))
 
 
-class ResolvedFromTheBinaries(unittest.TestCase):
-    """What a program needs is read out of it, not listed by hand.
-
-    Naming dependencies by hand caught MUI and a few libraries and missed
-    twenty more, each of which copied onto the card and then would not run.
-    """
-
-    def setUp(self):
-        self.donor = Path(tempfile.mkdtemp(prefix="pistorm-donor-"))
-        self.addCleanup(shutil.rmtree, self.donor, True)
-        self.system = self.donor / "System"
-        for drawer in ("C", "Libs", "Devs", "Classes", "Internet/Thing"):
-            (self.system / drawer).mkdir(parents=True)
-        for name in ("codesets.library", "ixemul.library"):
-            (self.system / "Libs" / name).write_bytes(b"L" * 4096)
-        (self.system / "Devs" / "netinfo.device").write_bytes(b"D" * 4096)
-
-    def _program(self, *mentions):
-        #  Real binaries separate their strings with NULs; without one the
-        #  padding runs into the first name and the scan reads them as a
-        #  single word, which is the over-matching the resolver tolerates.
-        body = (b"PADDING\x00" * 400
-                + b"".join(m.encode("latin-1") + b"\x00" for m in mentions)
-                + b"tail\x00" * 200)
-        (self.system / "Internet" / "Thing" / "thing").write_bytes(body)
-        return [(str(self.system / "Internet" / "Thing"), "Internet/Thing")]
-
-    def test_a_library_a_program_names_is_found_and_copied(self):
-        pairs = self._program("codesets.library", "netinfo.device")
-        extra = packages.resolve_dependencies(pairs, self.donor)
-        got = {Path(s).name for s, _d in extra}
-        self.assertEqual(got, {"codesets.library", "netinfo.device"})
-
-    def test_each_lands_where_the_donor_keeps_it(self):
-        extra = packages.resolve_dependencies(
-            self._program("codesets.library", "netinfo.device"), self.donor)
-        where = {Path(s).name: d for s, d in extra}
-        self.assertEqual(where["codesets.library"], "Libs")
-        self.assertEqual(where["netinfo.device"], "Devs")
-
-    def test_a_rom_library_is_not_copied(self):
-        #  dos.library is in Kickstart; copying one would be worse than
-        #  useless, it would shadow the ROM.
-        (self.system / "Libs" / "dos.library").write_bytes(b"x" * 4096)
-        extra = packages.resolve_dependencies(
-            self._program("dos.library", "intuition.library"), self.donor)
-        self.assertEqual(extra, [])
-
-    def test_something_already_being_copied_is_not_copied_again(self):
-        (self.system / "Internet" / "Thing" / "ixemul.library").write_bytes(
-            b"x" * 4096)
-        extra = packages.resolve_dependencies(
-            self._program("ixemul.library"), self.donor)
-        self.assertEqual(extra, [],
-                         "it travels inside the drawer already")
-
-    def test_a_name_the_donor_does_not_have_is_simply_dropped(self):
-        #  The scan over-matches where two strings abut; a fragment resolves
-        #  to nothing and costs nothing.
-        extra = packages.resolve_dependencies(
-            self._program("nusomething.library"), self.donor)
-        self.assertEqual(extra, [])
-
-    def test_no_donor_means_no_guessing(self):
-        self.assertEqual(packages.resolve_dependencies(
-            self._program("codesets.library"), None), [])
-
-    def test_a_dependency_of_a_dependency_is_found_too(self):
-        """One round left seven behind: mmu wants 68030, ixemul wants ixnet."""
-        (self.system / "Libs" / "middle.library").write_bytes(
-            b"PAD\x00" * 400 + b"deeper.library\x00")
-        (self.system / "Libs" / "deeper.library").write_bytes(b"z" * 4096)
-        #  ixemul names middle, which names deeper.  Only ixemul is
-        #  referenced by the program itself.
-        (self.system / "Libs" / "ixemul.library").write_bytes(
-            b"PAD\x00" * 400 + b"middle.library\x00")
-        extra = packages.resolve_dependencies(
-            self._program("ixemul.library"), self.donor)
-        got = {Path(s).name for s, _d in extra}
-        self.assertEqual(got, {"ixemul.library", "middle.library",
-                               "deeper.library"})
-
-    def test_resolution_terminates_when_libraries_name_each_other(self):
-        #  A pair that reference one another must not loop for ever.
-        (self.system / "Libs" / "ping.library").write_bytes(
-            b"PAD\x00" * 400 + b"pong.library\x00")
-        (self.system / "Libs" / "pong.library").write_bytes(
-            b"PAD\x00" * 400 + b"ping.library\x00")
-        extra = packages.resolve_dependencies(
-            self._program("ping.library"), self.donor)
-        got = {Path(s).name for s, _d in extra}
-        self.assertEqual(got, {"ping.library", "pong.library"})
-
-    def test_a_key_file_travels_with_what_it_unlocks(self):
-        #  Registered software looks for <name>.key beside the system, not in
-        #  its own drawer.  Copy xadmaster.library and leave xadmaster.key and
-        #  it runs crippled, which reads as the copy having failed.
-        (self.system / "S").mkdir(exist_ok=True)
-        (self.system / "Libs" / "xadmaster.library").write_bytes(b"x" * 4096)
-        (self.system / "S" / "xadmaster.key").write_bytes(b"key")
-        extra = packages.resolve_dependencies(
-            self._program("xadmaster.library"), self.donor)
-        where = {Path(s).name: d for s, d in extra}
-        self.assertIn("xadmaster.key", where)
-        self.assertEqual(where["xadmaster.key"], "S")
-
-    def test_a_key_for_something_not_being_copied_is_left(self):
-        (self.system / "S").mkdir(exist_ok=True)
-        (self.system / "S" / "SomethingElse.key").write_bytes(b"key")
-        extra = packages.resolve_dependencies(
-            self._program("codesets.library"), self.donor)
-        self.assertNotIn("SomethingElse.key",
-                         {Path(s).name for s, _d in extra})
-
-    def test_no_pair_is_ever_produced_twice(self):
-        #  The writer refuses to overwrite, so one duplicate ends a build.
-        (self.system / "S").mkdir(exist_ok=True)
-        (self.system / "S" / "ixemul.key").write_bytes(b"key")
-        pairs = self._program("ixemul.library", "codesets.library")
-        extra = packages.resolve_dependencies(pairs, self.donor)
-        both = pairs + extra
-        self.assertEqual(len(both), len(set(both)))
-
-
 class SoftKickBeforeIPrefs(unittest.TestCase):
     """The disk icon.library must replace the ROM one, or icons stay blank.
 
@@ -392,13 +256,13 @@ class SoftKickBeforeIPrefs(unittest.TestCase):
 class WhdloadNeedsKickstarts(unittest.TestCase):
     """A slave asks WHDLoad for the Kickstart the game expects."""
 
-    def test_whdload_asks_for_the_kickstart_images(self):
-        #  These are ROM images, not code: nothing names them inside a binary,
-        #  so no scan can find them and they have to be declared.  Without
-        #  them iGame launches a game and the machine falls over.
-        support = dict(packages.CATALOGUE_BY_KEY["whdload"].support)
-        self.assertIn("Devs/Kickstarts", support)
-        self.assertEqual(support["Devs/Kickstarts"], "Devs/Kickstarts")
+    def test_the_card_says_the_images_have_to_be_supplied(self):
+        #  These are Commodore ROM images. They used to be copied out of a
+        #  donor system; nothing publishes them, so with the donor gone the
+        #  only honest thing is to say so where the package is chosen.
+        note = packages.CATALOGUE_BY_KEY["whdload"].note.lower()
+        self.assertIn("kickstart", note)
+        self.assertIn("devs/kickstarts", note)
 
 
 class UpdatesForAnAcceleratedMachine(unittest.TestCase):
@@ -414,7 +278,6 @@ class UpdatesForAnAcceleratedMachine(unittest.TestCase):
         keys = {p.key for p in
                 packages.in_category(packages.Category.UPDATES)}
         self.assertIn("mmulib", keys)
-        self.assertIn("setpatch", keys)
 
     def test_whdload_does_not_drag_in_what_stops_it_working(self):
         """These were once required by WHDLoad.  It was exactly backwards.
@@ -424,55 +287,50 @@ class UpdatesForAnAcceleratedMachine(unittest.TestCase):
         MMULib alone gives a yellow screen - a CPU exception with no OS left
         to draw a Guru.  Either of them stops every game.
         """
-        order = packages.expand(["whdload"])
-        for key in ("setpatch", "mmulib"):
-            self.assertNotIn(key, order)
+        self.assertNotIn("mmulib", packages.expand(["whdload"]))
 
     def test_the_cpu_patches_are_off_by_default(self):
-        for key in ("setpatch", "mmulib"):
-            package = packages.CATALOGUE_BY_KEY[key]
-            self.assertFalse(package.default, key)
-            self.assertIn("games", package.note.lower(),
-                          f"{key} must say what it costs")
+        package = packages.CATALOGUE_BY_KEY["mmulib"]
+        self.assertFalse(package.default)
+        self.assertIn("games", package.note.lower(),
+                      "mmulib must say what it costs")
 
     def test_a_suggested_build_leaves_them_out(self):
         from pistorm_imager.core.machines import Display      # noqa: PLC0415
         chosen = packages.suggested(machines.MACHINES[0], Display.NATIVE)
-        for key in ("setpatch", "mmulib"):
-            self.assertNotIn(key, chosen)
+        self.assertNotIn("mmulib", chosen)
 
     def test_the_cpu_libraries_come_from_aminet_not_a_donor(self):
         #  They are freely distributable, so a card built from floppies alone
         #  can still have them - which is the whole point of offering them.
         mmulib = packages.CATALOGUE_BY_KEY["mmulib"]
         self.assertTrue(mmulib.download)
-        self.assertEqual(mmulib.items, ())
         self.assertEqual(dict(mmulib.download.items)["MMULib/Libs"], "Libs")
 
-    def test_setpatch_can_only_come_from_a_donor(self):
-        #  Commodore's, from a later release, and not on Aminet.
-        setpatch = packages.CATALOGUE_BY_KEY["setpatch"]
-        self.assertIsNone(setpatch.download)
-        self.assertEqual(dict(setpatch.items)["C/SetPatch"], "C")
+    def test_the_commodore_setpatch_is_not_offered_at_all(self):
+        #  It was Commodore's, from a later release, and could only ever come
+        #  out of a donor system - and it stopped WHDLoad games starting.
+        self.assertNotIn("setpatch", packages.CATALOGUE_BY_KEY)
 
     def test_they_are_still_offered_for_a_machine_used_for_applications(self):
         #  Off by default is not the same as gone: the newer CPU support is
         #  a real improvement where WHDLoad is not the point.
         keys = {p.key for p in
                 packages.in_category(packages.Category.UPDATES)}
-        self.assertEqual(keys, {"mmulib", "setpatch"})
+        self.assertEqual(keys, {"mmulib"})
 
 
 class NiceToHaves(unittest.TestCase):
     """The extras that make a stock Workbench pleasant to use."""
 
     def test_every_package_has_a_route_onto_the_card(self):
-        #  A catalogue entry with neither a donor path nor a download can
-        #  never be installed, and would sit in the list doing nothing.
+        #  A catalogue entry with no source can never be installed, and would
+        #  sit in the list doing nothing.
         for package in packages.CATALOGUE:
             with self.subTest(package.key):
-                self.assertTrue(package.items or package.download,
-                                f"{package.key} has no way of being obtained")
+                self.assertIsNotNone(
+                    package.download,
+                    f"{package.key} has no way of being obtained")
 
     def test_the_desktop_extras_are_on_by_default(self):
         #  DefIcons is most of why a stock 3.1 desktop looks bare, and a
@@ -484,8 +342,7 @@ class NiceToHaves(unittest.TestCase):
         #  They have to be started at boot to do anything at all.
         for key in ("deficons", "freewheel", "clicktofront"):
             package = packages.CATALOGUE_BY_KEY[key]
-            places = list(package.items) + list(
-                package.download.items if package.download else ())
+            places = list(package.download.items)
             self.assertTrue(any(d == "WBStartup" for _s, d in places),
                             f"{key} never reaches WBStartup")
 
@@ -499,97 +356,19 @@ class NiceToHaves(unittest.TestCase):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
 
-    def test_what_is_not_freely_distributable_needs_a_donor(self):
-        #  HippoPlayer and Directory Opus are not on Aminet; offering to
-        #  download them would be a promise that cannot be kept.
-        for key in ("hippoplayer", "diropus4"):
-            package = packages.CATALOGUE_BY_KEY[key]
-            self.assertIsNone(package.download, key)
-            self.assertTrue(package.items, key)
+    def test_what_cannot_be_fetched_says_where_to_get_it(self):
+        #  One publisher serves its archive only to a browser. That is not a
+        #  reason to leave the package out, but the person has to be told,
+        #  before the build rather than in the log afterwards.
+        for package in packages.CATALOGUE:
+            if package.download.manual:
+                self.assertTrue(package.download.source,
+                                f"{package.key} cannot be fetched and does "
+                                f"not say where to get it")
 
     def test_no_two_packages_share_a_key(self):
         keys = [p.key for p in packages.CATALOGUE]
         self.assertEqual(len(keys), len(set(keys)))
-
-
-class NeverScavengeCpuLibraries(unittest.TestCase):
-    """The dependency scan must not take CPU support from a donor.
-
-    It did, and it quietly undid a deliberate choice: with the CPU patch
-    packages deselected, the scan still copied mmu.library, 68030.library and
-    68040.library off the donor because something in the tree named them - and
-    those are exactly what stops every WHDLoad game from starting.  Cards were
-    built again and again with the packages removed and the libraries still
-    there, which sent the search off in entirely the wrong direction.
-    """
-
-    def setUp(self):
-        self.donor = Path(tempfile.mkdtemp(prefix="pistorm-donor-"))
-        self.addCleanup(shutil.rmtree, self.donor, True)
-        self.system = self.donor / "System"
-        for drawer in ("C", "Libs", "Programs/Thing"):
-            (self.system / drawer).mkdir(parents=True)
-        for name in ("mmu.library", "68040.library", "68030.library",
-                     "680x0.library", "memory.library", "codesets.library"):
-            (self.system / "Libs" / name).write_bytes(b"L" * 4096)
-
-    def _program(self, *mentions):
-        body = (b"PAD\x00" * 400
-                + b"".join(m.encode("latin-1") + b"\x00" for m in mentions))
-        (self.system / "Programs" / "Thing" / "thing").write_bytes(body)
-        return [(str(self.system / "Programs" / "Thing"), "Programs/Thing")]
-
-    def test_networking_brings_the_stack_not_the_socket_stub(self):
-        """The stack publishes the socket library; the card never carries it.
-
-        MiamiDx creates bsdsocket.library in memory once it is online, so a
-        networked card needs no copy in LIBS: - and the copy the donor has is
-        an AmiTCP stub with no stack behind it that stops every WHDLoad game.
-        A card can have both networking and games because of this.
-        """
-        (self.system / "Libs" / "bsdsocket.library").write_bytes(b"S" * 4096)
-        (self.system / "Libs" / "miamipcap.library").write_bytes(b"M" * 4096)
-        (self.system / "Internet" / "MiamiDx").mkdir(parents=True, exist_ok=True)
-        (self.system / "Internet" / "MiamiDx" / "MiamiDx").write_bytes(b"M" * 64)
-        chosen = packages.overlays_for(str(self.donor), ["network"],
-                                       allow_download=False)
-        names = {Path(s).name for s, _d in chosen}
-        self.assertIn("MiamiDx", names)
-        self.assertNotIn("bsdsocket.library", names)
-
-    def test_stack_provided_libraries_are_never_taken(self):
-        """bsdsocket is put in LIBS: by a running TCP/IP stack.
-
-        Copied as a file it is a stub with nothing behind it, and it stops
-        every WHDLoad game: yellow screen, then nothing.  Bisected to this
-        one library, alone, against a card proven to run the game.
-        """
-        for name in ("bsdsocket.library", "usergroup.library",
-                     "ixnet.library"):
-            (self.system / "Libs" / name).write_bytes(b"S" * 4096)
-        extra = packages.resolve_dependencies(
-            self._program("bsdsocket.library", "usergroup.library",
-                          "ixnet.library"), self.donor)
-        self.assertEqual(extra, [],
-                         f"scavenged: {[Path(s).name for s, _ in extra]}")
-
-    def test_cpu_libraries_are_never_taken(self):
-        pairs = self._program("mmu.library", "68040.library",
-                              "68030.library", "680x0.library",
-                              "memory.library")
-        extra = packages.resolve_dependencies(pairs, self.donor)
-        self.assertEqual(extra, [], f"scavenged: {[Path(s).name for s, _ in extra]}")
-
-    def test_ordinary_libraries_are_still_taken(self):
-        extra = packages.resolve_dependencies(
-            self._program("codesets.library"), self.donor)
-        self.assertEqual({Path(s).name for s, _d in extra},
-                         {"codesets.library"})
-
-    def test_the_mmulib_package_can_still_install_them_deliberately(self):
-        #  Off by default and warned about, but not unreachable.
-        mmulib = packages.CATALOGUE_BY_KEY["mmulib"]
-        self.assertEqual(dict(mmulib.download.items)["MMULib/Libs"], "Libs")
 
 
 class _Recorder(Progress):
@@ -729,7 +508,7 @@ class RoadshowsRealLayout(unittest.TestCase):
         written = [s for s, d in pairs if d == "Devs/NetInterfaces"]
         self.assertEqual(len(written), 1)
         text = Path(written[0]).read_text()
-        self.assertIn("device=vlink.device", text)
+        self.assertIn("device=wifipi.device", text)
         self.assertIn("configure=dhcp", text)
 
     def test_the_installer_and_docs_are_staged_once(self):
@@ -954,7 +733,7 @@ class NoMonitorIsInventedForACard(unittest.TestCase):
 
     def test_the_package_supplies_no_monitor(self):
         package = packages.CATALOGUE_BY_KEY["picasso96"]
-        taken = [source for source, _dest in package.support]
+        taken = [source for source, _dest in package.download.items]
         self.assertEqual([t for t in taken if "Monitors" in t], [],
                          f"a monitor is being supplied again: {taken}")
 
@@ -1038,9 +817,6 @@ class IgameIsInstalledStandalone(unittest.TestCase):
 
     def setUp(self):
         self.package = packages.CATALOGUE_BY_KEY["igame"]
-
-    def test_nothing_is_taken_from_a_donor(self):
-        self.assertEqual(self.package.items, ())
 
     def test_it_comes_from_its_own_release(self):
         self.assertIsNotNone(self.package.download)
@@ -1340,9 +1116,11 @@ class ChoicesThatBuildAndMislead(unittest.TestCase):
         said = self._config(rtg_display=True).concerns()
         self.assertTrue([s for s in said if "no RTG screen to open on" in s])
 
-    def test_software_that_needs_a_donor_when_there_is_none(self):
-        said = self._config(package_keys=["ibrowse"], package_donor="").concerns()
-        self.assertTrue([s for s in said if "ibrowse" in s], said)
+    def test_software_nobody_can_fetch_on_your_behalf(self):
+        #  Roadshow's publisher serves the archive only to a browser, so the
+        #  card is built without it unless a copy is already cached.
+        said = self._config(package_keys=["roadshow"]).concerns()
+        self.assertTrue([s for s in said if "roadshow" in s], said)
 
     def test_a_card_with_nothing_on_its_drives(self):
         said = self._config().concerns()

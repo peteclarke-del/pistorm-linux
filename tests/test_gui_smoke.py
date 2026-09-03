@@ -228,15 +228,11 @@ def on_activate(app: ImagerApplication) -> None:
 
         #  Hand the layout back to the quick settings, or every check after
         #  this one is testing a deliberately protected layout.
-        #  The software choices and the donor they come from were saved by
-        #  gather() and never put back, so loading a setup cleared every tick.
-        donor = SCRATCH / "donor"
-        (donor / "Libs").mkdir(parents=True, exist_ok=True)
+        #  The software choices were saved by gather() and never put back,
+        #  so loading a setup cleared every tick.
         with_packages = dataclasses.replace(
-            saved, package_donor=str(donor), package_keys=["whdload", "lha"])
+            saved, package_keys=["whdload", "lha"])
         window.apply(with_packages, keep_partitions=True)
-        check(window.package_donor.path == str(donor),
-              f"the donor is restored ({window.package_donor.path!r})")
         ticked = {k for k, r in window.package_rows.items() if r.get_active()}
         check({"whdload", "lha"} <= ticked,
               f"the chosen software is restored ({sorted(ticked)})")
@@ -245,9 +241,30 @@ def on_activate(app: ImagerApplication) -> None:
         back = window.gather()
         check(set(back.package_keys) >= {"whdload", "lha"},
               f"and survives a round trip ({back.package_keys})")
-        window.package_donor.set_path("")
         for row in window.package_rows.values():
             row.set_active(False)
+
+        #  Choosing a display that draws on the Pi's HDMI is choosing the
+        #  RTG subsystem with it. Nothing rebuilt the software list when the
+        #  display changed, so ticking "both outputs" left Picasso96 off and
+        #  the card had no RTG screen modes at all.
+        from pistorm_imager.core.machines import Display as _Display
+        for wanted in (_Display.BOTH, _Display.RTG_HDMI):
+            for index, display in enumerate(_Display):
+                if display is wanted:
+                    window.quick_display.set_selected(index)
+            window._on_display_changed()
+            picasso = window.package_rows["picasso96"]
+            check(picasso.get_active() and not picasso.get_sensitive(),
+                  f"{wanted.name} brings Picasso96 with it and holds it on")
+            check("picasso96" in window._chosen_packages(),
+                  f"and it reaches the build for {wanted.name}")
+        for index, display in enumerate(_Display):
+            if display is _Display.NATIVE:
+                window.quick_display.set_selected(index)
+        window._on_display_changed()
+        check(not window.package_rows["picasso96"].get_active(),
+              "and a native-only display does not carry it")
 
         #  Dependencies are linked both ways, and a package worth having on
         #  its own is not dragged off with the thing that needed it.
@@ -319,16 +336,13 @@ def on_activate(app: ImagerApplication) -> None:
 
         #  The whole setup, not one field at a time. Three separate things
         #  were saved faithfully and never restored - the drives, the software
-        #  and its donor, and the Emu68 release - and each was found only when
-        #  somebody noticed it missing. This compares every field at once.
+        #  and the Emu68 release - and each was found only when somebody
+        #  noticed it missing. This compares every field at once.
         window.target_row.set_selected(1)
         window.quick_target.set_selected(1)
         window.file_row.set_path(str(SCRATCH / "roundtrip.img"))
         window.quick_file.set_path(str(SCRATCH / "roundtrip.img"))
         window.file_size_row.set_text("40GB")
-        donor = SCRATCH / "donor"
-        (donor / "Libs").mkdir(parents=True, exist_ok=True)
-        window.package_donor.set_path(str(donor))
         for key in ("whdload", "lha"):
             if key in window.package_rows:
                 window.package_rows[key].set_active(True)
@@ -340,7 +354,6 @@ def on_activate(app: ImagerApplication) -> None:
         #  Scramble everything the load has to put back.
         window.file_size_row.set_text("8GB")
         window.file_row.set_path(str(SCRATCH / "somewhere-else.img"))
-        window.package_donor.set_path("")
         for row in window.package_rows.values():
             row.set_active(False)
         loaded, state, _reduced = jobs.load_session(session)

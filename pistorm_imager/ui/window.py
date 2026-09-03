@@ -1145,6 +1145,11 @@ class ImagerWindow(Adw.ApplicationWindow):
                                          self._prefer_rtg_screen())
 
     def _on_display_changed(self) -> None:
+        #  Which software suits the card follows the screen it is watched on,
+        #  and nothing rebuilt the list when that changed: choosing a display
+        #  that draws on the Pi's HDMI left Picasso96 - the RTG subsystem the
+        #  choice depends on - sitting there unticked.
+        self._refresh_packages()
         self._sync_visibility()
         self._on_layout_changed()
 
@@ -1155,8 +1160,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_machine_hint.set_subtitle(
             f"{machine.board_label} - {machine.chipset.value} chipset "
             f"({machine.chipset.native_colours})")
-        #  Which content categories are worth copying follows the machine.
+        #  Which content categories are worth copying follows the machine,
+        #  and so does which software suits its chipset.
         self._refresh_categories()
+        self._refresh_packages()
         #  Keep the Source page's board in step with the model.
         for index, variant in enumerate(emu68.VARIANTS):
             if variant.key == machine.board:
@@ -1235,7 +1242,6 @@ class ImagerWindow(Adw.ApplicationWindow):
             system_source=self._system_source(),
             hdf_source=self.quick_hdf.path,
             work_partition=self.quick_work.get_active(),
-            package_donor=self._package_donor(),
             package_keys=self._chosen_packages(),
             prefer_rtg_screen=self._prefer_rtg_screen()), base)
 
@@ -1652,14 +1658,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Software to add",
             description="A Workbench built from the original disks is exactly "
                         "what shipped in 1994: no archiver, no installer, no "
-                        "WHDLoad. Freely distributable pieces are fetched from "
-                        "Aminet and cached; anything that is not - IBrowse and "
-                        "the like - is only ever copied out of a system you "
-                        "already have, such as a PiMiga installation.")
-        self.package_donor = FileRow(
-            "Take it from", "A Workbench System drive, or a PiMiga folder",
-            folder=True, on_change=lambda _p: self._refresh_packages())
-        self.packages_group.add(self.package_donor)
+                        "WHDLoad. Everything here is fetched from its "
+                        "publisher - Aminet, or the project that makes it - "
+                        "and cached, so a card is built from the current "
+                        "release rather than from whatever another "
+                        "installation happened to hold.")
         suggest = Adw.ActionRow(
             title="Suggested load",
             subtitle="Tick what suits this machine, chipset and display")
@@ -2130,15 +2133,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.partition_group.remove(row)
         self._update_summary()
 
-    def _package_donor(self) -> str:
-        """Where optional software is copied from."""
-        return self.package_donor.path or self.quick_pimiga.path
-
     def _apply_suggested_packages(self) -> None:
         """Tick the set that suits the machine and screen that are chosen."""
         wanted = set(packages.suggested(
             self._machine(), self._display(),
-            donor=self._package_donor() or None,
             networking=bool(self.wifi_ssid.get_text().strip())))
         for key, row in self.package_rows.items():
             if row.get_sensitive():
@@ -2152,19 +2150,19 @@ class ImagerWindow(Adw.ApplicationWindow):
             row.reload_categories()
 
     def _refresh_packages(self) -> None:
-        """Offer only the software that can actually be obtained and used."""
+        """Offer the software that suits this machine and this screen.
+
+        Everything in the list is fetched from its publisher, so what is on
+        offer no longer depends on what some other installation happened to
+        hold - only on whether it makes sense here.
+        """
         if not self._ready:
             return
-        donor = self._package_donor()
-        found = packages.available(donor) if donor else {}
         display = self._display()
         chipset = self._machine().chipset
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
             fits = package.suits(chipset, display)
-            downloadable = package.download is not None
-            usable = fits and (key in found or downloadable)
-            row.set_sensitive(usable)
             note = package.description
             if not fits and package.rtg_only:
                 note += "  -  only useful with an RTG display."
@@ -2172,9 +2170,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 note += "  -  only useful on the Amiga's own screen."
             elif not fits:
                 note += "  -  not a fit for this chipset."
-            elif key in found:
-                note += "  -  from your donor system."
-            elif downloadable:
+            else:
                 where = package.download.source or "Aminet"
                 if package.download.manual:
                     #  Nothing here can fetch it; the build uses a copy the
@@ -2185,13 +2181,20 @@ class ImagerWindow(Adw.ApplicationWindow):
                     note += f"  -  will be fetched from {where}."
                 if package.note:
                     note += f" {package.note}"
+            #  An essential package is part of the choice that brought it in,
+            #  not an extra beside it: choosing an RTG display and then being
+            #  handed a card with no RTG screen modes is not a choice anyone
+            #  made. So it comes on with that display and cannot be dropped
+            #  while it lasts.
+            if fits and package.essential:
+                row.set_active(True)
+                row.set_sensitive(False)
+                note += "  -  required by the display you chose."
             else:
-                note += ("  -  needs a donor system that has it."
-                         if donor else
-                         "  -  choose where to take it from first.")
+                row.set_sensitive(fits)
+                if not fits:
+                    row.set_active(False)
             row.set_subtitle(GLib.markup_escape_text(note))
-            if not usable:
-                row.set_active(False)
         self._on_layout_changed()
 
     def _needed_by_active(self, key: str, ignoring: str = "") -> bool:
@@ -2259,8 +2262,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._on_layout_changed()
 
     def _chosen_packages(self) -> list[str]:
+        #  Not "and sensitive": a package the display makes essential is
+        #  ticked and locked, and testing sensitivity here dropped it back
+        #  out of the build it had just been forced into.
         return [key for key, row in self.package_rows.items()
-                if row.get_active() and row.get_sensitive()]
+                if row.get_active()]
 
     def _refresh_devices(self) -> None:
         if not self._ready:
@@ -2557,7 +2563,6 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  The software chosen on the Amiga page.  These only used to be
             #  set by the quick setup, so ticking a package and pressing Write
             #  from the pages themselves quietly built a card without it.
-            package_donor=self._package_donor(),
             package_keys=self._chosen_packages(),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
@@ -2927,7 +2932,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  What the configuration does not carry: the choosers, the
             #  machine, and the quick screen's own copies.
             for row in (self.quick_pimiga, self.quick_hdf, self.quick_donor,
-                        self.quick_file, self.package_donor):
+                        self.quick_file):
                 row.set_path("")
             self.quick_primary.set_selected(PRIMARY_SOURCES.index("default"))
             self.quick_system_source.set_selected(0)
@@ -3169,17 +3174,16 @@ class ImagerWindow(Adw.ApplicationWindow):
                 return
 
     def _restore_package_choices(self, config: builder.BuildConfig) -> None:
-        """Put the software choices, and where they come from, back.
+        """Put the software choices back.
 
         gather() has always saved these; nothing ever put them back, so
-        loading a setup returned a card with the donor forgotten and every
-        tick cleared, however carefully the list had been chosen.
+        loading a setup returned a card with every tick cleared, however
+        carefully the list had been chosen.
         """
-        if config.package_donor:
-            self.package_donor.set_path(config.package_donor)
-        #  The rows have to be worked out against this donor before they can
-        #  be ticked: refreshing afterwards would clear anything it thought
-        #  unusable, including choices that are perfectly usable.
+        #  Which rows are on offer has to be worked out first: refreshing
+        #  afterwards would clear anything it thought unusable, including
+        #  choices that are perfectly usable. A row left insensitive is one
+        #  the display makes essential, and it keeps the tick it was given.
         self._refresh_packages()
         wanted = set(config.package_keys)
         for key, row in self.package_rows.items():

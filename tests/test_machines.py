@@ -331,15 +331,19 @@ class TestMachineSetup(unittest.TestCase):
         self.assertNotIn("format it on the Amiga", text)
         self.assertIn("copied from Games", text)
 
-    def test_whdload_is_overlaid_onto_a_floppy_install(self):
-        """A Workbench built from floppies has no WHDLoad, so it is added."""
+    def test_whdload_is_chosen_for_a_floppy_install(self):
+        """A Workbench built from floppies has no WHDLoad, so it is added.
+
+        The files themselves are fetched from Aminet while the card is being
+        built, where there is a progress report to hang the download off, so
+        what the configuration carries is the choice.
+        """
         config = presets.machine_setup(
             machines.MACHINES_BY_KEY["a500"], Display.NATIVE,
             str(self.folder / "c.img"), False, 64 * GIB, self.detected(),
             pimiga_folder=str(self.pimiga), system_source="adf")
-        destinations = [dest for _src, dest in config.amiga_partitions[0].overlays]
-        self.assertIn("C", destinations)
-        self.assertIn("Expansion/WHDLoad", destinations)
+        self.assertIn("whdload", config.package_keys)
+        self.assertIn("lha", config.package_keys)
 
     def test_the_work_drive_switch_is_honoured(self):
         """It was passed nowhere, so turning it off changed nothing."""
@@ -422,15 +426,15 @@ class TestMachineSetup(unittest.TestCase):
             pimiga_folder=str(self.pimiga), system_source="adf")
         self.assertEqual(back.system_source, "adf")
 
-    def test_whdload_is_only_overlaid_when_installing_from_floppies(self):
-        """PiMiga's own system already has WHDLoad; a fresh Workbench does not."""
+    def test_software_is_only_chosen_when_installing_from_floppies(self):
+        """A ready-made system brings its own; a fresh Workbench does not."""
         from_floppies = presets.machine_setup(
             machines.MACHINES_BY_KEY["a500"], Display.NATIVE,
             str(self.folder / "c.img"), False, 64 * GIB, self.detected(),
             pimiga_folder=str(self.pimiga), system_source="adf")
-        self.assertTrue(from_floppies.amiga_partitions[0].overlays)
+        self.assertTrue(from_floppies.package_keys)
         self.assertFalse(self.setup_for("a1200", Display.RTG_HDMI)
-                         .amiga_partitions[0].overlays)
+                         .package_keys)
 
     def test_description_mentions_the_machine_and_display(self):
         config = self.setup_for("a500")
@@ -442,15 +446,15 @@ class TestMachineSetup(unittest.TestCase):
         self.assertIn("chip_slowdown", text)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 class TestOptionalSoftware(unittest.TestCase):
     """A Workbench from floppies has no archiver, installer or WHDLoad.
 
-    None of that is shipped here, so it is copied out of a system the user
-    already has - and only what that system actually holds is offered.
+    None of that is shipped here, so each piece is fetched from whoever
+    publishes it. It used to be copied out of a system the user already had,
+    which meant a card was built from whatever that installation happened to
+    hold, at whatever age it happened to be.
     """
 
     def scratch(self) -> Path:
@@ -458,54 +462,27 @@ class TestOptionalSoftware(unittest.TestCase):
         self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
         return folder
 
-    def donor(self, *present: str) -> Path:
-        system = self.scratch() / "System"
-        (system / "C").mkdir(parents=True)
-        (system / "S").mkdir()
-        for item in present:
-            path = system / item
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"x")
-        return system
-
-    def test_only_what_the_donor_has_is_offered(self):
+    def test_everything_offered_names_where_it_comes_from(self):
         from pistorm_imager.core import packages
-        system = self.donor("C/WHDLoad", "C/lha")
-        found = packages.available(system)
-        self.assertIn("whdload", found)
-        self.assertIn("lha", found)
-        self.assertNotIn("igame", found)
-
-    def test_nothing_is_offered_without_a_donor(self):
-        from pistorm_imager.core import packages
-        self.assertEqual(packages.available(None), {})
-        self.assertEqual(packages.available(self.scratch()), {})
-
-    def test_chosen_packages_become_overlays(self):
-        from pistorm_imager.core import packages
-        system = self.donor("C/WHDLoad", "C/lha", "C/Installer")
-        overlays = packages.overlays_for(system, ["whdload", "lha"], rtg=False)
-        destinations = sorted(dest for _src, dest in overlays)
-        self.assertEqual(destinations, ["C", "C"])
-        self.assertNotIn("Installer", " ".join(s for s, _d in overlays))
+        for package in packages.CATALOGUE:
+            self.assertIsNotNone(
+                package.download,
+                f"{package.key} has no source, so ticking it would do nothing")
 
     def test_rtg_only_software_is_withheld_without_rtg(self):
         from pistorm_imager.core import packages
-        system = self.donor("Libs/Picasso96/rtg.library")
-        self.assertEqual(packages.overlays_for(system, ["picasso96"], rtg=False), [])
-        self.assertTrue(packages.overlays_for(system, ["picasso96"], rtg=True))
+        self.assertEqual(
+            packages.overlays_for(["picasso96"], rtg=False,
+                                  allow_download=False), [])
 
-    def test_a_pimiga_folder_works_as_a_donor(self):
+    def test_nothing_is_fetched_when_downloads_are_not_allowed(self):
+        """The configuration stage resolves no files; the build fetches them."""
         from pistorm_imager.core import packages
-        root = self.scratch()
-        system = root / "disks" / "System"
-        (system / "C").mkdir(parents=True)
-        (system / "S").mkdir()
-        (system / "C" / "lha").write_bytes(b"x")
-        self.assertEqual(packages.donor_system(root), system)
+        self.assertEqual(
+            packages.overlays_for(["whdload", "lha"], rtg=False,
+                                  allow_download=False), [])
 
     def test_the_setup_adds_them_to_a_floppy_install(self):
-        system = self.donor("C/WHDLoad", "C/lha")
         folder = self.scratch()
         (folder / "adfs").mkdir()
         config = presets.machine_setup(
@@ -513,11 +490,8 @@ class TestOptionalSoftware(unittest.TestCase):
             str(folder / "c.img"), False, 32 * 10 ** 9,
             presets.Detected(adf_folder=str(folder / "adfs"), adf_version="3.1",
                              adf_complete=True),
-            system_source="adf", package_donor=str(system),
-            package_keys=["whdload", "lha"])
-        overlays = config.amiga_partitions[0].overlays
-        self.assertTrue(overlays)
-        self.assertTrue(any("WHDLoad" in src for src, _d in overlays))
+            system_source="adf", package_keys=["whdload", "lha"])
+        self.assertEqual(config.package_keys, ["whdload", "lha"])
 
 
 class TestPackageFit(unittest.TestCase):
@@ -543,7 +517,7 @@ class TestPackageFit(unittest.TestCase):
     def test_every_entry_is_obtainable_somehow(self):
         """A package nobody can supply would only ever be a dead switch."""
         for package in self.packages.CATALOGUE:
-            self.assertTrue(package.items or package.download, package.key)
+            self.assertTrue(package.download, package.key)
 
     def test_a_self_installing_download_says_where_it_lands(self):
         for package in self.packages.CATALOGUE:
@@ -584,13 +558,14 @@ class TestPackageFit(unittest.TestCase):
         self.assertNotIn("fblit", chosen)
 
     def test_a_suggestion_only_names_software_that_can_be_had(self):
-        """Scalos has no free download, so it needs a donor to be suggested."""
-        chosen = self.packages.suggested(self.a1200, Display.RTG_HDMI)
-        self.assertNotIn("scalos", chosen)
-        system = self.donor("C/WHDLoad", "System/Scalos/Scalos")
-        with_donor = self.packages.suggested(self.a1200, Display.RTG_HDMI,
-                                             donor=str(system))
-        self.assertIn("scalos", with_donor)
+        """Every suggestion has to be something this can actually install."""
+        for machine, display in ((self.a1200, Display.RTG_HDMI),
+                                 (self.a500, Display.NATIVE)):
+            for key in self.packages.suggested(machine, display,
+                                               networking=True):
+                self.assertIsNotNone(
+                    self.packages.CATALOGUE_BY_KEY[key].download,
+                    f"{key} is suggested and cannot be obtained")
 
     def test_networking_is_only_suggested_when_it_is_wanted(self):
         without = self.packages.suggested(self.a500, Display.NATIVE)
@@ -684,3 +659,7 @@ class EcsUpgrades(unittest.TestCase):
         options = machines.boot_options(machine, machines.Display.NATIVE)
         self.assertTrue(options.chip_slowdown)
         self.assertTrue(options.enable_slow_ram)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
