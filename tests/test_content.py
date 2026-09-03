@@ -788,6 +788,77 @@ class TheTrapdoorSwitchReachesTheCard(unittest.TestCase):
         self.assertIn("move_slow_to_chip", options.extra_cmdline)
 
 
+class IgameIsToldWhereTheGamesAre(unittest.TestCase):
+    """iGame keeps the drawers it scans in repos.prefs, and ships none.
+
+    Installed cleanly from Aminet it came up with nothing to scan, so "Scan
+    Repositories" found nothing and the list stayed empty - on a card whose
+    drives were full of games. The build knows which drives it filled.
+    """
+
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp(prefix="pistorm-repos-"))
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
+
+    def config(self, partitions, keys=("igame",)):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        return builder.BuildConfig(target="/tmp/x.img",
+                                   amiga_partitions=partitions,
+                                   package_keys=list(keys))
+
+    def part(self, name, volume, folder="", bootable=False):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        return builder.AmigaPartitionSpec(name, None, "PFS3", bootable, 0,
+                                          content_folder=folder,
+                                          volume_name=volume)
+
+    def written(self, config):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        pairs = builder._igame_repositories(config, Progress())
+        if not pairs:
+            return None
+        return Path(pairs[0][0]).read_text()
+
+    def test_the_whdload_drawer_is_named_when_it_is_there(self):
+        games = self.folder / "games"
+        (games / "WHDLoad").mkdir(parents=True)
+        text = self.written(self.config([
+            self.part("DH0", "Workbench", bootable=True),
+            self.part("DH1", "Games", str(games))]))
+        self.assertEqual(text, "Games:WHDLoad\n")
+
+    def test_the_drive_itself_when_there_is_no_whdload_drawer(self):
+        demos = self.folder / "demos"
+        demos.mkdir(parents=True)
+        text = self.written(self.config([
+            self.part("DH0", "Workbench", bootable=True),
+            self.part("DH1", "Demos", str(demos))]))
+        self.assertEqual(text, "Demos:\n")
+
+    def test_a_drive_this_build_did_not_fill_is_not_named(self):
+        #  Pointing iGame at a drawer that is not there is exactly what the
+        #  donor's own list did, and it is no better written by us.
+        text = self.written(self.config([
+            self.part("DH0", "Workbench", bootable=True),
+            self.part("DH1", "Work")]))
+        self.assertIsNone(text)
+
+    def test_nothing_is_written_when_igame_was_not_chosen(self):
+        games = self.folder / "g2"
+        (games / "WHDLoad").mkdir(parents=True)
+        self.assertIsNone(self.written(self.config(
+            [self.part("DH1", "Games", str(games))], keys=("whdload",))))
+
+    def test_it_lands_beside_igame(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        games = self.folder / "g3"
+        (games / "WHDLOAD").mkdir(parents=True)
+        pairs = builder._igame_repositories(self.config([
+            self.part("DH1", "Games", str(games))]), Progress())
+        self.assertEqual(pairs[0][1], "Programs/iGame")
+        self.assertTrue(pairs[0][0].endswith("repos.prefs"))
+
+
 class MagicWbIsGone(unittest.TestCase):
     """Unsupported, unregistrable, and its Installer broke a real machine.
 

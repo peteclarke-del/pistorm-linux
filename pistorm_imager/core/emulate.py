@@ -114,16 +114,3 @@ def fsuae_config(machine: machines.Machine, drive: str | Path,
     for key, value in (extra or {}).items():
         lines.append(f"{key} = {value}")
     return "\n".join(lines) + "\n"
-
-
-def config_for_build(config, machine: machines.Machine, drive: str | Path,
-                     **kwargs) -> str:
-    """The same, taking the Kickstart and the trapdoor choice from a build.
-
-    The point of the module: what the card was built for is what gets
-    emulated, with nothing restated.
-    """
-    kwargs.setdefault(
-        "trapdoor_to_chip",
-        "move_slow_to_chip" in config.boot_options.extra_cmdline.split())
-    return fsuae_config(machine, drive, config.kickstart_path, **kwargs)
