@@ -191,6 +191,20 @@ def on_activate(app: ImagerApplication) -> None:
         check(window._hand_edited_partitions() is not None,
               "a loaded layout counts as the user's when Apply is pressed")
         window.quick_pimiga.set_path("")
+
+        #  Forgetting the saved setup puts the window back as it started;
+        #  deleting the file alone left everything on screen exactly as it was.
+        window.quick_hdf.set_path(str(HDF_IMAGE))
+        window.quick_trapdoor.set_active(True)
+        window.extra_row.set_text("sd.verbose=1")
+        window._on_forget_session(None)
+        check(window.quick_hdf.path == "" and window.extra_row.get_text() == "",
+              "forgetting clears what was chosen")
+        check(not window.quick_trapdoor.get_active(),
+              "and the switches go back to their defaults")
+        check(window.package_rows["whdload"].get_active(),
+              "while the software defaults come back")
+
         #  Hand the layout back to the quick settings, or every check after
         #  this one is testing a deliberately protected layout.
         #  The software choices and the donor they come from were saved by
@@ -351,7 +365,22 @@ def on_activate(app: ImagerApplication) -> None:
         window.apply(plain, keep_partitions=True)
         check(window.gather().release_tag == "v1.0.7",
               f"with none saved, the newest stable is chosen ({window.gather().release_tag!r})")
+        #  The summary is written before that list arrives, so it says an
+        #  Emu68 release is still needed; nothing rewrote it once one was
+        #  there, and a loaded setup sat on "Still needed" for ever.
         window.releases = []
+        rewrites = []
+        real_update = window._update_summary
+        window._update_summary = lambda: rewrites.append(1)
+        window._releases_loaded([
+            _emu68.Release(tag="v1.0.7", name="1.0.7", prerelease=False,
+                           published="2024-01-01", assets=assets)])
+        window._releases_failed("no network")
+        window._update_summary = real_update
+        check(len(rewrites) == 2,
+              f"the summary is rewritten when the Emu68 list settles ({rewrites})")
+        window.releases = []
+        window._update_summary()
         #  Hand the layout back to the quick settings and put the hard disk
         #  chooser back: every check after this one depends on both.
         window._derived_partitions = [r.spec() for r in window.partition_rows]
