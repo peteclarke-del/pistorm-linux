@@ -895,6 +895,17 @@ provide for the gaps — and the packages, the drawer icons and `S:User-Startup`
 are applied there instead. Packages are resolved **before** the drive is
 filled, so they can take the place of an older copy.
 
+A drawer claims its **name** as well. ClassicWB keeps `Visage` as a *file* in
+`Utilities:` and this build wants a drawer of that name there — a collision
+that ended an hour-long build outright with *"Visage already exists as a
+file"*. The name is freed the same way, and safely: the copy asks about files
+and never about drawers, so claiming a name can only ever displace a file, and
+a drawer of the same name is merged into as before. Its contents are never
+touched one by one.
+
+And no single package may destroy a card again: an overlay that cannot be
+installed is reported as a warning and the build carries on with the rest.
+
 Whether they do is **asked**, not assumed. *"Replace older copies already on
 the imported drive"* sits with the software list and appears only when a drive
 is actually being imported. On, the release you ticked is installed in place of
