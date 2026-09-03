@@ -940,6 +940,33 @@ whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
 
+### Leaving out what this machine cannot run
+
+A collection keeps its titles in a container drawer — `WHDLOAD` is the usual
+one — divided into categories whose names say what they need, and those have
+always been offered as things to leave out, with the ones this machine cannot
+run switched off to start with.
+
+**Everything beside that drawer was offered nowhere.** A Games drive with forty
+native titles sitting next to its `WHDLOAD` collection could only be taken
+whole, so `Turrican2AGA` went onto an ECS machine along with the rest. Those are
+listed now too — one entry per program, on any drive being filled from a folder,
+games and demos alike — so anything can be suppressed whether or not this tool
+can judge it.
+
+What it *can* judge, it judges from the title's own name: `AGA` or `CD32` in
+UPPER CASE at a word boundary means AGA, so `Turrican2AGA` and `DeepCoreCD32`
+start switched off on an OCS or ECS machine while `Saga`, `Vagabond` and
+`AgaMemnon` are untouched. Everything else is listed with no requirement and
+left in, because the honest answer is that we do not know.
+
+**Reading the binaries was tried and abandoned.** FMODE and BPLCON4 are
+AGA-only registers, so scanning a program for them looks like a real test. It
+is not: matching 16-bit words finds "FMODE" 56 times inside `DOOM1.WAD` and 48
+times inside an IFF picture. It labels data as code, and would have confidently
+condemned titles that run perfectly well. A name is a weaker signal, but it is
+never a guess.
+
 ### iGame is told where the games are
 
 iGame keeps the drawers it scans in `repos.prefs`, and its Aminet archive
