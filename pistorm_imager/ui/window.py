@@ -2402,11 +2402,17 @@ class ImagerWindow(Adw.ApplicationWindow):
             what = "Partition and build"
         else:
             what = "Update the boot partition of"
+        #  Choices that will build and probably are not what was meant: said
+        #  here, where the setup is accepted, rather than discovered on the
+        #  Amiga afterwards.
+        concerns = config.concerns()
+        note = ("\n\n" + "\n".join(f"\u2022 {c}" for c in concerns)) if concerns else ""
         if applied:
-            self.summary.set_text(f"{what} → {target}")
+            self.summary.set_text(f"{what} → {target}{note}")
         else:
             self.summary.set_text(f"{what} → {target}"
-                                  "   -   Apply this setup to enable Write")
+                                  "   -   Apply this setup to enable Write"
+                                  + note)
         self.write_button.set_sensitive(applied)
         self._quick_preview()
 
