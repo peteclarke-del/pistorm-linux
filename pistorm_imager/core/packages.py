@@ -456,30 +456,6 @@ CATALOGUE: list[Package] = [
              "is the only point early enough to replace the one in ROM.",
     ),
     Package(
-        "magicwb", "MagicWB",
-        "The classic eight-colour icon and font set. Designed for exactly the "
-        "kind of limited palette a native Workbench has.",
-        category=Category.LOOK,
-        #  Its fonts and patterns are ordinary files and are installed here;
-        #  its icon set is used to give this build's own drawers icons (see
-        #  ``icon_set_dirs``).  Only the parts that replace icons already on
-        #  the card still need its Installer, because the file system this
-        #  tool writes creates files and never overwrites them.
-        #  The fonts and the patterns, and not its Installer. That Installer
-        #  prepends two lines to S:User-Startup - one of them runs
-        #  MagicWB-Demon to claim pens 4 to 8 - and a card it had been run on
-        #  stopped booting with a software error before Workbench appeared.
-        #  It could not be reproduced in an emulator, which is a reason to
-        #  keep it off a card rather than a reason to doubt it.
-        download=Download("util/wb/MagicWB21p.lha",
-                          (("MagicWB2.1p/Fonts", "Fonts"),
-                           ("MagicWB2.1p/Patterns", "Prefs/Presets"))),
-        note="Its fonts and desktop patterns only. The Installer that "
-             "restyles the icons is deliberately not put on the card: it "
-             "edits S:User-Startup, and a machine it had been run on stopped "
-             "booting.",
-    ),
-    Package(
         "magicmenu", "MagicMenu",
         "Turns the menu bar into a pop-up menu under the pointer, instead of a "
         "trip to the top of the screen.",
@@ -798,35 +774,6 @@ CATALOGUE: list[Package] = [
 CATALOGUE_BY_KEY = {p.key: p for p in CATALOGUE}
 
 
-#  Where a package keeps drawer icons once its archive is unpacked, best
-#  first.  MagicWB splits them: ImageDrawers holds the plain system drawers
-#  (Storage, Tools, Utilities and so on), XEN-Icons the rest.
-ICON_SET_DIRS = {
-    "magicwb": ("MagicWB2.1p/XEN-Icons/SPECIAL/ImageDrawers",
-                "MagicWB2.1p/XEN-Icons"),
-}
-
-
-def icon_set_dirs(key: str) -> list[Path]:
-    """Unpacked directories of ``key`` that hold drawer icons.
-
-    Only what is already in the cache is returned; this never downloads,
-    because it runs while a volume is open and a build that got this far has
-    already fetched whatever it is going to.
-    """
-    package = CATALOGUE_BY_KEY.get(key)
-    if package is None or package.download is None:
-        return []
-    unpacked = cache_dir() / (package.download.filename.rsplit(".", 1)[0]
-                              + ".unpacked")
-    out = []
-    for relative in ICON_SET_DIRS.get(key, ()):
-        path = unpacked / relative
-        if path.is_dir():
-            out.append(path)
-    return out
-
-
 def expand(keys: Iterable[str]) -> list[str]:
     """``keys`` plus everything they require, dependencies first.
 
@@ -1120,15 +1067,14 @@ def suggested(machine: Machine, display: Display, *,
     * Everything needs WHDLoad, an archiver and Installer.
     * A faster icon.library is free speed on any machine.
     * On a native screen the cost is the chipset drawing it, so FBlit, FText
-      and a locked palette earn their place, and MagicWB's eight colours suit
-      it better than icons that assume a deep display.
+      and a locked palette earn their place.
     * On an RTG screen there is no blitter in the way; Picasso96 is the point
       of it, and a heavier desktop becomes affordable.
     """
     chosen = ["whdload", "lha", "installer", "igame", "iconlib",
               "magicmenu", "visualprefs"]
     if display.uses_native and machine.chipset is not Chipset.NONE:
-        chosen += ["fblit", "ftext", "fullpalette", "magicwb"]
+        chosen += ["fblit", "ftext", "fullpalette"]
     if display.uses_rtg:
         chosen += ["picasso96"]
     if machine.aga or display.uses_rtg:

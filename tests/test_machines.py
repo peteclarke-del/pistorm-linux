@@ -546,7 +546,7 @@ class TestPackageFit(unittest.TestCase):
     def test_the_suggestion_for_an_ocs_a500_on_its_own_screen(self):
         chosen = self.packages.suggested(self.a500, Display.NATIVE)
         for key in ("whdload", "lha", "installer", "iconlib",
-                    "fblit", "ftext", "fullpalette", "magicwb"):
+                    "fblit", "ftext", "fullpalette"):
             self.assertIn(key, chosen)
         self.assertNotIn("picasso96", chosen)
         self.assertNotIn("scalos", chosen)
