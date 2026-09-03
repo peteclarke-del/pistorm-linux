@@ -34,8 +34,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import (amigafs, amigaos, bootcfg, compat, devices, emu68, hdfcheck,
-               imgsrc, kickstart, mbr, packages, pfs3, postwrite,
+from . import (amigafs, amigaos, bootcfg, compat, content, devices, emu68,
+               hdfcheck, imgsrc, kickstart, mbr, packages, pfs3, postwrite,
                rdb)
 from .fat32 import Fat32
 from .util import (MIB, Progress, align_up, copy_stream, human_size,
@@ -1143,6 +1143,45 @@ def _check_the_system_can_boot(config: BuildConfig, progress: Progress) -> None:
                 f"they will fill in what it does not have.")
 
 
+def _follow_launchers(spec: AmigaPartitionSpec, reader, source: Path | None,
+                      progress: Progress) -> list[str]:
+    """Leave out what an excluded launcher was the only thing running.
+
+    A title can be a few bytes naming the program that runs it. Leaving the
+    launcher out and keeping what it names wastes the very space the exclusion
+    was for, on something nothing can now reach.
+    """
+    if not spec.exclude:
+        return list(spec.exclude or [])
+    try:
+        if source is not None:
+            names = [p.name for p in source.iterdir()]
+            offered = [c.path for c in content.discover(source)]
+
+            def read(name: str):
+                path = source / name
+                return path.read_bytes() if path.is_file() else None
+        else:
+            top = reader.listdir()
+            names = [e.name for e in top]
+            offered = [c.path for c in content.discover_volume(reader)]
+            by_name = {e.name.lower(): e for e in top}
+
+            def read(name: str):
+                entry = by_name.get(name.lower())
+                return None if entry is None or entry.is_dir \
+                    else reader.read_file(entry)
+    except Exception as error:                   # noqa: BLE001 - not fatal
+        progress.log(f"  could not check what the exclusions run: {error}")
+        return list(spec.exclude)
+
+    extra = content.followed(spec.exclude, read, names, offered)
+    for name in extra:
+        progress.log(f"  {name} left out as well: only something you removed "
+                     f"ran it")
+    return list(spec.exclude) + extra
+
+
 def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      table: rdb.Rdb, progress: Progress) -> None:
     """Fill partitions that were given a host directory or overlays."""
@@ -1186,7 +1225,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                          partition.dostype)
             copied, skipped = amigaos.copy_volume(
                 reader, volume, "", progress, skip_existing=False,
-                compat=fixer, exclude=spec.exclude)
+                compat=fixer,
+                exclude=_follow_launchers(spec, reader, None, progress))
             try:
                 reader.f.close()
             except Exception:  # noqa: BLE001
@@ -1207,9 +1247,9 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                          partition.blocks(table.geometry),
                                          spec.volume_name or partition.drive_name,
                                          partition.dostype)
-            copied, renamed = amigaos.install_tree(volume, source, "", progress,
-                                                   compat=fixer,
-                                                   exclude=spec.exclude)
+            copied, renamed = amigaos.install_tree(
+                volume, source, "", progress, compat=fixer,
+                exclude=_follow_launchers(spec, None, source, progress))
             progress.log(f"{copied} files copied"
                          + (f", {renamed} renamed for AmigaDOS" if renamed else ""))
         else:

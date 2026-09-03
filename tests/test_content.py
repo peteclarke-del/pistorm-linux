@@ -153,6 +153,99 @@ class TestDiscover(unittest.TestCase):
                 raise OSError("no")
         self.assertEqual(content.discover_volume(Broken()), [])
 
+    def test_a_launcher_takes_what_it_runs_with_it(self):
+        """Turrican2AGA is fourteen bytes reading "AmigaGame.exe".
+
+        Leaving the launcher out and keeping the program it names wastes the
+        space the exclusion was for, on something nothing can now reach.
+        """
+        files = {"Turrican2AGA": b"AmigaGame.exe\n",
+                 "AmigaGame.exe": b"\x00\x00\x03\xf3" + b"x" * 900,
+                 "Doom": None}
+        self.assertEqual(
+            content.followed(["Turrican2AGA"], files.get, list(files)),
+            ["AmigaGame.exe"])
+
+    def test_a_launcher_that_stays_pins_what_it_runs(self):
+        #  A shared engine survives as long as anything still runs it.
+        files = {"Turrican2AGA": b"AmigaGame.exe\n",
+                 "SomethingElse": b"AmigaGame.exe\n",
+                 "AmigaGame.exe": b"\x00\x00\x03\xf3" + b"x" * 900}
+        self.assertEqual(
+            content.followed(["Turrican2AGA"], files.get, list(files)), [])
+
+    def test_a_choice_of_its_own_is_never_taken_away_behind_your_back(self):
+        files = {"Turrican2AGA": b"AmigaGame.exe\n", "AmigaGame.exe": b"prog"}
+        self.assertEqual(
+            content.followed(["Turrican2AGA"], files.get, list(files),
+                             offered=["AmigaGame.exe"]), [])
+
+    def test_a_program_is_not_mistaken_for_a_launcher(self):
+        #  Amiga executables start with a hunk header, and are not text.
+        files = {"Game": b"\x00\x00\x03\xf3\x00\x01", "Data": b"x"}
+        self.assertEqual(content.followed(["Game"], files.get, list(files)), [])
+
+    def test_something_too_big_to_be_a_launcher_is_not_followed(self):
+        files = {"Readme": b"Data\n" * 400, "Data": b"x"}
+        self.assertTrue(len(files["Readme"]) > content.LAUNCHER_LIMIT)
+        self.assertEqual(content.followed(["Readme"], files.get, list(files)),
+                         [])
+
+    def test_a_name_it_mentions_that_is_not_there_is_ignored(self):
+        files = {"Launcher": b"NotOnThisDrive\n"}
+        self.assertEqual(content.followed(["Launcher"], files.get,
+                                          list(files)), [])
+
+    def test_the_build_really_calls_it_for_a_folder(self):
+        """Exercises the builder's own wrapper, not just the rule.
+
+        The rule was tested and passed while the builder used `content`
+        without importing it - a NameError that would only have appeared an
+        hour into a real build.
+        """
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-follow-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "Turrican2AGA").write_bytes(b"AmigaGame.exe\n")
+        (folder / "AmigaGame.exe").write_bytes(b"\x00\x00\x03\xf3" + b"x" * 900)
+        (folder / "Doom").mkdir()
+        spec = builder.AmigaPartitionSpec("DH1", None, "PFS3", False, 0,
+                                          content_folder=str(folder),
+                                          exclude=["Turrican2AGA"])
+        out = builder._follow_launchers(spec, None, folder, Progress())
+        self.assertEqual(sorted(out), ["AmigaGame.exe", "Turrican2AGA"])
+
+    def test_the_build_really_calls_it_for_an_image(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+
+        class FakeEntry:
+            def __init__(self, name, is_dir, data=b""):
+                self.name, self.is_dir, self.anode = name, is_dir, 0
+                self.size, self.data = len(data), data
+
+        class FakeVolume:
+            entries = [FakeEntry("Turrican2AGA", False, b"AmigaGame.exe\n"),
+                       FakeEntry("AmigaGame.exe", False, b"\x00\x00\x03\xf3"),
+                       FakeEntry("Doom", True)]
+
+            def listdir(self, where=0):
+                return self.entries if where == 0 else []
+
+            def read_file(self, entry):
+                return entry.data
+
+        spec = builder.AmigaPartitionSpec("DH1", None, "PFS3", False, 0,
+                                          content_hdf="/some.hdf",
+                                          exclude=["Turrican2AGA"])
+        out = builder._follow_launchers(spec, FakeVolume(), None, Progress())
+        self.assertEqual(sorted(out), ["AmigaGame.exe", "Turrican2AGA"])
+
+    def test_nothing_excluded_means_nothing_to_follow(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        spec = builder.AmigaPartitionSpec("DH1", None, "PFS3", False, 0)
+        self.assertEqual(builder._follow_launchers(spec, None, None,
+                                                   Progress()), [])
+
     def test_a_folder_that_is_not_there(self):
         self.assertEqual(content.discover("/no/such/place"), [])
 
