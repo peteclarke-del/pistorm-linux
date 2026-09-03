@@ -287,6 +287,31 @@ the switch on and the option missing built a card without it: 512K of chip RAM
 on a machine that had been told to give it a megabyte, with the switch on screen
 still saying it was on.
 
+### The trapdoor RAM has to be mapped before it can be moved
+
+`move_slow_to_chip` moves the trapdoor RAM at `0xC00000` into the chip range.
+It can only move RAM that has been mapped, and mapping it is a different set of
+options — `enable_c0_slow`, `enable_c8_slow`, `enable_d0_slow` — which Emu68
+takes for any OCS or ECS machine. Sent on its own, `move_slow_to_chip` is inert.
+
+Nothing on screen decides those: the *machine* does. `machines.boot_options()`
+set them, and that runs only where a quick setup is assembled — while the card
+is written from `gather()`, which built its boot options from the widgets alone
+and so left the field at its default. **Every card this tool wrote went out
+without them**, and the symptom was the same 512K of chip RAM the paragraph
+above describes, now with the option that was supposed to fix it present and
+doing nothing. It was found by reading `cmdline.txt` back off a written card:
+
+    vc4.mem=64 chip_slowdown dbf_slowdown blitwait move_slow_to_chip
+
+The option names were then checked against the strings inside the Emu68 kernel
+binary rather than taken from memory, because a switch spelled wrongly does
+nothing at all and says nothing about it. `gather()` now asks
+`machines.wants_slow_ram()` for the same answer the quick path gets, so there is
+one rule rather than two, and the same card reads:
+
+    vc4.mem=64 chip_slowdown dbf_slowdown blitwait enable_c0_slow enable_c8_slow enable_d0_slow move_slow_to_chip
+
 ## How big is the card, and which gigabyte do you mean
 
 A size typed for a card is a guess at what the card holds, and the two meanings

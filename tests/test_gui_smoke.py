@@ -25,7 +25,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402
 
-from pistorm_imager.core import bootcfg, builder, jobs  # noqa: E402
+from pistorm_imager.core import bootcfg, builder, jobs, machines  # noqa: E402
 from pistorm_imager.ui.window import MODES  # noqa: E402
 
 import tempfile  # noqa: E402
@@ -267,6 +267,25 @@ def on_activate(app: ImagerApplication) -> None:
         for row in window.partition_rows:
             row.hdf_row.set_path("")
         window._sync_visibility()
+
+        #  The card is written from gather(), and gather() built its boot
+        #  options from the widgets alone. enable_slow_ram has no widget - the
+        #  machine decides it - so every card went out without
+        #  enable_c0_slow, and move_slow_to_chip had nothing to move: a
+        #  machine told to give Workbench a megabyte of chip RAM came up with
+        #  512K. Found on a real card's cmdline.txt.
+        for index, machine in enumerate(machines.MACHINES):
+            if machine.key == "a500ecs":
+                window.quick_machine.set_selected(index)
+        window._on_machine_changed()
+        window.quick_trapdoor.set_active(True)
+        line = window.gather().boot_options.cmdline()
+        check("move_slow_to_chip" in line and "enable_c0_slow" in line,
+              f"the trapdoor RAM is mapped as well as moved ({line})")
+        window.quick_trapdoor.set_active(False)
+        line = window.gather().boot_options.cmdline()
+        check("enable_c0_slow" in line and "move_slow_to_chip" not in line,
+              f"and the ranges stay mapped without the choice ({line})")
 
         #  Choosing a display that draws on the Pi's HDMI is choosing the
         #  RTG subsystem with it. Nothing rebuilt the software list when the
@@ -934,7 +953,6 @@ def on_activate(app: ImagerApplication) -> None:
         #  build actually reads, so it has to carry it: without this, applying
         #  a quick setup and pressing Write removed the emulator's RTG driver
         #  instead of replacing it, however the display was set.
-        from pistorm_imager.core import machines  # noqa: PLC0415
         displays = list(machines.Display)
         window.quick_display.set_selected(displays.index(machines.Display.RTG_HDMI))
         window._sync_visibility()
