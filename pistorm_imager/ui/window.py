@@ -960,6 +960,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         for warning in presets.check_image_for_machine(path, self._machine()):
             text += f"  -  {warning}"
         self.quick_hdf_info.set_subtitle(GLib.markup_escape_text(text))
+        #  Whether the Workbench disks are needed follows from the drive that
+        #  was just chosen, and only _sync_visibility reveals that chooser -
+        #  so without this the option to add them never appeared.
+        self._sync_visibility()
         self._relayout_partitions()
         self._quick_preview()
 
@@ -2465,11 +2469,15 @@ class ImagerWindow(Adw.ApplicationWindow):
             amiga_partitions=[row.spec() for row in self.partition_rows],
             pfs3_binary=self.quick_donor.path,
             #  Only a card we are partitioning ourselves can have an OS
-            #  installed onto it from floppies.
+            #  installed onto it from floppies - but a drive imported onto
+            #  such a card may need them as well. ClassicWB's brings no
+            #  Workbench of its own, and a card made from it alone stops at a
+            #  Shell, so the two go together rather than one excluding the
+            #  other.
             install_amigaos=(mode is builder.BuildMode.FRESH
-                             and not self.quick_hdf.path
-                             and self._system_source() == "adf"
-                             and bool(self.adf_row.path)),
+                             and bool(self.adf_row.path)
+                             and (self._system_source() == "adf"
+                                  or self._imported_needs_floppies())),
             adf_folder=self.adf_row.path,
             adf_version=self._selected_adf_version(),
             amiga_volume_name=self.volume_row.get_text().strip() or "Workbench",
