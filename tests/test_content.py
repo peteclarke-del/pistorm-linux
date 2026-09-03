@@ -60,11 +60,49 @@ class TestDiscover(unittest.TestCase):
             (folder / "WHDLOAD" / "OCS" / extra).mkdir()
         self.assertEqual(content.discover(folder)[0].entries, 4)
 
-    def test_a_tree_with_no_categories_says_so_rather_than_guessing(self):
+    def test_a_program_beside_the_collection_can_be_left_out(self):
+        """These were offered nowhere, so a drive could only be taken whole.
+
+        A Games drive keeps its WHDLoad collection in one drawer and forty
+        native titles beside it. Only the collection was divided into things
+        that could be excluded, so the rest went onto an ECS machine whatever
+        they needed.
+        """
         folder = Path(tempfile.mkdtemp(prefix="pistorm-content-"))
         self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
         (folder / "SomeGame").mkdir()
-        self.assertEqual(content.discover(folder), [])
+        found = content.discover(folder)
+        self.assertEqual([c.path for c in found], ["SomeGame"])
+
+    def test_a_title_that_names_its_own_chipset_is_judged_by_it(self):
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-content-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        for name in ("Turrican2AGA", "DeepCoreCD32", "Saga", "Doom"):
+            (folder / name).mkdir()
+        needs = {c.label: c.needs for c in content.discover(folder)}
+        self.assertEqual(needs["Turrican2AGA"], machines.Chipset.AGA)
+        self.assertEqual(needs["DeepCoreCD32"], machines.Chipset.AGA)
+        #  "Saga" ends in the same three letters and means nothing by them.
+        self.assertIsNone(needs["Saga"])
+        self.assertIsNone(needs["Doom"])
+
+    def test_the_ones_this_machine_cannot_run_start_switched_off(self):
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-content-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        for name in ("Turrican2AGA", "Doom"):
+            (folder / name).mkdir()
+        found = content.discover(folder)
+        a500 = machines.MACHINES_BY_KEY["a500ecs"]
+        self.assertEqual(content.unsuitable(found, a500), ["Turrican2AGA"])
+        a1200 = next(m for m in machines.MACHINES if m.aga)
+        self.assertEqual(content.unsuitable(found, a1200), [])
+
+    def test_hidden_drawers_are_not_offered(self):
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-content-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / ".backdrop").mkdir()
+        (folder / "Real").mkdir()
+        self.assertEqual([c.path for c in content.discover(folder)], ["Real"])
 
     def test_a_folder_that_is_not_there(self):
         self.assertEqual(content.discover("/no/such/place"), [])
