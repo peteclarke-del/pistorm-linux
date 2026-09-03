@@ -661,5 +661,46 @@ class EcsUpgrades(unittest.TestCase):
         self.assertTrue(options.enable_slow_ram)
 
 
+class TheTrapdoorRamHasToBeMappedBeforeItCanBeMoved(unittest.TestCase):
+    """``move_slow_to_chip`` on its own moves nothing.
+
+    The RAM at 0xC00000 has to be mapped first, which is what
+    ``enable_c0_slow`` and its neighbours do. Sent without them the option is
+    inert, and a machine told to give Workbench a megabyte of chip RAM comes
+    up with 512K - which is what a real card did.
+    """
+
+    def cmdline(self, key: str, trapdoor: bool) -> str:
+        machine = machines.MACHINES_BY_KEY[key]
+        return machines.boot_options(machine, machines.Display.NATIVE,
+                                     trapdoor_to_chip=trapdoor).cmdline()
+
+    def test_the_two_travel_together(self):
+        for key in ("a500", "a500ecs"):
+            with self.subTest(key):
+                text = self.cmdline(key, True)
+                self.assertIn("move_slow_to_chip", text)
+                self.assertIn("enable_c0_slow", text)
+
+    def test_the_ranges_are_mapped_even_without_the_trapdoor_choice(self):
+        #  Enabling the ranges is right for any OCS/ECS machine; moving them
+        #  into chip RAM is the separate choice.
+        text = self.cmdline("a500ecs", False)
+        self.assertIn("enable_c0_slow", text)
+        self.assertNotIn("move_slow_to_chip", text)
+
+    def test_an_aga_machine_gets_neither(self):
+        text = self.cmdline("a1200", True)
+        self.assertNotIn("enable_c0_slow", text)
+
+    def test_the_option_names_are_the_ones_emu68_knows(self):
+        #  Checked against the strings in the Emu68 kernel binary rather than
+        #  from memory: a switch spelled wrongly does nothing at all, quietly.
+        text = self.cmdline("a500ecs", True)
+        for word in ("enable_c0_slow", "enable_c8_slow", "enable_d0_slow",
+                     "move_slow_to_chip"):
+            self.assertIn(word, text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

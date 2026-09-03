@@ -187,6 +187,23 @@ def workbench_on_rtg(display: Display, prefer_rtg: bool = True) -> bool:
 CMDLINE_OPTIONS = ("move_slow_to_chip",)
 
 
+def wants_slow_ram(machine: Machine) -> bool:
+    """Whether Emu68 should map the slow RAM ranges for this machine.
+
+    ``move_slow_to_chip`` moves the trapdoor RAM at 0xC00000 into the chip
+    range - but only if that RAM has been mapped in the first place, which is
+    what ``enable_c0_slow`` and its neighbours do. Sent on its own it moves
+    nothing, and a machine told to give Workbench a megabyte of chip RAM comes
+    up with 512K, which is exactly what happened.
+
+    Asked here rather than decided in one place and copied in another, because
+    that is how the two came apart: this was set only where a quick setup was
+    assembled, and the configuration the card is actually written from is
+    gathered from the pages.
+    """
+    return machine.chipset in (Chipset.OCS, Chipset.ECS)
+
+
 def boot_options(machine: Machine, display: Display,
                  hdmi: tuple[int | None, int | None] = (None, None),
                  trapdoor_to_chip: bool = False) -> bootcfg.BootOptions:
@@ -207,8 +224,7 @@ def boot_options(machine: Machine, display: Display,
 
     if machine.trapdoor_ram and trapdoor_to_chip:
         options.extra_cmdline = "move_slow_to_chip"       # in CMDLINE_OPTIONS
-    if machine.chipset in (Chipset.OCS, Chipset.ECS):
-        options.enable_slow_ram = True
+    options.enable_slow_ram = wants_slow_ram(machine)
 
     if display is Display.NATIVE:
         #  No RTG, so nothing should force an HDMI mode.

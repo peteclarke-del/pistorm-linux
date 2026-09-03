@@ -2527,6 +2527,13 @@ class ImagerWindow(Adw.ApplicationWindow):
             blitwait=self.blitwait_row.get_active(),
             swap_df0_with_df1=self.swapdf_row.get_active(),
             sd_unit0_rw=self.unit0_row.get_active(),
+            #  No switch decides this - the machine does - and it was set only
+            #  where a quick setup was assembled, never here, where the card
+            #  is actually written from. So every card went out without
+            #  enable_c0_slow, and move_slow_to_chip had nothing to move: a
+            #  machine told to give Workbench a megabyte of chip RAM came up
+            #  with 512K.
+            enable_slow_ram=machines.wants_slow_ram(self._machine()),
             extra_cmdline=self._extra_cmdline(),
         )
 
