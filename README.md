@@ -350,11 +350,15 @@ not, which is why a setup loaded at startup went on saying *"Still needed: an
 Emu68 release"* with the release chosen and everything else in place. Both
 paths refresh it now, whether the list arrives or the fetch fails.
 
-**Forget the saved setup** now also puts the window back as it started -
-sources, target, switches, the extra cmdline options, the software ticks back
-to their defaults, and the layout handed back to the quick settings. It only
-deleted the file, so nothing on screen changed and only the *next* launch
-differed, which is not what starting again means.
+**Forget the saved setup** puts the window back as it opened. It only deleted
+the file, so nothing on screen changed and only the *next* launch differed,
+which is not what starting again means. Clearing the widgets by hand was not it
+either: the storage layout stayed exactly as it was, because the relayout gives
+up when there is no target to lay anything out for, so the drives someone had
+arranged survived a reset that claimed to have removed them. The reset now goes
+through `apply()` - the same method a loaded setup goes through - with a default
+configuration, so it reaches every widget the configuration reaches without a
+list to keep in step, and finishes back on the opening choice.
 
 ## Installing AmigaOS from floppy images
 
@@ -486,7 +490,21 @@ Reading it as finished offered a card that boots straight into an installer
 asking for a floppy drive.
 
 So a drive needs the Workbench disks unless it has both a boot script **and**
-`C:LoadWB`, and the description says which of the two is missing. The plan says so
+`C:LoadWB`, and the description says which of the two is missing. Needing them is
+also now *asked* for: the demand was made only when a folder had already been
+chosen - `install_amigaos` is false until then - so a card that needs the disks
+and has none said nothing at all, and built. What decides it is what the setup
+needs, which is known before any folder is, and the chooser is moved beside the
+drive that needs it rather than left on a page the quick start never shows.
+
+A drive is judged to need the disks only when it was actually read and found to
+lack them. An image this reader cannot open says nothing either way, and
+treating that as "needs the disks" would demand floppies for a perfectly good
+drive on the strength of not having understood it. The images searched are the
+one chosen on the quick screen *and* whatever fills the bootable drive on the
+Storage page, because those are two routes to the same card; the answer is
+cached against the file's modification time, since the summary asks on every
+redraw and the question costs an image read. The plan says so
 too: an imported drive with the disks installed alongside it reads *"the files
 out of an Amiga hard disk image, with Workbench from your floppy images filling
 in what it does not carry"*, where it named only the image before - the summary
