@@ -145,7 +145,13 @@ class Fix:
 def fetch_videocore_card(progress: Progress) -> bytes | None:
     """Get Emu68's RTG driver, from the cache when we already have it."""
     cache = emu68.cache_dir() / EMU68_CARD
-    if cache.exists() and cache.stat().st_size > 0:
+    #  Remember which release it was taken out of. Cached on existence alone,
+    #  a card extracted from Emu68-tools v1.1 would be used for ever, however
+    #  the release this build wants changes - the same staleness that had
+    #  cards carrying a 2007 WHDLoad while the archive beside it was current.
+    note = cache.with_name(cache.name + ".source")
+    if cache.exists() and cache.stat().st_size > 0 \
+            and note.exists() and note.read_text().strip() == EMU68_TOOLS_URL:
         return cache.read_bytes()
     archive = emu68.cache_dir() / "Emu68-tools.zip"
     try:
@@ -157,6 +163,7 @@ def fetch_videocore_card(progress: Progress) -> bytes | None:
                 return None
             data = zf.read(member)
         cache.write_bytes(data)
+        note.write_text(EMU68_TOOLS_URL + "\n")
         return data
     except Exception as error:  # noqa: BLE001 - offline is not fatal
         progress.log(f"Could not obtain {EMU68_CARD}: {error}")
@@ -204,6 +211,13 @@ class Compatibility:
         self._finished = False
         self._finish_classicwb = False
         self._classicwb_startup: bytes = b""
+        #  A drive being imported usually has its own S:User-Startup, and this
+        #  file system creates files and never overwrites them - so the lines
+        #  the chosen packages need could not be added and FBlit, FText and
+        #  Birdie went onto the card and were never run. Kept back here and
+        #  written out with those lines appended.
+        self._want_user_startup = False
+        self.kept_user_startup: bytes = b""
         #  Volume name -> (host folder it is filled from, paths left out), so
         #  a games list can be checked against what will actually be there.
         self.content: dict[str, tuple[Path, tuple[str, ...]]] = {}
@@ -260,6 +274,10 @@ class Compatibility:
         self._displace |= {p.replace("\\", "/").strip("/").lower()
                            for p in paths}
 
+    def keep_user_startup(self) -> None:
+        """Hold back the drive's S:User-Startup so it can be added to."""
+        self._want_user_startup = True
+
     def stop_displacing(self) -> None:
         """The copying is over; the packages may now write their own files.
 
@@ -303,6 +321,14 @@ class Compatibility:
                 and name[:-len(".info")].lower() in EMULATOR_MONITORS:
             if self.rtg:
                 self.monitor_icon = self._pending_data
+            return True
+        if self._want_user_startup \
+                and relative.replace("\\", "/").lower() == "s/user-startup":
+            #  Refused so the name is free; the build writes it back with the
+            #  packages' own lines after it.
+            self.kept_user_startup = self._pending_data
+            self.note("edited", f"{relative} (kept, with the lines your "
+                                f"software needs added after it)")
             return True
         if self._finish_classicwb:
             here = relative.replace("\\", "/").lower()
@@ -558,14 +584,28 @@ class Compatibility:
             self.note("added", f"{SWITCH_STORE}/{SWITCH_PREFS} (the RTG screen "
                                f"mode, kept so it can be switched back on)")
         scripts = target.makedirs("S")
+        written = []
         for name, text in (("PiStorm-Use-HDMI", USE_HDMI_SCRIPT),
                            ("PiStorm-Use-Amiga-Video", USE_NATIVE_SCRIPT)):
+            #  A drive being imported may already carry these - a card built
+            #  by this tool once before, for instance. Writing over one is not
+            #  possible here and raising would end the whole build at its last
+            #  step, an hour in, over a script that is already correct.
+            #  Asked of the volume when it can answer; a writer that cannot
+            #  is one of the test doubles, and falls back to the write itself
+            #  refusing a duplicate.
+            here = getattr(target, "_entry_exists", None)
+            if here is not None and here(scripts, name) is not None:
+                self.note("kept", f"S/{name} (the drive already has one)")
+                continue
             body = text.format(store=SWITCH_STORE, prefs=SWITCH_PREFS)
             target.write_file(scripts, name, body.encode("latin-1"),
                               protect=FIBF_SCRIPT, check_existing=True)
-        self.note("added", "S/PiStorm-Use-HDMI and S/PiStorm-Use-Amiga-Video "
-                           "(move Workbench between the two outputs, then "
-                           "reboot)")
+            written.append(name)
+        if written:
+            self.note("added", "S/" + " and S/".join(written)
+                      + " (move Workbench between the two outputs, then "
+                        "reboot)")
 
     def _install_native_monitor(self, target) -> None:
         """Make sure native screen modes can be chosen at all.

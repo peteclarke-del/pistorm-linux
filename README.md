@@ -1003,6 +1003,53 @@ times inside an IFF picture. It labels data as code, and would have confidently
 condemned titles that run perfectly well. A name is a weaker signal, but it is
 never a guess.
 
+### The drive's own S:User-Startup is kept, and added to
+
+A package that has to be *started* — FBlit, FText, Birdie, BlazeWCP — puts its
+line in `S:User-Startup`. A drive being imported brings its own, and this file
+system creates files and never overwrites them, so the build said
+
+    S:User-Startup already exists; left alone
+
+and those four went onto the card as programs that were never run. Read off a
+finished card, every one of their lines was absent; the only reason MUI's
+appeared was that ClassicWB's own file happens to carry identical assigns.
+
+The drive's file is now held back during the copy — the same trick that lets a
+distribution's real boot script replace its installer — and written out again
+whole with the packages' lines appended after it. Left whole deliberately: it
+is the distribution's own setup, and replacing it would break the system the
+card is built on.
+
+While there, the display-switching scripts were made tolerant of a drive that
+already carries them. They were written with `check_existing=True`, so a card
+built by this tool once before would end the *next* build at its last step,
+an hour in, over a script that was already correct.
+
+### Anything kept from a previous run has to say where it came from
+
+Three rebuilds were lost to one shape of bug, in three different places: a
+thing kept from an earlier run and handed back although what it came from had
+changed. Each one built a card that looked right and was not, and each was only
+found by reading the finished card rather than the build log — which reported
+the cache hit perfectly honestly every time.
+
+| Cache | Was keyed on | Now |
+| --- | --- | --- |
+| The downloaded archive | its file name — and Aminet and whdload.de both serve `WHDLoad_usr.lha` | the address it came from, recorded beside it |
+| The unpacked tree | the archive's name | discarded when the archive is newer than it |
+| Emu68's RTG driver | existence alone | the release URL it was extracted from |
+| The Raspberry Pi firmware | existence alone, with no check of what arrived | the source URL, and `Content-Length` |
+
+The unpacked tree is the one that stung most: every package was correctly
+re-downloaded and then installed from the tree unpacked hours earlier, so a
+card came out carrying WHDLoad 16.8 while the 20.0 archive sat beside it in the
+same directory.
+
+`EveryCacheKnowsWhereItCameFrom` in `tests/test_updates.py` walks the code and
+asserts each of these still checks its provenance, so the next cache added has
+to as well.
+
 ### iGame is told where the games are
 
 iGame keeps the drawers it scans in `repos.prefs`, and its Aminet archive

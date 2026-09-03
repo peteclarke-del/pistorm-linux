@@ -1,4 +1,5 @@
 """What a collection is divided into, and what a given Amiga can run."""
+import os
 import shutil
 import sys
 import tempfile
@@ -1105,6 +1106,65 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
                         .replace_older_software)
 
 
+class TheDrivesUserStartupIsKeptAndAddedTo(unittest.TestCase):
+    """A drive being imported brings its own S:User-Startup.
+
+    This file system creates files and never overwrites them, so the lines
+    the chosen packages need could not be added: the build said
+    "S:User-Startup already exists; left alone" and FBlit, FText, Birdie and
+    BlazeWCP went onto the card as programs that were never run. Read off a
+    finished card, where every one of their lines was absent.
+    """
+
+    def test_the_drive_keeps_its_own_file_and_our_lines_follow(self):
+        from pistorm_imager.core import amigaos, builder, rdb, pfs3  # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-startup-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        theirs = b";ClassicWB User-Startup\nExecute S:Assign-Startup\n"
+
+        image = folder / "drive.hdf"
+        size = 8 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            fixer = compat.Compatibility(Progress())
+            fixer.keep_user_startup()
+            #  What the copy does when it meets the drive's own file.
+            fixer.offer("S/User-Startup", theirs)
+            self.assertTrue(fixer.skip("S/User-Startup"),
+                            "the drive's copy must be held back")
+            self.assertEqual(fixer.kept_user_startup, theirs)
+            config = builder.BuildConfig(target="/tmp/x",
+                                         package_keys=["fblit"])
+            builder._write_user_startup(volume, config, Progress(),
+                                        fixer.kept_user_startup)
+            volume.close()
+
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            entry = back.find("S/User-Startup")
+            self.assertIsNotNone(entry, "no S:User-Startup was written")
+            text = back.read_file(entry).decode("latin-1")
+        self.assertIn("Execute S:Assign-Startup", text,
+                      "the drive's own setup was lost")
+        self.assertIn("C:FBlit", text,
+                      "the package's line never reached the card")
+        self.assertLess(text.index("Assign-Startup"), text.index("C:FBlit"),
+                        "ours must come after theirs")
+
+    def test_nothing_is_held_back_when_no_package_needs_a_line(self):
+        fixer = compat.Compatibility(Progress())
+        fixer.offer("S/User-Startup", b"theirs")
+        self.assertFalse(fixer.skip("S/User-Startup"))
+
+    def test_a_card_with_no_drive_to_import_still_gets_its_lines(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/x", package_keys=["fblit"])
+        self.assertIn("C:FBlit >NIL:", builder._package_startup_lines(config))
+
+
 class TheCacheRemembersWhereItGotThings(unittest.TestCase):
     """Two publishers can serve the same file name.
 
@@ -1174,6 +1234,48 @@ class TheCacheRemembersWhereItGotThings(unittest.TestCase):
             self.package("https://nowhere.invalid/Thing.lha", manual=True),
             Progress())
         self.assertEqual(got.read_bytes(), b"put here by the user")
+
+
+class TheUnpackedTreeFollowsTheArchive(unittest.TestCase):
+    """The same trap as the archive cache, one level down.
+
+    Fetching a newer archive is no use if what was unpacked from the old one
+    is handed back. Every package was correctly re-downloaded and then
+    installed from the tree unpacked hours earlier, so a card came out
+    carrying WHDLoad 16.8 while the archive sitting beside it was 20.0.
+    """
+
+    def setUp(self):
+        self.cache = Path(tempfile.mkdtemp(prefix="pistorm-unpack-"))
+        self.addCleanup(shutil.rmtree, self.cache, ignore_errors=True)
+        patch = unittest.mock.patch.object(packages, "cache_dir",
+                                           lambda: self.cache)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def prepared(self, archive_newer: bool):
+        archive = self.cache / "Thing.lha"
+        archive.write_bytes(b"an archive")
+        tree = self.cache / "Thing.unpacked"
+        tree.mkdir()
+        (tree / "from-the-old-archive").write_bytes(b"stale")
+        stamp = archive.stat().st_mtime
+        os.utime(archive, (stamp + 10, stamp + 10) if archive_newer
+                 else (stamp - 10, stamp - 10))
+        return archive, tree
+
+    def test_a_tree_older_than_its_archive_is_thrown_away(self):
+        archive, tree = self.prepared(archive_newer=True)
+        packages.unpack(archive, Progress())
+        self.assertFalse((tree / "from-the-old-archive").exists(),
+                         "the stale tree was handed back again")
+
+    def test_a_tree_newer_than_its_archive_is_kept(self):
+        #  The ordinary case: unpacking wrote the tree after the download.
+        archive, tree = self.prepared(archive_newer=False)
+        got = packages.unpack(archive, Progress())
+        self.assertEqual(got, tree)
+        self.assertTrue((tree / "from-the-old-archive").exists())
 
 
 class IgameIsToldWhereTheGamesAre(unittest.TestCase):

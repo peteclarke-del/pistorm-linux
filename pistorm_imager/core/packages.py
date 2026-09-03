@@ -928,7 +928,16 @@ def unpack(archive: Path, progress: Progress) -> Path | None:
     """Unpack an LhA archive into the cache, once, and return the directory."""
     destination = cache_dir() / (archive.stem + ".unpacked")
     if destination.is_dir() and any(destination.iterdir()):
-        return destination
+        #  The same trap as the archive cache, one level down: fetching a
+        #  newer archive is no use if what was unpacked from the old one is
+        #  handed back. Every package was correctly re-downloaded and then
+        #  installed from the tree unpacked hours earlier, so a card came out
+        #  carrying WHDLoad 16.8 while the archive beside it was 20.0.
+        if destination.stat().st_mtime >= archive.stat().st_mtime:
+            return destination
+        progress.log(f"  {archive.name} has changed since it was last "
+                     f"unpacked; unpacking it again")
+        shutil.rmtree(destination, ignore_errors=True)
     if archive.suffix.lower() == ".run":
         payload = embedded_archive(archive)
         if payload is None:

@@ -733,6 +733,8 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         if spec is not None else []
     if extra and config.replace_older_software:
         fixer.displace(_landing_paths(extra))
+    if _package_startup_lines(config):
+        fixer.keep_user_startup()
     volume = amigaos.install(handle, offset, partition.blocks(table.geometry),
                              chosen, progress,
                              volume_name=config.amiga_volume_name,
@@ -751,7 +753,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                        overlays=list(spec.overlays) + extra)
             _apply_overlays(volume, spec, fixer, progress)
         _give_drawers_icons(volume, spec, config, progress)
-    _write_user_startup(volume, config, progress)
+    _write_user_startup(volume, config, progress, fixer.kept_user_startup)
     #  Now that everything is on it, and not before: the graphics driver and
     #  the display-switching scripts depend on what the packages installed.
     fixer.finish(volume, progress)
@@ -829,15 +831,8 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
          "EndIF"], progress)
 
 
-def _write_user_startup(volume, config: "BuildConfig",
-                        progress: Progress) -> None:
-    """Add the lines the chosen packages need to S:User-Startup.
-
-    Workbench 3.1 runs this from its own Startup-Sequence if it is there, so
-    it is where a package that has to be started, or soft-kicked over a ROM
-    module, gets its chance.  Copying the file into LIBS: alone would leave
-    the ROM version in use and the whole package inert.
-    """
+def _package_startup_lines(config: "BuildConfig") -> list[str]:
+    """The lines the chosen software needs in S:User-Startup."""
     lines: list[str] = []
     #  expand() so that a package pulled in as a dependency gets its lines
     #  too: MUI is never ticked by name, and without its assigns muimaster
@@ -846,6 +841,19 @@ def _write_user_startup(volume, config: "BuildConfig",
         package = packages.CATALOGUE_BY_KEY.get(key)
         if package is not None and package.startup:
             lines += list(package.startup)
+    return lines
+
+
+def _write_user_startup(volume, config: "BuildConfig",
+                        progress: Progress, kept: bytes = b"") -> None:
+    """Add the lines the chosen packages need to S:User-Startup.
+
+    Workbench 3.1 runs this from its own Startup-Sequence if it is there, so
+    it is where a package that has to be started, or soft-kicked over a ROM
+    module, gets its chance.  Copying the file into LIBS: alone would leave
+    the ROM version in use and the whole package inert.
+    """
+    lines = _package_startup_lines(config)
     if not lines:
         return
     folder = volume.makedirs("S")
@@ -855,7 +863,17 @@ def _write_user_startup(volume, config: "BuildConfig",
     if volume._entry_exists(folder, "User-Startup") is not None:
         progress.log("  S:User-Startup already exists; left alone")
         return
-    body = ("; Written by the PiStorm imager for the software you chose.\n"
+    #  A drive being imported brings its own, which was held back during the
+    #  copy so it could be written here with the packages' lines after it.
+    #  Left whole and appended to: it is the distribution's own setup and
+    #  replacing it would break the system this card is built on.
+    head = ""
+    if kept:
+        head = kept.decode("latin-1")
+        if not head.endswith("\n"):
+            head += "\n"
+    body = (head
+            + "\n; Added by the PiStorm imager for the software you chose.\n"
             + "\n".join(lines) + "\n")
     volume.write_file(folder, "User-Startup", body.encode("latin-1"),
                       check_existing=False)
@@ -1204,6 +1222,12 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                  if spec.bootable else [])
         if extra and config.replace_older_software:
             fixer.displace(_landing_paths(extra))
+        #  The drive brings its own S:User-Startup and this file system never
+        #  overwrites, so it is held back and written out again below with
+        #  the packages' lines after it - otherwise FBlit, FText and Birdie
+        #  go onto the card and are never run.
+        if spec.bootable and _package_startup_lines(config):
+            fixer.keep_user_startup()
 
         if spec.content_hdf:
             from . import presets                 # noqa: PLC0415 - circular
@@ -1270,7 +1294,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             #  without these the software went on and had no icons, and
             #  nothing that needed a startup line ever ran.
             _give_drawers_icons(volume, spec, config, progress)
-            _write_user_startup(volume, config, progress)
+            _write_user_startup(volume, config, progress,
+                                fixer.kept_user_startup)
             #  Only the drive the machine boots from: Games and Demos were
             #  each being given their own copy of the display-switching
             #  scripts, which belong in the system drive's S: and nowhere.
