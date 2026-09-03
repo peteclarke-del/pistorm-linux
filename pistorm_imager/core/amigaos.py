@@ -327,6 +327,11 @@ def copy_volume(source, target, destination: str, progress: Progress,
                 if compat.skip(landed):
                     skipped += 1
                     continue
+                #  A distribution can ship its finished boot script under
+                #  another name, to be renamed once its installer has run.
+                instead = getattr(compat, "rename_to", None)
+                if instead is not None:
+                    name = instead(landed) or name
             target.write_file(parent, name, data, protect=entry.protect,
                               comment=entry.comment, days=entry.days,
                               mins=entry.mins, ticks=entry.ticks)

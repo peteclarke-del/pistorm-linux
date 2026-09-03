@@ -194,6 +194,8 @@ class Compatibility:
         self._seen_picasso = False
         self._picasso_expected = False
         self._finished = False
+        self._finish_classicwb = False
+        self._classicwb_startup: bytes = b""
         #  Volume name -> (host folder it is filled from, paths left out), so
         #  a games list can be checked against what will actually be there.
         self.content: dict[str, tuple[Path, tuple[str, ...]]] = {}
@@ -229,6 +231,18 @@ class Compatibility:
 
     # ------------------------------------------------------------ decisions
 
+    #  ClassicWB installs itself on the Amiga: it copies Commodore's files
+    #  off a Workbench floppy, then puts the boot script it carries as
+    #  T:Science in place of its installer's own. The files come from the
+    #  Workbench disks here, so the rest can be done here too, and the card
+    #  boots into the system instead of into an installer asking for a disk.
+    CLASSICWB_REAL_STARTUP = "t/science"
+    CLASSICWB_INSTALLER = ("s/startup-sequence", "s/activate", "t/science")
+
+    def finish_classicwb_install(self) -> None:
+        """Carry out on the card what its installer would do on the Amiga."""
+        self._finish_classicwb = True
+
     def skip(self, relative: str) -> bool:
         """True when a file should not be copied to the target at all."""
         if not self.enabled:
@@ -251,6 +265,16 @@ class Compatibility:
             if self.rtg:
                 self.monitor_icon = self._pending_data
             return True
+        if self._finish_classicwb:
+            here = relative.replace("\\", "/").lower()
+            if here == self.CLASSICWB_REAL_STARTUP:
+                #  Kept back and written out as the boot script below.
+                self._classicwb_startup = self._pending_data
+                return True
+            if here in self.CLASSICWB_INSTALLER:
+                self.note("removed", f"{relative} (its installer, carried out "
+                                     f"here instead)")
+                return True
         if Path(relative).name.lower() == GAMES_LIST:
             #  iGame's list holds an absolute path to every slave, written on
             #  somebody else's machine. Editing it to match this card was
@@ -467,6 +491,13 @@ class Compatibility:
         if self._finished:
             return
         self._finished = True
+        if self._classicwb_startup:
+            folder = target.makedirs("S")
+            target.write_file(folder, "Startup-Sequence",
+                              self._classicwb_startup, check_existing=False)
+            self.note("added", "S/Startup-Sequence from the one the "
+                               "distribution carries, so the card boots into "
+                               "the system rather than into its installer")
         if self.enabled and self.native:
             self._install_native_monitor(target)
         if self.enabled and self.rtg and self.native:

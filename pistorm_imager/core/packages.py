@@ -162,6 +162,11 @@ class Package:
     #  taken from a donor, never downloaded, and a missing one is not fatal.
     support: tuple[tuple[str, str], ...] = ()
     note: str = ""
+    #  True when nobody would choose this for its own sake - it is here to
+    #  satisfy something else. Such a package goes away with the last thing
+    #  that needed it; one that is useful on its own stays, because turning
+    #  off a browser should not take MUI away from everything else.
+    support_only: bool = False
 
     @property
     def manual(self) -> bool:
@@ -234,34 +239,27 @@ CATALOGUE: list[Package] = [
         default=True,
     ),
     Package(
-        "mcc_nlist", "MUI NList classes",
-        "The list classes a great deal of MUI software is built on - iGame's "
-        "games list among them. Not part of MUI itself.",
+        "newinstaller", "NewInstaller",
+        "Makes the Commodore Installer's script windows look like something "
+        "from this century, and can stand in for it entirely. Installer "
+        "scripts that other software ships then run through this instead.",
         category=Category.SYSTEM,
+        #  Its own Install script copies the program into C: and its
+        #  libraries with copylib, which is what these two lines do. The
+        #  rest - its demos, its documentation, the tool that sets a theme -
+        #  is staged, because choosing a theme is a decision and this cannot
+        #  make it.
         download=Download(
-            "dev/mui/MCC_NList-0.128.lha",
-            (("MCC_NList/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
-        requires=("mui",),
-    ),
-    Package(
-        "mcc_texteditor", "MUI TextEditor class",
-        "The editable text class MUI software uses for anything longer than "
-        "a line. Not part of MUI itself.",
-        category=Category.SYSTEM,
-        download=Download(
-            "dev/mui/MCC_TextEditor-15.56.lha",
-            (("MCC_TextEditor/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
-        requires=("mui",),
-    ),
-    Package(
-        "mcc_urltext", "MUI UrlText class",
-        "Draws a clickable web address inside a MUI window. iGame lists it "
-        "as optional; without it the window still opens.",
-        category=Category.SYSTEM,
-        download=Download("dev/mui/MCC_Urltext.lha",
-                          (("MCC_Urltext/MUI/Urltext.mcc",
-                            "System/MUI/Libs/mui"),)),
-        requires=("mui",),
+            "util/wb/NewInstaller17.lha",
+            (("NewInstaller1_7/NewInstaller", "C"),
+             ("NewInstaller1_7/Libs", "Libs"),
+             ("NewInstaller1_7/Catalogs", "Locale/Catalogs"),
+             ("NewInstaller1_7/Defaults", STAGING + "/NewInstaller/Defaults"),
+             ("NewInstaller1_7/Tools", STAGING + "/NewInstaller/Tools"),
+             ("NewInstaller1_7/Docs", STAGING + "/NewInstaller/Docs"))),
+        note="Installed as C:NewInstaller. To have it replace the Commodore "
+             "Installer outright, run its own Install from Storage/Install "
+             "on the Amiga - it asks questions this cannot answer for you.",
     ),
     Package(
         "kingcon", "KingCON",
@@ -294,67 +292,6 @@ CATALOGUE: list[Package] = [
         note="Started from S:User-Startup. It patches the operating "
              "system's chunky drawing, so if anything draws oddly, take that "
              "line out and reboot.",
-    ),
-    Package(
-        "newinstaller", "NewInstaller",
-        "Makes the Commodore Installer's script windows look like something "
-        "from this century, and can stand in for it entirely. Installer "
-        "scripts that other software ships then run through this instead.",
-        category=Category.LOOK,
-        #  Its own Install script copies the program into C: and its
-        #  libraries with copylib, which is what these two lines do. The
-        #  rest - its demos, its documentation, the tool that sets a theme -
-        #  is staged, because choosing a theme is a decision and this cannot
-        #  make it.
-        download=Download(
-            "util/wb/NewInstaller17.lha",
-            (("NewInstaller1_7/NewInstaller", "C"),
-             ("NewInstaller1_7/Libs", "Libs"),
-             ("NewInstaller1_7/Catalogs", "Locale/Catalogs"),
-             ("NewInstaller1_7/Defaults", STAGING + "/NewInstaller/Defaults"),
-             ("NewInstaller1_7/Tools", STAGING + "/NewInstaller/Tools"),
-             ("NewInstaller1_7/Docs", STAGING + "/NewInstaller/Docs"))),
-        note="Installed as C:NewInstaller. To have it replace the Commodore "
-             "Installer outright, run its own Install from Storage/Install "
-             "on the Amiga - it asks questions this cannot answer for you.",
-    ),
-    Package(
-        "igame", "iGame",
-        "A launcher that lists WHDLoad games with their screenshots.",
-        #  Nothing from a donor. A donor's copy is whatever its author
-        #  installed - PiMiga's is v2.1 from 2022 - and it arrives with that
-        #  person's games list, their screenshots and their settings, all
-        #  written against their machine. The release from Aminet is the whole
-        #  package and starts empty, which is what a program that scans your
-        #  own drives should do.
-        items=(),
-        download=Download(
-            "util/misc/iGame.lha",
-            items=(("iGame-v2.6.1", "Programs/iGame"),),
-            #  One binary per processor is shipped; Emu68 gives a PiStorm a
-            #  68040, and the icon launches whatever is called "iGame".
-            rename=(("iGame-v2.6.1/iGame.040", "Programs/iGame", "iGame"),),
-            #  guigfx.library and render.library draw its screenshots, and
-            #  both are compiled for a processor with an FPU: render.library
-            #  alone carries 153 floating point instructions, and no build
-            #  without them exists. Emu68 gives a PiStorm a 68040 with no
-            #  FPU, so calling one is a line-F exception - which is the guru
-            #  8000000B that iGame's own site warns about. They are optional,
-            #  so the card does without them and says so here.
-            write=(("igame.prefs", "Programs/iGame",
-                    "no_guigfx=1\n"
-                    "filter_use_enter=0\n"
-                    "hide_side_panel=0\n"
-                    "start_with_favorites=0\n"
-                    "save_stats_on_exit=0\n"
-                    "no_smart_spaces=0\n"
-                    "titles_from_dirs=1\n"
-                    "hide_screenshots=1\n"
-                    "screenshot_width=320\n"
-                    "screenshot_height=256\n"),)),
-        #  Its window is built from MUI classes that MUI itself does not
-        #  carry, so a card with no donor still has everything it opens.
-        requires=("mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext"),
     ),
     Package(
         "mmulib", "68k CPU libraries (MMULib)",
@@ -424,6 +361,77 @@ CATALOGUE: list[Package] = [
             "   EndIF",
             "EndIF",
         ),
+    ),
+    Package(
+        "mcc_nlist", "MUI NList classes",
+        "The list classes a great deal of MUI software is built on - iGame's "
+        "games list among them. Not part of MUI itself.",
+        category=Category.SYSTEM,
+        download=Download(
+            "dev/mui/MCC_NList-0.128.lha",
+            (("MCC_NList/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
+        requires=("mui",),
+        support_only=True,
+    ),
+    Package(
+        "mcc_texteditor", "MUI TextEditor class",
+        "The editable text class MUI software uses for anything longer than "
+        "a line. Not part of MUI itself.",
+        category=Category.SYSTEM,
+        download=Download(
+            "dev/mui/MCC_TextEditor-15.56.lha",
+            (("MCC_TextEditor/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
+        requires=("mui",),
+        support_only=True,
+    ),
+    Package(
+        "mcc_urltext", "MUI UrlText class",
+        "Draws a clickable web address inside a MUI window. iGame lists it "
+        "as optional; without it the window still opens.",
+        category=Category.SYSTEM,
+        download=Download("dev/mui/MCC_Urltext.lha",
+                          (("MCC_Urltext/MUI/Urltext.mcc",
+                            "System/MUI/Libs/mui"),)),
+        requires=("mui",),
+        support_only=True,
+    ),
+    Package(
+        "igame", "iGame",
+        "A launcher that lists WHDLoad games with their screenshots.",
+        #  Nothing from a donor. A donor's copy is whatever its author
+        #  installed - PiMiga's is v2.1 from 2022 - and it arrives with that
+        #  person's games list, their screenshots and their settings, all
+        #  written against their machine. The release from Aminet is the whole
+        #  package and starts empty, which is what a program that scans your
+        #  own drives should do.
+        items=(),
+        download=Download(
+            "util/misc/iGame.lha",
+            items=(("iGame-v2.6.1", "Programs/iGame"),),
+            #  One binary per processor is shipped; Emu68 gives a PiStorm a
+            #  68040, and the icon launches whatever is called "iGame".
+            rename=(("iGame-v2.6.1/iGame.040", "Programs/iGame", "iGame"),),
+            #  guigfx.library and render.library draw its screenshots, and
+            #  both are compiled for a processor with an FPU: render.library
+            #  alone carries 153 floating point instructions, and no build
+            #  without them exists. Emu68 gives a PiStorm a 68040 with no
+            #  FPU, so calling one is a line-F exception - which is the guru
+            #  8000000B that iGame's own site warns about. They are optional,
+            #  so the card does without them and says so here.
+            write=(("igame.prefs", "Programs/iGame",
+                    "no_guigfx=1\n"
+                    "filter_use_enter=0\n"
+                    "hide_side_panel=0\n"
+                    "start_with_favorites=0\n"
+                    "save_stats_on_exit=0\n"
+                    "no_smart_spaces=0\n"
+                    "titles_from_dirs=1\n"
+                    "hide_screenshots=1\n"
+                    "screenshot_width=320\n"
+                    "screenshot_height=256\n"),)),
+        #  Its window is built from MUI classes that MUI itself does not
+        #  carry, so a card with no donor still has everything it opens.
+        requires=("mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext"),
     ),
     Package(
         "identify", "identify.library",

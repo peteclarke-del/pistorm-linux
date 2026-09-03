@@ -861,12 +861,23 @@ from floppies and Aminet alone - no donor anywhere - has everything iGame opens:
 
 iGame names all four as requirements, so ticking iGame ticks them.
 
-### Ticking something ticks what it needs
+### What a choice drags along with it
 
-A package that names what it requires had those installed anyway - the build
-expands the list before it copies anything - but the page showed them switched
-off, so a card arrived carrying software nobody remembered choosing. Switching
-one on now switches on what it needs, so the list says what will be installed.
+Ticking a package switches on what it requires, and that happens for a package
+ticked by **default** too - iGame is on to begin with, and its MUI classes were
+shown switched off beside it. They were installed anyway; the page simply did
+not say so, and turning iGame off and on again appeared to "fix" it.
+
+Untricking works the other way, with one distinction that matters:
+
+* anything that **required** what was turned off goes with it - a MUI program
+  without MUI is not a program;
+* a package that was **only ever there to satisfy something else** goes when the
+  last thing needing it goes. The MUI `NList`, `TextEditor` and `UrlText`
+  classes are marked that way: nobody chooses them for their own sake;
+* a package **worth having on its own stays**. Turning off one MUI program does
+  not take MUI away from the others.
+
 
 ## iGame comes from its own release, and builds its own list
 

@@ -1639,8 +1639,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                 group.add(row)
             self.package_groups.append(group)
             page.add(group)
-
-
+        #  The defaults are set row by row above, which never goes through the
+        #  toggle, so what they need has to be ticked once they all exist.
+        self._tick_what_is_needed()
         return page
 
     def _page_storage(self) -> Adw.PreferencesPage:
@@ -2071,6 +2072,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         for key, row in self.package_rows.items():
             if row.get_sensitive():
                 row.set_active(key in wanted)
+        self._tick_what_is_needed()
         self._refresh_packages()
 
     def _refresh_categories(self) -> None:
@@ -2121,20 +2123,68 @@ class ImagerWindow(Adw.ApplicationWindow):
                 row.set_active(False)
         self._on_layout_changed()
 
-    def _on_package_toggled(self, key: str) -> None:
-        """Switching something on switches on what it needs.
+    def _needed_by_active(self, key: str, ignoring: str = "") -> bool:
+        """Whether anything still switched on requires this package."""
+        for other, row in self.package_rows.items():
+            if other in (key, ignoring) or not row.get_active():
+                continue
+            if key in packages.expand([other]):
+                return True
+        return False
 
-        A package that names what it requires had those installed anyway -
-        the build expands the list before it copies anything - but the page
-        showed them switched off, so the card arrived with software nobody
-        remembered choosing. Now the list says what will be installed.
+    def _tick_what_is_needed(self) -> None:
+        """Switch on whatever the ticked packages require.
+
+        Ticking one switches on what it needs, but a package ticked by
+        default - or by loading a setup, or by the suggested load - never
+        passed through that, so iGame arrived ticked with MUI and its classes
+        beside it switched off. They were installed anyway; the page simply
+        did not say so, and turning iGame off and on again "fixed" it.
         """
-        row = self.package_rows.get(key)
-        if row is not None and row.get_active():
+        for key, row in list(self.package_rows.items()):
+            if not row.get_active():
+                continue
             for needed in packages.expand([key]):
                 other = self.package_rows.get(needed)
                 if other is not None and needed != key and not other.get_active():
                     other.set_active(True)
+
+    def _on_package_toggled(self, key: str) -> None:
+        """Keep the page honest about what a choice drags along with it.
+
+        On: what it needs comes with it. Off: anything that needed *it* goes
+        too - a browser without MUI is not a browser - and so does anything
+        that was only ever there to satisfy something else and now satisfies
+        nothing. A package worth having on its own stays: turning off one MUI
+        program should not take MUI away from the rest.
+        """
+        if getattr(self, "_settling_packages", False):
+            return
+        row = self.package_rows.get(key)
+        self._settling_packages = True
+        try:
+            if row is not None and row.get_active():
+                for needed in packages.expand([key]):
+                    other = self.package_rows.get(needed)
+                    if other is not None and needed != key:
+                        other.set_active(True)
+            elif row is not None:
+                #  Whatever required it cannot work without it.
+                for other_key, other_row in list(self.package_rows.items()):
+                    if other_key == key or not other_row.get_active():
+                        continue
+                    if key in packages.expand([other_key]):
+                        other_row.set_active(False)
+                #  Then let go of anything that was only propping this up.
+                for gone in packages.expand([key]):
+                    package = packages.CATALOGUE_BY_KEY.get(gone)
+                    other = self.package_rows.get(gone)
+                    if (gone != key and package is not None and other is not None
+                            and package.support_only and other.get_active()
+                            and not self._needed_by_active(gone)):
+                        other.set_active(False)
+        finally:
+            self._settling_packages = False
         self._on_layout_changed()
 
     def _chosen_packages(self) -> list[str]:
@@ -3008,3 +3058,4 @@ class ImagerWindow(Adw.ApplicationWindow):
         for key, row in self.package_rows.items():
             if row.get_sensitive() or key in wanted:
                 row.set_active(key in wanted)
+        self._tick_what_is_needed()
