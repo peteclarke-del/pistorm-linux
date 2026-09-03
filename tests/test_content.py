@@ -1105,6 +1105,77 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
                         .replace_older_software)
 
 
+class TheCacheRemembersWhereItGotThings(unittest.TestCase):
+    """Two publishers can serve the same file name.
+
+    Moving WHDLoad from Aminet to its author's site changed nothing at all,
+    because both serve "WHDLoad_usr.lha" and the cache is keyed on the name -
+    so cards went on being built from a 2007 archive already in the cache
+    while the catalogue said 20.0. Found by reading the version string off a
+    finished card.
+    """
+
+    def setUp(self):
+        self.cache = Path(tempfile.mkdtemp(prefix="pistorm-cache-"))
+        self.addCleanup(shutil.rmtree, self.cache, ignore_errors=True)
+        patch = unittest.mock.patch.object(packages, "cache_dir",
+                                           lambda: self.cache)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.fetched = []
+
+    def package(self, url, manual=False):
+        return packages.Package("x", "X", "d", download=packages.Download(
+            url, manual=manual))
+
+    def fake_download(self, url, target):
+        """Stand in for the network: record the call, write the file."""
+        self.fetched.append(url)
+        target.write_bytes(b"from " + url.encode())
+
+    def run_fetch(self, package):
+        #  Only the caching decision is under test, not the transfer.
+        with unittest.mock.patch.object(
+                packages, "_transfer",
+                side_effect=self.fake_download, create=True):
+            return packages.download_archive(package, Progress())
+
+    def test_a_copy_from_the_same_place_is_reused(self):
+        name = self.cache / "Thing.lha"
+        name.write_bytes(b"cached")
+        name.with_name("Thing.lha.source").write_text(
+            "https://example.test/Thing.lha\n")
+        got = packages.download_archive(
+            self.package("https://example.test/Thing.lha"), Progress())
+        self.assertEqual(got.read_bytes(), b"cached")
+
+    def test_a_copy_from_somewhere_else_is_not_reused(self):
+        name = self.cache / "Thing.lha"
+        name.write_bytes(b"the old one")
+        name.with_name("Thing.lha.source").write_text(
+            "https://aminet.test/Thing.lha\n")
+        #  No network here, so the fetch fails and returns None - but the
+        #  point is that it *tried* rather than handing back the old file.
+        got = packages.download_archive(
+            self.package("https://nowhere.invalid/Thing.lha"), Progress())
+        self.assertIsNone(got)
+
+    def test_a_copy_of_unrecorded_origin_is_not_trusted(self):
+        (self.cache / "Thing.lha").write_bytes(b"who knows")
+        got = packages.download_archive(
+            self.package("https://nowhere.invalid/Thing.lha"), Progress())
+        self.assertIsNone(got)
+
+    def test_an_archive_supplied_by_hand_is_always_kept(self):
+        #  Nothing can fetch these, so provenance is not ours to check and
+        #  refusing the cache would leave the package out altogether.
+        (self.cache / "Thing.lha").write_bytes(b"put here by the user")
+        got = packages.download_archive(
+            self.package("https://nowhere.invalid/Thing.lha", manual=True),
+            Progress())
+        self.assertEqual(got.read_bytes(), b"put here by the user")
+
+
 class IgameIsToldWhereTheGamesAre(unittest.TestCase):
     """iGame keeps the drawers it scans in repos.prefs, and ships none.
 
