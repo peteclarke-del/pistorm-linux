@@ -973,6 +973,15 @@ than a drawer, so a rule about drawers alone missed the one title on the whole
 drive that could be identified — while listing every file would have buried it
 among save files and icons.
 
+**Leaving out a launcher takes what it runs with it.** `Turrican2AGA` is
+fourteen bytes reading `AmigaGame.exe`, so removing the title and keeping the
+170 KB program it names wastes the very space the exclusion was for, on
+something nothing can now reach. The reference is followed one step, and two
+things stop that doing harm: a launcher that **stays** pins what it names, so a
+shared engine survives as long as anything still runs it; and anything offered
+as a choice of its own is never taken away behind the user's back. Each one
+followed is named in the log.
+
 **Reading the binaries was tried and abandoned.** FMODE and BPLCON4 are
 AGA-only registers, so scanning a program for them looks like a real test. It
 is not: matching 16-bit words finds "FMODE" 56 times inside `DOOM1.WAD` and 48
