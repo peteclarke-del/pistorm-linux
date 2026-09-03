@@ -426,6 +426,15 @@ suits a monitor is not something this can know. Blanking a file's data touches n
 metadata — the extents are already allocated — which is what makes it safe on a
 finished volume, where deleting a file would not be.
 
+**It applies to any system built elsewhere, not only a whole image.** A drive
+imported into DH0 from an `.hdf` on a card this build partitions was set up on
+somebody else's machine and watched on somebody else's screen in exactly the
+same way, and the pass ran only for images written as they were. The switch was
+part of the image chooser, on a page such a build never shows, so there was no
+way to ask for it either. It lives with the display on the **Amiga** page now,
+appears whenever a ready-made system is involved, and one predicate —
+`BuildConfig.brings_a_system_from_elsewhere()` — decides both.
+
 ### A rev 6A A500 is not necessarily OCS
 
 Fitting a Super Denise to a rev 6A board makes it a full **ECS** machine, and
