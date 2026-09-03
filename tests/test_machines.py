@@ -520,9 +520,20 @@ class TestPackageFit(unittest.TestCase):
             self.assertTrue(package.download, package.key)
 
     def test_a_self_installing_download_says_where_it_lands(self):
+        """A package placed whole has to name the drawer it goes into.
+
+        "Placed whole" is the archive going somewhere as it is, which is what
+        happens when nothing says where its parts belong - so a package that
+        places files by `rename`, or writes its own, is not one of these. The
+        condition used to be `items` alone, and a package with only a rename
+        fell through to being placed whole at `stage`, which for such a
+        package is "" - the volume root.
+        """
         for package in self.packages.CATALOGUE:
             download = package.download
-            if download is not None and not download.items:
+            if download is None or download.merge:
+                continue
+            if not (download.items or download.rename or download.write):
                 self.assertTrue(download.stage, package.key)
                 self.assertTrue(package.note, package.key)
 

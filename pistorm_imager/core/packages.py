@@ -198,10 +198,15 @@ CATALOGUE: list[Package] = [
         #  MMULib and a newer SetPatch were once required here, on the
         #  reasoning that a 68040 needs modern CPU support. Tested, the
         #  opposite is true: either of them stops every WHDLoad game dead.
-        download=Download("dev/misc/WHDLoad_usr.lha",
+        #  Aminet's dev/misc/WHDLoad_usr.lha is a 2007 upload of 16.8 and has
+        #  not moved since; the author's own site serves the current release.
+        #  A card built from Aminet came out older than the ready-made
+        #  distributions it was competing with.
+        download=Download("https://whdload.de/whdload/WHDLoad_usr.lha",
                           (("WHDLoad/C/WHDLoad", "C"),
                            ("WHDLoad/C/WHDLoadCD32", "C"),
-                           ("WHDLoad/C/Patcher", "C"))),
+                           ("WHDLoad/C/Patcher", "C")),
+                          source="whdload.de"),
         default=True,
         #  Nearly every slave asks WHDLoad for the Kickstart the game expects
         #  and will not start without it. Those are Commodore ROM images:
@@ -217,11 +222,15 @@ CATALOGUE: list[Package] = [
         "lha", "LhA",
         "The archiver Amiga software is distributed in. Without it very little "
         "downloaded from Aminet can be unpacked.",
-        download=Download("util/arc/lha.run", stage=STAGING + "/LhA",
-                          raw=True),
+        #  Aminet ships LhA as a self-extracting Amiga program - which is
+        #  what an archiver has to be, since you need one to unpack the
+        #  other. The archive inside it is an ordinary LhA one, so it is
+        #  taken out here and the right build installed, rather than leaving
+        #  the card with no archiver until somebody runs the extractor.
+        download=Download("util/arc/lha.run",
+                          rename=(("lha_68040", "C", "LhA"),)),
         default=True,
-        note="Aminet ships LhA as a self-extracting Amiga program; run "
-             "lha.run from Storage/Install on the Amiga.",
+        note="The 68040 build, which is what Emu68 provides.",
     ),
     Package(
         "installer", "Installer",
@@ -492,19 +501,30 @@ CATALOGUE: list[Package] = [
     ),
     Package(
         "birdie", "Birdie",
-        "Patterns the window borders, which softens the stock look for very "
-        "little memory.",
+        "Patterns in the window borders, which is most of what makes a "
+        "Workbench look like somebody's rather than the factory's.",
         category=Category.LOOK,
-        download=Download("util/wb/birdie2000.lha", stage=STAGING + "/Birdie"),
-        note="Copy it into C: and start it from your user-startup.",
+        download=Download("util/wb/birdie2000.lha",
+                          (("Birdie", "C"),
+                           ("Patterns", "Prefs/Presets/Birdie"))),
+        #  Its own documentation gives this line, and says it has to come
+        #  after IPrefs - which is where package startup lines go anyway.
+        startup=("C:Run >NIL: C:Birdie",),
+        note="Installed into C: with its patterns in Prefs/Presets/Birdie, "
+             "and started from S:User-Startup.",
     ),
     Package(
         "powerwindows", "PowerWindows",
-        "Makes windows move and resize smoothly rather than as an outline.",
+        "Reshapes the window gadgets and borders, and can render icons the "
+        "way later systems do.",
         category=Category.LOOK,
+        #  It carries its own external routines and images and looks for them
+        #  beside itself, so the drawer goes on whole rather than the one
+        #  binary being lifted out of it.
         download=Download("util/misc/PowerWindows.lha",
-                          stage=STAGING + "/PowerWindows"),
-        note="Copy it into WBStartup on the Amiga.",
+                          stage="Utilities/PowerWindows"),
+        note="Installed into Utilities/PowerWindows. Drag PowerWindows into "
+             "WBStartup on the Amiga to have it run at every boot.",
     ),
     Package(
         "deficons", "DefIcons",
@@ -861,11 +881,51 @@ def download_archive(package: Package, progress: Progress) -> Path | None:
     return target
 
 
+#  The first word of an LhA header is the header size and its checksum; the
+#  method identifier sits two bytes in.  These are the ones Amiga archives use.
+LHA_METHODS = (b"-lh0-", b"-lh1-", b"-lh4-", b"-lh5-", b"-lh6-", b"-lh7-")
+
+
+def embedded_archive(path: Path) -> Path | None:
+    """The LhA archive inside a self-extracting Amiga program.
+
+    An archiver has to be distributed as one of these - you need an archiver
+    to unpack an archive - so Aminet ships LhA as ``lha.run``: a small Amiga
+    executable with the real archive appended. Nothing here can run an Amiga
+    program, and leaving it on the card meant handing over a card with no
+    archiver until somebody found and ran the extractor.
+
+    The stub carries a tiny archive of its own (its usage text), so the
+    *second* header is the payload. Returns None when the file holds nothing
+    that looks like one, rather than guessing.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    starts = [i for i in range(len(data) - 7)
+              if data[i + 2:i + 7] in LHA_METHODS]
+    if len(starts) < 2:
+        return None
+    out = cache_dir() / (path.stem + "-payload.lha")
+    out.write_bytes(data[starts[1]:])
+    return out
+
+
 def unpack(archive: Path, progress: Progress) -> Path | None:
     """Unpack an LhA archive into the cache, once, and return the directory."""
     destination = cache_dir() / (archive.stem + ".unpacked")
     if destination.is_dir() and any(destination.iterdir()):
         return destination
+    if archive.suffix.lower() == ".run":
+        payload = embedded_archive(archive)
+        if payload is None:
+            progress.log(f"  {archive.name} is a self-extracting program and "
+                         f"no archive could be found inside it")
+            return None
+        progress.log(f"  {archive.name}: took the archive out of the "
+                     f"self-extractor")
+        archive = payload
     command = _extractor()
     if command is None:
         progress.log("  no 7z or lha available to unpack Amiga archives")
@@ -973,8 +1033,12 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
     download = package.download
     if download.merge:
         return _merged(package, root, progress) + _written(package, progress)
-    if not download.items:
-        #  Self-installing: put the whole thing on the card to run there.
+    #  Placed whole - the archive is the program, and goes where `stage` says.
+    #  This used to be chosen on `items` alone, so a package that placed its
+    #  files by `rename` or wrote its own returned here instead, and its whole
+    #  archive went to `stage` - which for such a package is "", the volume
+    #  root.
+    if not (download.items or download.rename or download.write):
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
         return [(str(source), download.stage)]

@@ -868,6 +868,67 @@ Two updates are offered:
 | **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
 | **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
 
+### Which copy wins when a drive already has one
+
+The file system here creates files and never overwrites them, so when two
+sources offer the same file **the one that lands first wins**. That was being
+settled by the order the build happened to run in, and it produced three
+separate faults:
+
+1. **The software never reached an imported drive at all.** Packages were
+   applied only by the floppy-install pass. Import a drive as DH0 without
+   ticking the Workbench disks and every program in the list was silently
+   left off the card.
+2. **With both, the floppy install was thrown away.** `_install_amigaos`
+   formatted DH0, installed Workbench and applied the packages; the content
+   pass then re-created the same drive from the image, destroying all of it.
+   A card built that way is the imported distribution and nothing else — which
+   is exactly what a card built here turned out to be when its `Programs`
+   drawer was read back: fifteen programs, none of them from this catalogue.
+3. **A package could never replace an older copy.** Whatever the drive or the
+   floppies carried was there first, so the current release the user had
+   ticked was skipped as "already present".
+
+All three are fixed. The floppy install is skipped when the boot drive is
+filled from an image — the content pass fills it and takes what the disks
+provide for the gaps — and the packages, the drawer icons and `S:User-Startup`
+are applied there instead. Packages are resolved **before** the drive is
+filled, so they can take the place of an older copy.
+
+Whether they do is **asked**, not assumed. *"Replace older copies already on
+the imported drive"* sits with the software list and appears only when a drive
+is actually being imported. On, the release you ticked is installed in place of
+the drive's; off, the drive's own copy is kept. Only whole files are ever
+displaced — a drawer is merged into what is there, and refusing one during the
+copy would take the drive's own contents with it — and only paths a package has
+already fetched, so a failed download can never leave the card without the file
+it refused.
+
+### Where the software actually comes from
+
+Three sources were wrong or second-best, and reading a built card is what
+showed it:
+
+- **WHDLoad** came from `dev/misc/WHDLoad_usr.lha`, which is a 2007 upload of
+  16.8 that has not moved since. The card being built against it came out
+  *older* than the ready-made distribution it was competing with (18.2). It now
+  comes from the author's own site, which serves 20.0.
+- **LhA** was left in `Storage/Install` as a self-extracting Amiga program to
+  run by hand, so a card could arrive with no archiver at all. An archiver has
+  to be shipped that way — you need one to unpack the other — but the archive
+  inside is an ordinary LhA one, so it is taken out here and the 68040 build
+  installed as `C:LhA`.
+- **Birdie** and **PowerWindows** were staged with a note asking the user to
+  copy them into place. Birdie now goes into `C:` with its patterns, and is
+  started from `S:User-Startup` the way its own documentation says; PowerWindows
+  goes into `Utilities/PowerWindows` whole, because it looks for its external
+  routines beside itself.
+
+One bug fell out of that work: `fetch()` chose "place the archive whole" on
+whether a package listed `items`, so a package that placed its files by
+`rename` instead took that branch and its entire archive went to `stage` —
+which for such a package is `""`, the volume root.
+
 ### iGame is told where the games are
 
 iGame keeps the drawers it scans in `repos.prefs`, and its Aminet archive

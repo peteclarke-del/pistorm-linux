@@ -244,6 +244,28 @@ def on_activate(app: ImagerApplication) -> None:
         for row in window.package_rows.values():
             row.set_active(False)
 
+        #  Which copy wins when an imported drive already has a program that
+        #  was ticked is the user's choice, and it has to survive the round
+        #  trip like any other.
+        window.mode_row.set_selected(
+            next(i for i, m in enumerate(MODES)
+                 if m[1] is builder.BuildMode.FRESH))
+        window.partition_rows[0].hdf_row.set_path(str(HDF_IMAGE))
+        window._sync_visibility()
+        check(window.replace_older_row.get_visible(),
+              "importing a drive raises the question of which copy wins")
+        check(window.gather().replace_older_software,
+              "and the newer release is the default answer")
+        window.replace_older_row.set_active(False)
+        check(not window.gather().replace_older_software,
+              "keeping the drive's own copy reaches the build")
+        window.replace_older_row.set_active(True)
+        for row in window.partition_rows:
+            row.hdf_row.set_path("")
+        window._sync_visibility()
+        check(not window.replace_older_row.get_visible(),
+              "and it is not asked when nothing is being imported")
+
         #  "Adapt the display after writing" sat on the image chooser, which
         #  a build that partitions the card never shows - so a card whose DH0
         #  came from an .hdf had no way to ask for it. It lives with the

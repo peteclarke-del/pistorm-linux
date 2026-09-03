@@ -1675,6 +1675,21 @@ class ImagerWindow(Adw.ApplicationWindow):
                         "and cached, so a card is built from the current "
                         "release rather than from whatever another "
                         "installation happened to hold.")
+        #  A drive imported from an image usually has its own copy of some of
+        #  this. The file system creates files and never overwrites them, so
+        #  one of the two wins by landing first - which is not a decision the
+        #  build should be making quietly on somebody's behalf.
+        self.replace_older_row = Adw.SwitchRow(
+            title="Replace older copies already on the imported drive",
+            subtitle="A ready-made drive often carries its own WHDLoad, "
+                     "icon.library and the like, sometimes years old. On, the "
+                     "release you ticked is installed in its place; off, "
+                     "whatever the drive already has is kept and the download "
+                     "is left out.")
+        self.replace_older_row.set_active(True)
+        self.replace_older_row.connect("notify::active",
+                                       lambda *_a: self._update_summary())
+        self.packages_group.add(self.replace_older_row)
         suggest = Adw.ActionRow(
             title="Suggested load",
             subtitle="Tick what suits this machine, chipset and display")
@@ -2021,6 +2036,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             mode is not builder.BuildMode.FRESH
             or any(row.spec().content_hdf for row in self.partition_rows)
             or bool(self.quick_hdf.path))
+        #  Only a card that imports a drive can have the clash this settles.
+        self.replace_older_row.set_visible(
+            show_packages
+            and (any(row.spec().content_hdf for row in self.partition_rows)
+                 or bool(self.quick_hdf.path)))
         self.expand_group.set_visible(mode is not builder.BuildMode.FRESH)
         for row in self.extra_rows:
             row.set_visible(self.expand_row.get_active())
@@ -2597,6 +2617,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  set by the quick setup, so ticking a package and pressing Write
             #  from the pages themselves quietly built a card without it.
             package_keys=self._chosen_packages(),
+            replace_older_software=self.replace_older_row.get_active(),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
@@ -3152,6 +3173,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.unit0_row.set_active(options.sd_unit0_rw)
         self.extra_row.set_text(options.extra_cmdline)
 
+        self.replace_older_row.set_active(config.replace_older_software)
         self.patch_display_row.set_active(config.patch_display)
         self.expand_row.set_active(config.expand_to_fill)
         for row in list(self.extra_rows):
