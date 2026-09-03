@@ -244,6 +244,30 @@ def on_activate(app: ImagerApplication) -> None:
         for row in window.package_rows.values():
             row.set_active(False)
 
+        #  "Adapt the display after writing" sat on the image chooser, which
+        #  a build that partitions the card never shows - so a card whose DH0
+        #  came from an .hdf had no way to ask for it. It lives with the
+        #  display now, on the Amiga page.
+        group = window.patch_display_row.get_ancestor(Adw.PreferencesGroup)
+        check(group.get_ancestor(Adw.PreferencesPage) is window.page_amiga,
+              "the display switch is on the Amiga page")
+        fresh_index = next(i for i, m in enumerate(MODES)
+                           if m[1] is builder.BuildMode.FRESH)
+        window.mode_row.set_selected(fresh_index)
+        window.quick_hdf.set_path("")
+        for row in window.partition_rows:
+            row.hdf_row.set_path("")
+        window._sync_visibility()
+        check(not window.display_group.get_visible(),
+              "a Workbench from floppies is not asked about it")
+        window.partition_rows[0].hdf_row.set_path(str(HDF_IMAGE))
+        window._sync_visibility()
+        check(window.display_group.get_visible(),
+              "a drive imported into DH0 is")
+        for row in window.partition_rows:
+            row.hdf_row.set_path("")
+        window._sync_visibility()
+
         #  Choosing a display that draws on the Pi's HDMI is choosing the
         #  RTG subsystem with it. Nothing rebuilt the software list when the
         #  display changed, so ticking "both outputs" left Picasso96 off and
