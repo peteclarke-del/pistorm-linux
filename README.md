@@ -10,7 +10,13 @@ top of it.
 
 ## What it does
 
-Four tasks, all ending with the same boot-partition customisation pass:
+Four tasks, all ending with the same boot-partition customisation pass. Two of
+them take a `.hdf`, and the difference between them is the whole point: **Write
+a drive image unchanged** keeps the image's own partitions and file systems and
+adds nothing, while **Build a new card** can take the *files* out of that same
+image, put them on a layout of your choosing, and add the Workbench disks and
+software to them. That is why a ClassicWB card is built with the second: its
+drive brings no Workbench, so it needs the floppies alongside it.
 
 | Task | What happens |
 | --- | --- |

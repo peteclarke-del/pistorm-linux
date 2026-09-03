@@ -46,14 +46,18 @@ FRESH_SOURCES = ["adf", "none"]
 
 MODES = [
     ("Build a new card", builder.BuildMode.FRESH,
-     "Partition the card, install Emu68 and create an empty Amiga drive "
-     "ready for HDToolBox or an AmigaOS install."),
+     "Partition the card yourself and fill the drives: Workbench from floppy "
+     "images, the files out of somebody's drive image or folder, and the "
+     "software you choose. This is the one that can combine them."),
     ("Write a pre-built image", builder.BuildMode.IMAGE,
      "Write PiMiga, an Emu68 Hatcher image or a backup of your own card, then "
      "apply your Emu68 build and settings on top."),
-    ("Import an Amiga hard disk image", builder.BuildMode.HDF,
-     "Take a WinUAE/FS-UAE/HstWB .hdf - the Amiga drive on its own - build the "
-     "boot partition around it and write it into the Amiga partition."),
+    ("Write a drive image unchanged", builder.BuildMode.HDF,
+     "Put a WinUAE/FS-UAE/HstWB .hdf on the card exactly as it is, keeping its "
+     "own partitions and file systems, with an Emu68 boot partition built "
+     "around it. Nothing can be added to it and nothing resized - to take the "
+     "files off a drive image and put them on a card of your own layout, use "
+     "Build a new card and give a partition that image as its contents."),
     ("Update an existing card", builder.BuildMode.CUSTOMISE,
      "Leave everything on the card alone and only refresh the boot partition."),
 ]
