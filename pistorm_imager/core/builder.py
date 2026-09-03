@@ -744,6 +744,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      "and OS3.5 colour icons will not be drawn")
     #  Overlays (WHDLoad and the like) go on while the volume is still open;
     #  reopening a finished volume would mean rebuilding its allocation state.
+    fixer.stop_displacing()
     if spec is not None:
         if spec.overlays or extra:
             spec = dataclasses.replace(spec,
@@ -1260,6 +1261,9 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         if extra:
             spec = dataclasses.replace(spec,
                                        overlays=list(spec.overlays) + extra)
+        #  The drive and the disks have had their turn; what follows is the
+        #  packages writing the very files those were refused for.
+        fixer.stop_displacing()
         _apply_overlays(volume, spec, fixer, progress)
         if spec.bootable:
             #  Everything the floppy install does once the files are on:
