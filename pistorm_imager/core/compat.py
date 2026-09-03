@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path
 
 from . import amigainfo, emu68
@@ -191,6 +192,13 @@ class Compatibility:
         #  Remembered so the replacement monitor can be built from the original.
         self.monitor_file: bytes | None = None
         self.monitor_icon: bytes | None = None
+        #  Paths a chosen package is going to install a newer copy of. The
+        #  file system here creates files and never overwrites them, so the
+        #  first copy on the drive wins - which meant an imported drive's
+        #  years-old WHDLoad beat the current release the user had ticked.
+        #  Refusing it during the copy leaves the name free for the package.
+        self._displace: set[str] = set()
+        self._displaced: list[str] = []
         self._seen_picasso = False
         self._picasso_expected = False
         self._finished = False
@@ -243,8 +251,27 @@ class Compatibility:
         """Carry out on the card what its installer would do on the Amiga."""
         self._finish_classicwb = True
 
+    def displace(self, paths: Iterable[str]) -> None:
+        """Refuse these paths while copying, so a package can supply them.
+
+        Only ever called with paths a package has already fetched, so a
+        failed download cannot leave the card without the file it refused.
+        """
+        self._displace |= {p.replace("\\", "/").strip("/").lower()
+                           for p in paths}
+
     def skip(self, relative: str) -> bool:
         """True when a file should not be copied to the target at all."""
+        #  Checked before `enabled`, because this is not a compatibility fix
+        #  at all: it is the user's own choice of software, and it has to
+        #  hold whether or not the compatibility pass is switched on.
+        posix = relative.replace("\\", "/").strip("/").lower()
+        if posix in self._displace:
+            self._displaced.append(relative)
+            self.note("replaced",
+                      f"{relative} (the newer copy you chose is installed "
+                      f"instead)")
+            return True
         if not self.enabled:
             return False
         name = Path(relative).name

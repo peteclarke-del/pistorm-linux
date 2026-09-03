@@ -788,6 +788,75 @@ class TheTrapdoorSwitchReachesTheCard(unittest.TestCase):
         self.assertIn("move_slow_to_chip", options.extra_cmdline)
 
 
+class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
+    """The file system creates files and never overwrites them.
+
+    So whichever copy lands first wins, and the order the build happened to
+    run in decided it: a drive imported from an image kept its own years-old
+    WHDLoad and the current release the user had ticked was skipped. Which
+    copy wins is the user's choice now, and it is made before the drive is
+    filled, because afterwards is too late.
+    """
+
+    def fixer(self, displace=()):
+        from pistorm_imager.core import compat                 # noqa: PLC0415
+        c = compat.Compatibility(Progress())
+        c.displace(displace)
+        return c
+
+    def test_a_path_a_package_will_supply_is_refused(self):
+        c = self.fixer(["C/WHDLoad"])
+        self.assertTrue(c.skip("C/WHDLoad"))
+
+    def test_the_match_ignores_case_as_the_amiga_does(self):
+        c = self.fixer(["C/WHDLoad"])
+        self.assertTrue(c.skip("c/whdload"))
+
+    def test_everything_else_is_left_alone(self):
+        c = self.fixer(["C/WHDLoad"])
+        self.assertFalse(c.skip("C/WHDLoadCD32"))
+        self.assertFalse(c.skip("Libs/icon.library"))
+
+    def test_it_holds_even_with_the_compatibility_pass_switched_off(self):
+        #  This is not a compatibility fix; it is the user's own choice.
+        from pistorm_imager.core import compat                 # noqa: PLC0415
+        c = compat.Compatibility(Progress(), enabled=False)
+        c.displace(["C/WHDLoad"])
+        self.assertTrue(c.skip("C/WHDLoad"))
+
+    def test_only_whole_files_are_ever_displaced(self):
+        #  A drawer is merged into what is there; refusing one during the
+        #  copy would take out the drive's own contents with it.
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-land-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "WHDLoad").write_bytes(b"x")
+        (folder / "Patterns").mkdir()
+        paths = builder._landing_paths([(str(folder / "WHDLoad"), "C"),
+                                        (str(folder / "Patterns"), "Prefs")])
+        self.assertEqual(paths, ["C/WHDLoad"])
+
+    def test_a_card_that_imports_nothing_has_no_clash_to_settle(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        spec = builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0)
+        self.assertFalse(builder._boot_drive_is_filled(
+            builder.BuildConfig(target="/tmp/x", amiga_partitions=[spec])))
+
+    def test_a_card_whose_boot_drive_comes_from_an_image_does(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        spec = builder.AmigaPartitionSpec("DH0", None, "PFS3", True, 0,
+                                          content_hdf="/some/System.hdf")
+        self.assertTrue(builder._boot_drive_is_filled(
+            builder.BuildConfig(target="/tmp/x", amiga_partitions=[spec])))
+
+    def test_keeping_the_drives_own_copy_is_the_default_off_switch(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        #  On by default - ticking a package means wanting that release - but
+        #  it is a switch, and off means the drive's copy is kept.
+        self.assertTrue(builder.BuildConfig(target="/tmp/x")
+                        .replace_older_software)
+
+
 class IgameIsToldWhereTheGamesAre(unittest.TestCase):
     """iGame keeps the drawers it scans in repos.prefs, and ships none.
 

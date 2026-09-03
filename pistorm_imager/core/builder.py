@@ -115,6 +115,11 @@ class BuildConfig:
     #  Optional software, fetched from its publisher while the card is built
     #  and cached between builds.
     package_keys: list[str] = dataclasses.field(default_factory=list)
+    #  What to do when a drive being imported already has a program that was
+    #  ticked here. The file system creates files and never overwrites them,
+    #  so whichever lands first wins - and that used to be settled by the
+    #  order the build happened to run in rather than by anybody's choice.
+    replace_older_software: bool = True
     package_chipset: str = ""          # a machines.Chipset value
     package_display: str = ""          # a machines.Display value
 
@@ -718,6 +723,16 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     #  no single one of them ever saw everything the card was given - and the
     #  floppies were seen by none of them.
     fixer = _make_fixer(config, progress)
+    #  Resolved before the disks are copied, not after: the file system here
+    #  creates files and never overwrites them, so whatever lands first wins.
+    #  Asked for afterwards, a package's current release lost to whatever
+    #  Workbench 3.1 shipped in 1994 - PeterK's icon.library among them.
+    spec = next((s for s in config.amiga_partitions
+                 if s.name.upper() == partition.drive_name.upper()), None)
+    extra = _package_overlays(config, list(spec.overlays), progress) \
+        if spec is not None else []
+    if extra and config.replace_older_software:
+        fixer.displace(_landing_paths(extra))
     volume = amigaos.install(handle, offset, partition.blocks(table.geometry),
                              chosen, progress,
                              volume_name=config.amiga_volume_name,
@@ -729,10 +744,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      "and OS3.5 colour icons will not be drawn")
     #  Overlays (WHDLoad and the like) go on while the volume is still open;
     #  reopening a finished volume would mean rebuilding its allocation state.
-    spec = next((s for s in config.amiga_partitions
-                 if s.name.upper() == partition.drive_name.upper()), None)
     if spec is not None:
-        extra = _package_overlays(config, list(spec.overlays), progress)
         if spec.overlays or extra:
             spec = dataclasses.replace(spec,
                                        overlays=list(spec.overlays) + extra)
@@ -847,6 +859,28 @@ def _write_user_startup(volume, config: "BuildConfig",
     volume.write_file(folder, "User-Startup", body.encode("latin-1"),
                       check_existing=False)
     progress.log(f"  S:User-Startup written ({len(lines)} lines)")
+
+
+def _landing_paths(pairs: list[tuple[str, str]]) -> list[str]:
+    """Where a set of overlays will put single files on the drive.
+
+    Only files: a whole drawer is merged into whatever is already there, and
+    refusing one during the copy would take out the drive's own contents
+    along with it.
+    """
+    out: list[str] = []
+    for source, destination in pairs:
+        path = Path(source)
+        if path.is_file():
+            out.append(f"{destination}/{path.name}" if destination
+                       else path.name)
+    return out
+
+
+def _boot_drive_is_filled(config: "BuildConfig") -> bool:
+    """Whether the drive the machine boots from is filled from elsewhere."""
+    return any(spec.bootable and (spec.content_hdf or spec.content_folder)
+               for spec in config.amiga_partitions)
 
 
 def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
@@ -1106,6 +1140,13 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         capacity = partition.size_bytes(table.geometry)
         offset = partition.byte_offset(table.geometry, amiga.start_bytes)
         fixer = _make_fixer(config, progress)
+        #  The software goes on the drive the machine boots from, and it is
+        #  resolved before the drive is filled so it can take the place of an
+        #  older copy already in the image - if that is what was asked for.
+        extra = (_package_overlays(config, list(spec.overlays), progress)
+                 if spec.bootable else [])
+        if extra and config.replace_older_software:
+            fixer.displace(_landing_paths(extra))
 
         if spec.content_hdf:
             from . import presets                 # noqa: PLC0415 - circular
@@ -1159,8 +1200,16 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             continue
         if spec.bootable and config.install_amigaos:
             _add_missing_system(config, volume, fixer, progress)
+        if extra:
+            spec = dataclasses.replace(spec,
+                                       overlays=list(spec.overlays) + extra)
         _apply_overlays(volume, spec, fixer, progress)
         if spec.bootable:
+            #  Everything the floppy install does once the files are on:
+            #  without these the software went on and had no icons, and
+            #  nothing that needed a startup line ever ran.
+            _give_drawers_icons(volume, spec, config, progress)
+            _write_user_startup(volume, config, progress)
             #  Only the drive the machine boots from: Games and Demos were
             #  each being given their own copy of the display-switching
             #  scripts, which belong in the system drive's S: and nowhere.
@@ -1580,7 +1629,7 @@ def _build_hdf_output(config: BuildConfig, handle, size: int,
     for line in table.describe().splitlines():
         progress.log(line)
     amiga = mbr.MbrPartition(0, 0, mbr.TYPE_AMIGA, 0, size // SECTOR)
-    if config.install_amigaos:
+    if config.install_amigaos and not _boot_drive_is_filled(config):
         _install_amigaos(config, handle, amiga, table, progress)
     if any(p.content_folder or p.content_hdf
                            for p in config.amiga_partitions):
@@ -1829,7 +1878,8 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
                     table.write(handle, amiga_part.start_bytes)
                     for line in table.describe().splitlines():
                         progress.log(line)
-                    if config.install_amigaos:
+                    if config.install_amigaos \
+                            and not _boot_drive_is_filled(config):
                         _install_amigaos(config, handle, amiga_part, table, progress)
                     if any(p.content_folder or p.content_hdf
                            for p in config.amiga_partitions):
