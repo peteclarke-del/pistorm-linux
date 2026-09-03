@@ -935,15 +935,48 @@ class ImagerWindow(Adw.ApplicationWindow):
         page.add(group)
         return page
 
+    def _imported_drives(self) -> list[str]:
+        """Every hard disk image whose files land on the bootable drive.
+
+        The quick screen's chooser is not the only way in: the workflow fills
+        DH0 from an image on the Storage page, and a drive imported that way
+        needs the Workbench disks exactly as much.
+        """
+        paths = [self.quick_hdf.path] if self.quick_hdf.path else []
+        for row in getattr(self, "partition_rows", []):
+            try:
+                spec = row.spec()
+            except Exception:                    # noqa: BLE001 - half-typed row
+                continue
+            if spec.bootable and spec.content_hdf:
+                paths.append(spec.content_hdf)
+        return paths
+
     def _imported_needs_floppies(self) -> bool:
         """Whether the drive being imported brings no Workbench of its own."""
-        path = self.quick_hdf.path
-        if not path:
-            return False
-        try:
-            return presets.inspect_image_system(path).needs_floppies
-        except Exception:                        # noqa: BLE001 - not fatal
-            return False
+        for path in self._imported_drives():
+            #  Asked on every redraw of the summary, and it reads the image
+            #  each time; the answer only changes when the file does.
+            try:
+                stamp = (path, os.stat(path).st_mtime_ns)
+            except OSError:
+                continue
+            cache = self.__dict__.setdefault("_floppy_need", {})
+            if stamp not in cache:
+                try:
+                    found = presets.inspect_image_system(path)
+                    #  Only when the drive was actually read and found to
+                    #  bring no Workbench. An image this reader cannot open
+                    #  says nothing either way, and treating that as "needs
+                    #  the disks" would demand floppies for a perfectly good
+                    #  drive on the strength of not having understood it.
+                    cache[stamp] = bool(not found.error
+                                        and found.needs_floppies)
+                except Exception:                # noqa: BLE001 - not fatal
+                    cache[stamp] = False
+            if cache[stamp]:
+                return True
+        return False
 
     def _on_quick_hdf(self) -> None:
         path = self.quick_hdf.path
@@ -1381,9 +1414,20 @@ class ImagerWindow(Adw.ApplicationWindow):
                 and not config.emu68_prepared_dir and not self.releases:
             missing.append("an Emu68 release - still looking, or choose a "
                            "local archive on the Source page")
-        if config.install_amigaos:
+        #  install_amigaos is only true once a folder has been chosen, so
+        #  asking about it alone meant a card that needs the disks and has
+        #  none said nothing at all - and built, unbootable. What decides it
+        #  is what the setup needs, which is known before any folder is.
+        needs_disks = (config.install_amigaos
+                       or self._system_source() == "adf"
+                       or self._imported_needs_floppies())
+        if needs_disks:
             if not config.adf_folder:
-                missing.append("a folder of Workbench floppy images")
+                missing.append("a folder of Workbench floppy images - the "
+                               "drive you are importing brings no Workbench "
+                               "of its own"
+                               if self._imported_needs_floppies() else
+                               "a folder of Workbench floppy images")
             else:
                 disks = getattr(self, "_adf_disks", None) or []
                 if not disks:
@@ -1942,9 +1986,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  for them lives on the Source page - which a quick screen does not
         #  show. So it is brought to where the drive was chosen, beside it,
         #  or there is simply no way to say where the disks are.
-        if self._imported_needs_floppies():
-            self._move_row(self.adf_row, self.group_primary)
-            self._move_row(self.os_version_row, self.group_primary)
+        #  Only in the full workflow: a quick screen has already borrowed
+        #  these into the group it shows, and moving them onto the Source
+        #  page - which no quick screen shows - would take the chooser away
+        #  from the very person who has to answer it.
+        if self._imported_needs_floppies() and getattr(self, "_customising", True):
+            for row in (self.adf_row, self.os_version_row, self.os_disks):
+                self._move_row(row, self.group_primary)
+        elif getattr(self, "_customising", True):
+            for row in (self.adf_row, self.os_version_row, self.os_disks):
+                self._move_row(row, self.os_group)
         for row in (self.adf_row, self.os_version_row, self.volume_row, self.os_disks):
             row.set_visible(installing)
         self.expand_group.set_visible(mode is not builder.BuildMode.FRESH)
@@ -2853,11 +2904,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         dialog.open(self, None, done)
 
     def _on_forget_session(self, _button) -> None:
-        """Forget the saved setup and put the window back as it started.
+        """Forget the saved setup and put the window back as it opened.
 
         Deleting the file was all this did, so everything on screen stayed
-        exactly as it was and only the next launch differed - which is not
-        what anyone means by starting again.
+        exactly as it was and only the *next* launch differed - which is not
+        what anyone means by starting again. Clearing the widgets by hand was
+        not it either: the storage layout stayed behind, because the relayout
+        gives up when there is no target to lay anything out for.
+
+        So the reset goes through apply(), the same method a loaded setup
+        goes through, with a default configuration - which is every widget the
+        configuration reaches, in one place, rather than a list to keep in
+        step with the window.
         """
         try:
             jobs.session_file().unlink(missing_ok=True)
@@ -2866,36 +2924,38 @@ class ImagerWindow(Adw.ApplicationWindow):
             return
         was_ready, self._ready = self._ready, False
         try:
-            for row in (self.quick_pimiga, self.quick_hdf, self.quick_file,
-                        self.quick_donor, self.rom_row, self.rom_key_row,
-                        self.adf_row, self.image_row, self.hdf_row,
-                        self.local_zip_row, self.file_row,
-                        self.package_donor):
+            #  What the configuration does not carry: the choosers, the
+            #  machine, and the quick screen's own copies.
+            for row in (self.quick_pimiga, self.quick_hdf, self.quick_donor,
+                        self.quick_file, self.package_donor):
                 row.set_path("")
             self.quick_primary.set_selected(PRIMARY_SOURCES.index("default"))
             self.quick_system_source.set_selected(0)
-            self.mode_row.set_selected(0)
-            self.quick_target.set_selected(0)
-            self.target_row.set_selected(0)
+            self.quick_machine.set_selected(0)
+            self.quick_display.set_selected(0)
+            self.quick_workbench_screen.set_selected(0)
             self.quick_trapdoor.set_active(False)
-            self.extra_row.set_text("")
-            for key, row in self.package_rows.items():
-                package = packages.CATALOGUE_BY_KEY.get(key)
-                row.set_active(bool(package and package.default))
-            #  Nothing has been arranged, so the layout follows the settings
-            #  again rather than being treated as somebody's own.
-            self._derived_partitions = None
+            self.quick_system.set_text("1G")
+            self.quick_work.set_active(True)
+            self.quick_target.set_selected(0)
+            self.device_row.set_selected(0)
             self._applied_config = None
+            self._quick_screen = "choices"
         finally:
             self._ready = was_ready
-        self._tick_what_is_needed()
+        self.apply(builder.BuildConfig(
+            target="",
+            package_keys=[p.key for p in packages.CATALOGUE if p.default]))
+        #  Whatever is lying about on this machine is found again, exactly as
+        #  it is at startup: a Kickstart, the Workbench disks, a PFS3 handler.
         self._detect_material()
         self._on_machine_changed()
         self._mirror_target()
-        self._sync_visibility()
         self._relayout_partitions()
+        self._set_customising(False)
+        self._sync_visibility()
         self._update_summary()
-        self._toast("The saved setup has been forgotten - starting again")
+        self._toast("Forgotten - starting again")
 
     def _on_inspect(self, _button) -> None:
         try:
