@@ -1006,6 +1006,11 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         fixer = _make_fixer(config, progress)
 
         if spec.content_hdf:
+            if spec.bootable and presets.finishable_install(
+                    spec.content_hdf, spec.content_hdf_partition):
+                #  A distribution that would otherwise boot into its own
+                #  installer: it is carried out here instead.
+                fixer.finish_classicwb_install()
             reader, label = amigaos.open_amiga_volume(spec.content_hdf,
                                                       spec.content_hdf_partition)
             progress.step(f"Filling {partition.drive_name} from {label}")

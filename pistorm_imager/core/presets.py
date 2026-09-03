@@ -704,6 +704,31 @@ def check_image_for_machine(path: str | Path, machine: machines.Machine,
     return warnings
 
 
+def finishable_install(path: str | Path, partition: str = "") -> bool:
+    """Whether an imported drive is a distribution waiting to install itself.
+
+    ClassicWB's drive boots into its own installer: it copies Commodore's
+    files off a Workbench floppy and then puts the boot script it carries as
+    T:Science in place of the installer's own. Both halves can be done while
+    the card is built, and then it boots into the system instead.
+    """
+    from . import amigaos
+
+    try:
+        volume, _label = amigaos.open_amiga_volume(path, partition)
+    except Exception:                            # noqa: BLE001 - not fatal
+        return False
+    try:
+        return bool(volume.find("T/Science") and volume.find("S/Activate"))
+    except Exception:                            # noqa: BLE001
+        return False
+    finally:
+        try:
+            volume.f.close()
+        except Exception:                        # noqa: BLE001
+            pass
+
+
 def inspect_image_system(path: str | Path, partition: str = "") -> ImageSystem:
     """Look inside an image to see whether it brings its own operating system."""
     from . import amigaos
