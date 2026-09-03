@@ -1227,3 +1227,28 @@ class ABootScriptIsNotAnOperatingSystem(unittest.TestCase):
 
     def test_no_boot_script_at_all_still_needs_them(self):
         self.assertTrue(self._system(bootable=False).needs_floppies)
+
+
+class DrawersAreVisibleWithoutADonor(unittest.TestCase):
+    """A card can be built from floppies and Aminet alone. Nothing then had a
+    drawer icon to copy, so Programs - which is where every package goes -
+    was created without one and did not appear on Workbench at all. iGame was
+    on the card and could not be found."""
+
+    def test_a_real_drawer_icon_comes_out_of_the_floppies(self):
+        folder = Path(__file__).resolve().parent.parent / "samples" / "workbench"
+        if not list(folder.glob("*.adf")):
+            self.skipTest("no ADFs in samples")
+        into = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, into, ignore_errors=True)
+        from pistorm_imager.core import amigaos, amigainfo
+        made = amigaos.drawer_icon_from_disks(folder, into)
+        self.assertIsNotNone(made, "no drawer icon found on any Workbench disk")
+        self.assertTrue(amigainfo.is_drawer_icon(made.read_bytes()),
+                        "what was taken is not a drawer icon")
+
+    def test_nothing_is_taken_from_a_folder_with_no_disks(self):
+        from pistorm_imager.core import amigaos
+        into = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, into, ignore_errors=True)
+        self.assertIsNone(amigaos.drawer_icon_from_disks(into, into))
