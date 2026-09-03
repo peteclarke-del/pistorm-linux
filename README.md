@@ -518,7 +518,17 @@ too: an imported drive with the disks installed alongside it reads *"the files
 out of an Amiga hard disk image, with Workbench from your floppy images filling
 in what it does not carry"*, where it named only the image before - the summary
 of the very setup that produced an unbootable card looked as though the disks
-had been ignored. The
+had been ignored.
+
+The plan for the two tasks that take the whole Amiga side from a file -
+building a card around an `.hdf`, and writing a prepared image unchanged -
+now describes **the drives inside that file**, read out of its own RDB (or
+the single bare file system, for an image with none). It used to walk the
+configuration's partition list, which those tasks never use, and so announced
+an empty DH0 - *"left empty - format it on the Amiga"* - on a card whose whole
+point was the drive in the image.
+
+The
 distribution's own `Real_Amiga_Install.ADF` is a separate thing again: a floppy
 that unzips a `System.zip` onto a formatted DH0 and repairs the protection bits
 `unzip` destroys. Importing the drive directly needs none of that - the files
@@ -712,13 +722,11 @@ than letting a game launch and take the machine down.
 
 Whatever can be installed outright is installed, and `Storage/Install` is a last
 resort rather than the default: a tick box that produces an installer you have to
-find and run has not delivered what it promised. MagicWB's fonts and patterns go
-straight into `Fonts:` and `Prefs/Presets`, and its icon set is what gives this
-build's own drawers their icons. What still needs running on the Amiga is the
-part that *replaces* icons already on the card, because the file system here
-creates files and never overwrites them — so VisualPrefs, MCP, NewIcons and
-Picasso96, which patch the system or restyle what is already there, are unpacked
-into `Storage/Install` and say so in the log. Where a package needs a line to take effect — PeterK's
+find and run has not delivered what it promised. What still needs running on the
+Amiga is the part that *replaces* files already on the card, because the file
+system here creates files and never overwrites them — so VisualPrefs, MCP,
+NewIcons, Scalos and Picasso96, which patch the system or restyle what is
+already there, are unpacked into `Storage/Install` and say so in the log. Where a package needs a line to take effect — PeterK's
 `icon.library` has to be soft-kicked over the one in ROM, FBlit has to be
 started — the build writes `S:User-Startup` to do it.
 
@@ -869,7 +877,7 @@ right answer genuinely differs:
 |---|---|---|
 | Drawing | FBlit and FText move Workbench's drawing off the blitter and into fast RAM, which is where a PiStorm's speed is | no blitter in the way; Picasso96 is the point of it |
 | Palette | FullPalette locks the desktop colours so a program cannot scramble them | a deep display has colours to spare |
-| Icons | MagicWB's eight colours suit a limited palette | a heavier desktop such as Scalos becomes affordable |
+| Desktop | the stock icons, drawn for exactly this palette | a heavier desktop such as Scalos becomes affordable |
 
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
 VisualPrefs. Networking — the Pi's WiFi as an Amiga network card, Roadshow,
@@ -1009,17 +1017,17 @@ with `DOS-Error #205`.
 
 ## An installer that edits the boot script is not worth the icons
 
-MagicWB is an eight-colour icon set, and eight colours is exactly why it suits
-an ECS machine - it needs no AGA. Its **Installer** is another matter. It
+MagicWB is not offered at all any more. It is an eight-colour icon set that
+suited an ECS machine perfectly, but it can no longer be registered or
+supported, and its **Installer** had already earned its withdrawal: it
 prepends two lines to `S:User-Startup`, one of which runs `MagicWB-Demon` to
-claim pens 4 to 8, and it adds commodities to `WBStartup`. A card it had been
-run on stopped booting: a software error before Workbench appeared.
-
-That could not be reproduced in an emulator - the same lines and the same
-Demon boot perfectly in FS-UAE - which is a reason to keep it off a card
-rather than a reason to doubt it. So the package installs the fonts and the
-desktop patterns, which are files and nothing more, and the Installer is not
-put on the card at all. The icons stay as they were.
+claim pens 4 to 8, and a card it had been run on stopped booting with a
+software error before Workbench appeared. That could not be reproduced in an
+emulator - the same lines and the same Demon boot perfectly in FS-UAE - which
+was a reason to keep it off a card rather than a reason to doubt it. For a
+while its fonts and desktop patterns were installed with the Installer
+withheld; unsupported and unregistrable, it has now left the catalogue, and
+the build's own drawer icons come from the Workbench disks instead.
 
 The general rule this belongs to: **anything that edits `S:User-Startup` or
 `S:Startup-Sequence` on the Amiga can stop the card booting, and the user is
