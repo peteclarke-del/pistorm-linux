@@ -222,6 +222,18 @@ class BuildConfig:
                 f"in the cache first, or it will be left out.")
         return said
 
+    def brings_a_system_from_elsewhere(self) -> bool:
+        """Whether a system somebody else set up is going onto this card.
+
+        A whole prepared image and a drive written unchanged both are one; so
+        is a drive imported onto a card this build partitions, which is what
+        was missed - its saved screen mode is just as much somebody else's as
+        the other two, and nothing was ever done about it.
+        """
+        if self.mode is not BuildMode.FRESH:
+            return True
+        return any(p.content_hdf for p in self.amiga_partitions)
+
     def validate(self) -> list[str]:
         """Return a list of problems; an empty list means the config is usable."""
         problems: list[str] = []
@@ -1784,6 +1796,16 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
                         _install_content(config, handle, amiga_part, table, progress)
                     _format_empty_partitions(config, handle, amiga_part, table,
                                              progress)
+                    #  A drive imported onto a card built here carries a saved
+                    #  screen mode exactly as a whole prepared image does, and
+                    #  this ran only for those - so a card whose DH0 came from
+                    #  an .hdf opened Workbench on a screen it has not got.
+                    if config.patch_display \
+                            and config.brings_a_system_from_elsewhere():
+                        progress.step("Adapting the display setup on the card")
+                        postwrite.adapt_display(handle, amiga_part.start_bytes,
+                                                table, config.rtg_display,
+                                                progress)
             else:
                 parts = mbr.read_table(handle)
                 boot_part = _find_boot_partition(parts)

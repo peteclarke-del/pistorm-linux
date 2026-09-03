@@ -1541,15 +1541,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.image_info = Adw.ActionRow(title="Image details", subtitle="No image selected")
         self.image_info.set_sensitive(False)
         self.image_group.add(self.image_info)
-        self.patch_display_row = Adw.SwitchRow(
-            title="Adapt the display after writing",
-            subtitle="A finished system keeps its own drivers, which are "
-                     "right for it, but not its saved screen mode. Where "
-                     "there is no RTG display, clear it so Workbench opens on "
-                     "the Amiga's own screen instead of one that is not there.")
-        self.patch_display_row.connect("notify::active",
-                                       lambda *_a: self._update_summary())
-        self.image_group.add(self.patch_display_row)
         page.add(self.image_group)
 
         page.add(self.group_primary)
@@ -1613,6 +1604,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  Which Amiga this is, and how it is being looked at, decides most of
         #  what follows on this page.
         page.add(self.group_hardware)
+
+        #  This belongs with the display, not with the image chooser it used
+        #  to sit under: a drive imported onto a card this build partitions
+        #  carries a saved screen mode exactly as a whole prepared image
+        #  does, and there was no way to ask for it to be dealt with.
+        group = Adw.PreferencesGroup(
+            title="A system that was built elsewhere",
+            description="Anything ready-made - a prepared card image, or a "
+                        "drive imported from an .hdf - was set up on somebody "
+                        "else's machine, watched on somebody else's screen.")
+        self.patch_display_row = Adw.SwitchRow(
+            title="Adapt the display after writing",
+            subtitle="It keeps its own drivers, which are right for it, but "
+                     "not its saved screen mode. Where this card has no RTG "
+                     "display, clear it so Workbench opens on the Amiga's own "
+                     "screen instead of one that is not there.")
+        self.patch_display_row.connect("notify::active",
+                                       lambda *_a: self._update_summary())
+        group.add(self.patch_display_row)
+        self.display_group = group
+        page.add(group)
 
         group = Adw.PreferencesGroup(
             title="Kickstart ROM",
@@ -2001,6 +2013,14 @@ class ImagerWindow(Adw.ApplicationWindow):
                 self._move_row(row, self.os_group)
         for row in (self.adf_row, self.os_version_row, self.volume_row, self.os_disks):
             row.set_visible(installing)
+        #  There is a saved screen mode to deal with only where a ready-made
+        #  system is involved: a whole card image, a drive written unchanged,
+        #  or a drive imported onto a card this build partitions. A Workbench
+        #  installed from floppies has never been watched on anything.
+        self.display_group.set_visible(
+            mode is not builder.BuildMode.FRESH
+            or any(row.spec().content_hdf for row in self.partition_rows)
+            or bool(self.quick_hdf.path))
         self.expand_group.set_visible(mode is not builder.BuildMode.FRESH)
         for row in self.extra_rows:
             row.set_visible(self.expand_row.get_active())
