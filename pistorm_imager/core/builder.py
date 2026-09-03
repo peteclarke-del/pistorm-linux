@@ -883,6 +883,12 @@ def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
         if config.package_donor else None
     if donor is not None:
         sources.append(donor)
+    if not sources and config.adf_folder:
+        #  No icon set and no donor: the floppies have real drawer icons and
+        #  are the only thing this card was built from.
+        borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drawer-icon-"))
+        if amigaos.drawer_icon_from_disks(config.adf_folder, borrowed):
+            sources.append(borrowed)
 
     written = amigaos.ensure_drawer_icons(volume, wanted, sources, progress)
     if written:
