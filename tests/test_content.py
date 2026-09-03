@@ -824,17 +824,46 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
         c.displace(["C/WHDLoad"])
         self.assertTrue(c.skip("C/WHDLoad"))
 
-    def test_only_whole_files_are_ever_displaced(self):
-        #  A drawer is merged into what is there; refusing one during the
-        #  copy would take out the drive's own contents with it.
+    def test_a_drawer_needs_its_name_free_of_a_file(self):
+        #  ClassicWB keeps Visage as a file in Utilities; this build wants a
+        #  drawer of that name there, and the collision ended an hour-long
+        #  build outright. The copy only ever asks about files, so refusing
+        #  the name can never take out a drawer of the same name.
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-drawer-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "Visage").mkdir()
+        paths = builder._landing_paths([(str(folder / "Visage"),
+                                         "Utilities/Visage")])
+        self.assertEqual(paths, ["Utilities/Visage"])
+        self.assertTrue(self.fixer(paths).skip("Utilities/Visage"))
+
+    def test_a_drawer_going_to_the_volume_root_displaces_nothing(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-root-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "Stuff").mkdir()
+        self.assertEqual(
+            builder._landing_paths([(str(folder / "Stuff"), "")]), [])
+
+    def test_a_drawers_contents_are_never_displaced_one_by_one(self):
+        #  A drawer is merged into whatever is there. Only its own name is
+        #  claimed - refusing the files inside it would take out the drive's
+        #  contents along with them.
         from pistorm_imager.core import builder                # noqa: PLC0415
         folder = Path(tempfile.mkdtemp(prefix="pistorm-land-"))
         self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
         (folder / "WHDLoad").write_bytes(b"x")
         (folder / "Patterns").mkdir()
+        (folder / "Patterns" / "one.iff").write_bytes(b"x")
         paths = builder._landing_paths([(str(folder / "WHDLoad"), "C"),
                                         (str(folder / "Patterns"), "Prefs")])
-        self.assertEqual(paths, ["C/WHDLoad"])
+        self.assertEqual(sorted(paths), ["C/WHDLoad", "Prefs"])
+        keeps = self.fixer(paths)
+        self.assertFalse(keeps.skip("Prefs/one.iff"),
+                         "a file inside the drawer must survive")
+        self.assertFalse(keeps.skip("Prefs/Env-Archive/Sys/anything"),
+                         "and so must everything else already under it")
 
     def test_a_card_that_imports_nothing_has_no_clash_to_settle(self):
         from pistorm_imager.core import builder                # noqa: PLC0415

@@ -874,6 +874,14 @@ def _landing_paths(pairs: list[tuple[str, str]]) -> list[str]:
         if path.is_file():
             out.append(f"{destination}/{path.name}" if destination
                        else path.name)
+        elif destination:
+            #  A drawer going onto the card needs its name free. ClassicWB
+            #  keeps Visage as a *file* in Utilities, and this build wants a
+            #  drawer of that name there - which ended an hour-long build
+            #  outright. Only a file can ever be refused by this: the copy
+            #  asks about files and never about drawers, so a drawer of the
+            #  same name is merged into as before.
+            out.append(destination)
     return out
 
 
@@ -963,9 +971,18 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
             progress.log(f"  overlay missing, skipped: {source}")
             continue
         if source.is_dir():
-            copied, _renamed = amigaos.install_tree(volume, source, destination,
-                                                    progress, compat=fixer,
-                                                    merge=True)
+            try:
+                copied, _renamed = amigaos.install_tree(
+                    volume, source, destination, progress, compat=fixer,
+                    merge=True)
+            except (amigafs.AmigaFsError, pfs3.Pfs3Error) as error:
+                #  One package colliding with the drive is not a reason to
+                #  throw away a card that took an hour to build. Say which,
+                #  and go on with the rest.
+                progress.log(f"  WARNING: {source.name} could not be "
+                             f"installed into {destination or ':'} - {error}. "
+                             f"Everything else is unaffected.")
+                continue
             progress.log(f"  overlay: {source.name}/ -> {destination or ':'} "
                          f"({copied} files)")
         else:
