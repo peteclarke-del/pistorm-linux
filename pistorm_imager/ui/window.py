@@ -1993,12 +1993,17 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _releases_loaded(self, found: list[emu68.Release]) -> bool:
         self.releases = found
         self._populate_releases()
+        #  The list arrives from GitHub after the window is up, so the summary
+        #  was written while there was no build to offer and went on saying
+        #  "Still needed: an Emu68 release" long after one had been chosen.
+        self._update_summary()
         return False
 
     def _releases_failed(self, message: str) -> bool:
         self.release_row.set_model(combo(["Could not reach GitHub"]))
         self.release_row.set_subtitle(
             f"{message}. Choose a local Emu68 zip below instead.")
+        self._update_summary()
         return False
 
     def _populate_releases(self) -> None:
@@ -2848,12 +2853,49 @@ class ImagerWindow(Adw.ApplicationWindow):
         dialog.open(self, None, done)
 
     def _on_forget_session(self, _button) -> None:
-        """Stop restoring the last setup, for when it is no longer wanted."""
+        """Forget the saved setup and put the window back as it started.
+
+        Deleting the file was all this did, so everything on screen stayed
+        exactly as it was and only the next launch differed - which is not
+        what anyone means by starting again.
+        """
         try:
             jobs.session_file().unlink(missing_ok=True)
-            self._toast("The saved setup has been forgotten")
         except OSError as error:
             self._toast(f"Could not remove it: {error}")
+            return
+        was_ready, self._ready = self._ready, False
+        try:
+            for row in (self.quick_pimiga, self.quick_hdf, self.quick_file,
+                        self.quick_donor, self.rom_row, self.rom_key_row,
+                        self.adf_row, self.image_row, self.hdf_row,
+                        self.local_zip_row, self.file_row,
+                        self.package_donor):
+                row.set_path("")
+            self.quick_primary.set_selected(PRIMARY_SOURCES.index("default"))
+            self.quick_system_source.set_selected(0)
+            self.mode_row.set_selected(0)
+            self.quick_target.set_selected(0)
+            self.target_row.set_selected(0)
+            self.quick_trapdoor.set_active(False)
+            self.extra_row.set_text("")
+            for key, row in self.package_rows.items():
+                package = packages.CATALOGUE_BY_KEY.get(key)
+                row.set_active(bool(package and package.default))
+            #  Nothing has been arranged, so the layout follows the settings
+            #  again rather than being treated as somebody's own.
+            self._derived_partitions = None
+            self._applied_config = None
+        finally:
+            self._ready = was_ready
+        self._tick_what_is_needed()
+        self._detect_material()
+        self._on_machine_changed()
+        self._mirror_target()
+        self._sync_visibility()
+        self._relayout_partitions()
+        self._update_summary()
+        self._toast("The saved setup has been forgotten - starting again")
 
     def _on_inspect(self, _button) -> None:
         try:

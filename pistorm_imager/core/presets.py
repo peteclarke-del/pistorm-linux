@@ -510,9 +510,16 @@ def describe_machine_setup(config: builder.BuildConfig,
                            display: machines.Display,
                            detected: Detected) -> str:
     source = getattr(config, "system_source", "adf")
+    described = SYSTEM_SOURCE_LABELS.get(source, source)
+    #  A drive can be imported *and* the Workbench disks installed to fill in
+    #  what it does not carry. Saying only where the drive came from left the
+    #  summary looking as though the disks had been ignored.
+    if config.install_amigaos and source != "adf":
+        described += ", with Workbench from your floppy images filling in " \
+                     "what it does not carry"
     lines = [f"{machine.label} with {machine.board_label}",
              f"Display: {display.label}",
-             f"System: {SYSTEM_SOURCE_LABELS.get(source, source)}"]
+             f"System: {described}"]
     if display.has_choice_of_screen:
         lines.append("Workbench opens on: "
                      + ("the RTG screen, leaving the Amiga's own output for "

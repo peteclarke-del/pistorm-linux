@@ -341,6 +341,21 @@ and the display arrive with the interface state, and they decide which software
 suits the card and which board the Source page shows, so both of those are
 restored from the configuration afterwards.
 
+Two things are only true a moment later, and the summary has to be told when
+they become true. The Workbench disks are identified in a background thread,
+and the list of Emu68 builds arrives from GitHub after the window is already
+up; the summary is written before either, so it says an Emu68 release is still
+needed. The scan rewrote the summary when it finished and the release list did
+not, which is why a setup loaded at startup went on saying *"Still needed: an
+Emu68 release"* with the release chosen and everything else in place. Both
+paths refresh it now, whether the list arrives or the fetch fails.
+
+**Forget the saved setup** now also puts the window back as it started -
+sources, target, switches, the extra cmdline options, the software ticks back
+to their defaults, and the layout handed back to the quick settings. It only
+deleted the file, so nothing on screen changed and only the *next* launch
+differed, which is not what starting again means.
+
 ## Installing AmigaOS from floppy images
 
 Point the tool at a folder of ADFs and it identifies them by volume name -
@@ -471,7 +486,12 @@ Reading it as finished offered a card that boots straight into an installer
 asking for a floppy drive.
 
 So a drive needs the Workbench disks unless it has both a boot script **and**
-`C:LoadWB`, and the description says which of the two is missing. The
+`C:LoadWB`, and the description says which of the two is missing. The plan says so
+too: an imported drive with the disks installed alongside it reads *"the files
+out of an Amiga hard disk image, with Workbench from your floppy images filling
+in what it does not carry"*, where it named only the image before - the summary
+of the very setup that produced an unbootable card looked as though the disks
+had been ignored. The
 distribution's own `Real_Amiga_Install.ADF` is a separate thing again: a floppy
 that unzips a `System.zip` onto a formatted DH0 and repairs the protection bits
 `unzip` destroys. Importing the drive directly needs none of that - the files
