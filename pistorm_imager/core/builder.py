@@ -1006,6 +1006,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         fixer = _make_fixer(config, progress)
 
         if spec.content_hdf:
+            from . import presets                 # noqa: PLC0415 - circular
             if spec.bootable and presets.finishable_install(
                     spec.content_hdf, spec.content_hdf_partition):
                 #  A distribution that would otherwise boot into its own

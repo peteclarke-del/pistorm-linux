@@ -779,3 +779,41 @@ class DuplicateOverlayFile(_Scratch):
         for name in ("colorwheel", "gradientslider", "tapedeck"):
             self.assertIn(name, packages.STOCK,
                           f"{name}.gadget comes with Workbench 3.1")
+
+
+class TestABootableDriveFilledFromAnImage(_Scratch):
+    """The path that fills the boot drive from another drive: nothing
+    exercised it, and a name that did not exist there ended a real build
+    after the partition table had already been written."""
+
+    def _source(self):
+        """A small Amiga drive to import."""
+        tree = self.scratch() / "source"
+        (tree / "S").mkdir(parents=True)
+        (tree / "S" / "Startup-Sequence").write_text("echo hello\n")
+        (tree / "C").mkdir()
+        (tree / "C" / "LoadWB").write_bytes(b"x" * 64)
+        made = self.scratch() / "source.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(made), output_hdf=True,
+            image_size=40 * MIB, install_emu68=False,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0, volume_name="Src",
+                content_folder=str(tree))]), QUIET)
+        return made
+
+    def test_a_card_can_be_built_around_an_imported_drive(self):
+        source = self._source()
+        out = self.scratch() / "card.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            image_size=80 * MIB, install_emu68=False, fix_compatibility=True,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0, volume_name="Sys",
+                content_hdf=str(source))]), QUIET)
+        from pistorm_imager.core import amigaos
+        volume, _label = amigaos.open_amiga_volume(str(out))
+        self.assertIsNotNone(volume.find("C/LoadWB"),
+                             "the imported drive's files are not on the card")
