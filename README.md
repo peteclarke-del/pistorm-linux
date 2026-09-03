@@ -800,6 +800,12 @@ later.
 
 ### Nothing on the card may need an FPU
 
+*This is what stopped iGame launching games.* It listed them correctly and then
+did nothing when one was clicked - window closed, WHDLoad never started, nothing
+reported. With the FPU libraries off the card and `no_guigfx=1` in its
+preferences, it launches.
+
+
 Emu68 gives a PiStorm a **68040 with no FPU**. A floating point instruction on
 such a machine raises a line-F exception - **guru 8000000B** - and iGame's own
 site warns about exactly that guru for exactly these libraries.

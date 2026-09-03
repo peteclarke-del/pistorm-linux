@@ -1067,6 +1067,43 @@ def _drawer_icon_sources(folders: Iterable[str | Path]) -> dict[str, bytes]:
     return found
 
 
+def drawer_icon_from_disks(folder: str | Path, into: Path) -> Path | None:
+    """Take one real drawer icon out of the Workbench floppies.
+
+    A card can now be built from floppies and Aminet alone, with no donor and
+    no icon set - and then nothing had a drawer icon to copy, so the drawers
+    this tool creates stayed invisible on Workbench. The floppies have real
+    ones; one of those is as good as any.
+    """
+    folder = Path(folder)
+    if not folder.is_dir():
+        return None
+    for disk in sorted(folder.glob("*.adf")):
+        try:
+            volume, _label = open_amiga_volume(str(disk), "")
+            entries = volume.listdir()
+        except Exception:                        # noqa: BLE001 - try the next
+            continue
+        names = {e.name.lower() for e in entries}
+        for entry in entries:
+            name = entry.name
+            if entry.is_dir or not name.lower().endswith(ICON_SUFFIX):
+                continue
+            if name[:-len(ICON_SUFFIX)].lower() not in names:
+                continue
+            try:
+                data = volume.read_file(entry)
+            except Exception:                    # noqa: BLE001
+                continue
+            if not amigainfo.is_drawer_icon(data):
+                continue
+            into.mkdir(parents=True, exist_ok=True)
+            made = into / f"drawer{ICON_SUFFIX}"
+            made.write_bytes(data)
+            return made
+    return None
+
+
 def ensure_drawer_icons(volume, drawers: Iterable[str],
                         sources: Iterable[str | Path],
                         progress: Progress) -> int:
