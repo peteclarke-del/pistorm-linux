@@ -1202,3 +1202,28 @@ class FilesThisToolWritesItself(unittest.TestCase):
                                   _Recorder())
         text = Path(pairs[0][0]).read_text()
         self.assertIn("no_guigfx=1", text)
+
+
+class ABootScriptIsNotAnOperatingSystem(unittest.TestCase):
+    """ClassicWB's drive has a Startup-Sequence and it is an installer: on
+    the first boot it asks for a Workbench floppy and copies the copyright
+    files off it, because Workbench is still sold. Reading that as a complete
+    system offered a card that boots into an installer wanting a floppy
+    drive."""
+
+    def _system(self, **found):
+        from pistorm_imager.core import presets
+        return presets.ImageSystem(label="test", found=found)
+
+    def test_a_boot_script_without_loadwb_still_needs_floppies(self):
+        system = self._system(bootable=True, workbench=False, whdload=True)
+        self.assertTrue(system.needs_floppies)
+        self.assertIn("no C:LoadWB", system.describe())
+
+    def test_a_real_system_does_not(self):
+        system = self._system(bootable=True, workbench=True)
+        self.assertFalse(system.needs_floppies)
+        self.assertIn("complete system", system.describe())
+
+    def test_no_boot_script_at_all_still_needs_them(self):
+        self.assertTrue(self._system(bootable=False).needs_floppies)

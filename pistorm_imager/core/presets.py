@@ -622,8 +622,15 @@ class ImageSystem:
 
     @property
     def needs_floppies(self) -> bool:
-        """True when the image cannot supply an operating system itself."""
-        return not self.bootable
+        """True when the image cannot supply an operating system itself.
+
+        A Startup-Sequence is not an operating system. ClassicWB's drive has
+        one and it is an *installer*: on the first boot it asks for a
+        Workbench floppy and copies the copyright files off it, because
+        Workbench is still sold. Without ``C:LoadWB`` there is no Workbench
+        to start, whatever the boot script says.
+        """
+        return not (self.bootable and self.found.get("workbench"))
 
     def describe(self) -> str:
         if self.error:
@@ -631,6 +638,10 @@ class ImageSystem:
         if not self.bootable:
             return ("no operating system on this drive - install one from "
                     "floppy images, or it will not boot")
+        if not self.found.get("workbench"):
+            return ("boots, but brings no Workbench of its own: no C:LoadWB. "
+                    "A drive like this expects the Workbench disks and takes "
+                    "the copyright files from them, so add them as well")
         traits = [text for key, _path, text in SYSTEM_MARKERS
                   if key != "bootable" and self.found.get(key)]
         detail = f"; {', '.join(traits)}" if traits else ""

@@ -182,7 +182,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 398 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 401 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -408,6 +408,27 @@ that is a common enough upgrade that offering only a plain OCS A500 gets the
 chipset wrong for a real machine. The chipset decides which game collections
 are worth copying and which screen modes exist, so there is a separate
 **Amiga 500 with ECS** to choose, and the plain A500's note points at it.
+
+## A boot script is not an operating system
+
+An imported drive was called a complete system if it had `S:Startup-Sequence`.
+ClassicWB has one, and it is an **installer**: on the first boot it says
+
+> You'll need a valid Workbench 3.0/3.1 disk, without one the install will
+> fail. Vital and copyright files contained on the disk will be copied during
+> installation. This is required because Workbench is still sold commercially.
+
+Its drive carries no `C:LoadWB`, no `C:IPrefs`, no `workbench.library` and no
+`diskfont.library`, because those belong to Commodore and cannot be given away.
+Reading it as finished offered a card that boots straight into an installer
+asking for a floppy drive.
+
+So a drive needs the Workbench disks unless it has both a boot script **and**
+`C:LoadWB`, and the description says which of the two is missing. The
+distribution's own `Real_Amiga_Install.ADF` is a separate thing again: a floppy
+that unzips a `System.zip` onto a formatted DH0 and repairs the protection bits
+`unzip` destroys. Importing the drive directly needs none of that - the files
+are read out of a real Amiga file system with their protection bits intact.
 
 ## Checking an image against the machine
 
