@@ -50,7 +50,6 @@ ROLES = [
     Role("backdrops", "Backdrops", "Backdrops", ("backdrops",), order=65),
     Role("install", "Install", "Install", ("install",), order=70),
 ]
-ROLES_BY_KEY = {r.key: r for r in ROLES}
 
 
 #  "Workbench3.1" / "Extras3.2" carry the release in the volume name; Fonts and
@@ -354,7 +353,6 @@ ILLEGAL_AMIGA_CHARS = set(':/')
 #  launched from the tool types in its icon, so an orphaned icon is a game that
 #  no longer starts.
 ICON_SUFFIX = ".info"
-MAX_WITH_ICON = amigafs.MAX_NAME - len(ICON_SUFFIX)
 
 
 def _fold(char: str) -> str:

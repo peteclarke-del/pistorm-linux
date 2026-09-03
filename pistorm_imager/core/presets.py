@@ -350,8 +350,6 @@ AGA_ONLY_CATEGORIES = ["WHDLOAD/AGA", "WHDLOAD/CD32"]
 
 #  PiMiga's System drive is around 9 GB, so give it headroom.
 PIMIGA_SYSTEM_SIZE = 11 * GIB
-#  Below this there is no point taking a 9 GB system and no room for games.
-PIMIGA_SYSTEM_MIN_CARD = 24 * GIB
 
 
 def choose_system_source(display: machines.Display, disks: "Path | None",
