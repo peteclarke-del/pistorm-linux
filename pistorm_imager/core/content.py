@@ -67,40 +67,96 @@ def _folder_key(name: str) -> str:
     return name.strip().lower().removesuffix(".info")
 
 
-def discover(folder: str | Path) -> list[Category]:
-    """The categories a content folder is divided into.
+#  Markers a title puts in its own name to say which chipset it wants. Matched
+#  in UPPER CASE and only at a word boundary, which is what keeps "Saga" and
+#  "Vagabond" out of it - their "aga" is lower case and mid-word.
+NAME_MARKERS = (("CD32", Chipset.AGA, "the name says CD32, which is an AGA "
+                                      "machine"),
+                ("AGA", Chipset.AGA, "the name says AGA"))
 
-    Looks for a container drawer - WHDLOAD is the usual one - and lists what
-    is inside it. A tree with no such drawer has no categories to offer, which
-    is different from having none this machine can run.
+
+def needs_from_name(name: str) -> tuple[Chipset | None, str]:
+    """What a title's own name admits about the chipset it needs.
+
+    This is the only honest automatic judgement available. Scanning the
+    program for AGA-only registers was tried and abandoned: matching 16-bit
+    words finds FMODE inside DOOM1.WAD and inside an IFF picture, so it
+    labels data as code and would confidently condemn titles that run
+    perfectly well. A name is a weaker signal but it is never a guess.
+    """
+    stem = Path(name).stem
+    for marker, needs, why in NAME_MARKERS:
+        at = stem.upper().rfind(marker)
+        if at < 0 or stem[at:at + len(marker)] != marker:
+            continue
+        before = stem[at - 1] if at else ""
+        after = stem[at + len(marker):at + len(marker) + 1]
+        #  A boundary before it, and nothing lower-case run on after it.
+        if before.isupper() and before.isalpha():
+            continue
+        if after.islower():
+            continue
+        return needs, why
+    return None, ""
+
+
+def discover(folder: str | Path) -> list[Category]:
+    """What a content folder holds, as things that can be left out.
+
+    Two kinds. A collection keeps its titles in a container drawer - WHDLOAD
+    is the usual one - divided into categories whose names say what they
+    need, and those are listed as before. Everything *else* at the top of the
+    drive is a program in its own right, and those were never offered at all:
+    a Games drive with forty native titles sitting beside its WHDLOAD drawer
+    could only be taken whole, AGA titles and all, onto an ECS machine.
     """
     root = Path(folder)
     if not root.is_dir():
         return []
     found: list[Category] = []
     seen: set[str] = set()
+    containers: set[str] = set()
+
     for container in CONTAINERS:
+        here = root / container
         try:
-            entries = [p for p in (root / container).iterdir() if p.is_dir()]
+            entries = [p for p in here.iterdir() if p.is_dir()]
         except OSError:
             continue
-        #  The real name on disk, whatever its case, is what the copy matches.
-        actual = (root / container).name if (root / container).exists() else container
+        containers.add(here.name.lower())
+        actual = here.name
         for entry in sorted(entries, key=lambda p: p.name.lower()):
             key = _folder_key(entry.name)
             if not key or key in seen:
                 continue
             seen.add(key)
             needs, note = KNOWN.get(key, (None, ""))
-            try:
-                count = sum(1 for _ in entry.iterdir())
-            except OSError:
-                count = 0
+            if needs is None and not note:
+                needs, note = needs_from_name(entry.name)
             found.append(Category(f"{actual}/{entry.name}", entry.name,
-                                  needs, note, count))
+                                  needs, note, _count(entry)))
         if found:
             break
+
+    #  The programs beside the collection, each one its own choice.
+    try:
+        loose = [p for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        loose = []
+    for entry in sorted(loose, key=lambda p: p.name.lower()):
+        if entry.name.lower() in containers or entry.name.startswith("."):
+            continue
+        needs, note = needs_from_name(entry.name)
+        found.append(Category(entry.name, entry.name, needs, note,
+                              _count(entry)))
     return found
+
+
+def _count(folder: Path) -> int:
+    try:
+        return sum(1 for _ in folder.iterdir())
+    except OSError:
+        return 0
 
 
 def unsuitable(categories: list[Category], machine: Machine) -> list[str]:
