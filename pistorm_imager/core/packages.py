@@ -101,6 +101,10 @@ class Download:
     #  archive that ships templates for other people's hardware still needs
     #  one for the machine being built.
     write: tuple[tuple[str, str, str], ...] = ()
+    #  (path inside the archive, destination, name on the card). For an
+    #  archive that ships one binary per processor: the card wants the one
+    #  its machine has, under the name the icon launches.
+    rename: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def url(self) -> str:
@@ -108,6 +112,12 @@ class Download:
             return self.path
         return AMINET + self.path
 
+    @property
+    def where(self) -> str:
+        """Where the archive is published, for saying so in the log."""
+        if self.manual or self.source:
+            return self.source or "its publisher"
+        return "Aminet" if not self.path.startswith("http") else self.path
     @property
     def filename(self) -> str:
         return self.path.rsplit("/", 1)[-1]
@@ -119,14 +129,17 @@ class Package:
     label: str
     description: str
     category: Category = Category.SYSTEM
-    #  (path within the donor system, destination within the target drive).
-    #  A source that is a directory is copied whole; a file is copied into the
-    #  destination drawer.
-    items: tuple[tuple[str, str], ...] = ()
+    #  Where it comes from. Every package has one: software used to be able to
+    #  come out of a donor system instead, which meant a card was built from
+    #  whatever some other installation happened to hold.
     download: Download | None = None
     default: bool = False
     #  Only worth having where the Pi's HDMI is driving an RTG screen.
     rtg_only: bool = False
+    #  Not optional wherever it does suit the setup: without it the thing the
+    #  user asked for does not work at all. An RTG display with no Picasso96
+    #  has no RTG screen modes, so the HDMI output shows nothing.
+    essential: bool = False
     #  Chipsets this makes sense on; empty means any.
     chipsets: tuple[Chipset, ...] = ()
     #  Waive the chipset restriction when there is an RTG screen: some of this
@@ -145,13 +158,12 @@ class Package:
     #  because muimaster.library is not there.  A dependency is pulled in
     #  whether or not the user thought to tick it.
     requires: tuple[str, ...] = ()
-    #  Files the package needs but which are not the package: the shared
-    #  libraries and classes it draws with.  Kept apart from ``items``
-    #  because ``items`` means "the donor's copy of this package", and a
-    #  package taken from Aminet instead still needs these.  They are always
-    #  taken from a donor, never downloaded, and a missing one is not fatal.
-    support: tuple[tuple[str, str], ...] = ()
     note: str = ""
+    #  True when nobody would choose this for its own sake - it is here to
+    #  satisfy something else. Such a package goes away with the last thing
+    #  that needed it; one that is useful on its own stays, because turning
+    #  off a browser should not take MUI away from everything else.
+    support_only: bool = False
 
     @property
     def manual(self) -> bool:
@@ -183,54 +195,105 @@ CATALOGUE: list[Package] = [
         "whdload", "WHDLoad",
         "Runs floppy games and demos from the hard drive. Almost every game "
         "collection is built around it.",
-        items=(("C/WHDLoad", "C"), ("Expansion/WHDLoad", "Expansion/WHDLoad"),
-               #  Its settings live here, not in the command: the quit key,
-               #  whether it forces PAL, and the hooks it runs around a game.
-               ("S/WHDLoad.prefs", "S")),
-        #  Nearly every slave asks WHDLoad for the Kickstart the game expects
-        #  and will not start without it.  These are ROM images rather than
-        #  code, so nothing names them inside a binary and no scan can find
-        #  them - they have to be asked for.  Without them iGame launches a
-        #  game and the machine falls over on the spot.
-        support=(("Devs/Kickstarts", "Devs/Kickstarts"),),
-        #  These were once required here, on the reasoning that a 68040
-        #  needs modern CPU support.  Tested, the opposite is true: either
-        #  of them stops every WHDLoad game dead.  See their own entries.
-
-        download=Download("dev/misc/WHDLoad_usr.lha",
+        #  MMULib and a newer SetPatch were once required here, on the
+        #  reasoning that a 68040 needs modern CPU support. Tested, the
+        #  opposite is true: either of them stops every WHDLoad game dead.
+        #  Aminet's dev/misc/WHDLoad_usr.lha is a 2007 upload of 16.8 and has
+        #  not moved since; the author's own site serves the current release.
+        #  A card built from Aminet came out older than the ready-made
+        #  distributions it was competing with.
+        download=Download("https://whdload.de/whdload/WHDLoad_usr.lha",
                           (("WHDLoad/C/WHDLoad", "C"),
                            ("WHDLoad/C/WHDLoadCD32", "C"),
-                           ("WHDLoad/C/Patcher", "C"))),
+                           ("WHDLoad/C/Patcher", "C")),
+                          source="whdload.de"),
         default=True,
+        #  Nearly every slave asks WHDLoad for the Kickstart the game expects
+        #  and will not start without it. Those are Commodore ROM images:
+        #  nobody publishes them, and they used to be copied out of a donor
+        #  system. With no donor there is nowhere honest to get them, so the
+        #  card says what is missing rather than launching a game and falling
+        #  over on the spot.
+        note="Games that need a Kickstart image want them in Devs/Kickstarts "
+             "on the card - they are Commodore's and cannot be fetched, so "
+             "copy your own there afterwards.",
     ),
     Package(
         "lha", "LhA",
         "The archiver Amiga software is distributed in. Without it very little "
         "downloaded from Aminet can be unpacked.",
-        items=(("C/lha", "C"),),
-        download=Download("util/arc/lha.run", stage=STAGING + "/LhA",
-                          raw=True),
+        #  Aminet ships LhA as a self-extracting Amiga program - which is
+        #  what an archiver has to be, since you need one to unpack the
+        #  other. The archive inside it is an ordinary LhA one, so it is
+        #  taken out here and the right build installed, rather than leaving
+        #  the card with no archiver until somebody runs the extractor.
+        download=Download("util/arc/lha.run",
+                          rename=(("lha_68040", "C", "LhA"),)),
         default=True,
-        note="Aminet ships LhA as a self-extracting Amiga program; run "
-             "lha.run from Storage/Install on the Amiga.",
+        note="The 68040 build, which is what Emu68 provides.",
     ),
     Package(
         "installer", "Installer",
         "Commodore's installer, which most third-party install scripts expect "
         "to find and fail without.",
-        items=(("C/Installer", "C"),),
         download=Download("util/misc/Installer-43_3.lha",
                           (("Installer43_3/Installer", "C"),)),
         default=True,
     ),
     Package(
-        "igame", "iGame",
-        "A launcher that lists WHDLoad games with their screenshots.",
-        items=(("Programs/iGame", "Programs/iGame"),),
-        #  iGame draws its screenshots through these two.
-        support=(("Libs/guigfx.library", "Libs"),
-                 ("Libs/render.library", "Libs")),
-        requires=("mui",),
+        "newinstaller", "NewInstaller",
+        "Makes the Commodore Installer's script windows look like something "
+        "from this century, and can stand in for it entirely. Installer "
+        "scripts that other software ships then run through this instead.",
+        category=Category.SYSTEM,
+        #  Its own Install script copies the program into C: and its
+        #  libraries with copylib, which is what these two lines do. The
+        #  rest - its demos, its documentation, the tool that sets a theme -
+        #  is staged, because choosing a theme is a decision and this cannot
+        #  make it.
+        download=Download(
+            "util/wb/NewInstaller17.lha",
+            (("NewInstaller1_7/NewInstaller", "C"),
+             ("NewInstaller1_7/Libs", "Libs"),
+             ("NewInstaller1_7/Catalogs", "Locale/Catalogs"),
+             ("NewInstaller1_7/Defaults", STAGING + "/NewInstaller/Defaults"),
+             ("NewInstaller1_7/Tools", STAGING + "/NewInstaller/Tools"),
+             ("NewInstaller1_7/Docs", STAGING + "/NewInstaller/Docs"))),
+        note="Installed as C:NewInstaller. To have it replace the Commodore "
+             "Installer outright, run its own Install from Storage/Install "
+             "on the Amiga - it asks questions this cannot answer for you.",
+    ),
+    Package(
+        "kingcon", "KingCON",
+        "A console handler with a command history, filename completion and "
+        "an editable command line - what the Shell should always have been. "
+        "The handler goes into L: and the mountfile into DEVS:DOSDrivers.",
+        category=Category.EXTRAS,
+        download=Download(
+            "util/shell/KingCON_1.3.lha",
+            (("KingCON1.3/Handler/KingCON-handler.020", "L"),
+             ("KingCON1.3/Docs", STAGING + "/KingCON/Docs"),
+             ("KingCON1.3/Installation", STAGING + "/KingCON"))),
+        note="The 68020 build of the handler is installed. Its own "
+             "Installation script, in Storage/Install, mounts it as the "
+             "console and can make it the default - which changes how every "
+             "Shell on the card behaves, so it is left for you to decide.",
+    ),
+    Package(
+        "blazewcp", "BlazeWCP",
+        "A 32-bit chunky-to-planar patch for the OS chunky functions, which "
+        "is what anything drawing a chunky picture on a planar screen goes "
+        "through.",
+        category=Category.SPEED,
+        download=Download("util/boot/BlazeWCP178.lha",
+                          (("BlazeWCP", "C"),
+                           ("BlazeWCP.guide", STAGING + "/BlazeWCP"))),
+        startup=("IF EXISTS C:BlazeWCP",
+                 "   C:BlazeWCP >NIL:",
+                 "EndIF"),
+        note="Started from S:User-Startup. It patches the operating "
+             "system's chunky drawing, so if anything draws oddly, take that "
+             "line out and reboot.",
     ),
     Package(
         "mmulib", "68k CPU libraries (MMULib)",
@@ -252,24 +315,6 @@ CATALOGUE: list[Package] = [
              "for applications, where the newer CPU support is the point.",
     ),
     Package(
-        "setpatch", "A SetPatch that knows about the 68040",
-        "Workbench 3.1 ships SetPatch 40.16, from 1994 - it predates the "
-        "68040 and does not set one up. Newer, but it stops WHDLoad games "
-        "starting, so it is off unless you know you want it.",
-        category=Category.UPDATES,
-        #  Only a donor can supply this: it is Commodore's, from a later
-        #  release, and is not on Aminet.  Without it WHDLoad takes a
-        #  privilege violation the moment it tries to start a game, because
-        #  the CPU it is running on was never properly set up.
-        items=(("C/SetPatch", "C"),),
-        support=(("C/PatchRAM", "C"),),
-        #  Same story as MMULib: replacing Commodore's SetPatch leaves
-        #  WHDLoad games hanging on a black screen.  Tested one variable at
-        #  a time against a card that runs the game.
-        note="Do not install this on a card for games: WHDLoad titles hang "
-             "instead of starting.",
-    ),
-    Package(
         "mui", "MUI",
         "Magic User Interface: the toolkit a great deal of Amiga software "
         "draws itself with. Nothing that needs it will start without it.",
@@ -277,13 +322,16 @@ CATALOGUE: list[Package] = [
         #  expects to be found through a MUI: assign, with its own libraries
         #  and locale added to the system's.  This is how a real MUI install
         #  is arranged, and how the donor systems carry it.
-        items=(("System/MUI", "System/MUI"),),
+        #  MUI 3.8 as published. A donor's MUI is usually richer - PiMiga's
+        #  carries 84 classes against this archive's 36 - so the release goes
+        #  on first and the donor fills in the extra classes behind it.
+        download=Download("util/libs/mui38usr.lha",
+                          (("MUI", "System/MUI"),)),
         #  MUI reads its configuration from ENV:MUI, which Workbench fills
         #  from ENVARC: at boot.  Without it every MUI application starts on
         #  built-in defaults and loses whatever the donor had set up.
         #  MUI's own key is picked up by the key rule in
         #  resolve_dependencies, which matches it to this drawer's name.
-        support=(("Prefs/Env-Archive/mui", "Prefs/Env-Archive/mui"),),
         startup=(
             "IF EXISTS SYS:System/MUI",
             "   Assign >NIL: MUI: SYS:System/MUI",
@@ -297,10 +345,79 @@ CATALOGUE: list[Package] = [
         ),
     ),
     Package(
+        "mcc_nlist", "MUI NList classes",
+        "The list classes a great deal of MUI software is built on - iGame's "
+        "games list among them. Not part of MUI itself.",
+        category=Category.SYSTEM,
+        download=Download(
+            "dev/mui/MCC_NList-0.128.lha",
+            (("MCC_NList/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
+        requires=("mui",),
+        support_only=True,
+    ),
+    Package(
+        "mcc_texteditor", "MUI TextEditor class",
+        "The editable text class MUI software uses for anything longer than "
+        "a line. Not part of MUI itself.",
+        category=Category.SYSTEM,
+        download=Download(
+            "dev/mui/MCC_TextEditor-15.56.lha",
+            (("MCC_TextEditor/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
+        requires=("mui",),
+        support_only=True,
+    ),
+    Package(
+        "mcc_urltext", "MUI UrlText class",
+        "Draws a clickable web address inside a MUI window. iGame lists it "
+        "as optional; without it the window still opens.",
+        category=Category.SYSTEM,
+        download=Download("dev/mui/MCC_Urltext.lha",
+                          (("MCC_Urltext/MUI/Urltext.mcc",
+                            "System/MUI/Libs/mui"),)),
+        requires=("mui",),
+        support_only=True,
+    ),
+    Package(
+        "igame", "iGame",
+        "A launcher that lists WHDLoad games with their screenshots.",
+        #  Nothing from a donor. A donor's copy is whatever its author
+        #  installed - PiMiga's is v2.1 from 2022 - and it arrives with that
+        #  person's games list, their screenshots and their settings, all
+        #  written against their machine. The release from Aminet is the whole
+        #  package and starts empty, which is what a program that scans your
+        #  own drives should do.
+        download=Download(
+            "util/misc/iGame.lha",
+            items=(("iGame-v2.6.1", "Programs/iGame"),),
+            #  One binary per processor is shipped; Emu68 gives a PiStorm a
+            #  68040, and the icon launches whatever is called "iGame".
+            rename=(("iGame-v2.6.1/iGame.040", "Programs/iGame", "iGame"),),
+            #  guigfx.library and render.library draw its screenshots, and
+            #  both are compiled for a processor with an FPU: render.library
+            #  alone carries 153 floating point instructions, and no build
+            #  without them exists. Emu68 gives a PiStorm a 68040 with no
+            #  FPU, so calling one is a line-F exception - which is the guru
+            #  8000000B that iGame's own site warns about. They are optional,
+            #  so the card does without them and says so here.
+            write=(("igame.prefs", "Programs/iGame",
+                    "no_guigfx=1\n"
+                    "filter_use_enter=0\n"
+                    "hide_side_panel=0\n"
+                    "start_with_favorites=0\n"
+                    "save_stats_on_exit=0\n"
+                    "no_smart_spaces=0\n"
+                    "titles_from_dirs=1\n"
+                    "hide_screenshots=1\n"
+                    "screenshot_width=320\n"
+                    "screenshot_height=256\n"),)),
+        #  Its window is built from MUI classes that MUI itself does not
+        #  carry, so a card with no donor still has everything it opens.
+        requires=("mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext"),
+    ),
+    Package(
         "identify", "identify.library",
         "Lets tools name the hardware they are running on. A dependency of "
         "several of the others.",
-        items=(("Libs/identify.library", "Libs"),),
         download=Download("util/libs/Identify.lha",
                           (("Identify/libs/identify.library", "Libs"),)),
     ),
@@ -308,7 +425,6 @@ CATALOGUE: list[Package] = [
         "copyicon", "CopyIcon",
         "Copies an icon's image onto another file, which is how a hand-made "
         "icon set gets applied.",
-        items=(("C/CopyIcon", "C"),),
         download=Download("util/wb/CopyIcon44.lha",
                           (("CopyIcon44/CopyIcon", "C"),)),
     ),
@@ -323,7 +439,6 @@ CATALOGUE: list[Package] = [
         "toolsdaemon", "ToolsDaemon",
         "Adds your own entries to the Workbench Tools menu. Patches Workbench, "
         "so it installs itself on the Amiga.",
-        items=(("L/ToolsDaemon-Handler", "L"),),
         download=Download("util/boot/ToolsDaemon22.lha",
                           stage=STAGING + "/ToolsDaemon"),
         note="Run its patch script from Storage/Install on the Amiga.",
@@ -338,9 +453,6 @@ CATALOGUE: list[Package] = [
         #  Taken from a donor in preference, because a working system already
         #  has the pieces this needs arranged together: LoadModule to install
         #  it, and the workbench.library that goes with it.
-        items=(("Libs/icon.library", "Libs"),
-               ("Libs/workbench.library", "Libs"),
-               ("C/LoadModule", "C")),
         download=Download("util/libs/IconLib_46.4.lha",
                           (("IconLib_46.4/Libs/icon.library", "Libs"),
                            ("IconLib_46.4/ThirdParty/LoadResident/LoadResident",
@@ -353,28 +465,10 @@ CATALOGUE: list[Package] = [
              "is the only point early enough to replace the one in ROM.",
     ),
     Package(
-        "magicwb", "MagicWB",
-        "The classic eight-colour icon and font set. Designed for exactly the "
-        "kind of limited palette a native Workbench has.",
-        category=Category.LOOK,
-        #  Its fonts and patterns are ordinary files and are installed here;
-        #  its icon set is used to give this build's own drawers icons (see
-        #  ``icon_set_dirs``).  Only the parts that replace icons already on
-        #  the card still need its Installer, because the file system this
-        #  tool writes creates files and never overwrites them.
-        download=Download("util/wb/MagicWB21p.lha",
-                          (("MagicWB2.1p/Fonts", "Fonts"),
-                           ("MagicWB2.1p/Patterns", "Prefs/Presets"),
-                           ("MagicWB2.1p", STAGING + "/MagicWB"))),
-        note="Fonts and patterns are installed; run its Installer from "
-             "Storage/Install to restyle the icons already on the card.",
-    ),
-    Package(
         "magicmenu", "MagicMenu",
         "Turns the menu bar into a pop-up menu under the pointer, instead of a "
         "trip to the top of the screen.",
         category=Category.LOOK,
-        items=(("WBStartup/MagicMenu", "WBStartup"),),
         download=Download("util/wb/MagicMenu_3.1.lha",
                           (("MagicMenu/WBStartup/MagicMenu", "WBStartup"),)),
     ),
@@ -383,7 +477,6 @@ CATALOGUE: list[Package] = [
         "Redraws window borders and gadgets - thin, flat, modern instead of "
         "the stock bevels. Patches the GUI, so it installs itself on the Amiga.",
         category=Category.LOOK,
-        items=(("Prefs/VisualPrefs", "Prefs"),),
         download=Download("util/wb/VisualPrefs.lha",
                           stage=STAGING + "/VisualPrefs"),
         note="Run its Installer from Storage/Install on the Amiga.",
@@ -403,28 +496,35 @@ CATALOGUE: list[Package] = [
         "Icons that redraw themselves in whatever palette the screen has. "
         "Patches the system, so it installs itself on the Amiga.",
         category=Category.LOOK,
-        items=(("C/NewIcons", "C"), ("Prefs/NewIcons", "Prefs")),
-        support=(("Libs/newicon.library", "Libs"),),
         download=Download("util/wb/NewIcons46.lha", stage=STAGING + "/NewIcons"),
         note="Run its Installer from Storage/Install on the Amiga.",
     ),
     Package(
         "birdie", "Birdie",
-        "Patterns the window borders, which softens the stock look for very "
-        "little memory.",
+        "Patterns in the window borders, which is most of what makes a "
+        "Workbench look like somebody's rather than the factory's.",
         category=Category.LOOK,
-        items=(("C/Birdie", "C"),),
-        download=Download("util/wb/birdie2000.lha", stage=STAGING + "/Birdie"),
-        note="Copy it into C: and start it from your user-startup.",
+        download=Download("util/wb/birdie2000.lha",
+                          (("Birdie", "C"),
+                           ("Patterns", "Prefs/Presets/Birdie"))),
+        #  Its own documentation gives this line, and says it has to come
+        #  after IPrefs - which is where package startup lines go anyway.
+        startup=("C:Run >NIL: C:Birdie",),
+        note="Installed into C: with its patterns in Prefs/Presets/Birdie, "
+             "and started from S:User-Startup.",
     ),
     Package(
         "powerwindows", "PowerWindows",
-        "Makes windows move and resize smoothly rather than as an outline.",
+        "Reshapes the window gadgets and borders, and can render icons the "
+        "way later systems do.",
         category=Category.LOOK,
-        items=(("Programs/PowerWindows", "Programs/PowerWindows"),),
+        #  It carries its own external routines and images and looks for them
+        #  beside itself, so the drawer goes on whole rather than the one
+        #  binary being lifted out of it.
         download=Download("util/misc/PowerWindows.lha",
-                          stage=STAGING + "/PowerWindows"),
-        note="Copy it into WBStartup on the Amiga.",
+                          stage="Utilities/PowerWindows"),
+        note="Installed into Utilities/PowerWindows. Drag PowerWindows into "
+             "WBStartup on the Amiga to have it run at every boot.",
     ),
     Package(
         "deficons", "DefIcons",
@@ -455,19 +555,10 @@ CATALOGUE: list[Package] = [
         "Click anywhere in a window to bring it to the front, instead of "
         "aiming for the depth gadget.",
         category=Category.LOOK,
-        items=(("WBStartup/ClickToFront", "WBStartup"),),
+        download=Download("util/mouse/ClickToFront.lha",
+                          (("ClickToFront/ClickToFront", "WBStartup"),
+                           ("ClickToFront/ClickToFront.info", "WBStartup"))),
     ),
-    Package(
-        "backdrops", "Backdrops and boot pictures",
-        "The wallpapers and boot pictures from the system you are copying "
-        "from. Several megabytes of them, so worth a thought on a small "
-        "system partition.",
-        category=Category.LOOK,
-        items=(("Prefs/Presets/Backdrops", "Prefs/Presets/Backdrops"),
-               ("Prefs/Presets/BootPics", "Prefs/Presets/BootPics")),
-    ),
-
-    # ------------------------------------------------------- handy extras
     Package(
         "dockit", "Dock-It",
         "A dock along the edge of the screen to launch what you use most. "
@@ -497,9 +588,20 @@ CATALOGUE: list[Package] = [
     Package(
         "diropus4", "Directory Opus 4",
         "A two-pane file manager, and a considerable step up from moving "
-        "things about in Workbench windows.",
+        "things about in Workbench windows. Released under the GPL, so this "
+        "is the current 4.18 rather than whatever a donor happened to hold.",
         category=Category.EXTRAS,
-        items=(("Programs/DirectoryOpus4", "Programs/DirectoryOpus4"),),
+        download=Download(
+            "util/dopus/DirectoryOpus-4.18.22.lha",
+            #  Its own installer copies these four into the system drawers and
+            #  the program into one of its own; doing it here means the card
+            #  arrives with Opus working rather than with an installer on it.
+            (("DOpus4/DirectoryOpus", "Programs/DirectoryOpus"),
+             ("DOpus4/DirectoryOpus.info", "Programs/DirectoryOpus"),
+             ("DOpus4/Modules", "Programs/DirectoryOpus/Modules"),
+             ("DOpus4/C", "C"),
+             ("DOpus4/Libs", "Libs"),
+             ("DOpus4/S", "S"))),
     ),
 
     # ------------------------------------------------------ music and pictures
@@ -512,10 +614,12 @@ CATALOGUE: list[Package] = [
     ),
     Package(
         "hippoplayer", "HippoPlayer",
-        "The classic lightweight module player. Not freely distributable, so "
-        "only ever copied from a system you already have.",
+        "The classic lightweight module player, small enough to leave "
+        "running while something else works.",
         category=Category.MEDIA,
-        items=(("Audio/HippoPlayer", "Audio/HippoPlayer"),),
+        download=Download("mus/play/hippoplayer.lha",
+                          (("HippoPlayer", "Audio/HippoPlayer"),
+                           ("HippoSupport", "Audio/HippoSupport"))),
     ),
     Package(
         "digibooster", "DigiBooster 1.7",
@@ -530,9 +634,16 @@ CATALOGUE: list[Package] = [
         "A complete Workbench replacement. Handsome, and hungry: worth it on "
         "AGA or an RTG screen, a poor trade on a plain OCS desktop.",
         category=Category.LOOK,
-        items=(("System/Scalos", "System/Scalos"), ("C/FixScalos", "C")),
+        download=Download("util/wb/Scalos.lha", stage=STAGING + "/Scalos"),
         chipsets=(Chipset.AGA,),
         or_rtg=True,
+        #  One of the few things that genuinely cannot be installed from here:
+        #  its script picks between three builds of every module for the
+        #  machine it finds, and replacing the desktop half-way is how a card
+        #  stops booting.
+        note="Unpacked into Storage/Install/Scalos. Run its Install.Scalos on "
+             "the Amiga - it chooses between three builds of each module for "
+             "the machine it finds, which cannot be decided from here.",
     ),
 
     # ------------------------------------------------------------- speed
@@ -561,60 +672,40 @@ CATALOGUE: list[Package] = [
         "The RTG subsystem. Only useful where there is an RTG display to draw "
         "on - the Pi's HDMI output.",
         category=Category.SPEED,
-        items=(("Libs/Picasso96", "Libs/Picasso96"),
-               ("Prefs/Picasso96Mode", "Prefs"),
-               ("Libs/rtg.library", "Libs")),
-        #  A Picasso96 board needs a monitor file in DEVS: before its screen
-        #  modes can be chosen, and the driver alone does not make one. Every
-        #  Picasso96 monitor is the same loader with the board named in its
-        #  icon, so the emulator's is taken and the compatibility pass writes
-        #  it back out as the board a PiStorm has. Building from floppies used
-        #  to leave the card with the driver and no way to select it.
-        support=(("Devs/Monitors/uaegfx", "Devs/Monitors"),
-                 ("Devs/Monitors/uaegfx.info", "Devs/Monitors")),
         download=Download("driver/video/Picasso96.lha",
                           stage=STAGING + "/Picasso96"),
         rtg_only=True,
-        note="Emu68 supplies the VideoCore board driver itself. The full "
-             "Installer is in Storage/Install if the modes need changing.",
+        #  Choosing an RTG display *is* choosing Picasso96: it is the RTG
+        #  subsystem, and Emu68's driver is a card for it. Leaving it to be
+        #  ticked separately meant asking for the Pi's HDMI output and being
+        #  handed a card with no screen modes to show on it.
+        essential=True,
+        note="Emu68's VideoCore driver is installed for it. Run the Installer "
+             "from Storage/Install on the Amiga to create the monitor and "
+             "screen modes - doing that here produced a card that would not "
+             "boot.",
     ),
 
     # -------------------------------------------------------- networking
     Package(
-        "network", "TCP/IP networking",
-        "The PiStorm's own network device and the MiamiDx stack, from a "
-        "donor. Miami arrives unregistered and unconfigured, so it has to be "
-        "set up on the Amiga before anything can use it; for a stack that "
-        "works as installed, choose Roadshow instead.",
+        "wifipi", "The Pi's WiFi as an Amiga network card",
+        "Emu68's own driver for the wireless chip on the Pi, so the Amiga "
+        "has something for a TCP/IP stack to talk to. The network it joins "
+        "is the one set on the Amiga page; the firmware for every Pi model "
+        "is installed with it.",
         category=Category.NETWORK,
-        items=(("Devs/Networks/vlink.device", "Devs/Networks"),
-               #  MiamiDx is the stack this system actually runs.  It brings
-               #  its own libraries and devices, and it publishes
-               #  bsdsocket.library itself, in memory, once it goes online -
-               #  which is why no copy of that file is installed here.  The
-               #  one in the donor's LIBS: is an orphaned AmiTCP 4.1 stub
-               #  with no stack behind it, and it stops every WHDLoad game.
-               ("Internet/MiamiDx", "Internet/MiamiDx"),
-               ("Libs/miamibpf.library", "Libs"),
-               ("Libs/miamiipnat.library", "Libs"),
-               ("Libs/miamipcap.library", "Libs"),
-               ("Libs/miamisecureshell.library", "Libs"),
-               ("Libs/miamisocks.library", "Libs"),
-               ("Libs/miamisocksd.library", "Libs"),
-               ("S/miami.key1", "S"),
-               ("S/miami.key2", "S"),
-               ("AmiTCP", "AmiTCP"),
-               ("Internet/Genesis", "Internet/Genesis")),
-        #  Miami looks for its own libraries under Miami:, and its window is
-        #  a MUI class, so neither the assign nor MUI is optional: without
-        #  them it exits silently and nothing publishes bsdsocket.
-        requires=("mui",),
-        startup=("IF EXISTS SYS:Internet/MiamiDx",
-                 "   Assign Miami: SYS:Internet/MiamiDx",
-                 "EndIF"),
-        note="Installs MiamiDx, which provides the socket library itself "
-             "while it is online. Nothing is left in LIBS: when it is not, "
-             "so WHDLoad games are unaffected.",
+        #  Where the network device used to come from was a donor's
+        #  vlink.device, which is the PiStorm firmware's emulated Ethernet
+        #  and is not published anywhere this can fetch. Emu68's own release
+        #  carries a driver for the hardware the Pi actually has.
+        download=Download(
+            "https://github.com/michalsc/Emu68-tools/releases/download/"
+            "v1.1/Emu68-tools.zip",
+            (("Emu68-WiFi/Devs/Networks/wifipi.device", "Devs/Networks"),
+             ("Emu68-WiFi/Devs/Firmware", "Devs/Firmware")),
+            source="the Emu68-tools release"),
+        note="Needs the WiFi network filled in on the Amiga page: the driver "
+             "reads the same wpa_supplicant.conf the Pi is given.",
     ),
 
     Package(
@@ -636,13 +727,13 @@ CATALOGUE: list[Package] = [
                           #  to be added to the card's, not to replace it.
                           skip=("S/User-Startup",),
                           #  Every interface template in the archive is for
-                          #  somebody else's hardware. A PiStorm is always
-                          #  vlink.device, so the card gets one that works.
-                          write=(("vlink", "Devs/NetInterfaces",
+                          #  somebody else's hardware. The card gets one for
+                          #  the device this tool actually installs.
+                          write=(("wifipi", "Devs/NetInterfaces",
                                   "# Written by the PiStorm imager.\n"
-                                  "# The PiStorm's own Ethernet, as installed"
-                                  " by the networking package.\n"
-                                  "device=vlink.device\n"
+                                  "# The Pi's own WiFi, as installed by the"
+                                  " network card package.\n"
+                                  "device=wifipi.device\n"
                                   "unit=0\n"
                                   "configure=dhcp\n"
                                   "requiresinitdelay=no\n"),)),
@@ -672,303 +763,35 @@ CATALOGUE: list[Package] = [
         category=Category.NETWORK,
         download=Download("comm/www/netsurf-m68k.lha",
                           stage="Internet/NetSurf"),
-        support=(("Libs/codesets.library", "Libs"),
-                 ("Libs/openurl.library", "Libs")),
         requires=("mui",),
         note="Unpacked into Internet/NetSurf, ready to run.",
-    ),
-    Package(
-        "aweb", "AWeb",
-        "The lighter classic browser, now freely distributable. Quicker than "
-        "NetSurf on a plain native screen.",
-        category=Category.NETWORK,
-        #  AWeb draws with ReAction, whose gadget classes live in CLASSES: -
-        #  without them it opens no window at all.
-        items=(("Internet/AWeb_APL", "Internet/AWeb"),),
-        #  ReAction is the gadget classes *and* the window and requester
-        #  classes that hold them; Gadgets alone still opens nothing.  AWeb
-        #  itself is reached through an assign - the donor system makes one -
-        #  and both it and ReAction keep settings in ENVARC.
-        support=(("Classes/Gadgets", "Classes/Gadgets"),
-                 ("Classes/window.class", "Classes"),
-                 ("Classes/requester.class", "Classes"),
-                 ("Classes/arexx.class", "Classes"),
-                 ("Classes/startup.class", "Classes"),
-                 ("Libs/codesets.library", "Libs"),
-                 ("Prefs/Env-Archive/AWeb3", "Prefs/Env-Archive/AWeb3"),
-                 ("Prefs/Env-Archive/ClassAct", "Prefs/Env-Archive/ClassAct")),
-        startup=("IF EXISTS SYS:Internet/AWeb",
-                 "   Assign >NIL: AWEB_APL: SYS:Internet/AWeb",
-                 "EndIF"),
     ),
     Package(
         "amftp", "AmFTP",
         "An FTP client, which is still how most Amiga file transfer is done.",
         category=Category.NETWORK,
-        items=(("Internet/AmFTP", "Internet/AmFTP"),),
+        download=Download("comm/tcp/AmFTP191.lha", stage="Internet/AmFTP"),
         requires=("mui",),
+        note="Unpacked into Internet/AmFTP, ready to run.",
     ),
     Package(
         "wookiechat", "WookieChat",
         "An IRC client.",
         category=Category.NETWORK,
-        items=(("Internet/WookieChat", "Internet/WookieChat"),),
-        support=(("Libs/codesets.library", "Libs"),),
+        download=Download(
+            "comm/irc/WookieChat2.11_OS3.lha",
+            #  Its installer copies these into the system drawers; the
+            #  program cannot open a window without the MUI classes, and
+            #  cannot decode anything it is sent without codesets.
+            (("WookieChat2.11_OS3_Installer", "Internet/WookieChat"),
+             ("WookieChat2.11_OS3_Installer/libs", "Libs"),
+             ("WookieChat2.11_OS3_Installer/MUI/OS3", "Libs/MUI"))),
         requires=("mui",),
     ),
-    Package(
-        "ibrowse", "IBrowse",
-        "The commercial browser. Only ever taken from a donor system you "
-        "already own - it is not freely distributable.",
-        category=Category.NETWORK,
-        items=(("Internet/IBrowse", "Internet/IBrowse"),),
-        support=(("Libs/openurl.library", "Libs"),),
-        requires=("mui",),
-    ),
+
 ]
 
 CATALOGUE_BY_KEY = {p.key: p for p in CATALOGUE}
-
-
-#  Where a package keeps drawer icons once its archive is unpacked, best
-#  first.  MagicWB splits them: ImageDrawers holds the plain system drawers
-#  (Storage, Tools, Utilities and so on), XEN-Icons the rest.
-ICON_SET_DIRS = {
-    "magicwb": ("MagicWB2.1p/XEN-Icons/SPECIAL/ImageDrawers",
-                "MagicWB2.1p/XEN-Icons"),
-}
-
-
-def icon_set_dirs(key: str) -> list[Path]:
-    """Unpacked directories of ``key`` that hold drawer icons.
-
-    Only what is already in the cache is returned; this never downloads,
-    because it runs while a volume is open and a build that got this far has
-    already fetched whatever it is going to.
-    """
-    package = CATALOGUE_BY_KEY.get(key)
-    if package is None or package.download is None:
-        return []
-    unpacked = cache_dir() / (package.download.filename.rsplit(".", 1)[0]
-                              + ".unpacked")
-    out = []
-    for relative in ICON_SET_DIRS.get(key, ()):
-        path = unpacked / relative
-        if path.is_dir():
-            out.append(path)
-    return out
-
-
-#  Libraries and devices Kickstart 3.1 has in ROM, or that a Workbench 3.1
-#  install puts in LIBS: itself.  A program asking for one of these needs
-#  nothing copied for it.
-STOCK = {
-    "exec", "dos", "graphics", "intuition", "layers", "utility", "expansion",
-    "gadtools", "workbench", "icon", "keymap", "mathffp", "mathieeesingbas",
-    "misc", "potgo", "timer", "input", "console", "trackdisk", "audio",
-    "gameport", "keyboard", "ramdrive", "serial", "parallel", "printer",
-    "clipboard", "translator", "diskfont", "commodities", "asl", "iffparse",
-    "rexxsyslib", "rexxsupport", "mathtrans", "mathieeedoubbas",
-    "mathieeedoubtrans", "mathieeesingtrans", "nonvolatile", "realtime",
-    "bullet", "amigaguide", "datatypes", "locale", "lowlevel", "version",
-    #  Workbench 3.1 installs these itself, into CLASSES:Gadgets.
-    "colorwheel", "gradientslider", "tapedeck",
-}
-
-#  Never taken from a donor, whatever names it, because they are the CPU's own
-#  support and SetPatch loads whichever the machine needs.  Scavenging them
-#  broke every WHDLoad game: with mmu.library present a game dies on a yellow
-#  screen, and the scan was quietly putting it back even after the package
-#  that installs it had been deselected.  If someone wants these, the MMULib
-#  package installs them deliberately and says what it costs.
-NEVER_SCAVENGE = {
-    "mmu", "memory", "softieee", "disassembler",
-    "68020", "68030", "68040", "68060", "680x0",
-    #  bsdsocket is not a library that lives in LIBS: at all - a TCP/IP stack
-    #  puts it there while it runs.  Copying the donor's file leaves a stub
-    #  with nothing behind it, and it stops every WHDLoad game: the game
-    #  starts, the machine takes a CPU exception, and all you see is a yellow
-    #  screen and then nothing.  Bisected to this one file, on its own,
-    #  against a card proven to run the game.  The network package installs a
-    #  stack, which is what actually provides it.
-    "bsdsocket", "usergroup", "ixnet",
-}
-
-#  Where a donor system keeps the things programs look up by name, and where
-#  each belongs on the card.  Order matters only in that the first hit wins.
-LOOKUP_DIRS = (
-    ("Libs", "Libs"),
-    ("Classes", "Classes"),
-    ("Classes/Gadgets", "Classes/Gadgets"),
-    ("Classes/DataTypes", "Classes/DataTypes"),
-    ("Devs", "Devs"),
-    ("Devs/Networks", "Devs/Networks"),
-    ("L", "L"),
-    ("System/MUI/Libs", "System/MUI/Libs"),
-    ("System/MUI/Libs/mui", "System/MUI/Libs/mui"),
-)
-
-REFERENCE = re.compile(
-    rb"[A-Za-z0-9_]{2,28}\.(?:library|device|class|gadget|mcc)")
-
-#  Small enough to skip nothing that matters: a stub library can be a few
-#  hundred bytes, and a floor of 2 KB stepped straight over some of them.
-#  Scanning a text file costs a little time and finds nothing, because a name
-#  that is not a real library does not resolve in the donor anyway.
-SCAN_MIN = 64
-SCAN_MAX = 6 << 20
-
-
-def _referenced(path: Path) -> set[str]:
-    """Every library-ish name mentioned inside one file.
-
-    Amiga binaries name what they open as plain strings, so reading them out
-    is the only way to know what a program needs without a list maintained by
-    hand - and a list maintained by hand is what kept missing things.  The
-    pattern over-matches where two strings sit next to each other with no
-    separator, which is harmless: a name that is really a fragment of another
-    resolves to nothing in the donor and is dropped.
-    """
-    try:
-        if not (SCAN_MIN <= path.stat().st_size <= SCAN_MAX):
-            return set()
-        data = path.read_bytes()
-    except OSError:
-        return set()
-    return {m.decode("latin-1") for m in REFERENCE.findall(data)}
-
-
-#  Where a system keeps the key files that register its software.
-KEY_DIRS = (("S", "S"), ("L", "L"), ("Devs/keyfiles", "Devs/keyfiles"))
-
-
-def _keys_for(names: Iterable[str], system: Path) -> list[tuple[str, str]]:
-    """Key files belonging to things being copied.
-
-    Registered Amiga software looks for ``<name>.key`` beside the system, not
-    inside its own drawer: xadmaster.library wants ``S:xadmaster.key`` and
-    telser.device wants ``S:telser.key``.  Copy the library and leave the key
-    and it runs crippled or not at all, which looks like the copy having
-    failed.  Matched on the stem, so a key is only taken when the thing it
-    unlocks is going too.
-    """
-    stems = {Path(name).stem.lower() for name in names}
-    out: list[tuple[str, str]] = []
-    for folder, destination in KEY_DIRS:
-        here = system / folder
-        if not here.is_dir():
-            continue
-        try:
-            entries = list(here.iterdir())
-        except OSError:
-            continue
-        for entry in entries:
-            if not entry.is_file() or entry.suffix.lower() != ".key":
-                continue
-            if entry.stem.lower() in stems:
-                out.append((str(entry), destination))
-    return out
-
-
-def _provided_by(pairs: Iterable[tuple[str, str]]) -> set[str]:
-    """Every file name these copies will put on the card, lower-cased."""
-    names: set[str] = set()
-    for source, _destination in pairs:
-        path = Path(source)
-        if path.is_dir():
-            for child in path.rglob("*"):
-                if child.is_file():
-                    names.add(child.name.lower())
-        elif path.is_file():
-            names.add(path.name.lower())
-    return names
-
-
-def resolve_dependencies(pairs: list[tuple[str, str]],
-                         donor: str | Path | None,
-                         progress: Progress | None = None
-                         ) -> list[tuple[str, str]]:
-    """Extra files the copied programs need and the donor can supply.
-
-    Declaring dependencies by hand caught MUI and a handful of libraries, and
-    missed nineteen more: bsdsocket for the network clients, ixemul and
-    netinfo for NetSurf, Picasso96API for AWeb, screennotify for Birdie,
-    popupmenu and vapor_toolkit for the MUI applications.  Each one was a
-    program that copied onto the card perfectly and then would not run.
-
-    So they are read out of the binaries instead.  Anything a copied program
-    names, that will not be on the card and that the donor has, is copied too.
-    """
-    system = donor_system(donor) if donor else None
-    if system is None or not pairs:
-        return []
-
-    index: dict[str, tuple[Path, str]] = {}
-    for folder, destination in LOOKUP_DIRS:
-        here = system / folder
-        if not here.is_dir():
-            continue
-        try:
-            for entry in here.iterdir():
-                if entry.is_file():
-                    index.setdefault(entry.name.lower(), (entry, destination))
-        except OSError:
-            continue
-
-    provided = _provided_by(pairs)
-
-    def references_of(paths: Iterable[Path]) -> set[str]:
-        names: set[str] = set()
-        for path in paths:
-            children = ([c for c in path.rglob("*") if c.is_file()]
-                        if path.is_dir() else [path])
-            for child in children:
-                names |= _referenced(child)
-        return names
-
-    out: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    frontier = [Path(source) for source, _destination in pairs]
-
-    #  A library brings its own needs with it: mmu.library wants
-    #  68030.library, ixemul wants ixnet, xpkmaster wants xfdmaster.  Resolving
-    #  one round left seven of those behind, so keep going until a round finds
-    #  nothing new.  It terminates because the donor holds finitely many files
-    #  and none is ever taken twice.
-    while frontier:
-        found_now: list[tuple[str, str]] = []
-        for name in sorted(references_of(frontier)):
-            lowered = name.lower()
-            stem = lowered.rsplit(".", 1)[0]
-            if stem in STOCK or stem in NEVER_SCAVENGE or lowered in provided:
-                continue
-            if lowered in seen:
-                continue
-            found = index.get(lowered)
-            if found is None:
-                continue
-            seen.add(lowered)
-            found_now.append((str(found[0]), found[1]))
-        out += found_now
-        frontier = [Path(source) for source, _destination in found_now]
-
-    #  Whatever is going, take the key that registers it.  Deduplicated
-    #  against what is already being copied as well as what was resolved: the
-    #  writer creates files and refuses to overwrite, so a second copy of one
-    #  key would end the build.
-    taken = {Path(source).name for source, _d in pairs}
-    taken |= {Path(source).name for source, _d in out}
-    already = {source for source, _d in pairs} | {source for source, _d in out}
-    for pair in _keys_for(taken, system):
-        if pair[0] not in already:
-            already.add(pair[0])
-            out.append(pair)
-    if out and progress is not None:
-        progress.log(f"  {len(out)} further file(s) the chosen software needs "
-                     f"were found in the donor system")
-        for source, destination in out:
-            progress.log(f"    {Path(source).name} -> {destination}")
-    return out
 
 
 def expand(keys: Iterable[str]) -> list[str]:
@@ -997,49 +820,6 @@ def expand(keys: Iterable[str]) -> list[str]:
 
 def in_category(category: Category) -> list[Package]:
     return [p for p in CATALOGUE if p.category is category]
-
-
-# --------------------------------------------------------------- donors
-
-def donor_system(folder: str | Path) -> Path | None:
-    """Find a Workbench system drive to copy packages out of.
-
-    Accepts the drive itself, or a PiMiga folder, in which case its System
-    drive is used.
-    """
-    folder = Path(folder)
-    for candidate in (folder, folder / "System", folder / "disks" / "System",
-                      folder / "pimiga" / "disks" / "System"):
-        #  A C drawer is what makes something a system drive; whether it holds
-        #  any particular package is checked per package afterwards.
-        if (candidate / "C").is_dir():
-            return candidate
-    return None
-
-
-def available(donor: str | Path | None) -> dict[str, list[str]]:
-    """Which packages this donor can supply, and what each is missing."""
-    system = donor_system(donor) if donor else None
-    if system is None:
-        return {}
-    found: dict[str, list[str]] = {}
-    for package in CATALOGUE:
-        if not package.items:
-            continue
-        missing = [source for source, _dest in package.items
-                   if not (system / source).exists()]
-        #  A package is offered when at least its first item is there; the rest
-        #  are extras that some installations arrange differently.
-        if len(missing) < len(package.items):
-            found[package.key] = missing
-    return found
-
-
-def obtainable(donor: str | Path | None) -> set[str]:
-    """Every package that could be installed, from a donor or from Aminet."""
-    keys = set(available(donor))
-    keys.update(p.key for p in CATALOGUE if p.download)
-    return keys
 
 
 # ------------------------------------------------------------ downloads
@@ -1081,6 +861,17 @@ def download_archive(package: Package, progress: Progress) -> Path | None:
         with urllib.request.urlopen(request, timeout=60) as response, \
                 open(temporary, "wb") as out:
             shutil.copyfileobj(response, out)
+            declared = response.headers.get("Content-Length")
+        #  A download that stops early is still a file, and caching it means
+        #  every build afterwards fails to unpack an archive that looks like
+        #  it is already there. Check the length while the answer is at hand.
+        written = temporary.stat().st_size
+        if declared is not None and written != int(declared):
+            temporary.unlink(missing_ok=True)
+            progress.log(f"  {package.label}: download stopped early "
+                         f"({human_size(written)} of {human_size(int(declared))}"
+                         f"), not kept")
+            return None
     except Exception as error:                    # noqa: BLE001 - reported
         temporary.unlink(missing_ok=True)
         progress.log(f"  {package.label}: download failed ({error}), skipped")
@@ -1090,11 +881,51 @@ def download_archive(package: Package, progress: Progress) -> Path | None:
     return target
 
 
+#  The first word of an LhA header is the header size and its checksum; the
+#  method identifier sits two bytes in.  These are the ones Amiga archives use.
+LHA_METHODS = (b"-lh0-", b"-lh1-", b"-lh4-", b"-lh5-", b"-lh6-", b"-lh7-")
+
+
+def embedded_archive(path: Path) -> Path | None:
+    """The LhA archive inside a self-extracting Amiga program.
+
+    An archiver has to be distributed as one of these - you need an archiver
+    to unpack an archive - so Aminet ships LhA as ``lha.run``: a small Amiga
+    executable with the real archive appended. Nothing here can run an Amiga
+    program, and leaving it on the card meant handing over a card with no
+    archiver until somebody found and ran the extractor.
+
+    The stub carries a tiny archive of its own (its usage text), so the
+    *second* header is the payload. Returns None when the file holds nothing
+    that looks like one, rather than guessing.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    starts = [i for i in range(len(data) - 7)
+              if data[i + 2:i + 7] in LHA_METHODS]
+    if len(starts) < 2:
+        return None
+    out = cache_dir() / (path.stem + "-payload.lha")
+    out.write_bytes(data[starts[1]:])
+    return out
+
+
 def unpack(archive: Path, progress: Progress) -> Path | None:
     """Unpack an LhA archive into the cache, once, and return the directory."""
     destination = cache_dir() / (archive.stem + ".unpacked")
     if destination.is_dir() and any(destination.iterdir()):
         return destination
+    if archive.suffix.lower() == ".run":
+        payload = embedded_archive(archive)
+        if payload is None:
+            progress.log(f"  {archive.name} is a self-extracting program and "
+                         f"no archive could be found inside it")
+            return None
+        progress.log(f"  {archive.name}: took the archive out of the "
+                     f"self-extractor")
+        archive = payload
     command = _extractor()
     if command is None:
         progress.log("  no 7z or lha available to unpack Amiga archives")
@@ -1112,6 +943,23 @@ def unpack(archive: Path, progress: Progress) -> Path | None:
                      f"{result.stderr.decode('utf-8', 'replace').strip()[:120]}")
         return None
     return destination
+
+
+def _written(package: Package, progress: Progress) -> list[tuple[str, str]]:
+    """The files this tool writes itself for a package.
+
+    Any download can have them, not only one laid out drawer by drawer: a
+    settings file that says which of a program's optional pieces this machine
+    can actually use is exactly that sort of thing.
+    """
+    out: list[tuple[str, str]] = []
+    for name, destination, text in package.download.write:
+        made = cache_dir() / f"{package.key}-written" / destination
+        made.mkdir(parents=True, exist_ok=True)
+        (made / name).write_text(text)
+        out.append((str(made / name), destination))
+        progress.log(f"  {package.label}: wrote {destination}/{name}")
+    return out
 
 
 def _merged(package: Package, root: Path,
@@ -1152,12 +1000,6 @@ def _merged(package: Package, root: Path,
                 continue
             staged.append(entry.name)
             pairs.append((str(entry), package.download.stage or STAGING))
-    for name, destination, text in package.download.write:
-        made = cache_dir() / (package.key + "-written") / destination
-        made.mkdir(parents=True, exist_ok=True)
-        (made / name).write_text(text)
-        pairs.append((str(made / name), destination))
-        progress.log(f"  {package.label}: wrote {destination}/{name}")
     if staged:
         progress.log(f"  {package.label}: staged {', '.join(staged)}")
     return pairs
@@ -1190,13 +1032,28 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
         return []
     download = package.download
     if download.merge:
-        return _merged(package, root, progress)
-    if not download.items:
-        #  Self-installing: put the whole thing on the card to run there.
+        return _merged(package, root, progress) + _written(package, progress)
+    #  Placed whole - the archive is the program, and goes where `stage` says.
+    #  This used to be chosen on `items` alone, so a package that placed its
+    #  files by `rename` or wrote its own returned here instead, and its whole
+    #  archive went to `stage` - which for such a package is "", the volume
+    #  root.
+    if not (download.items or download.rename or download.write):
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
         return [(str(source), download.stage)]
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str]] = _written(package, progress)
+    for inside, destination, newname in download.rename:
+        source = root / inside
+        if not source.exists():
+            progress.log(f"  {package.label}: {inside} is not in the archive")
+            continue
+        staged = cache_dir() / f"{package.key}-renamed" / destination
+        staged.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, staged / newname)
+        out.append((str(staged / newname), destination))
+        progress.log(f"  {package.label}: {Path(inside).name} installed as "
+                     f"{destination}/{newname}")
     for inside, destination in download.items:
         path = root / inside
         if path.exists():
@@ -1213,21 +1070,22 @@ def suits(key: str, chipset: Chipset, display: Display) -> bool:
     return package is not None and package.suits(chipset, display)
 
 
-def overlays_for(donor: str | Path | None, keys: list[str],
+def overlays_for(keys: list[str],
                  rtg: bool = True,
                  chipset: Chipset = Chipset.AGA,
                  display: Display | None = None,
                  progress: Progress | None = None,
-                 allow_download: bool = False) -> list[tuple[str, str]]:
+                 allow_download: bool = True) -> list[tuple[str, str]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
-    A donor is preferred over a download: it is already on this machine, and
-    for the packages that are not freely distributable it is the only route.
+    Everything comes from its publisher - Aminet, or the project that makes
+    it. Software used to be able to come out of a donor system instead, which
+    meant a card was built from whatever some other installation happened to
+    hold, at whatever age; every package here now names where it comes from.
     """
     if display is None:
         display = Display.RTG_HDMI if rtg else Display.NATIVE
     progress = progress or Progress()
-    system = donor_system(donor) if donor else None
     out: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -1245,25 +1103,14 @@ def overlays_for(donor: str | Path | None, keys: list[str],
         package = CATALOGUE_BY_KEY.get(key)
         if package is None or not package.suits(chipset, display):
             continue
-        from_donor: list[tuple[str, str]] = []
-        if system is not None:
-            for source, destination in package.items:
-                path = system / source
-                if path.exists():
-                    from_donor.append((str(path), destination))
-        if from_donor:
-            add(from_donor)
-        elif allow_download and package.download is not None:
-            add(fetch(package, progress))
-        #  Support goes on whichever way the package itself arrived.
-        if system is not None:
-            for source, destination in package.support:
-                path = system / source
-                if path.exists():
-                    add([(str(path), destination)])
-                elif progress is not None:
-                    progress.log(f"  {package.label}: {source} is not in the "
-                                 f"donor system; it may not run without it")
+        if not allow_download or package.download is None:
+            continue
+        fetched = fetch(package, progress)
+        if not fetched and progress is not None:
+            progress.log(f"  WARNING: {package.label} could not be fetched "
+                         f"from {package.download.where}, so it is not on "
+                         f"this card")
+        add(fetched)
     return out
 
 
@@ -1272,7 +1119,6 @@ def default_keys(rtg: bool = True) -> list[str]:
 
 
 def suggested(machine: Machine, display: Display, *,
-              donor: str | Path | None = None,
               networking: bool = False) -> list[str]:
     """A sensible set for this machine and this screen.
 
@@ -1285,21 +1131,18 @@ def suggested(machine: Machine, display: Display, *,
     * Everything needs WHDLoad, an archiver and Installer.
     * A faster icon.library is free speed on any machine.
     * On a native screen the cost is the chipset drawing it, so FBlit, FText
-      and a locked palette earn their place, and MagicWB's eight colours suit
-      it better than icons that assume a deep display.
+      and a locked palette earn their place.
     * On an RTG screen there is no blitter in the way; Picasso96 is the point
       of it, and a heavier desktop becomes affordable.
     """
     chosen = ["whdload", "lha", "installer", "igame", "iconlib",
               "magicmenu", "visualprefs"]
     if display.uses_native and machine.chipset is not Chipset.NONE:
-        chosen += ["fblit", "ftext", "fullpalette", "magicwb"]
+        chosen += ["fblit", "ftext", "fullpalette"]
     if display.uses_rtg:
         chosen += ["picasso96"]
     if machine.aga or display.uses_rtg:
         chosen += ["scalos"]
     if networking:
-        chosen += ["network", "amissl", "netsurf"]
-    possible = obtainable(donor)
-    return [key for key in chosen
-            if key in possible and suits(key, machine.chipset, display)]
+        chosen += ["wifipi", "roadshow", "amissl", "netsurf"]
+    return [key for key in chosen if suits(key, machine.chipset, display)]

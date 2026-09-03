@@ -25,7 +25,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402
 
-from pistorm_imager.core import bootcfg, builder, jobs  # noqa: E402
+from pistorm_imager.core import bootcfg, builder, jobs, machines  # noqa: E402
 from pistorm_imager.ui.window import MODES  # noqa: E402
 
 import tempfile  # noqa: E402
@@ -83,6 +83,12 @@ def on_activate(app: ImagerApplication) -> None:
     try:
         window = app.window
         check(window is not None, "window constructed")
+        #  How the window looks before anything is done to it, so "forget the
+        #  saved setup" can be held to putting it back exactly here.
+        pristine_rows = [dataclasses.asdict(r.spec())
+                         for r in window.partition_rows]
+        pristine_ticks = {k for k, r in window.package_rows.items()
+                          if r.get_active()}
 
         for index in range(len(MODES)):
             window.mode_row.set_selected(index)
@@ -191,27 +197,161 @@ def on_activate(app: ImagerApplication) -> None:
         check(window._hand_edited_partitions() is not None,
               "a loaded layout counts as the user's when Apply is pressed")
         window.quick_pimiga.set_path("")
+
+        #  Forgetting the saved setup puts the window back as it started.
+        #  Deleting the file alone left everything on screen exactly as it
+        #  was, and clearing the widgets by hand left the storage behind.
+        window.quick_hdf.set_path(str(HDF_IMAGE))
+        window.quick_trapdoor.set_active(True)
+        window.extra_row.set_text("sd.verbose=1")
+        window.vc4_row.set_value(64)
+        window._add_partition()
+        window._add_partition()
+        window._on_forget_session(None)
+        check(window.quick_hdf.path == "" and window.extra_row.get_text() == "",
+              "forgetting clears what was chosen")
+        check(not window.quick_trapdoor.get_active()
+              and window.vc4_row.get_value() == 0,
+              "and the switches go back to their defaults")
+        after = [r.spec() for r in window.partition_rows]
+        #  Not "the same rows as a window that has just opened" - a target has
+        #  been chosen since, and the layout follows it. What matters is that
+        #  the two drives added by hand are gone and the settings own the
+        #  layout again, which is what leaving it alone got wrong.
+        check(after == window._quick_layout()
+              and window._hand_edited_partitions() is None,
+              f"the storage layout goes back to the settings ({len(after)} "
+              f"rows, {len(pristine_rows) + 2} before forgetting)")
+        check({k for k, r in window.package_rows.items() if r.get_active()}
+              == pristine_ticks,
+              "and the software ticks are the ones it opened with")
+
         #  Hand the layout back to the quick settings, or every check after
         #  this one is testing a deliberately protected layout.
-        #  The software choices and the donor they come from were saved by
-        #  gather() and never put back, so loading a setup cleared every tick.
-        donor = SCRATCH / "donor"
-        (donor / "Libs").mkdir(parents=True, exist_ok=True)
+        #  The software choices were saved by gather() and never put back,
+        #  so loading a setup cleared every tick.
         with_packages = dataclasses.replace(
-            saved, package_donor=str(donor), package_keys=["whdload", "lha"])
+            saved, package_keys=["whdload", "lha"])
         window.apply(with_packages, keep_partitions=True)
-        check(window.package_donor.path == str(donor),
-              f"the donor is restored ({window.package_donor.path!r})")
         ticked = {k for k, r in window.package_rows.items() if r.get_active()}
         check({"whdload", "lha"} <= ticked,
               f"the chosen software is restored ({sorted(ticked)})")
-        check("magicwb" not in ticked,
+        check("newicons" not in ticked,
               "software that was not chosen stays off")
         back = window.gather()
         check(set(back.package_keys) >= {"whdload", "lha"},
               f"and survives a round trip ({back.package_keys})")
-        window.package_donor.set_path("")
         for row in window.package_rows.values():
+            row.set_active(False)
+
+        #  Which copy wins when an imported drive already has a program that
+        #  was ticked is the user's choice, and it has to survive the round
+        #  trip like any other.
+        window.mode_row.set_selected(
+            next(i for i, m in enumerate(MODES)
+                 if m[1] is builder.BuildMode.FRESH))
+        window.partition_rows[0].hdf_row.set_path(str(HDF_IMAGE))
+        window._sync_visibility()
+        check(window.replace_older_row.get_visible(),
+              "importing a drive raises the question of which copy wins")
+        check(window.gather().replace_older_software,
+              "and the newer release is the default answer")
+        window.replace_older_row.set_active(False)
+        check(not window.gather().replace_older_software,
+              "keeping the drive's own copy reaches the build")
+        window.replace_older_row.set_active(True)
+        for row in window.partition_rows:
+            row.hdf_row.set_path("")
+        window._sync_visibility()
+        check(not window.replace_older_row.get_visible(),
+              "and it is not asked when nothing is being imported")
+
+        #  "Adapt the display after writing" sat on the image chooser, which
+        #  a build that partitions the card never shows - so a card whose DH0
+        #  came from an .hdf had no way to ask for it. It lives with the
+        #  display now, on the Amiga page.
+        group = window.patch_display_row.get_ancestor(Adw.PreferencesGroup)
+        check(group.get_ancestor(Adw.PreferencesPage) is window.page_amiga,
+              "the display switch is on the Amiga page")
+        fresh_index = next(i for i, m in enumerate(MODES)
+                           if m[1] is builder.BuildMode.FRESH)
+        window.mode_row.set_selected(fresh_index)
+        window.quick_hdf.set_path("")
+        for row in window.partition_rows:
+            row.hdf_row.set_path("")
+        window._sync_visibility()
+        check(not window.display_group.get_visible(),
+              "a Workbench from floppies is not asked about it")
+        window.partition_rows[0].hdf_row.set_path(str(HDF_IMAGE))
+        window._sync_visibility()
+        check(window.display_group.get_visible(),
+              "a drive imported into DH0 is")
+        for row in window.partition_rows:
+            row.hdf_row.set_path("")
+        window._sync_visibility()
+
+        #  The card is written from gather(), and gather() built its boot
+        #  options from the widgets alone. enable_slow_ram has no widget - the
+        #  machine decides it - so every card went out without
+        #  enable_c0_slow, and move_slow_to_chip had nothing to move: a
+        #  machine told to give Workbench a megabyte of chip RAM came up with
+        #  512K. Found on a real card's cmdline.txt.
+        for index, machine in enumerate(machines.MACHINES):
+            if machine.key == "a500ecs":
+                window.quick_machine.set_selected(index)
+        window._on_machine_changed()
+        window.quick_trapdoor.set_active(True)
+        line = window.gather().boot_options.cmdline()
+        check("move_slow_to_chip" in line and "enable_c0_slow" in line,
+              f"the trapdoor RAM is mapped as well as moved ({line})")
+        window.quick_trapdoor.set_active(False)
+        line = window.gather().boot_options.cmdline()
+        check("enable_c0_slow" in line and "move_slow_to_chip" not in line,
+              f"and the ranges stay mapped without the choice ({line})")
+
+        #  Choosing a display that draws on the Pi's HDMI is choosing the
+        #  RTG subsystem with it. Nothing rebuilt the software list when the
+        #  display changed, so ticking "both outputs" left Picasso96 off and
+        #  the card had no RTG screen modes at all.
+        from pistorm_imager.core.machines import Display as _Display
+        for wanted in (_Display.BOTH, _Display.RTG_HDMI):
+            for index, display in enumerate(_Display):
+                if display is wanted:
+                    window.quick_display.set_selected(index)
+            window._on_display_changed()
+            picasso = window.package_rows["picasso96"]
+            check(picasso.get_active() and not picasso.get_sensitive(),
+                  f"{wanted.name} brings Picasso96 with it and holds it on")
+            check("picasso96" in window._chosen_packages(),
+                  f"and it reaches the build for {wanted.name}")
+        for index, display in enumerate(_Display):
+            if display is _Display.NATIVE:
+                window.quick_display.set_selected(index)
+        window._on_display_changed()
+        check(not window.package_rows["picasso96"].get_active(),
+              "and a native-only display does not carry it")
+
+        #  Dependencies are linked both ways, and a package worth having on
+        #  its own is not dragged off with the thing that needed it.
+        rows = window.package_rows
+        for row in rows.values():
+            row.set_active(False)
+        rows["igame"].set_active(True)
+        check(all(rows[k].get_active() for k in
+                  ("mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext")),
+              "ticking iGame ticks everything it needs")
+        rows["mui"].set_active(False)
+        check(not rows["igame"].get_active(),
+              "turning MUI off turns off what cannot work without it")
+        check(not rows["mcc_nlist"].get_active(),
+              "and the classes that were only there for it")
+        rows["igame"].set_active(True)
+        rows["igame"].set_active(False)
+        check(not rows["mcc_nlist"].get_active(),
+              "dropping iGame drops the classes nothing else wants")
+        check(rows["mui"].get_active(),
+              "but MUI stays: it is worth having on its own")
+        for row in rows.values():
             row.set_active(False)
 
         #  A size typed for a card is a guess, and "125G" means 125 GiB - nine
@@ -261,16 +401,13 @@ def on_activate(app: ImagerApplication) -> None:
 
         #  The whole setup, not one field at a time. Three separate things
         #  were saved faithfully and never restored - the drives, the software
-        #  and its donor, and the Emu68 release - and each was found only when
-        #  somebody noticed it missing. This compares every field at once.
+        #  and the Emu68 release - and each was found only when somebody
+        #  noticed it missing. This compares every field at once.
         window.target_row.set_selected(1)
         window.quick_target.set_selected(1)
         window.file_row.set_path(str(SCRATCH / "roundtrip.img"))
         window.quick_file.set_path(str(SCRATCH / "roundtrip.img"))
         window.file_size_row.set_text("40GB")
-        donor = SCRATCH / "donor"
-        (donor / "Libs").mkdir(parents=True, exist_ok=True)
-        window.package_donor.set_path(str(donor))
         for key in ("whdload", "lha"):
             if key in window.package_rows:
                 window.package_rows[key].set_active(True)
@@ -282,7 +419,6 @@ def on_activate(app: ImagerApplication) -> None:
         #  Scramble everything the load has to put back.
         window.file_size_row.set_text("8GB")
         window.file_row.set_path(str(SCRATCH / "somewhere-else.img"))
-        window.package_donor.set_path("")
         for row in window.package_rows.values():
             row.set_active(False)
         loaded, state, _reduced = jobs.load_session(session)
@@ -328,7 +464,22 @@ def on_activate(app: ImagerApplication) -> None:
         window.apply(plain, keep_partitions=True)
         check(window.gather().release_tag == "v1.0.7",
               f"with none saved, the newest stable is chosen ({window.gather().release_tag!r})")
+        #  The summary is written before that list arrives, so it says an
+        #  Emu68 release is still needed; nothing rewrote it once one was
+        #  there, and a loaded setup sat on "Still needed" for ever.
         window.releases = []
+        rewrites = []
+        real_update = window._update_summary
+        window._update_summary = lambda: rewrites.append(1)
+        window._releases_loaded([
+            _emu68.Release(tag="v1.0.7", name="1.0.7", prerelease=False,
+                           published="2024-01-01", assets=assets)])
+        window._releases_failed("no network")
+        window._update_summary = real_update
+        check(len(rewrites) == 2,
+              f"the summary is rewritten when the Emu68 list settles ({rewrites})")
+        window.releases = []
+        window._update_summary()
         #  Hand the layout back to the quick settings and put the hard disk
         #  chooser back: every check after this one depends on both.
         window._derived_partitions = [r.spec() for r in window.partition_rows]
@@ -824,7 +975,6 @@ def on_activate(app: ImagerApplication) -> None:
         #  build actually reads, so it has to carry it: without this, applying
         #  a quick setup and pressing Write removed the emulator's RTG driver
         #  instead of replacing it, however the display was set.
-        from pistorm_imager.core import machines  # noqa: PLC0415
         displays = list(machines.Display)
         window.quick_display.set_selected(displays.index(machines.Display.RTG_HDMI))
         window._sync_visibility()
@@ -937,6 +1087,13 @@ def on_activate(app: ImagerApplication) -> None:
               "HDF mode hides the partition editor (the RDB comes from the image)")
         problems = window.gather().validate()
         check(problems == [], f"HDF mode config is valid ({problems})")
+        #  The plan used to walk the partition list, which this task does not
+        #  use, and so announced an empty DH0 on a card whose whole point was
+        #  the drive in the image.
+        window._describe_plan()
+        plan = window.quick_plan.get_text()
+        check("left empty" not in plan and HDF_IMAGE.name in plan,
+              "the plan describes the drives inside the image")
 
         #  A card built from floppies has to be able to be pointed at the
         #  floppies.  The quick start reported what it had found and offered
@@ -977,6 +1134,46 @@ def on_activate(app: ImagerApplication) -> None:
         check(group_of(window.adf_row) == "Workbench floppy images",
               f"the ADF chooser returns to its page "
               f"(it is on {group_of(window.adf_row)!r})")
+        #  A drive imported from an image can need the Workbench disks as
+        #  well - ClassicWB's brings no Workbench of its own - and nothing
+        #  asked for them: the demand was made only once a folder had already
+        #  been chosen, so a card that needs the disks and has none said
+        #  nothing at all and built, unbootable.
+        from pistorm_imager.core import presets as _presets
+        from pistorm_imager.ui.window import PRIMARY_SOURCES as _PRIMARY
+        real_inspect = _presets.inspect_image_system
+        _presets.inspect_image_system = lambda path, partition="": (
+            _presets.ImageSystem(label="Workbench", found={"bootable": True}))
+        try:
+            window._floppy_need = {}
+            window.adf_row.set_path("")
+            window.mode_row.set_selected(
+                next(i for i, m in enumerate(MODES)
+                     if m[1] is builder.BuildMode.FRESH))
+            window.quick_primary.set_selected(_PRIMARY.index("image"))
+            window.quick_hdf.set_path(str(HDF_IMAGE))
+            pump()
+            check(window._imported_needs_floppies(),
+                  "a drive that brings no Workbench is recognised")
+            wanted = [m for m in window._missing_choices()
+                      if "floppy images" in m]
+            check(bool(wanted),
+                  f"importing such a drive asks for the disks ({wanted})")
+            check(group_of(window.adf_row) == "Primary installation",
+                  "and the chooser is beside the drive that needs them "
+                  f"(it is on {group_of(window.adf_row)!r})")
+            window.adf_row.set_path(str(ADF_FOLDER))
+            pump()
+            check(not [m for m in window._missing_choices()
+                       if "floppy images" in m],
+                  "and stops asking once they are pointed at")
+        finally:
+            _presets.inspect_image_system = real_inspect
+            window._floppy_need = {}
+            window.quick_hdf.set_path("")
+            window.quick_primary.set_selected(_PRIMARY.index("default"))
+            pump()
+
         window._set_customising(False)
         pump()
     except Exception as error:  # noqa: BLE001

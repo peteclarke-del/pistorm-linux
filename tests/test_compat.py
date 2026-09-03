@@ -502,19 +502,19 @@ class TestWhdloadPrefs(unittest.TestCase):
         self.assertEqual(fixer.offer("S/WHDLoad.prefs", self.PREFS), self.PREFS)
 
 
-class TestGamesListFilter(unittest.TestCase):
-    """iGame stores an absolute path to every slave it knows about."""
+class TestTheGamesListIsNotCarriedOver(unittest.TestCase):
+    """iGame's list holds an absolute path to every slave, written on
+    somebody else's machine. Editing it to match this card meant guessing at
+    another program's data; it is left off instead, and iGame builds its own
+    from what is actually on the card.
+    """
 
     def setUp(self):
         folder = Path(tempfile.mkdtemp(prefix="pistorm-igame-"))
         self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
         self.games = folder / "Games"
-        for relative in ("WHDLOAD/OCS/D/Driller/Driller.slave",
-                         "WHDLOAD/AGA/S/Slamtilt/slamtilt.slave",
-                         "WHDLOAD/Foreign/H/Hugo2Fi/hugo2fi.slave"):
-            path = self.games / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"slave")
+        (self.games / "WHDLOAD/OCS/D/Driller").mkdir(parents=True)
+        (self.games / "WHDLOAD/OCS/D/Driller/Driller.slave").write_bytes(b"s")
 
     def fixer(self, *excludes: str) -> compat.Compatibility:
         fixer = compat.Compatibility(Progress(), enabled=True, rtg=False,
@@ -522,48 +522,22 @@ class TestGamesListFilter(unittest.TestCase):
         fixer.content["GAMES"] = (self.games, excludes)
         return fixer
 
-    def filter(self, fixer, *paths: str) -> list[str]:
-        lines = "".join(f"0;Name;Unknown;{path};0;0;0;0\n" for path in paths)
-        out = fixer.offer("Programs/iGame/gameslist.csv",
-                          lines.encode("latin-1")).decode("latin-1")
-        return [line for line in out.splitlines() if line.strip()]
+    def test_the_list_is_left_off_the_card(self):
+        self.assertTrue(self.fixer().skip("Programs/iGame/gameslist.csv"))
 
-    def test_a_game_that_is_there_is_kept(self):
-        kept = self.filter(self.fixer(),
-                           "Games:WHDLOAD/OCS/D/Driller/Driller.slave")
-        self.assertEqual(len(kept), 1)
+    def test_it_is_left_off_wherever_it_sits(self):
+        """iGame can be installed anywhere; the name identifies it."""
+        self.assertTrue(self.fixer().skip("Tools/iGame/gameslist.csv"))
 
-    def test_a_game_that_is_not_there_is_dropped(self):
-        kept = self.filter(self.fixer(),
-                           "Games:WHDLOAD/OCS/N/Nothing/nothing.slave")
-        self.assertEqual(kept, [])
-
-    def test_an_excluded_collection_is_dropped_even_though_it_exists(self):
-        """The AGA games are in the source and deliberately left off an OCS
-        card; every one of them would otherwise still be offered."""
-        kept = self.filter(self.fixer("WHDLOAD/AGA"),
-                           "Games:WHDLOAD/AGA/S/Slamtilt/slamtilt.slave")
-        self.assertEqual(kept, [])
-
-    def test_the_match_ignores_case(self):
-        """The list was written on a case-insensitive volume and is checked
-        against a Linux tree, where WHDLoad and WHDLOAD are two directories."""
-        kept = self.filter(self.fixer(),
-                           "games:whdload/ocs/d/driller/driller.slave")
-        self.assertEqual(len(kept), 1)
-
-    def test_a_volume_nothing_fills_is_left_alone(self):
-        """Dropping what cannot be checked would be worse than keeping it."""
-        kept = self.filter(self.fixer(), "Work:Somewhere/else.slave")
-        self.assertEqual(len(kept), 1)
-
-    def test_a_line_that_is_not_an_entry_is_kept(self):
-        fixer = self.fixer()
-        data = b"# a comment\n;;;\n"
-        self.assertEqual(fixer.offer("Programs/iGame/gameslist.csv", data), data)
-
-    def test_nothing_happens_without_a_content_map(self):
+    def test_a_card_with_no_games_still_leaves_it_off(self):
         fixer = compat.Compatibility(Progress(), enabled=True)
-        data = b"0;Name;Unknown;Games:WHDLOAD/Nope/x.slave;0;0;0;0\n"
-        self.assertEqual(fixer.offer("Programs/iGame/gameslist.csv", data), data)
+        self.assertTrue(fixer.skip("Programs/iGame/gameslist.csv"))
 
+    def test_the_repository_list_is_still_corrected(self):
+        """That one is a short list of drawers to scan, and naming a drawer
+        this card has not got sends iGame looking for something absent."""
+        out = self.fixer("WHDLOAD/AGA").offer(
+            "Programs/iGame/repos.prefs",
+            b"Games:WHDLOAD/OCS/\nGames:WHDLOAD/AGA/\n").decode("latin-1")
+        self.assertIn("OCS", out)
+        self.assertNotIn("AGA", out)

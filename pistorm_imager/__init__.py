@@ -9,4 +9,4 @@ Nothing heavier belongs in this module.  setuptools reads the attribute while
 building, and the GTK imports the interface needs are not available then.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

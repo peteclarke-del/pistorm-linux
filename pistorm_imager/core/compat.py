@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path
 
 from . import amigainfo, emu68
@@ -191,9 +192,18 @@ class Compatibility:
         #  Remembered so the replacement monitor can be built from the original.
         self.monitor_file: bytes | None = None
         self.monitor_icon: bytes | None = None
+        #  Paths a chosen package is going to install a newer copy of. The
+        #  file system here creates files and never overwrites them, so the
+        #  first copy on the drive wins - which meant an imported drive's
+        #  years-old WHDLoad beat the current release the user had ticked.
+        #  Refusing it during the copy leaves the name free for the package.
+        self._displace: set[str] = set()
+        self._displaced: list[str] = []
         self._seen_picasso = False
         self._picasso_expected = False
         self._finished = False
+        self._finish_classicwb = False
+        self._classicwb_startup: bytes = b""
         #  Volume name -> (host folder it is filled from, paths left out), so
         #  a games list can be checked against what will actually be there.
         self.content: dict[str, tuple[Path, tuple[str, ...]]] = {}
@@ -229,8 +239,39 @@ class Compatibility:
 
     # ------------------------------------------------------------ decisions
 
+    #  ClassicWB installs itself on the Amiga: it copies Commodore's files
+    #  off a Workbench floppy, then puts the boot script it carries as
+    #  T:Science in place of its installer's own. The files come from the
+    #  Workbench disks here, so the rest can be done here too, and the card
+    #  boots into the system instead of into an installer asking for a disk.
+    CLASSICWB_REAL_STARTUP = "t/science"
+    CLASSICWB_INSTALLER = ("s/startup-sequence", "s/activate", "t/science")
+
+    def finish_classicwb_install(self) -> None:
+        """Carry out on the card what its installer would do on the Amiga."""
+        self._finish_classicwb = True
+
+    def displace(self, paths: Iterable[str]) -> None:
+        """Refuse these paths while copying, so a package can supply them.
+
+        Only ever called with paths a package has already fetched, so a
+        failed download cannot leave the card without the file it refused.
+        """
+        self._displace |= {p.replace("\\", "/").strip("/").lower()
+                           for p in paths}
+
     def skip(self, relative: str) -> bool:
         """True when a file should not be copied to the target at all."""
+        #  Checked before `enabled`, because this is not a compatibility fix
+        #  at all: it is the user's own choice of software, and it has to
+        #  hold whether or not the compatibility pass is switched on.
+        posix = relative.replace("\\", "/").strip("/").lower()
+        if posix in self._displace:
+            self._displaced.append(relative)
+            self.note("replaced",
+                      f"{relative} (the newer copy you chose is installed "
+                      f"instead)")
+            return True
         if not self.enabled:
             return False
         name = Path(relative).name
@@ -250,6 +291,25 @@ class Compatibility:
                 and name[:-len(".info")].lower() in EMULATOR_MONITORS:
             if self.rtg:
                 self.monitor_icon = self._pending_data
+            return True
+        if self._finish_classicwb:
+            here = relative.replace("\\", "/").lower()
+            if here == self.CLASSICWB_REAL_STARTUP:
+                #  Kept back and written out as the boot script below.
+                self._classicwb_startup = self._pending_data
+                return True
+            if here in self.CLASSICWB_INSTALLER:
+                self.note("removed", f"{relative} (its installer, carried out "
+                                     f"here instead)")
+                return True
+        if Path(relative).name.lower() == GAMES_LIST:
+            #  iGame's list holds an absolute path to every slave, written on
+            #  somebody else's machine. Editing it to match this card was
+            #  half-guessing at another program's data; iGame builds the list
+            #  itself from what is actually here, which cannot be wrong.
+            self.note("removed",
+                      f"{relative} (iGame builds its own from the card - "
+                      f"Actions > Scan Repositories, once)")
             return True
         if not self.workbench_on_rtg \
                 and relative.replace("\\", "/").lower() in SCREENMODE_PREFS:
@@ -289,8 +349,6 @@ class Compatibility:
         name = Path(posix).name.lower()
         if name in WHDLOAD_PREFS:
             return self._clean_whdload_prefs(posix, data)
-        if name == GAMES_LIST:
-            return self._filter_games_list(posix, data)
         if name == GAMES_REPOS:
             return self._filter_repositories(posix, data)
         return data
@@ -339,34 +397,6 @@ class Compatibility:
             if skip and (lowered == skip or lowered.startswith(skip + "/")):
                 return False
         return self._resolve(root, rest)
-
-    def _filter_games_list(self, relative: str, data: bytes) -> bytes:
-        """Drop entries whose game will not be on the card.
-
-        iGame stores an absolute path to each slave.  Leave out a collection -
-        the AGA games on a machine that cannot run them - and every one of its
-        entries stays in the list, offering games that are not there.
-        """
-        if not self.content:
-            return data
-        out: list[str] = []
-        dropped = 0
-        for line in data.decode("latin-1").splitlines(keepends=True):
-            fields = line.split(";")
-            if len(fields) < 4 or not fields[3].strip():
-                out.append(line)
-                continue
-            present = self._on_the_card(fields[3].strip())
-            if present is False:
-                dropped += 1
-                continue
-            out.append(line)
-        if dropped:
-            self.note("edited",
-                      f"{relative}: dropped {dropped} game"
-                      f"{'s' if dropped != 1 else ''} that will not be on the "
-                      f"card, so iGame does not offer what it cannot launch")
-        return "".join(out).encode("latin-1")
 
     def _filter_repositories(self, relative: str, data: bytes) -> bytes:
         """Drop the drawers iGame is told to scan that will not be there.
@@ -488,6 +518,13 @@ class Compatibility:
         if self._finished:
             return
         self._finished = True
+        if self._classicwb_startup:
+            folder = target.makedirs("S")
+            target.write_file(folder, "Startup-Sequence",
+                              self._classicwb_startup, check_existing=False)
+            self.note("added", "S/Startup-Sequence from the one the "
+                               "distribution carries, so the card boots into "
+                               "the system rather than into its installer")
         if self.enabled and self.native:
             self._install_native_monitor(target)
         if self.enabled and self.rtg and self.native:

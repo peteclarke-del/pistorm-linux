@@ -10,7 +10,13 @@ top of it.
 
 ## What it does
 
-Four tasks, all ending with the same boot-partition customisation pass:
+Four tasks, all ending with the same boot-partition customisation pass. Two of
+them take a `.hdf`, and the difference between them is the whole point: **Write
+a drive image unchanged** keeps the image's own partitions and file systems and
+adds nothing, while **Build a new card** can take the *files* out of that same
+image, put them on a layout of your choosing, and add the Workbench disks and
+software to them. That is why a ClassicWB card is built with the second: its
+drive brings no Workbench, so it needs the floppies alongside it.
 
 | Task | What happens |
 | --- | --- |
@@ -182,7 +188,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 374 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 414 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -211,8 +217,8 @@ Emu68 installation, Kickstart handling, `config.txt`/`cmdline.txt`, RDB
 creation, image writing (including compressed sources), and expansion into
 unused space. On top of that: PFS3 and FFS volumes created and filled, PiMiga
 and `.hdf` drives imported and adapted, per-machine presets, the display
-handling described above, optional software copied from a donor system or
-fetched from Aminet, prepared systems recognised and adapted after writing, and
+handling described above, optional software fetched from its publisher,
+prepared systems recognised and adapted after writing, and
 per-category exclusions followed through into iGame's list.
 
 Validated against real material: a full Workbench 3.1 install built from the
@@ -235,7 +241,7 @@ that were silent at build time and fatal at mount.
 
 **Not yet tried on hardware:** everything past the basic card. The RTG and
 dual-output display handling, including the switcher scripts; optional software
-copied from a donor system; multi-partition layouts; adapting a written prepared
+fetched and installed; multi-partition layouts; adapting a written prepared
 system. Those are checked against the format specifications, against independent
 tools and in an emulator, which is not the same as an Amiga booting from them.
 
@@ -273,8 +279,83 @@ its default and then save the session in that state, so they could not be kept
 at all.
 
 The one field the two share is **Additional cmdline.txt options**: the trapdoor
-switch puts `move_slow_to_chip` there and anything else in the box was typed by
-hand. Both survive, and turning the switch off removes only its own option.
+switch owns `move_slow_to_chip` and anything else in the box was typed by hand.
+Both survive, and turning the switch off removes only its own option. The switch
+is asked when the configuration is gathered rather than only when a quick setup
+is applied - the two were separate records of one fact, so a setup loaded with
+the switch on and the option missing built a card without it: 512K of chip RAM
+on a machine that had been told to give it a megabyte, with the switch on screen
+still saying it was on.
+
+### Every option the machine decides has to reach the card
+
+The card is written from `gather()`, and `gather()` built its boot options
+from the widgets alone. Two settings have no widget — the machine or the
+display decides them — so both sat at their dataclass default on every card
+written from the pages:
+
+| Option | Decided by | What its absence did |
+| --- | --- | --- |
+| `enable_slow_ram` | an OCS/ECS machine | `move_slow_to_chip` had nothing to move: 512K of chip RAM on a machine told to give Workbench a megabyte |
+| `unicam`, `unicam_smooth` | the Framethrower display | choosing that display wrote no overlay to drive it |
+
+A save/load round trip cannot catch this: a field never set at all is
+consistently wrong in both directions, so it survives the comparison. The
+guard is an invariant instead —
+`EveryOptionTheMachineDecidesReachesTheCard` asserts that everything
+`machines.boot_options()` can decide is either passed by `gather()` or owned by
+a widget it reads. It was proved by putting the bug back and watching it fail.
+
+### The trapdoor RAM has to be mapped before it can be moved
+
+`move_slow_to_chip` moves the trapdoor RAM at `0xC00000` into the chip range.
+It can only move RAM that has been mapped, and mapping it is a different set of
+options — `enable_c0_slow`, `enable_c8_slow`, `enable_d0_slow` — which Emu68
+takes for any OCS or ECS machine. Sent on its own, `move_slow_to_chip` is inert.
+
+Nothing on screen decides those: the *machine* does. `machines.boot_options()`
+set them, and that runs only where a quick setup is assembled — while the card
+is written from `gather()`, which built its boot options from the widgets alone
+and so left the field at its default. **Every card this tool wrote went out
+without them**, and the symptom was the same 512K of chip RAM the paragraph
+above describes, now with the option that was supposed to fix it present and
+doing nothing. It was found by reading `cmdline.txt` back off a written card:
+
+    vc4.mem=64 chip_slowdown dbf_slowdown blitwait move_slow_to_chip
+
+The option names were then checked against the strings inside the Emu68 kernel
+binary rather than taken from memory, because a switch spelled wrongly does
+nothing at all and says nothing about it. `gather()` now asks
+`machines.wants_slow_ram()` for the same answer the quick path gets, so there is
+one rule rather than two, and the same card reads:
+
+    vc4.mem=64 chip_slowdown dbf_slowdown blitwait enable_c0_slow enable_c8_slow enable_d0_slow move_slow_to_chip
+
+## Testing a card in an emulator
+
+The Amiga to emulate is the one the card was built for, and that description
+already exists: `pistorm_imager/core/emulate.py` turns a `Machine` into an
+FS-UAE configuration so it is never written twice.
+
+That matters because the hand-written harness used through one long bisection
+had drifted into describing a different machine entirely — `amiga_model =
+A1200` (AGA, not the ECS A500 in question), `fpu = 68040` on an accelerator
+that has no FPU at all, and `accuracy = 0`, which runs a fast, inexact 68040 on
+which WHDLoad cannot start a single game. That last one cost hours of hunting a
+defect in the imager that was a flag in the emulator. The module fixes
+`accuracy = 1`, takes the model from the chipset, the chip RAM from the
+trapdoor choice, and asks for no FPU.
+
+One caveat is recorded rather than papered over: FS-UAE 3.0.3 accepts
+`fpu = none` silently and says nothing either way, so whether it takes effect
+is **unverified**. Assume floating point code may still run in the emulator and
+guru on the real machine.
+
+Attach **the whole `0x76` partition**, not the bootable drive alone, so that
+every drive mounts and can be checked — and copy it *exactly*. A copy one
+mebibyte short of the partition made the last drive come up as `NDOS`, because
+PFS3 keeps a copy of its root block at the end; that looked exactly like a
+formatting bug in this tool and was not.
 
 ## How big is the card, and which gigabyte do you mean
 
@@ -329,6 +410,25 @@ repeated at each call site, because the order is the whole of it: the machine
 and the display arrive with the interface state, and they decide which software
 suits the card and which board the Source page shows, so both of those are
 restored from the configuration afterwards.
+
+Two things are only true a moment later, and the summary has to be told when
+they become true. The Workbench disks are identified in a background thread,
+and the list of Emu68 builds arrives from GitHub after the window is already
+up; the summary is written before either, so it says an Emu68 release is still
+needed. The scan rewrote the summary when it finished and the release list did
+not, which is why a setup loaded at startup went on saying *"Still needed: an
+Emu68 release"* with the release chosen and everything else in place. Both
+paths refresh it now, whether the list arrives or the fetch fails.
+
+**Forget the saved setup** puts the window back as it opened. It only deleted
+the file, so nothing on screen changed and only the *next* launch differed,
+which is not what starting again means. Clearing the widgets by hand was not it
+either: the storage layout stayed exactly as it was, because the relayout gives
+up when there is no target to lay anything out for, so the drives someone had
+arranged survived a reset that claimed to have removed them. The reset now goes
+through `apply()` - the same method a loaded setup goes through - with a default
+configuration, so it reaches every widget the configuration reaches without a
+list to keep in step, and finishes back on the opening choice.
 
 ## Installing AmigaOS from floppy images
 
@@ -396,6 +496,15 @@ suits a monitor is not something this can know. Blanking a file's data touches n
 metadata — the extents are already allocated — which is what makes it safe on a
 finished volume, where deleting a file would not be.
 
+**It applies to any system built elsewhere, not only a whole image.** A drive
+imported into DH0 from an `.hdf` on a card this build partitions was set up on
+somebody else's machine and watched on somebody else's screen in exactly the
+same way, and the pass ran only for images written as they were. The switch was
+part of the image chooser, on a page such a build never shows, so there was no
+way to ask for it either. It lives with the display on the **Amiga** page now,
+appears whenever a ready-made system is involved, and one predicate —
+`BuildConfig.brings_a_system_from_elsewhere()` — decides both.
+
 ### A rev 6A A500 is not necessarily OCS
 
 Fitting a Super Denise to a rev 6A board makes it a full **ECS** machine, and
@@ -403,6 +512,97 @@ that is a common enough upgrade that offering only a plain OCS A500 gets the
 chipset wrong for a real machine. The chipset decides which game collections
 are worth copying and which screen modes exist, so there is a separate
 **Amiga 500 with ECS** to choose, and the plain A500's note points at it.
+
+## Refused, warned about, or allowed
+
+Three different things, and the tool now keeps them apart.
+
+**Refused** - it cannot work, so nothing is written. A card whose system drive
+brings no Workbench and no floppies to fill it in stops at a Shell saying
+`C:Version: Unknown command`; the drives adding up to more than the card holds;
+a bootable drive told to be filled two ways at once.
+
+**Warned about** - it will build, and probably is not what was meant. These are
+said in the summary where the setup is accepted, and again in the log before
+anything is written, and then the build goes ahead:
+
+* games or demos on the card with no WHDLoad to launch them
+* iGame installed with no drive being filled with games, so it opens empty
+* an RTG display chosen with no Picasso96 and no imported system that might
+  carry one
+* Workbench set to open on an RTG screen the card has not got
+* nothing at all going onto the Amiga drives
+* software chosen whose archive nobody can fetch on your behalf
+
+**Allowed silently** - everything else.
+
+## A boot script is not an operating system
+
+Such a drive **must** be given the disks: a card made from it alone stops at a
+Shell saying `C:Version: Unknown command`, so building that combination is
+refused rather than written. The drive is written first and the floppies add
+only what it has not got - nothing its author put there is
+replaced - so a ClassicWB card can be built with `C:LoadWB` and the rest in
+place. Its own installer copies the same files with `copy DF0:C/... SYS:C CLONE` and
+then puts the boot script it carries as `T:Science` in place of its own; doing
+that here saves feeding it floppies on the Amiga. It is only done when the disks
+are being installed too - taking an installer away without doing its work leaves
+a card that cannot boot at all, which is worse than one that asks for a disk.
+
+And software can be added to an imported drive at all. The list was shown only
+for a Workbench installed from floppies - "only a Workbench built from floppies
+needs anything added to it" - while the build applies package overlays to an
+imported drive exactly the same way. A card built around somebody's drive could
+not be given WHDLoad or iGame.
+
+
+An imported drive was called a complete system if it had `S:Startup-Sequence`.
+ClassicWB has one, and it is an **installer**: on the first boot it says
+
+> You'll need a valid Workbench 3.0/3.1 disk, without one the install will
+> fail. Vital and copyright files contained on the disk will be copied during
+> installation. This is required because Workbench is still sold commercially.
+
+Its drive carries no `C:LoadWB`, no `C:IPrefs`, no `workbench.library` and no
+`diskfont.library`, because those belong to Commodore and cannot be given away.
+Reading it as finished offered a card that boots straight into an installer
+asking for a floppy drive.
+
+So a drive needs the Workbench disks unless it has both a boot script **and**
+`C:LoadWB`, and the description says which of the two is missing. Needing them is
+also now *asked* for: the demand was made only when a folder had already been
+chosen - `install_amigaos` is false until then - so a card that needs the disks
+and has none said nothing at all, and built. What decides it is what the setup
+needs, which is known before any folder is, and the chooser is moved beside the
+drive that needs it rather than left on a page the quick start never shows.
+
+A drive is judged to need the disks only when it was actually read and found to
+lack them. An image this reader cannot open says nothing either way, and
+treating that as "needs the disks" would demand floppies for a perfectly good
+drive on the strength of not having understood it. The images searched are the
+one chosen on the quick screen *and* whatever fills the bootable drive on the
+Storage page, because those are two routes to the same card; the answer is
+cached against the file's modification time, since the summary asks on every
+redraw and the question costs an image read. The plan says so
+too: an imported drive with the disks installed alongside it reads *"the files
+out of an Amiga hard disk image, with Workbench from your floppy images filling
+in what it does not carry"*, where it named only the image before - the summary
+of the very setup that produced an unbootable card looked as though the disks
+had been ignored.
+
+The plan for the two tasks that take the whole Amiga side from a file -
+building a card around an `.hdf`, and writing a prepared image unchanged -
+now describes **the drives inside that file**, read out of its own RDB (or
+the single bare file system, for an image with none). It used to walk the
+configuration's partition list, which those tasks never use, and so announced
+an empty DH0 - *"left empty - format it on the Amiga"* - on a card whose whole
+point was the drive in the image.
+
+The
+distribution's own `Real_Amiga_Install.ADF` is a separate thing again: a floppy
+that unzips a `System.zip` onto a formatted DH0 and repairs the protection bits
+`unzip` destroys. Importing the drive directly needs none of that - the files
+are read out of a real Amiga file system with their protection bits intact.
 
 ## Checking an image against the machine
 
@@ -559,22 +759,44 @@ A Workbench installed from the original floppies is exactly what shipped in
 people add next are offered as a catalogue, grouped as System, Look and feel,
 Speed and Networking.
 
-Each one arrives by whichever route it can. Freely distributable software is
-**fetched from Aminet and cached** under `~/.cache/pistorm-imager/packages`, so
-a second card costs no download. Anything that is not freely distributable —
-IBrowse and MiamiDx among them — is only ever **copied out of a donor system
-you already have**, which is what pointing at a PiMiga installation is for. A
-donor is always preferred over a download.
+Every one of them comes **from whoever publishes it** — Aminet, or the project
+that makes it — and is cached under `~/.cache/pistorm-imager/packages`, so a
+second card costs no download.
+
+Software used to be able to come out of a *donor system* instead: a Workbench
+drive or a PiMiga folder the user pointed at, which the build mined for
+whatever it held. That is gone, along with the "Take it from" chooser. It meant
+a card was built from whatever some other installation happened to contain, at
+whatever age, and nothing said which. Everything in the catalogue now names its
+own source, and where a package once had only a donor it either found a real
+one or left the list:
+
+| Was donor-only | Now |
+| --- | --- |
+| ClickToFront | `util/mouse/ClickToFront.lha` |
+| Directory Opus 4 | `util/dopus/DirectoryOpus-4.18.22.lha`, the GPL 4.18 release |
+| HippoPlayer | `mus/play/hippoplayer.lha` |
+| Scalos | `util/wb/Scalos.lha` |
+| AmFTP | `comm/tcp/AmFTP191.lha` |
+| WookieChat | `comm/irc/WookieChat2.11_OS3.lha` |
+| MiamiDx (`network`) | **Replaced.** The device it needed was the donor's `vlink.device`, which nobody publishes. Emu68's own release carries `wifipi.device` for the wireless chip the Pi actually has, so that is the network card now, with the firmware for every Pi model, and Roadshow's interface file names it. |
+| IBrowse | **Dropped.** Commercial, and not distributable. NetSurf is the browser. |
+| AWeb | **Dropped.** Aminet's `AWeb.lha` is a 3.2 demo; the free APL release is a per-CPU build whose 68020 binary carries floating point instructions, and [a PiStorm has no FPU](#a-pistorm-has-no-fpu). |
+| A newer SetPatch | **Dropped.** Commodore's, from a later release, undistributable — and it stopped every WHDLoad game from starting. |
+| Backdrops and boot pictures | **Dropped.** They were another distribution's artwork. |
+
+One thing genuinely goes with the donor: **WHDLoad's `DEVS:Kickstarts`**. Those
+are Commodore ROM images, nobody publishes them, and most slaves will not start
+without the one the game expects. The package says so where it is chosen rather
+than letting a game launch and take the machine down.
 
 Whatever can be installed outright is installed, and `Storage/Install` is a last
 resort rather than the default: a tick box that produces an installer you have to
-find and run has not delivered what it promised. MagicWB's fonts and patterns go
-straight into `Fonts:` and `Prefs/Presets`, and its icon set is what gives this
-build's own drawers their icons. What still needs running on the Amiga is the
-part that *replaces* icons already on the card, because the file system here
-creates files and never overwrites them — so VisualPrefs, MCP, NewIcons and
-Picasso96, which patch the system or restyle what is already there, are unpacked
-into `Storage/Install` and say so in the log. Where a package needs a line to take effect — PeterK's
+find and run has not delivered what it promised. What still needs running on the
+Amiga is the part that *replaces* files already on the card, because the file
+system here creates files and never overwrites them — so VisualPrefs, MCP,
+NewIcons, Scalos and Picasso96, which patch the system or restyle what is
+already there, are unpacked into `Storage/Install` and say so in the log. Where a package needs a line to take effect — PeterK's
 `icon.library` has to be soft-kicked over the one in ROM, FBlit has to be
 started — the build writes `S:User-Startup` to do it.
 
@@ -646,36 +868,155 @@ Two updates are offered:
 | **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
 | **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
 
-The floppies' `C:SetPatch` is **refused during the install** rather than
-overwritten afterwards, because this file system creates files and never
-replaces them; the newer one is then copied into its place.
+### Which copy wins when a drive already has one
 
-### What a program needs is read out of it
+The file system here creates files and never overwrites them, so when two
+sources offer the same file **the one that lands first wins**. That was being
+settled by the order the build happened to run in, and it produced three
+separate faults:
 
-Declaring dependencies by hand caught MUI and a handful of libraries and missed
-twenty more, each of which copied onto the card perfectly and then would not
-run: `ixemul` and `netinfo.device` for NetSurf, `Picasso96API` for AWeb,
-`screennotify` for Birdie, `popupmenu` and `vapor_toolkit` for the MUI
-applications.
+1. **The software never reached an imported drive at all.** Packages were
+   applied only by the floppy-install pass. Import a drive as DH0 without
+   ticking the Workbench disks and every program in the list was silently
+   left off the card.
+2. **With both, the floppy install was thrown away.** `_install_amigaos`
+   formatted DH0, installed Workbench and applied the packages; the content
+   pass then re-created the same drive from the image, destroying all of it.
+   A card built that way is the imported distribution and nothing else — which
+   is exactly what a card built here turned out to be when its `Programs`
+   drawer was read back: fifteen programs, none of them from this catalogue.
+3. **A package could never replace an older copy.** Whatever the drive or the
+   floppies carried was there first, so the current release the user had
+   ticked was skipped as "already present".
 
-Amiga binaries name what they open as plain strings, so the answer is in the
-files themselves. Everything a copied program mentions, that will not be on the
-card and that the donor system has, is copied too - and then the same question
-is asked of *those*, because a library brings its own needs with it
-(`mmu.library` wants `68030.library`, `ixemul` wants `ixnet`, `xpkmaster` wants
-`xfdmaster`). One round left seven behind; repeating until a round finds nothing
-new brought the real card down from nineteen missing files to three, and those
-three are optional (`narrator.device` is speech synthesis).
+All three are fixed. The floppy install is skipped when the boot drive is
+filled from an image — the content pass fills it and takes what the disks
+provide for the gaps — and the packages, the drawer icons and `S:User-Startup`
+are applied there instead. Packages are resolved **before** the drive is
+filled, so they can take the place of an older copy.
 
-The scan over-matches where two strings abut in a binary, which costs nothing: a
-name that is really a fragment of another resolves to nothing in the donor and
-is dropped.
+A drawer claims its **name** as well. ClassicWB keeps `Visage` as a *file* in
+`Utilities:` and this build wants a drawer of that name there — a collision
+that ended an hour-long build outright with *"Visage already exists as a
+file"*. The name is freed the same way, and safely: the copy asks about files
+and never about drawers, so claiming a name can only ever displace a file, and
+a drawer of the same name is merged into as before. Its contents are never
+touched one by one.
 
-**Key files travel with what they unlock.** Registered Amiga software looks for
-`<name>.key` beside the system rather than in its own drawer, so copying
-`xadmaster.library` without `S:xadmaster.key` leaves it crippled in a way that
-reads as the copy having failed. Anything being copied that has a matching key
-in `S:`, `L:` or `DEVS:keyfiles` takes it along — which picks up MUI's key too.
+And no single package may destroy a card again: an overlay that cannot be
+installed is reported as a warning and the build carries on with the rest.
+
+Whether they do is **asked**, not assumed. *"Replace older copies already on
+the imported drive"* sits with the software list and appears only when a drive
+is actually being imported. On, the release you ticked is installed in place of
+the drive's; off, the drive's own copy is kept. Only whole files are ever
+displaced — a drawer is merged into what is there, and refusing one during the
+copy would take the drive's own contents with it — and only paths a package has
+already fetched, so a failed download can never leave the card without the file
+it refused.
+
+### Where the software actually comes from
+
+Three sources were wrong or second-best, and reading a built card is what
+showed it:
+
+- **WHDLoad** came from `dev/misc/WHDLoad_usr.lha`, which is a 2007 upload of
+  16.8 that has not moved since. The card being built against it came out
+  *older* than the ready-made distribution it was competing with (18.2). It now
+  comes from the author's own site, which serves 20.0.
+- **LhA** was left in `Storage/Install` as a self-extracting Amiga program to
+  run by hand, so a card could arrive with no archiver at all. An archiver has
+  to be shipped that way — you need one to unpack the other — but the archive
+  inside is an ordinary LhA one, so it is taken out here and the 68040 build
+  installed as `C:LhA`.
+- **Birdie** and **PowerWindows** were staged with a note asking the user to
+  copy them into place. Birdie now goes into `C:` with its patterns, and is
+  started from `S:User-Startup` the way its own documentation says; PowerWindows
+  goes into `Utilities/PowerWindows` whole, because it looks for its external
+  routines beside itself.
+
+One bug fell out of that work: `fetch()` chose "place the archive whole" on
+whether a package listed `items`, so a package that placed its files by
+`rename` instead took that branch and its entire archive went to `stage` —
+which for such a package is `""`, the volume root.
+
+### Leaving out what this machine cannot run
+
+A collection keeps its titles in a container drawer — `WHDLOAD` is the usual
+one — divided into categories whose names say what they need, and those have
+always been offered as things to leave out, with the ones this machine cannot
+run switched off to start with.
+
+**Everything beside that drawer was offered nowhere.** A Games drive with forty
+native titles sitting next to its `WHDLOAD` collection could only be taken
+whole, so `Turrican2AGA` went onto an ECS machine along with the rest. Those are
+listed now too — one entry per program, on any drive being filled from a folder,
+games and demos alike — so anything can be suppressed whether or not this tool
+can judge it.
+
+What it *can* judge, it judges from the title's own name: `AGA` or `CD32` in
+UPPER CASE at a word boundary means AGA, so `Turrican2AGA` and `DeepCoreCD32`
+start switched off on an OCS or ECS machine while `Saga`, `Vagabond` and
+`AgaMemnon` are untouched. Everything else is listed with no requirement and
+left in, because the honest answer is that we do not know.
+
+**A folder and an image are asked the same question.** The listing used to walk
+a host directory, so a drive imported from an `.hdf` was offered nothing to
+leave out and could only be taken whole. The FFS and PFS3 readers both list a
+directory by name, so the same walk works on either — one directory at a time
+rather than over the whole drive, which on twenty gigabytes of games would take
+longer than the build.
+
+A loose *file* is listed only when its own name says what it needs. That is not
+fussiness: `Turrican2AGA` on a real drive is a fourteen-byte launcher rather
+than a drawer, so a rule about drawers alone missed the one title on the whole
+drive that could be identified — while listing every file would have buried it
+among save files and icons.
+
+**Leaving out a launcher takes what it runs with it.** `Turrican2AGA` is
+fourteen bytes reading `AmigaGame.exe`, so removing the title and keeping the
+170 KB program it names wastes the very space the exclusion was for, on
+something nothing can now reach. The reference is followed one step, and two
+things stop that doing harm: a launcher that **stays** pins what it names, so a
+shared engine survives as long as anything still runs it; and anything offered
+as a choice of its own is never taken away behind the user's back. Each one
+followed is named in the log.
+
+**Reading the binaries was tried and abandoned.** FMODE and BPLCON4 are
+AGA-only registers, so scanning a program for them looks like a real test. It
+is not: matching 16-bit words finds "FMODE" 56 times inside `DOOM1.WAD` and 48
+times inside an IFF picture. It labels data as code, and would have confidently
+condemned titles that run perfectly well. A name is a weaker signal, but it is
+never a guess.
+
+### iGame is told where the games are
+
+iGame keeps the drawers it scans in `repos.prefs`, and its Aminet archive
+ships none. Installed cleanly it came up with **nothing to scan**: "Scan
+Repositories" found nothing and the list stayed empty on a card whose drives
+were full of games. Found by booting a written card in an emulator and
+watching iGame open its repositories requester with nothing in it.
+
+The build knows exactly which drives it filled, so it says so — one line per
+drive it put content on, naming the `WHDLoad` drawer inside only when that
+drawer is really there. Nothing is guessed: a drive this build did not fill is
+not named, because pointing iGame at a drawer that does not exist is precisely
+what the donor's own list used to do.
+
+### What a program needs comes with it
+
+Dependencies between packages are declared and pulled in: iGame, AmFTP, NetSurf
+and WookieChat are MUI applications, and copied on their own they land on the
+card, appear on Workbench and then do nothing at all when clicked.
+
+The shared libraries a program draws with come from the same archive that
+brings the program. There used to be a scanner for this: Amiga binaries name
+what they open as plain strings, so everything a copied program mentioned that
+the *donor* had was copied too, transitively. It found nineteen missing files
+where hand-written declarations had found three. It also only ever worked
+because there was a donor system to mine, and with everything coming from its
+publisher there is nothing to scan against — an archive that needs
+`codesets.library` ships it.
 
 **Some things no scan can find.** A WHDLoad slave asks for the Kickstart the
 game expects, and those are ROM images, not code: nothing names them inside a
@@ -697,8 +1038,9 @@ creates that drawer *and* its icon, and installing from the ADFs creates only th
 drawer.
 
 Every drawer this build makes now gets an icon, taken from a real Amiga icon
-rather than invented — the chosen icon set, or the donor system — matched on the
-drawer's own name and otherwise any drawer icon among them. Two things decide
+rather than invented — the chosen icon set, or failing that the Workbench
+disks — matched on the drawer's own name and otherwise any drawer icon among
+them. Two things decide
 which one is usable:
 
 * **It must be a drawer icon.** Icons are typed, and only a drawer icon opens a
@@ -730,9 +1072,8 @@ not start and you need to see what it is looking for, and **Directory Opus 4**
 as a real file manager.
 
 For music there is **AMPlifier** (modules, MP3, skins) and **DigiBooster 1.7**
-as an eight channel tracker, both from Aminet; **HippoPlayer** is the classic
-lightweight player but is not freely distributable, so it is copied from a
-donor or not at all.
+as an eight channel tracker, and **HippoPlayer**, the classic lightweight
+player - all three from Aminet.
 
 **Suggested load** picks a set from the machine and the display, because the
 right answer genuinely differs:
@@ -741,11 +1082,163 @@ right answer genuinely differs:
 |---|---|---|
 | Drawing | FBlit and FText move Workbench's drawing off the blitter and into fast RAM, which is where a PiStorm's speed is | no blitter in the way; Picasso96 is the point of it |
 | Palette | FullPalette locks the desktop colours so a program cannot scramble them | a deep display has colours to spare |
-| Icons | MagicWB's eight colours suit a limited palette | a heavier desktop such as Scalos becomes affordable |
+| Desktop | the stock icons, drawn for exactly this palette | a heavier desktop such as Scalos becomes affordable |
 
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
-VisualPrefs. Networking — the PiStorm's `vlink.device`, a TCP/IP stack, AmiSSL
-and NetSurf — is suggested when a WiFi network has been configured.
+VisualPrefs. Networking — the Pi's WiFi as an Amiga network card, Roadshow,
+AmiSSL and NetSurf — is suggested when a WiFi network has been configured.
+
+**An RTG display brings Picasso96 with it, and holds it on.** Picasso96 *is*
+the RTG subsystem; Emu68's driver is a card for it, and without it a card set
+up for the Pi's HDMI output has no RTG screen modes to open on. It was an
+ordinary tick box beside the display choice, and nothing rebuilt the software
+list when the display changed — so choosing both outputs left it off, silently.
+Choosing a display that draws on the Pi now ticks it and locks it, and says
+why in the row.
+
+## Every package names its source
+
+A published release is the newest there is; a donor's copy was whatever its
+author installed, which may be years old, and there was no way to tell from the
+card which had happened. So there is one route now — the publisher's — and a
+package that cannot be fetched says so before the build rather than in the log
+afterwards:
+
+> WARNING: Roadshow could not be fetched from http://roadshow.apc-tcp.de/, so
+> it is not on this card
+
+One archive genuinely cannot be downloaded: APC&TCP serve Roadshow only to a
+browser. That is marked `manual`, the setup summary says so while there is
+still time to do something about it, and the build uses a copy put in
+`~/.cache/pistorm-imager/packages` by hand rather than caching a login page as
+though it were the archive. A
+download that **stops early is no longer kept** - it is still a file, and
+caching a truncated archive means every build afterwards fails to unpack
+something that looks like it is already there. The length is checked against
+what the server said while the answer is still at hand; this was found when a
+real download arrived 170 KB short and the failure only surfaced two steps
+later.
+
+### Nothing on the card may need an FPU
+
+*This is what stopped iGame launching games.* It listed them correctly and then
+did nothing when one was clicked - window closed, WHDLoad never started, nothing
+reported. With the FPU libraries off the card and `no_guigfx=1` in its
+preferences, it launches.
+
+
+Emu68 gives a PiStorm a **68040 with no FPU**. A floating point instruction on
+such a machine raises a line-F exception - **guru 8000000B** - and iGame's own
+site warns about exactly that guru for exactly these libraries.
+
+Counting F-line opcodes in the binaries settles it, with the published no-FPU
+build of `guigfx` as the control:
+
+| Library | FPU instructions |
+| --- | --- |
+| `guigfx.library` (standard) | 41 |
+| `guigfx.library` (no-FPU build) | 0 |
+| `render.library` | **153** |
+
+There is a no-FPU `guigfx` on Aminet and **no no-FPU `render` anywhere**, and
+`guigfx.library` opens `render.library`, so the whole stack is unusable here.
+iGame lists all three as optional, so the card does without them and iGame is
+installed with `no_guigfx=1` in its own preferences. It loses the screenshots
+and keeps working. PiMiga's copy of that preferences file had the same line in
+it, which suggests somebody else met this years ago.
+
+### MUI, and the classes that are not in MUI
+
+MUI is published on Aminet, and what it publishes is MUI 3.8 with 36 classes.
+A ready-made distribution's MUI is usually the richer one - PiMiga's carries 84
+- which is what made mining one so tempting, and why the classes iGame needs
+are named and fetched individually instead.
+
+Those extra classes are not decoration. iGame's window is built from `NList`,
+`NListview`, `TextEditor` and `Guigfx`, **none of which are part of MUI**, and
+they are published separately. Each is now a package of its own, so a card built
+from floppies and Aminet alone - no donor anywhere - has everything iGame opens:
+
+| Package | Supplies |
+| --- | --- |
+| MUI | `muimaster.library` and 36 standard classes |
+| MUI NList classes | `NList.mcc`, `NListview.mcc` and the rest of that family |
+| MUI TextEditor class | `TextEditor.mcc` |
+| MUI Guigfx class | `Guigfx.mcc`, `guigfx.library`, `render.library` |
+
+iGame names all four as requirements, so ticking iGame ticks them.
+
+### What a choice drags along with it
+
+Ticking a package switches on what it requires, and that happens for a package
+ticked by **default** too - iGame is on to begin with, and its MUI classes were
+shown switched off beside it. They were installed anyway; the page simply did
+not say so, and turning iGame off and on again appeared to "fix" it.
+
+Untricking works the other way, with one distinction that matters:
+
+* anything that **required** what was turned off goes with it - a MUI program
+  without MUI is not a program;
+* a package that was **only ever there to satisfy something else** goes when the
+  last thing needing it goes. The MUI `NList`, `TextEditor` and `UrlText`
+  classes are marked that way: nobody chooses them for their own sake;
+* a package **worth having on its own stays**. Turning off one MUI program does
+  not take MUI away from the others.
+
+
+## iGame comes from its own release, and builds its own list
+
+A donor's copy of a program is whatever its author installed. PiMiga's iGame is
+v2.1 from June 2022, and it arrives with that person's `gameslist.csv` - an
+absolute path to every slave on *their* machine - their screenshots and their
+settings. Editing that list to match this card, which is what this tool used to
+do, is guessing at another program's database.
+
+So iGame is installed standalone from its current Aminet release: nothing from a
+donor at all. The archive ships one binary per processor, and since Emu68 gives
+a PiStorm a 68040, the `.040` build is installed under the name the icon
+launches. The card gets an iGame with **no games list**, and the first thing to
+do on the Amiga is *Settings > Game Repositories*, then *Actions > Scan
+Repositories*: the paths are then ones iGame resolved from the drives in front
+of it, and cannot disagree with what is there.
+
+It still needs **MUI**, which no download here supplies - its window is built
+from MUI classes (`NList`, `NListview`, `Guigfx`, `TextEditor`) that come with a
+donor's MUI installation.
+
+**A caution, stated because it is not fixed.** On the machine this was developed
+against, iGame lists games correctly and then does nothing when one is clicked:
+its window closes and WHDLoad never starts. That was reproduced with v2.1 and
+v2.6.1, with the donor's list and with one iGame scanned for itself, with and
+without WHDLoad requesters, on the full package set and on a card carrying
+almost nothing. SnoopDos shows iGame reading the game's drawer successfully and
+never asking the system to execute anything. It is not understood.
+
+Games launch perfectly from **their own Workbench icons** in the Games drawer -
+each is a project icon whose default tool is WHDLoad, and Workbench sets the
+current directory to the game's drawer, which is the condition a WHDLoad slave
+needs. `WHDLoad` given a full path from a shell, without that directory, fails
+with `DOS-Error #205`.
+
+## An installer that edits the boot script is not worth the icons
+
+MagicWB is not offered at all any more. It is an eight-colour icon set that
+suited an ECS machine perfectly, but it can no longer be registered or
+supported, and its **Installer** had already earned its withdrawal: it
+prepends two lines to `S:User-Startup`, one of which runs `MagicWB-Demon` to
+claim pens 4 to 8, and a card it had been run on stopped booting with a
+software error before Workbench appeared. That could not be reproduced in an
+emulator - the same lines and the same Demon boot perfectly in FS-UAE - which
+was a reason to keep it off a card rather than a reason to doubt it. For a
+while its fonts and desktop patterns were installed with the Installer
+withheld; unsupported and unregistrable, it has now left the catalogue, and
+the build's own drawer icons come from the Workbench disks instead.
+
+The general rule this belongs to: **anything that edits `S:User-Startup` or
+`S:Startup-Sequence` on the Amiga can stop the card booting, and the user is
+then a long way from a keyboard that can fix it.** Where this tool can do the
+same work itself it does, and writes those lines with the rest of the startup
+it already manages.
 
 ## A socket library belongs to its stack, not to the card
 
@@ -871,15 +1364,24 @@ package had been installed. The fixes are:
 
 * the emulator's RTG driver (`uaegfx.card`) is dropped and Emu68's
   `VideoCore.card` installed in `LIBS:Picasso96/` in its place;
-* the Picasso96 monitor in `DEVS:Monitors` is written out as `VideoCore`, with
-  `BOARDTYPE=VideoCore` in its icon, which is how Picasso96 chooses its board.
-  Every Picasso96 monitor is the same loader named differently, so the
-  emulator's is what gets renamed - and where there is no emulator to take one
-  from, the Picasso96 package supplies it. Without a monitor file the board's
-  screen modes cannot be selected at all, driver or no driver;
+* where a system being adapted already had a Picasso96 monitor for the
+  emulator's board, it is written out as `VideoCore` with `BOARDTYPE=VideoCore`
+  in its icon, which is how Picasso96 chooses its board;
 * a Picasso96 that was *chosen as a package* counts as installed even before
   anything is copied, while a copy merely staged in `Storage/Install` for you
   to install later does not - staging is not installing;
+
+A card built from floppies is **not** given a monitor file, and this is
+deliberate. Making one by renaming the emulator's monitor looked right - every
+Picasso96 monitor is the same loader with its board named in its icon - and
+produced a card that would not boot: a software error in VideoCore, which is
+that monitor bringing the board up against a 1999 `rtg.library`. Emu68's
+`VideoCore.card` still goes on the card, where nothing loads it until a monitor
+names it, and the monitor is left to Picasso96's own installer in
+`Storage/Install`, which is the only thing that knows what it is installing
+against. Without one the board's screen modes cannot be selected, so this is a
+gap rather than a fix - but a card that boots and cannot use RTG is worth more
+than one that does not boot.
 * startup scripts have emulator-only commands (`uae-configuration` and friends)
   commented out, so they cannot fail the boot;
 * `S:WHDLoad.prefs` is cleaned the same way. This is where WHDLoad's settings
