@@ -779,18 +779,40 @@ CATALOGUE: list[Package] = [
         "The RTG subsystem. Only useful where there is an RTG display to draw "
         "on - the Pi's HDMI output.",
         category=Category.SPEED,
-        download=Download("driver/video/Picasso96.lha",
-                          stage=STAGING + "/Picasso96"),
+        download=Download(
+            "driver/video/Picasso96.lha",
+            #  Installed from its own archive, not assembled out of whatever
+            #  the source drive happened to carry. RTG used to depend on the
+            #  imported system having a Picasso96 monitor to adapt: build on
+            #  a distribution without one - ClassicWB has none - and the card
+            #  came out with VideoCore.card in LIBS: and nothing able to load
+            #  it, which is a feature that works or does not depending on
+            #  where the drive came from.
+            (("Picasso96Install", STAGING + "/Picasso96"),
+             ("Picasso96Install/Libs/Picasso96API.library", "Libs"),
+             ("Picasso96Install/Libs/Picasso96/fastlayers.library",
+              "Libs/Picasso96"),
+             ("Picasso96Install/Devs/Monitors/Picasso96", "Devs/Monitors"),
+             ("Picasso96Install/Devs/Monitors/Picasso96.info",
+              "Devs/Monitors"),
+             ("Picasso96Install/Prefs/Picasso96Mode", "Prefs"),
+             ("Picasso96Install/Prefs/Picasso96Mode.info", "Prefs")),
+            #  The archive ships one settings file per monitor frequency and
+            #  its installer asks which. Emu68's output is HDMI, so the most
+            #  permissive of them is the one that does not needlessly cut the
+            #  mode list short.
+            rename=(("Picasso96Install/Devs/Picasso96Settings.64", "Devs",
+                     "Picasso96Settings"),)),
         rtg_only=True,
         #  Choosing an RTG display *is* choosing Picasso96: it is the RTG
         #  subsystem, and Emu68's driver is a card for it. Leaving it to be
         #  ticked separately meant asking for the Pi's HDMI output and being
         #  handed a card with no screen modes to show on it.
         essential=True,
-        note="Emu68's VideoCore driver is installed for it. Run the Installer "
-             "from Storage/Install on the Amiga to create the monitor and "
-             "screen modes - doing that here produced a card that would not "
-             "boot.",
+        note="Installed, not staged: Picasso96API.library, its own monitor "
+             "and settings, with Emu68's VideoCore driver as the board. The "
+             "full archive is still in Storage/Install if you want the "
+             "datatypes and painting-program drivers as well.",
     ),
 
     # -------------------------------------------------------- networking
