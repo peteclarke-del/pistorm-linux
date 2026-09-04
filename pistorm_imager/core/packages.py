@@ -675,6 +675,31 @@ CATALOGUE: list[Package] = [
 
     # ------------------------------------------------------ music and pictures
     Package(
+        "adfdevice", "ADF Device",
+        "Mount an .adf file as a floppy drive and read it like a disk, "
+        "without writing it to real media. Insert one, and AD0: appears on "
+        "Workbench.",
+        category=Category.EXTRAS,
+        download=Download(
+            "disk/misc/ADF_Device.lha",
+            #  adf.device and its mountlist have to be in DEVS: together: the
+            #  scripts mount "from devs:adf.ml", and the device is what that
+            #  mountlist names.
+            (("ADF_Device_v1.3/adf.device", "Devs"),
+             ("ADF_Device_v1.3/ADF.ml", "Devs"),
+             ("ADF_Device_v1.3/InsertDisk", "C"),
+             ("ADF_Device_v1.3/RemoveDisk", "C"),
+             ("ADF_Device_v1.3/Insert.script", "Utilities/ADF_Device"),
+             ("ADF_Device_v1.3/Remove.script", "Utilities/ADF_Device"),
+             ("ADF_Device_v1.3/ADF_Device.guide", "Utilities/ADF_Device"),
+             ("ADF_Device_v1.3/ADF_Device.guide.info",
+              "Utilities/ADF_Device"))),
+        note="Bjoern Fuglsang's adf.device goes into DEVS: with its "
+             "mountlist. From a Shell: Execute "
+             "Utilities/ADF_Device/Insert.script <file>.adf - it asks which "
+             "unit, mounts AD0: and up, and the disk appears on Workbench.",
+    ),
+    Package(
         "ahi", "AHI",
         "The Amiga's standard audio interface. Programs ask AHI for sound "
         "instead of driving Paula themselves, so they share the hardware "

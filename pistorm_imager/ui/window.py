@@ -1008,6 +1008,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         if not path:
             self.quick_hdf_info.set_subtitle("No image selected")
             self._relayout_partitions()
+            #  Both lists describe the drive that was chosen, so dropping the
+            #  drive has to drop them: left standing, they would leave
+            #  software out of a build that is no longer using that drive.
+            self._refresh_older_copies()
+            self._refresh_what_arrives()
             self._quick_preview()
             return
         scheme = presets.describe_image_scheme(path)
@@ -1028,6 +1033,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._sync_visibility()
         self._relayout_partitions()
         self._refresh_older_copies()
+        self._refresh_what_arrives()
         self._quick_preview()
 
     def _primary(self) -> str:
@@ -1801,6 +1807,17 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.older_group.set_visible(False)
         page.add(self.older_group)
 
+        #  A ready-made distribution arrives with its own idea of what
+        #  belongs on a card, and until now it was all of it or none.
+        self.arrives_group = Adw.PreferencesGroup(
+            title="Software the drive already has",
+            description="What the image you are building on brings with it. "
+                        "Turn one off to leave it out - the drawer, what is "
+                        "in it and its icon.")
+        self.arrives_rows: dict[str, Adw.SwitchRow] = {}
+        self.arrives_group.set_visible(False)
+        page.add(self.arrives_group)
+
         #  One group per category, so a long list reads as a few short ones.
         self.package_rows: dict[str, Adw.SwitchRow] = {}
         self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
@@ -2335,6 +2352,42 @@ class ImagerWindow(Adw.ApplicationWindow):
                 pass
         return found
 
+    def _refresh_what_arrives(self) -> None:
+        """List the programs the chosen drive already carries."""
+        if not hasattr(self, "arrives_group"):
+            return
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        found: list[tuple[str, str]] = []
+        if path:
+            try:
+                from ..core import amigaos, content          # noqa: PLC0415
+                reader, _label = amigaos.open_amiga_volume(path, "")
+            except Exception:                                # noqa: BLE001
+                reader = None
+            if reader is not None:
+                try:
+                    found = content.installed_programs(reader)
+                finally:
+                    try:
+                        reader.f.close()
+                    except Exception:                        # noqa: BLE001
+                        pass
+        wanted = {f"{drawer}/{name}" for drawer, name in found}
+        for key, row in list(self.arrives_rows.items()):
+            if key not in wanted:
+                self.arrives_group.remove(row)
+                del self.arrives_rows[key]
+        for drawer, name in found:
+            key = f"{drawer}/{name}"
+            if key in self.arrives_rows:
+                continue
+            row = Adw.SwitchRow(title=name, subtitle=f"in {drawer}")
+            row.set_active(True)                 # keep it, unless told not to
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.arrives_rows[key] = row
+            self.arrives_group.add(row)
+        self.arrives_group.set_visible(bool(self.arrives_rows))
+
     def _refresh_older_copies(self) -> None:
         """Show one row per older copy actually found, keeping any answers."""
         if not hasattr(self, "older_group"):
@@ -2863,6 +2916,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             replace_older_software=self.replace_older_row.get_active(),
             #  A row switched off is one the user looked at and chose to
             #  keep, so it is named here and left on the card.
+            #  A row switched off is software the user looked at and does
+            #  not want; it is left out drawer, contents and icon.
+            leave_out=sorted(key for key, row
+                             in getattr(self, "arrives_rows", {}).items()
+                             if not row.get_active()),
             keep_older_copies=sorted(
                 drawer.strip("/").lower()
                 for drawer, row in getattr(self, "older_rows", {}).items()
