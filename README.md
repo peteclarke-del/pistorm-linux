@@ -878,6 +878,37 @@ started — the build writes `S:User-Startup` to do it.
 
 ### What a package needs to actually run
 
+#### Where an archive ships no way to start it
+
+ADF Device mounts an `.adf` as a floppy drive, so a disk image appears on
+Workbench as `AD0:` without being written to real media — sixteen units, swapped
+in and out like disks. ClassicWB ships `Programs/FMSsys` for the same job and it
+cannot work as it arrives: the drawer has `ADF2FMS`, `MountFMS` and a mountlist,
+and neither the handler nor the device they need.
+
+What the archive does *not* ship is any way to start it from Workbench. Its own
+scripts want a Shell and a filename, and the author's suggestion was to drive
+them from ToolsDaemon or DOpus. So the package writes a small script of its own,
+`Utilities/ADF_Device/MountADF`, which asks for the file with `RequestFile` and
+then hands over to the archive's `Insert.script` — which asks which unit, mounts
+it if it is not mounted, and tells DOS the disk has changed.
+
+Making it double-clickable needs a **project icon**, whose DefaultTool is the
+program Workbench runs on the file beside it: `IconX`, the script runner. An
+icon invented from scratch would have no image and draw as nothing, so the
+package borrows one the archive already has and retargets it — that is what
+`Download.retool` does, and `amigainfo.set_default_tool` rewrites the string in
+place. Everything after the DefaultTool in a `.info` moves when it changes
+length, so a test checks the tool types still read back identically afterwards;
+getting that wrong leaves an icon Workbench cannot parse, which looks exactly
+like the file having no icon at all.
+
+The helper is part of this package rather than a loose extra, because it is no
+use without the device beside it — and a test ties the two together: the script
+it calls has to be one this same package installs, and the icon has to land in
+the same drawer under the script's own name plus `.info`, or the pair are two
+files that do nothing.
+
 #### A driver has to go where the system looks for it
 
 AHI is the Amiga's standard audio interface, and it is a **device**: programs

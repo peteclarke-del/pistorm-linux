@@ -37,6 +37,7 @@ import urllib.request
 from collections.abc import Iterable
 from pathlib import Path
 
+from . import amigainfo
 from .machines import Chipset, Display, Machine
 from .util import Progress, human_size
 
@@ -105,6 +106,12 @@ class Download:
     #  archive that ships one binary per processor: the card wants the one
     #  its machine has, under the name the icon launches.
     rename: tuple[tuple[str, str, str], ...] = ()
+    #  (icon inside the archive, destination, name on the card, DefaultTool).
+    #  A project icon runs its DefaultTool on the file beside it, which is
+    #  how a script becomes something that can be double clicked. Borrowing
+    #  an icon the archive already has and retargeting it beats inventing
+    #  one: a hand-built DiskObject with no image draws as nothing at all.
+    retool: tuple[tuple[str, str, str, str], ...] = ()
 
     @property
     def url(self) -> str:
@@ -207,6 +214,9 @@ class Package:
 
 
 STAGING = "Storage/Install"          # where self-installing packages land
+
+
+MOUNT_ADF_SCRIPT = '.key NAME/F\n;\n; MountADF - choose a disk image and mount it as a floppy drive.\n;\n; Written by the PiStorm imager. Double click it and it asks for the file,\n; or pass one:  Execute SYS:Utilities/ADF_Device/MountADF <file>.adf\n; Either way it hands the job to the ADF Device\'s own Insert.script, which\n; asks which unit, mounts it if it is not mounted, and tells DOS the disk\n; has changed - after which AD0: is on Workbench like any other floppy.\n;\nIF "<NAME>" EQ ""\n  RequestFile >ENV:PiStormADF TITLE "Choose a disk image to mount" PATTERN "#?.adf" NOICONS\n  IF EXISTS ENV:PiStormADF\n    IF NOT "$PiStormADF" EQ ""\n      Execute SYS:Utilities/ADF_Device/Insert.script $PiStormADF\n    ENDIF\n    Delete >NIL: ENV:PiStormADF\n  ENDIF\nELSE\n  Execute SYS:Utilities/ADF_Device/Insert.script <NAME>\nENDIF\n'
 
 
 CATALOGUE: list[Package] = [
@@ -693,11 +703,22 @@ CATALOGUE: list[Package] = [
              ("ADF_Device_v1.3/Remove.script", "Utilities/ADF_Device"),
              ("ADF_Device_v1.3/ADF_Device.guide", "Utilities/ADF_Device"),
              ("ADF_Device_v1.3/ADF_Device.guide.info",
-              "Utilities/ADF_Device"))),
+              "Utilities/ADF_Device")),
+            #  The archive has no Workbench front end at all: its own scripts
+            #  want a Shell and a filename. This one asks for the file with
+            #  RequestFile and then hands over to theirs, so it works by
+            #  double click - and it is part of this package, not a loose
+            #  extra, because it is no use without the device beside it.
+            write=(("MountADF", "Utilities/ADF_Device", MOUNT_ADF_SCRIPT),),
+            #  ...and the icon that makes double clicking it run it. IconX is
+            #  Workbench's script runner; the guide's own icon is borrowed
+            #  and retargeted, because an invented one would have no image.
+            retool=(("ADF_Device_v1.3/ADF_Device.guide.info",
+                     "Utilities/ADF_Device", "MountADF.info", "IconX"),)),
         note="Bjoern Fuglsang's adf.device goes into DEVS: with its "
-             "mountlist. From a Shell: Execute "
-             "Utilities/ADF_Device/Insert.script <file>.adf - it asks which "
-             "unit, mounts AD0: and up, and the disk appears on Workbench.",
+             "mountlist, and Utilities/ADF_Device holds MountADF - double "
+             "click it, pick an .adf, pick a unit, and the disk appears on "
+             "Workbench as AD0:. Sixteen units are mountable.",
     ),
     Package(
         "ahi", "AHI",
@@ -1213,11 +1234,29 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
     #  files by `rename` or wrote its own returned here instead, and its whole
     #  archive went to `stage` - which for such a package is "", the volume
     #  root.
-    if not (download.items or download.rename or download.write):
+    if not (download.items or download.rename or download.write
+            or download.retool):
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
         return [(str(source), download.stage)]
     out: list[tuple[str, str]] = _written(package, progress)
+    for inside, destination, newname, tool in download.retool:
+        source = root / inside
+        if not source.exists():
+            progress.log(f"  {package.label}: {inside} is not in the archive")
+            continue
+        try:
+            icon = amigainfo.set_default_tool(source.read_bytes(), tool)
+        except amigainfo.InfoError as error:
+            progress.log(f"  {package.label}: {inside} is not an icon this "
+                         f"understands ({error}); leaving it out rather than "
+                         f"writing one that opens the wrong thing")
+            continue
+        staged = cache_dir() / f"{package.key}-retooled" / destination
+        staged.mkdir(parents=True, exist_ok=True)
+        (staged / newname).write_bytes(icon)
+        out.append((str(staged / newname), destination))
+        progress.log(f"  {package.label}: {newname} set to open with {tool}")
     for inside, destination, newname in download.rename:
         source = root / inside
         if not source.exists():
