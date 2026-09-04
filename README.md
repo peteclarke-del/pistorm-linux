@@ -1073,6 +1073,86 @@ already carries them. They were written with `check_existing=True`, so a card
 built by this tool once before would end the *next* build at its last step,
 an hour in, over a script that was already correct.
 
+### The card says what was put on it
+
+AmigaOS has no uninstaller. Commodore's Installer only ever installed — it has
+no removal facility — and the third-party tools on Aminet that fill the gap
+either read Installer's log file (`util/wb/Uninstaller.lha`) or watch an
+installation as it happens and record what changed (`util/misc/DeInstaller.lha`).
+Neither helps here, because nothing this tool installs goes through Installer
+at all: the files are copied into place directly, which is the whole point of
+installing rather than staging. So there is no log to undo.
+
+Taking a package back off a finished card therefore meant reading an hour-old
+build log, if it was still on the screen. Every build now writes its own record
+to `S:PiStorm-Installed` on the drive the machine boots from — readable on the
+Amiga with `Type`, and grouped by the package that asked for each path:
+
+    ; WHDLoad
+    C/WHDLoad
+    C/WHDLoadCD32
+
+    ; SysInfo
+    Utilities/SysInfo  ; whole drawer, 34 files
+
+The distinction in that example is the one that matters. A package bringing its
+own drawer is named as the drawer, because deleting it removes exactly that
+package and nothing else. A package that merges into a drawer the *system*
+owns — WHDLoad puts three commands into `C` — is listed file by file, because
+naming the drawer there would read as an instruction to delete `SYS:C` and take
+AmigaDOS with it.
+
+**Only what was really written is listed.** The first version walked the
+source tree instead, and claimed five of ClassicWB's own libraries as
+NewInstaller's — because the overlay offered them and the drive already had
+them, which its own log said plainly:
+
+    skipped guigfx.library: guigfx.library already exists
+
+Following that record would have deleted somebody else's files under a
+package's name. `install_tree` now reports the path of every file it actually
+wrote, and the record is built from that: a file the drive already had, one a
+compatibility rule refused, and one that could not be written are all absent.
+
+**A drawer is named as one line only when this build created it**, so that
+everything inside it really did come from the package. ClassicWB brings its
+own `System/MUI`, and ours merges 56 files into it while skipping 339 — naming
+that drawer would hand over the drive's MUI as though this build had put it
+there, so its 56 files are listed instead. `Internet/NetSurf`, which did not
+exist until this build made it, stays one line.
+
+**The destination decides whether a drawer may be named at all, never the name
+it arrived under.** The first version asked whether the source drawer's name matched the
+destination's, which sounds equivalent and is the opposite: a package merging
+into a system drawer does so under exactly that drawer's own name, and the
+build log is full of `Libs/ -> Libs`, `C/ -> C` and `S/ -> S`. That rule would
+have written `C`, `Libs` and `S` into a file whose header says to delete what
+it lists. So `SYSTEM_DRAWERS` names the drawers AmigaOS, Workbench and this
+build own — including the ones several packages share, like `Internet` and
+`Storage/Install` — and anything landing in one of those is listed file by
+file. Everything else is the package's own drawer, whatever the archive
+unpacked as: WookieChat arrives as `WookieChat2.11_OS3_Installer` and lands in
+`Internet/WookieChat`, which is one line rather than 145.
+
+The lines added to `S:User-Startup` are recorded too, commented out. A line left
+behind runs a program that is no longer there, which is a boot-time error every
+time the machine starts.
+
+Nothing this file does can end a build. It is written at the very last step of
+a build that takes an hour, and the first version of it ended one: MUI ships
+`Locale/Catalogs/français`, whose name arrives from the host as a lone
+surrogate, and a plain `latin-1` encode raised on it *after* every file had
+been copied — taking the volume with it, unclosed and unformatted, 413 MB
+allocated out of nine gigabytes. Names are now encoded through
+`surrogateescape`, which puts back the byte the Amiga had in the first place,
+and the whole write is wrapped so that any other failure is a warning and the
+card is finished regardless. A convenience is not worth an hour.
+
+A card built from a drive this tool produced earlier brings that earlier
+build's record with it, describing software that is not there and missing
+software that is. It is held back during the copy, the same way the drive's
+`S:User-Startup` is, so this build's record lands in its place.
+
 ### Anything kept from a previous run has to say where it came from
 
 Three rebuilds were lost to one shape of bug, in three different places: a

@@ -1791,3 +1791,334 @@ class ChoicesThatBuildAndMislead(unittest.TestCase):
     def test_a_card_with_nothing_on_its_drives(self):
         said = self._config().concerns()
         self.assertTrue([s for s in said if "Nothing is being put" in s])
+
+
+class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
+    """AmigaOS has no uninstaller, so the card carries its own record.
+
+    Commodore's Installer never had a removal facility, and nothing this
+    imager installs goes through Installer at all - the files are copied into
+    place directly - so there is no install log for any of the Aminet
+    uninstallers to work from. Taking a package off a finished card meant
+    reading an hour-old build log, if it was still on the screen. The card now
+    says so itself, in S:PiStorm-Installed.
+    """
+
+    def setUp(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        self.builder = builder
+        self.folder = Path(tempfile.mkdtemp(prefix="pistorm-manifest-"))
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
+
+    def _package_with_its_own_drawer(self) -> str:
+        drawer = self.folder / "PowerWindows"
+        (drawer / "Docs").mkdir(parents=True)
+        (drawer / "PowerWindows").write_bytes(b"prog")
+        (drawer / "Docs" / "PowerWindows.guide").write_bytes(b"doc")
+        return str(drawer)
+
+    def _package_merged_into_the_system(self) -> str:
+        commands = self.folder / "whdload-c"
+        commands.mkdir()
+        (commands / "WHDLoad").write_bytes(b"prog")
+        (commands / "WHDLoadCD32").write_bytes(b"prog")
+        return str(commands)
+
+    def test_a_packages_own_drawer_is_named_as_a_drawer(self):
+        pairs = [(self._package_with_its_own_drawer(),
+                  "Utilities/PowerWindows")]
+        landed = {pairs[0]: (["Utilities/PowerWindows/PowerWindows",
+                              "Utilities/PowerWindows/Docs/PowerWindows.guide"],
+                             True)}
+        entries = self.builder._manifest_entries(pairs,
+                                                 {pairs[0]: "powerwindows"},
+                                                 landed)
+        self.assertEqual([label for label, _ in entries], ["PowerWindows"],
+                         "the package's own name is what a reader can act on, "
+                         "not the key this code happens to file it under")
+        listed = entries[0][1]
+        self.assertEqual(len(listed), 1,
+                         "a package's own drawer is one line, not a file list")
+        self.assertTrue(listed[0].startswith("Utilities/PowerWindows"),
+                        listed[0])
+        self.assertIn("2 files", listed[0],
+                      "the count is what says whether it is worth deleting")
+
+    def test_files_merged_into_a_system_drawer_are_listed_one_by_one(self):
+        #  The dangerous case. WHDLoad puts its commands into C, which
+        #  AmigaDOS owns: naming the drawer would read as "Delete SYS:C ALL"
+        #  and take the operating system with it.
+        pairs = [(self._package_merged_into_the_system(), "C")]
+        entries = self.builder._manifest_entries(pairs, {pairs[0]: "whdload"})
+        listed = entries[0][1]
+        self.assertIn("C/WHDLoad", listed)
+        self.assertIn("C/WHDLoadCD32", listed)
+        self.assertNotIn("C", listed, "the whole C: drawer must never be named")
+        for line in listed:
+            self.assertNotIn("whole drawer", line, line)
+
+    def test_the_startup_lines_are_recorded_too(self):
+        config = self.builder.BuildConfig(target="/tmp/x",
+                                          package_keys=["fblit"])
+        pairs = [(self._package_with_its_own_drawer(),
+                  "Utilities/PowerWindows")]
+        text = self.builder._manifest_text(
+            config, pairs, {pairs[0]: "powerwindows"},
+            {pairs[0]: (["Utilities/PowerWindows/PowerWindows"], True)})
+        self.assertIn("User-Startup", text,
+                      "a line left behind in User-Startup runs a program that "
+                      "is no longer there")
+        self.assertIn("C:FBlit", text)
+
+    def test_nothing_installed_means_no_file_at_all(self):
+        config = self.builder.BuildConfig(target="/tmp/x")
+        self.assertEqual(self.builder._manifest_text(config, [], {}), "")
+
+    def test_it_really_lands_on_the_drive(self):
+        #  Not the pure function alone: the last time a helper was tested
+        #  without its caller, the caller was missing an import and every
+        #  build died on it while the tests stayed green.
+        from pistorm_imager.core import amigaos, pfs3, rdb      # noqa: PLC0415
+        image = self.folder / "drive.hdf"
+        size = 8 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        pairs = [(self._package_merged_into_the_system(), "C")]
+        config = self.builder.BuildConfig(target="/tmp/x",
+                                          package_keys=["whdload"])
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            self.builder._write_manifest(volume, config, pairs,
+                                         {pairs[0]: "whdload"}, Progress())
+            volume.close()
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            entry = back.find(self.builder.MANIFEST_PATH)
+            self.assertIsNotNone(entry, "no record was written to the card")
+            text = back.read_file(entry).decode("latin-1")
+        self.assertIn("C/WHDLoad", text)
+        self.assertIn("Delete SYS:", text, "it has to say how to use it")
+
+    def test_an_imported_drives_old_record_is_not_left_standing(self):
+        #  A card built from a drive that this imager built before brings the
+        #  earlier build's manifest with it. Read afterwards it would describe
+        #  software that is not there and miss software that is.
+        fixer = compat.Compatibility(Progress())
+        fixer.displace([self.builder.MANIFEST_PATH])
+        fixer.offer(self.builder.MANIFEST_PATH, b"; an older card")
+        self.assertTrue(fixer.skip(self.builder.MANIFEST_PATH),
+                        "the old record must be held back so ours can land")
+
+    def test_a_real_build_writes_it(self):
+        #  The whole path, not the writer alone: a helper can be correct and
+        #  never called, which is how a missing import once broke every build
+        #  with the tests still green.
+        from pistorm_imager.core import mbr, pfs3               # noqa: PLC0415
+        drive = self.folder / "drive"
+        (drive / "S").mkdir(parents=True)
+        (drive / "S" / "Startup-Sequence").write_bytes(b"Echo hello\n")
+        #  The drive brings a library of its own, and an overlay offers the
+        #  same one. It is not written, so it is not this build's to claim.
+        (drive / "Libs").mkdir()
+        (drive / "Libs" / "guigfx.library").write_bytes(b"the drive's own")
+        overlay = self.folder / "PowerWindows"
+        overlay.mkdir()
+        (overlay / "PowerWindows").write_bytes(b"prog")
+        offered = self.folder / "libs-overlay"
+        offered.mkdir()
+        (offered / "guigfx.library").write_bytes(b"ours")
+        (offered / "identify.library").write_bytes(b"ours")
+
+        image = self.folder / "out.hdf"
+        size = 200 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        config = self.builder.BuildConfig(
+            target=str(image), install_amigaos=False,
+            amiga_partitions=[self.builder.AmigaPartitionSpec(
+                name="DH0", size=180 * 1024 * 1024, bootable=True,
+                volume_name="System", content_folder=str(drive),
+                overlays=[(str(overlay), "Utilities/PowerWindows"),
+                          (str(offered), "Libs")])])
+        progress = Progress()
+        with open(image, "r+b") as handle:
+            table = self.builder._build_rdb(config, size // 512, progress)
+            table.write(handle, 0)
+            whole = mbr.MbrPartition(0, 0, mbr.TYPE_AMIGA, 0, size // 512)
+            self.builder._install_content(config, handle, whole, table,
+                                          progress)
+        with open(image, "rb") as handle:
+            offset = table.partitions[0].byte_offset(table.geometry, 0)
+            volume = pfs3.Pfs3Volume(handle, offset)
+            entry = volume.find(self.builder.MANIFEST_PATH)
+            self.assertIsNotNone(entry,
+                                 "a finished drive carries no record of what "
+                                 "this build put on it")
+            text = volume.read_file(entry).decode("latin-1")
+        self.assertIn("Utilities/PowerWindows", text)
+        self.assertIn("whole drawer, 1 file", text)
+        self.assertIn("Libs/identify.library", text,
+                      "the library this build really wrote is missing")
+        self.assertNotIn("guigfx", text,
+                         "the drive's own library was skipped as already "
+                         "present, so claiming it is an instruction to delete "
+                         "somebody else's file")
+
+    def test_a_name_that_is_not_utf8_does_not_end_the_build(self):
+        #  MUI ships Locale/Catalogs/francais with a latin-1 cedilla, which
+        #  arrives from the host as a lone surrogate. A plain latin-1 encode
+        #  raises on it, and this file is written at the very last step of a
+        #  build that takes an hour: it took the whole card with it, unclosed
+        #  and unformatted, after every file had already been copied.
+        from pistorm_imager.core import amigaos, pfs3, rdb      # noqa: PLC0415
+        merged = self.folder / "catalogs"
+        (merged / "fran\udce7ais").mkdir(parents=True)
+        (merged / "fran\udce7ais" / "mui.catalog").write_bytes(b"cat")
+        pairs = [(str(merged), "Locale/Catalogs")]
+        config = self.builder.BuildConfig(target="/tmp/x")
+
+        text = self.builder._manifest_text(config, pairs, {})
+        self.assertIn("Locale/Catalogs/fran\udce7ais/mui.catalog", text)
+        #  Written back as the byte the Amiga had in the first place.
+        self.assertIn(b"fran\xe7ais", self.builder._amiga_bytes(text))
+
+        image = self.folder / "cat.hdf"
+        size = 8 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            self.builder._write_manifest(volume, config, pairs, {}, Progress())
+            volume.close()
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            self.assertIsNotNone(back.find(self.builder.MANIFEST_PATH))
+
+    def test_nothing_it_can_do_ends_a_build(self):
+        #  Whatever else goes wrong in here, an hour of copying is not thrown
+        #  away for a file that is only a convenience.
+        class Broken:
+            def makedirs(self, _where):
+                raise RuntimeError("the drive said no")
+
+        progress = Progress()
+        said = []
+        progress.log = said.append
+        config = self.builder.BuildConfig(target="/tmp/x")
+        pairs = [(self._package_with_its_own_drawer(),
+                  "Utilities/PowerWindows")]
+        self.builder._write_manifest(Broken(), config, pairs,
+                                     {pairs[0]: "powerwindows"}, progress)
+        self.assertTrue(any("WARNING" in line and "card is unaffected" in line
+                            for line in said),
+                        f"the failure has to be reported, not swallowed: {said}")
+
+    def test_a_drawer_the_system_owns_is_never_named_however_it_arrived(self):
+        #  The near-miss. Every package that merges into a system drawer does
+        #  so under exactly that drawer's own name - the build log shows
+        #  "Libs/ -> Libs", "C/ -> C" and "S/ -> S" - so deciding by whether
+        #  the source drawer's name matched the destination would have written
+        #  "C ; whole drawer" into a file whose header says to delete what it
+        #  lists. That is "Delete SYS:C ALL", and the end of AmigaDOS.
+        for name in ("C", "Libs", "S", "L", "Devs", "WBStartup", "Prefs"):
+            with self.subTest(drawer=name):
+                source = self.folder / "same" / name
+                source.mkdir(parents=True, exist_ok=True)
+                (source / "thing").write_bytes(b"x")
+                pairs = [(str(source), name)]
+                listed = self.builder._manifest_entries(pairs, {})[0][1]
+                self.assertEqual(listed, [f"{name}/thing"],
+                                 f"{name} must be listed file by file")
+                for line in listed:
+                    self.assertNotIn("whole drawer", line, line)
+
+    def test_a_drawer_the_package_brought_is_named_even_if_renamed(self):
+        #  WookieChat unpacks as "WookieChat2.11_OS3_Installer" and lands in
+        #  Internet/WookieChat. Matching on the source name listed all 145 of
+        #  its files; the destination is the package's own drawer, so one line
+        #  says it.
+        source = self.folder / "WookieChat2.11_OS3_Installer"
+        (source / "Docs").mkdir(parents=True)
+        (source / "WookieChat").write_bytes(b"x")
+        (source / "Docs" / "readme").write_bytes(b"x")
+        pairs = [(str(source), "Internet/WookieChat")]
+        landed = {pairs[0]: (["Internet/WookieChat/WookieChat",
+                              "Internet/WookieChat/Docs/readme"], True)}
+        listed = self.builder._manifest_entries(pairs, {}, landed)[0][1]
+        self.assertEqual(len(listed), 1, listed)
+        self.assertIn("Internet/WookieChat  ; whole drawer, 2 files", listed[0])
+
+    def test_the_drawers_this_build_shares_out_are_not_named_either(self):
+        #  Several packages land side by side in Internet, Audio and Programs.
+        #  Naming one of those as a package's own drawer would take the others
+        #  with it.
+        for name in ("Internet", "Audio", "Programs", "Storage/Install"):
+            with self.subTest(drawer=name):
+                source = self.folder / "shared" / name.replace("/", "-")
+                source.mkdir(parents=True, exist_ok=True)
+                (source / "thing").write_bytes(b"x")
+                pairs = [(str(source), name)]
+                listed = self.builder._manifest_entries(pairs, {})[0][1]
+                self.assertEqual(listed, [f"{name}/thing"])
+
+    def test_only_what_was_really_written_is_claimed(self):
+        #  Read off a finished card. NewInstaller's overlay offers five
+        #  libraries the drive already had - the log says "skipped
+        #  guigfx.library: already exists" - and the record claimed all five
+        #  as its own. Following it would have deleted ClassicWB's copies
+        #  under NewInstaller's name.
+        source = self.folder / "newinstaller"
+        source.mkdir()
+        for name in ("NewInstaller", "guigfx.library", "render.library"):
+            (source / name).write_bytes(b"x")
+        pairs = [(str(source), "Libs")]
+        #  Only the first was actually written; the drive already had the
+        #  other two.
+        landed = {pairs[0]: (["Libs/NewInstaller"], False)}
+        listed = self.builder._manifest_entries(pairs, {}, landed)[0][1]
+        self.assertEqual(listed, ["Libs/NewInstaller"])
+        self.assertNotIn("Libs/guigfx.library", listed,
+                         "a file this build did not write must never be "
+                         "offered up for deletion")
+
+    def test_a_drawer_the_drive_already_had_is_not_claimed_whole(self):
+        #  ClassicWB brings its own System/MUI. Our MUI merges 56 files into
+        #  it and skips 339, so naming the drawer would hand over the drive's
+        #  MUI as though this build had put it there.
+        source = self.folder / "MUI"
+        source.mkdir()
+        (source / "muimaster.library").write_bytes(b"x")
+        pairs = [(str(source), "System/MUI")]
+        landed = {pairs[0]: (["System/MUI/muimaster.library"], False)}
+        listed = self.builder._manifest_entries(pairs, {}, landed)[0][1]
+        self.assertEqual(listed, ["System/MUI/muimaster.library"])
+        for line in listed:
+            self.assertNotIn("whole drawer", line, line)
+
+    def test_the_copy_reports_only_the_files_it_wrote(self):
+        #  The plumbing this rests on: install_tree's report must exclude a
+        #  file the volume already had.
+        from pistorm_imager.core import amigaos, rdb                # noqa: PLC0415
+        source = self.folder / "overlay"
+        source.mkdir()
+        (source / "new").write_bytes(b"new")
+        (source / "old").write_bytes(b"ours")
+        image = self.folder / "landings.hdf"
+        size = 8 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            drawer = volume.makedirs("Libs")
+            volume.write_file(drawer, "old", b"the drive's own",
+                              check_existing=False)
+            written = []
+            amigaos.install_tree(volume, source, "Libs", Progress(),
+                                 merge=True, written=written)
+            volume.close()
+        self.assertEqual(written, ["Libs/new"],
+                         "the file the drive already had was not written by "
+                         f"this build and must not be reported: {written}")
