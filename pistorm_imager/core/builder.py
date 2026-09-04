@@ -731,6 +731,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     spec = next((s for s in config.amiga_partitions
                  if s.name.upper() == partition.drive_name.upper()), None)
     credit: dict[tuple[str, str], str] = {}
+    landings: dict = {}
     extra = _package_overlays(config, list(spec.overlays), progress, credit) \
         if spec is not None else []
     if extra and config.replace_older_software:
@@ -756,12 +757,12 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         if spec.overlays or extra:
             spec = dataclasses.replace(spec,
                                        overlays=list(spec.overlays) + extra)
-            _apply_overlays(volume, spec, fixer, progress)
+            _apply_overlays(volume, spec, fixer, progress, landings)
         _give_drawers_icons(volume, spec, config, progress)
     _write_user_startup(volume, config, progress, fixer.kept_user_startup)
     _write_manifest(volume, config,
                     list(spec.overlays) if spec is not None else [],
-                    credit, progress)
+                    credit, progress, landings)
     #  Now that everything is on it, and not before: the graphics driver and
     #  the display-switching scripts depend on what the packages installed.
     fixer.finish(volume, progress)
@@ -923,16 +924,22 @@ SYSTEM_DRAWERS = {
 
 
 def _manifest_entries(pairs: list[tuple[str, str]],
-                      credit: dict[tuple[str, str], str]
+                      credit: dict[tuple[str, str], str],
+                      landings: dict | None = None
                       ) -> list[tuple[str, list[str]]]:
-    """What each package put on the card, as paths that can be deleted.
+    """What each package really put on the card, as paths that can be deleted.
 
-    A package that brings its own drawer - ``Utilities/PowerWindows`` - is
-    named as the drawer, because deleting it removes exactly that package.
-    One that merges into a drawer the system already owns - WHDLoad puts
-    three commands into ``C`` - is listed file by file, because naming the
-    drawer there would read as an instruction to delete ``SYS:C`` and take
-    AmigaDOS with it.
+    Built from what the copy actually wrote, never from what was asked for.
+    The first version walked the source tree instead and claimed five of
+    ClassicWB's own libraries as NewInstaller's, because the overlay offered
+    them and the drive already had them - reading its own log would have said
+    "skipped guigfx.library: already exists". A record that names a file this
+    build did not write is worse than no record: it is an instruction to
+    delete somebody else's.
+
+    A drawer is named as one line only when this build made it, so that
+    everything inside it came from the package. Otherwise - a system drawer,
+    or one the drive already had - the files are named one by one.
     """
     grouped: dict[str, list[str]] = {}
     order: list[str] = []
@@ -940,47 +947,31 @@ def _manifest_entries(pairs: list[tuple[str, str]],
         source_text, destination = pair
         source = Path(source_text)
         key = credit.get(pair, "")
-        label = ""
         package = packages.CATALOGUE_BY_KEY.get(key)
         if package is not None:
             label = package.label
-        elif key:
-            label = key
         else:
             #  An overlay the user added themselves, or one the setup made.
-            label = "Added by this build"
+            label = key or "Added by this build"
         where = str(destination).strip("/")
-        landed: list[str] = []
-        if source.is_file():
-            landed.append(f"{where}/{source.name}" if where else source.name)
-        elif source.is_dir():
-            #  The package brought a drawer of its own if the destination is
-            #  not one the system already owns.  A destination with a parent -
-            #  Internet/NetSurf, Utilities/SysInfo - is the package's own
-            #  even when the archive unpacked under a different name, which
-            #  is why the source name is only consulted at the top level.
-            system = where.lower() in SYSTEM_DRAWERS
-            own_drawer = bool(where) and not system and (
-                "/" in where
-                or source.name.lower() == where.rpartition("/")[2].lower())
-            if own_drawer:
-                inside = sum(1 for child in source.rglob("*")
-                             if child.is_file())
-                landed.append(f"{where}  ; whole drawer, {inside} "
-                              f"file{'' if inside == 1 else 's'}")
-            else:
-                files = sorted(child for child in source.rglob("*")
-                               if child.is_file())
-                if len(files) > MANIFEST_FILE_LIMIT:
-                    landed.append(f"{where or ':'}  ; {len(files)} files "
-                                  f"merged in, too many to list")
-                else:
-                    for child in files:
-                        relative = child.relative_to(source).as_posix()
-                        landed.append(f"{where}/{relative}" if where
-                                      else relative)
-        if not landed:
+        written, made_the_drawer = (landings or {}).get(pair, (None, False))
+        if written is None:
+            #  No record of the copy: describe the intent, and never as a
+            #  whole drawer, because nothing here knows what else is in it.
+            written = _intended_paths(source, where)
+            made_the_drawer = False
+        if not written:
             continue
+        own_drawer = (bool(where) and made_the_drawer
+                      and where.lower() not in SYSTEM_DRAWERS)
+        if own_drawer:
+            landed = [f"{where}  ; whole drawer, {len(written)} "
+                      f"file{'' if len(written) == 1 else 's'}"]
+        elif len(written) > MANIFEST_FILE_LIMIT:
+            landed = [f"{where or ':'}  ; {len(written)} files added here, "
+                      f"too many to list"]
+        else:
+            landed = list(written)
         if label not in grouped:
             grouped[label] = []
             order.append(label)
@@ -988,8 +979,24 @@ def _manifest_entries(pairs: list[tuple[str, str]],
     return [(label, grouped[label]) for label in order]
 
 
+def _intended_paths(source: Path, where: str) -> list[str]:
+    """Where an overlay would land, for a caller that did not watch it copy."""
+    if source.is_file():
+        return [f"{where}/{source.name}" if where else source.name]
+    if not source.is_dir():
+        return []
+    out = []
+    for child in sorted(source.rglob("*")):
+        if not child.is_file():
+            continue
+        relative = child.relative_to(source).as_posix()
+        out.append(f"{where}/{relative}" if where else relative)
+    return out
+
+
 def _manifest_text(config: "BuildConfig", pairs: list[tuple[str, str]],
-                   credit: dict[tuple[str, str], str]) -> str:
+                   credit: dict[tuple[str, str], str],
+                   landings: dict | None = None) -> str:
     """The card's own record of what this build added to it.
 
     AmigaOS has no uninstaller and Commodore's Installer never had a removal
@@ -1000,7 +1007,7 @@ def _manifest_text(config: "BuildConfig", pairs: list[tuple[str, str]],
     for it, in a form that can be read on the Amiga with ``Type`` and acted
     on with ``Delete``.
     """
-    entries = _manifest_entries(pairs, credit)
+    entries = _manifest_entries(pairs, credit, landings)
     startup = _package_startup_lines(config)
     if not entries and not startup:
         return ""
@@ -1057,10 +1064,11 @@ def _amiga_bytes(text: str) -> bytes:
 def _write_manifest(volume, config: "BuildConfig",
                     pairs: list[tuple[str, str]],
                     credit: dict[tuple[str, str], str],
-                    progress: Progress) -> None:
+                    progress: Progress, landings: dict | None = None) -> None:
     """Write that record onto the drive the machine boots from."""
     try:
-        _write_manifest_now(volume, config, pairs, credit, progress)
+        _write_manifest_now(volume, config, pairs, credit,
+                            progress, landings)
     except Exception as error:                              # noqa: BLE001
         #  This file is a convenience, written at the very end of a build
         #  that takes an hour.  Nothing about it is worth losing that build
@@ -1074,9 +1082,10 @@ def _write_manifest(volume, config: "BuildConfig",
 def _write_manifest_now(volume, config: "BuildConfig",
                         pairs: list[tuple[str, str]],
                         credit: dict[tuple[str, str], str],
-                        progress: Progress) -> None:
+                        progress: Progress,
+                        landings: dict | None = None) -> None:
     """Write it, and let anything that goes wrong reach the caller."""
-    body = _manifest_text(config, pairs, credit)
+    body = _manifest_text(config, pairs, credit, landings)
     if not body:
         return
     folder = volume.makedirs("S")
@@ -1210,19 +1219,55 @@ def _igame_repositories(config: "BuildConfig",
     return [(str(written), "Programs/iGame")]
 
 
+def _drawer_exists(volume, destination: str) -> bool:
+    """Whether the drive already has this drawer, before an overlay makes it.
+
+    It decides whether a drawer may be named in the record as one thing to
+    delete. A drawer this build created holds nothing but what this build put
+    in it; a drawer that was already there - ClassicWB's own ``System/MUI``,
+    which our MUI merges 56 files into and skips 339 - does not, and naming it
+    would offer up the drive's own files under a package's name.
+    """
+    if not destination:
+        return True
+    block = volume.root
+    for name in destination.strip("/").split("/"):
+        found = volume._entry_exists(block, name)
+        if found is None:
+            return False
+        #  FFS hands back an Entry and PFS3 a (anode, is_dir) pair; both take
+        #  their own number back as a parent.
+        if isinstance(found, tuple):
+            block, is_dir = found[0], bool(found[1])
+        else:
+            block, is_dir = found.block, found.is_dir
+        if not is_dir:
+            return False
+    return True
+
+
 def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
-                    progress: Progress) -> None:
-    """Copy extra files or folders on top of a filled partition."""
+                    progress: Progress,
+                    landings: dict | None = None) -> None:
+    """Copy extra files or folders on top of a filled partition.
+
+    ``landings``, if given, is filled in with what each overlay really put on
+    the drive: the paths written, and whether this build made the drawer they
+    went into.
+    """
     for source_text, destination in spec.overlays:
+        pair = (source_text, destination)
         source = Path(source_text)
         if not source.exists():
             progress.log(f"  overlay missing, skipped: {source}")
             continue
         if source.is_dir():
+            made_the_drawer = not _drawer_exists(volume, destination)
+            written: list[str] = []
             try:
                 copied, _renamed = amigaos.install_tree(
                     volume, source, destination, progress, compat=fixer,
-                    merge=True)
+                    merge=True, written=written)
             except (amigafs.AmigaFsError, pfs3.Pfs3Error) as error:
                 #  One package colliding with the drive is not a reason to
                 #  throw away a card that took an hour to build. Say which,
@@ -1231,6 +1276,9 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
                              f"installed into {destination or ':'} - {error}. "
                              f"Everything else is unaffected.")
                 continue
+            if landings is not None and written:
+                already, made = landings.get(pair, ([], made_the_drawer))
+                landings[pair] = (already + written, made and made_the_drawer)
             progress.log(f"  overlay: {source.name}/ -> {destination or ':'} "
                          f"({copied} files)")
         else:
@@ -1257,6 +1305,9 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
                 if fixer.skip(relative):
                     continue
             volume.write_file(parent, source.name, data, check_existing=True)
+            if landings is not None:
+                landings[pair] = ([amigaos.landed_path(destination,
+                                                       source.name)], False)
             progress.log(f"  overlay: {source.name} -> {destination or ':'}")
 
 
@@ -1523,7 +1574,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         #  The drive and the disks have had their turn; what follows is the
         #  packages writing the very files those were refused for.
         fixer.stop_displacing()
-        _apply_overlays(volume, spec, fixer, progress)
+        landings: dict = {}
+        _apply_overlays(volume, spec, fixer, progress, landings)
         if spec.bootable:
             #  Everything the floppy install does once the files are on:
             #  without these the software went on and had no icons, and
@@ -1532,7 +1584,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             _write_user_startup(volume, config, progress,
                                 fixer.kept_user_startup)
             _write_manifest(volume, config, list(spec.overlays), credit,
-                            progress)
+                            progress, landings)
             #  Only the drive the machine boots from: Games and Demos were
             #  each being given their own copy of the display-switching
             #  scripts, which belong in the system drive's S: and nowhere.
