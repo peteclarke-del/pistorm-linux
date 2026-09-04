@@ -2523,3 +2523,97 @@ class ADistributionsOwnOlderCopyIsReplaced(unittest.TestCase):
                 reader.f.close()
             except Exception:                                     # noqa: BLE001
                 pass
+
+    def test_the_drawer_and_its_icon_really_go(self):
+        #  The unit test asked skip() about files and passed while a card was
+        #  built with an empty Tools/SysInfo whose icon was still on the
+        #  desktop: copy_volume creates a drawer without consulting skip at
+        #  all, and Tools/SysInfo.info is not inside Tools/SysInfo. Both were
+        #  found by reading the finished card, so this copies a real volume.
+        from pistorm_imager.core import amigaos, compat, rdb     # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-supersede-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        drive = folder / "drive"
+        for path in ("Tools/SysInfo/Docs", "Tools/SysInfoExtra", "System/MUI"):
+            (drive / path).mkdir(parents=True)
+        (drive / "Tools/SysInfo/SysInfo").write_bytes(b"old")
+        (drive / "Tools/SysInfo/Docs/guide").write_bytes(b"old")
+        (drive / "Tools/SysInfo.info").write_bytes(b"icon")
+        (drive / "Tools/SysInfoExtra/keep").write_bytes(b"keep")
+        (drive / "System/MUI/muimaster.library").write_bytes(b"keep")
+
+        image = folder / "out.hdf"
+        size = 16 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            fixer = compat.Compatibility(Progress())
+            fixer.supersede(["Tools/SysInfo"])
+            #  A drawer overlay claims its destination the other way, and
+            #  that must not stop the drive's own MUI being copied.
+            fixer.displace(["System/MUI"])
+            amigaos.install_tree(volume, drive, "", Progress(), compat=fixer)
+            volume.close()
+
+        from pistorm_imager.core import pfs3                     # noqa: PLC0415
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            def there(path):
+                return back.find(path) is not None
+            self.assertFalse(there("Tools/SysInfo"),
+                             "the drawer itself was still created")
+            self.assertFalse(there("Tools/SysInfo.info"),
+                             "its icon was left on the desktop, opening an "
+                             "empty window")
+            self.assertFalse(there("Tools/SysInfo/SysInfo"))
+            self.assertTrue(there("Tools/SysInfoExtra/keep"),
+                            "a drawer with a longer name was taken too")
+            self.assertTrue(there("System/MUI/muimaster.library"),
+                            "a displaced drawer must still be merged into")
+
+    def test_the_same_through_the_path_a_real_build_uses(self):
+        #  A boot drive filled from an .hdf goes through copy_volume, not
+        #  install_tree, and that is the path the card was built by. Testing
+        #  only the other one is how this shipped.
+        from pistorm_imager.core import amigaos, compat, pfs3, rdb  # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-supersede2-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        drive = folder / "drive"
+        (drive / "Tools/SysInfo/Docs").mkdir(parents=True)
+        (drive / "Tools/SysInfoExtra").mkdir(parents=True)
+        (drive / "Tools/SysInfo/SysInfo").write_bytes(b"old")
+        (drive / "Tools/SysInfo/Docs/guide").write_bytes(b"old")
+        (drive / "Tools/SysInfo.info").write_bytes(b"icon")
+        (drive / "Tools/SysInfoExtra/keep").write_bytes(b"keep")
+
+        size = 16 * 1024 * 1024
+        source_image = folder / "source.hdf"
+        with open(source_image, "wb") as handle:
+            handle.truncate(size)
+        with open(source_image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Source",
+                                         rdb.DOSTYPE_PFS3)
+            amigaos.install_tree(volume, drive, "", Progress())
+            volume.close()
+
+        target_image = folder / "target.hdf"
+        with open(target_image, "wb") as handle:
+            handle.truncate(size)
+        with open(source_image, "rb") as src, open(target_image, "r+b") as dst:
+            reader = pfs3.Pfs3Volume(src, 0)
+            volume = amigaos.make_volume(dst, 0, size // 512, "Target",
+                                         rdb.DOSTYPE_PFS3)
+            fixer = compat.Compatibility(Progress())
+            fixer.supersede(["Tools/SysInfo"])
+            amigaos.copy_volume(reader, volume, "", Progress(),
+                                skip_existing=False, compat=fixer)
+            volume.close()
+
+        with open(target_image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            self.assertIsNone(back.find("Tools/SysInfo"))
+            self.assertIsNone(back.find("Tools/SysInfo.info"))
+            self.assertIsNone(back.find("Tools/SysInfo/Docs/guide"))
+            self.assertIsNotNone(back.find("Tools/SysInfoExtra/keep"))
