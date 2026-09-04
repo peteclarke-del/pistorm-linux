@@ -121,12 +121,6 @@ class BuildConfig:
     #  so whichever lands first wins - and that used to be settled by the
     #  order the build happened to run in rather than by anybody's choice.
     replace_older_software: bool = True
-    #  Older copies the user looked at and chose to keep, lower-cased. Empty
-    #  by default: the point of choosing a package is to get its version, and
-    #  a distribution's own 1993 copy of the same program beside it is
-    #  clutter nobody asked for. But it is theirs to overrule, one at a time
-    #  rather than all or nothing.
-    keep_older_copies: list[str] = dataclasses.field(default_factory=list)
     #  Software the prepared drive arrives with that the user does not want.
     #  A ready-made distribution has its own idea of what belongs on a card -
     #  ClassicWB FULL carries thirty of them in Programs alone - and until
@@ -748,7 +742,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         if spec is not None else []
     if extra and config.replace_older_software:
         fixer.displace(_landing_paths(extra))
-    fixer.supersede(_older_copies_to_remove(config))
+    fixer.supersede(config.leave_out or [])
     #  Any record an imported drive brings describes a card that no longer
     #  exists; this build writes its own in its place.
     fixer.displace([MANIFEST_PATH])
@@ -1114,27 +1108,6 @@ def _write_manifest_now(volume, config: "BuildConfig",
                       check_existing=False)
     lines = sum(1 for line in body.splitlines() if not line.startswith(";"))
     progress.log(f"  S:{name} written: {lines} path(s) this build added")
-
-
-def _older_copies_to_remove(config: "BuildConfig") -> list[str]:
-    """Drawers a chosen package replaces outright, wherever they sit.
-
-    Displacement handles a file the package writes in the same place. This is
-    the other shape: the distribution keeps its own copy of the same program
-    somewhere this build would never write, so both land and only one is ever
-    opened - ClassicWB's Tools/SysInfo (3.24, from 1993) beside the package's
-    Utilities/SysInfo (4.4).
-    """
-    out: list[str] = []
-    #  Older copies are discovered on the drive rather than named here, and
-    #  the answers arrive as leave_out - one entry per drawer the user left
-    #  ticked for removal. Nothing about which programs exist is written
-    #  into this source.
-    #  What the user asked to be rid of goes by the same route: it is the
-    #  same operation, and the drawer's own icon has to go with it or the
-    #  desktop keeps an icon that opens nothing.
-    out += [str(path) for path in (config.leave_out or [])]
-    return out
 
 
 def _landing_paths(pairs: list[tuple[str, str]]) -> list[str]:
@@ -1644,7 +1617,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         if extra and config.replace_older_software:
             fixer.displace(_landing_paths(extra))
         if spec.bootable:
-            fixer.supersede(_older_copies_to_remove(config))
+            fixer.supersede(config.leave_out or [])
         if spec.bootable:
             #  See above: an earlier build's record is not left standing in
             #  front of this one's.

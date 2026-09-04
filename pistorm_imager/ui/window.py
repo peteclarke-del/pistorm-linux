@@ -2940,17 +2940,21 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  from the pages themselves quietly built a card without it.
             package_keys=self._chosen_packages(),
             replace_older_software=self.replace_older_row.get_active(),
-            #  A row switched off is one the user looked at and chose to
-            #  keep, so it is named here and left on the card.
-            #  A row switched off is software the user looked at and does
-            #  not want; it is left out drawer, contents and icon.
-            leave_out=sorted(key for key, row
-                             in getattr(self, "arrives_rows", {}).items()
-                             if not row.get_active()),
-            keep_older_copies=sorted(
-                drawer.strip("/").lower()
-                for drawer, row in getattr(self, "older_rows", {}).items()
-                if not row.get_active()),
+            #  Everything the user asked to be left out, from both lists.
+            #  They read in opposite directions and mean the same thing: a
+            #  drawer of the drive's own software switched *off* is one they
+            #  do not want, and an older copy switched *on* is one they want
+            #  replaced. Both go drawer, contents and icon.
+            #
+            #  These used to be two config fields, and the second was written
+            #  and then read by nobody - so the whole "older copies" list did
+            #  nothing at all, quietly, while looking as though it worked.
+            leave_out=sorted(
+                [key for key, row in getattr(self, "arrives_rows", {}).items()
+                 if not row.get_active()]
+                + [drawer for drawer, row
+                   in getattr(self, "older_rows", {}).items()
+                   if row.get_active()]),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides

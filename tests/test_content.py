@@ -2567,14 +2567,13 @@ class ADistributionsOwnOlderCopyIsReplaced(unittest.TestCase):
     def test_nothing_is_removed_unless_the_user_said_so(self):
         #  Nothing about which programs exist is written into the source any
         #  more: the removals are exactly the answers that came back from the
-        #  list, and a build with no answers removes nothing.
+        #  lists, and a build with no answers removes nothing.
         from pistorm_imager.core import builder                  # noqa: PLC0415
         config = builder.BuildConfig(target="/tmp/x",
                                      package_keys=["whdload", "sysinfo"])
-        self.assertEqual(builder._older_copies_to_remove(config), [])
+        self.assertEqual(list(config.leave_out), [])
         asked = dataclasses.replace(config, leave_out=["Tools/SysInfo"])
-        self.assertEqual(builder._older_copies_to_remove(asked),
-                         ["Tools/SysInfo"])
+        self.assertEqual(list(asked.leave_out), ["Tools/SysInfo"])
 
     def test_no_package_names_a_drawer_in_the_source(self):
         from pistorm_imager.core import packages                 # noqa: PLC0415
@@ -2809,8 +2808,7 @@ class SoftwareTheDriveArrivesWithCanBeLeftOut(unittest.TestCase):
             config = builder.BuildConfig(
                 target="/tmp/x", replace_older_software=replace,
                 leave_out=["Programs/FinalWriter"])
-            self.assertIn("Programs/FinalWriter",
-                          builder._older_copies_to_remove(config))
+            self.assertIn("Programs/FinalWriter", config.leave_out)
 
     def test_it_goes_by_the_route_that_takes_the_icon_too(self):
         #  The same rule that removes a superseded drawer, so the drawer, its

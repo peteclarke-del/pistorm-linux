@@ -1276,9 +1276,36 @@ def on_activate(app: ImagerApplication) -> None:
         check(not window.older_group.get_visible(),
               "and the group stays out of the way")
         gathered = window.gather()
-        check(list(gathered.keep_older_copies) == [],
-              f"nothing is kept when nothing was offered "
-              f"({gathered.keep_older_copies})")
+        check(list(gathered.leave_out) == [],
+              f"nothing is removed when nothing was offered "
+              f"({gathered.leave_out})")
+        #  Both lists mean the same thing and must reach the same place: a
+        #  drawer of the drive's software switched OFF, and an older copy
+        #  switched ON. The second was written to a config field nobody read,
+        #  so the whole list did nothing while looking as though it worked.
+        real = Path.home()/"Downloads/ClassicWB_FULL_v28/System.hdf"
+        if real.exists():
+            window.quick_hdf.set_path(str(real))
+            for key in ("sysinfo",):
+                row = window.package_rows.get(key)
+                if row is not None:
+                    row.set_active(True)
+            pump()
+            if window.older_rows:
+                drawer, row = sorted(window.older_rows.items())[0]
+                row.set_active(True)
+                pump()
+                check(drawer in window.gather().leave_out,
+                      f"a ticked older copy reaches the build ({drawer})")
+                row.set_active(False)
+                pump()
+                check(drawer not in window.gather().leave_out,
+                      "and unticking it takes it back out again")
+            else:
+                check(False, "nothing was offered to compare against")
+            window.quick_hdf.set_path("")
+            pump()
+
         window.quick_hdf.set_path("")
         pump()
 
