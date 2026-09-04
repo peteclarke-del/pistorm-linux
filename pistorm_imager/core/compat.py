@@ -353,8 +353,16 @@ class Compatibility:
         refused those too - and the file landed nowhere at all. Whole drawers
         were unaffected, which is what made it look like a packaging problem
         rather than this.
+
+        Superseding is the same rule one drawer wider, and it had the same
+        fault: removing ClassicWB's own older iGame so the chosen one could
+        take its place then refused the chosen one as well, because it lands
+        in the drawer that was being emptied. The card came out with
+        Programs/iGame holding an icon and nothing else. Both sets stop here,
+        for the same reason and at the same moment.
         """
         self._displace.clear()
+        self._supersede.clear()
 
     def skip(self, relative: str) -> bool:
         """True when a file should not be copied to the target at all."""
