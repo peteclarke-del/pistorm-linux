@@ -1208,6 +1208,58 @@ def on_activate(app: ImagerApplication) -> None:
 
         window._set_customising(False)
         pump()
+
+        #  The size box, which cost a written card. A 64 GB card was shown as
+        #  "59.48 GiB", building an image file read that back as 1.6 MB more
+        #  than the card holds, and the box was locked so it could not be
+        #  corrected.
+        print("\nthe card size box")
+        from types import SimpleNamespace                        # noqa: PLC0415
+        from pistorm_imager.core.util import exact_size_text     # noqa: PLC0415
+        from pistorm_imager.ui.window import parse_size          # noqa: PLC0415
+        real_size = 63864569856
+        from pistorm_imager.ui.window import SELECT_CARD, combo  # noqa: PLC0415
+        card = SimpleNamespace(name="/dev/sdz", size=real_size,
+                               label="Test card", model="Test",
+                               description="Test card (59.48 GiB)",
+                               removable=True)
+        window.device_list = [card]
+        window.device_row.set_model(combo([SELECT_CARD, card.description]))
+        window.quick_device.set_model(combo([SELECT_CARD, card.description]))
+        #  Chosen the way the quick setup does it, which is what mirrors onto
+        #  the Target page.
+        window.quick_target.set_selected(0)            # write to a card
+        window.quick_device.set_selected(1)            # the one above
+        pump()
+        shown = window.file_size_row.get_text()
+        check(parse_size(shown) == real_size,
+              f"a card's size reads back as exactly itself ({shown!r} -> "
+              f"{parse_size(shown):,} of {real_size:,})")
+        check(not window.file_size_row.get_sensitive(),
+              "and is locked while that card is the target")
+
+        #  The user's move that lost a card: switching to an image file on the
+        #  Target page itself, which used only to re-lay out the page.
+        window.target_row.set_selected(1)              # ...now an image file
+        pump()
+        check(window.file_size_row.get_sensitive(),
+              "switching to an image file on the Target page unlocks it again")
+        check(parse_size(window.file_size_row.get_text()) <= real_size,
+              "and the size it is left holding still fits the card")
+
+        #  Now genuinely building an image file, with that card still in the
+        #  reader, and a size a megabyte over what it holds.
+        window.quick_target.set_selected(1)
+        pump()
+        window.quick_card_size.set_text(exact_size_text(real_size + 1024 * 1024))
+        pump()
+        check("too big" in window.quick_size_info.get_subtitle(),
+              "a size just over a card in the reader is called out: "
+              f"{window.quick_size_info.get_subtitle()[-90:]!r}")
+        window.device_list = []
+        window.quick_target.set_selected(1)
+        window.quick_card_size.set_text("32GB")
+        pump()
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()
