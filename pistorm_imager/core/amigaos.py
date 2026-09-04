@@ -1170,6 +1170,29 @@ def drawer_icon_from_disks(folder: str | Path, into: Path) -> Path | None:
     return None
 
 
+def _generic_drawer_icon(folders: Iterable[str | Path]) -> bytes | None:
+    """A stand-in for a drawer whose own name matched nothing.
+
+    Taken from the *first* source that can supply one, so the order the
+    caller offered them in decides. Choosing by name across all of them
+    looked equivalent and was not: the Workbench floppies contribute an icon
+    called literally "drawer", which beat every name after it, so a card
+    built on a MagicWB-styled drive still got plain 3.1 drawers for exactly
+    the software the user had chosen. Read off a finished card, where none of
+    the new drawers' icons was one of the drive's twenty-four.
+    """
+    for folder in folders:
+        found = _drawer_icon_sources([folder])
+        if not found:
+            continue
+        for name in ("drawer", "tools", "utilities", "storage", "system"):
+            if name in found:
+                return found[name]
+        #  Any drawer icon from this source beats one from a later source.
+        return next(iter(found.values()))
+    return None
+
+
 def ensure_drawer_icons(volume, drawers: Iterable[str],
                         sources: Iterable[str | Path],
                         progress: Progress) -> int:
@@ -1189,14 +1212,11 @@ def ensure_drawer_icons(volume, drawers: Iterable[str],
     and otherwise any drawer icon among them, because one drawer icon is as
     good as another and having one is what matters.
     """
+    sources = list(sources)
     icons = _drawer_icon_sources(sources)
     if not icons:
         return 0
-    #  A stand-in for a drawer whose name nothing matched.  Preferring the
-    #  plain Workbench drawers keeps it looking like a drawer.
-    generic = next((icons[name] for name in ("drawer", "tools", "utilities",
-                                             "storage", "system")
-                    if name in icons), None)
+    generic = _generic_drawer_icon(sources)
     written = 0
     for drawer in drawers:
         path = drawer.strip("/")
