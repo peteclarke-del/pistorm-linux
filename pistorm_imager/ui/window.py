@@ -1025,6 +1025,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  software out of a build that is no longer using that drive.
             self._refresh_older_copies()
             self._refresh_what_arrives()
+            self._refresh_what_cannot_work()
             self._quick_preview()
             return
         scheme = presets.describe_image_scheme(path)
@@ -1046,6 +1047,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._relayout_partitions()
         self._refresh_older_copies()
         self._refresh_what_arrives()
+        self._refresh_what_cannot_work()
         self._quick_preview()
 
     def _primary(self) -> str:
@@ -1830,6 +1832,19 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.arrives_group.set_visible(False)
         page.add(self.arrives_group)
 
+        #  Software the drive brings that cannot work here at all - written
+        #  for another machine, or asking for a device or a volume this card
+        #  has not got. Shown separately from the rest, because "you may not
+        #  want this" and "this cannot work" are different statements.
+        self.broken_group = Adw.PreferencesGroup(
+            title="Software that cannot work on this card",
+            description="Each of these was checked against the card being "
+                        "built and needs something it will not have. They are "
+                        "removed unless you turn one back on.")
+        self.broken_rows: dict[str, Adw.SwitchRow] = {}
+        self.broken_group.set_visible(False)
+        page.add(self.broken_group)
+
         #  One group per category, so a long list reads as a few short ones.
         self.package_rows: dict[str, Adw.SwitchRow] = {}
         self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
@@ -2414,6 +2429,53 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.arrives_group.add(row)
         self.arrives_group.set_visible(bool(self.arrives_rows))
 
+    def _refresh_what_cannot_work(self) -> None:
+        """List software the drive carries that this card cannot run."""
+        if not hasattr(self, "broken_group"):
+            return
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        found = []
+        if path:
+            try:
+                from ..core import amigaos, content            # noqa: PLC0415
+                reader, _label = amigaos.open_amiga_volume(path, "")
+            except Exception:                                  # noqa: BLE001
+                reader = None
+            if reader is not None:
+                try:
+                    named = [spec.volume_name or spec.name
+                             for spec in (row.spec() for row
+                                          in getattr(self, "partition_rows", []))]
+                    volumes = content.volumes_on_the_card(reader, named)
+                    drivers = []
+                    entry = reader.find("Devs/DOSDrivers")
+                    if entry is not None and entry.is_dir:
+                        drivers = [e.name for e in
+                                   reader.listdir(content._locator(entry))]
+                    found = content.cannot_work(reader, volumes, drivers)
+                except Exception:                              # noqa: BLE001
+                    found = []
+                finally:
+                    try:
+                        reader.f.close()
+                    except Exception:                          # noqa: BLE001
+                        pass
+        wanted = {b.drawer: b for b in found}
+        for key, row in list(self.broken_rows.items()):
+            if key not in wanted:
+                self.broken_group.remove(row)
+                del self.broken_rows[key]
+        for drawer, broken in wanted.items():
+            if drawer in self.broken_rows:
+                continue
+            row = Adw.SwitchRow(title=f"Remove {drawer}",
+                                subtitle="; ".join(broken.reasons))
+            row.set_active(True)
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.broken_rows[drawer] = row
+            self.broken_group.add(row)
+        self.broken_group.set_visible(bool(self.broken_rows))
+
     def _refresh_older_copies(self) -> None:
         """Show one row per older copy actually found, keeping any answers."""
         if not hasattr(self, "older_group"):
@@ -2961,6 +3023,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                  if not row.get_active()]
                 + [drawer for drawer, row
                    in getattr(self, "older_rows", {}).items()
+                   if row.get_active()]
+                + [drawer for drawer, row
+                   in getattr(self, "broken_rows", {}).items()
                    if row.get_active()]),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,

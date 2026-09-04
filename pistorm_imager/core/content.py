@@ -310,6 +310,117 @@ def find_duplicates(reader, wanted: dict[str, tuple[str, str, tuple | None]],
     return sorted(found.values(), key=lambda d: (not d.certain, d.where))
 
 
+#  Assigns and devices AmigaOS provides, or that this tool always makes. A
+#  script naming one of these is not asking for anything unusual.
+STOCK_VOLUMES = {
+    "sys", "c", "s", "l", "libs", "devs", "fonts", "locale", "env", "envarc",
+    "t", "ram", "progdir", "rexx", "classes", "help", "keymaps", "printers",
+    "storage", "prefs", "clipboard", "nil", "con", "raw", "ser", "par", "prt",
+    "df0", "df1", "df2", "df3", "mui", "in", "out", "aux", "speak",
+}
+
+#  Documentation, not instructions. A guide explaining how to mount PC: is
+#  not a script that tries to, and quoting one as evidence is how a check
+#  like this stops being believed.
+NOT_A_SCRIPT = (".guide", ".doc", ".txt", ".readme", ".info", ".history",
+                ".ct", ".cd", ".nfo", ".me", ".man", ".hlp")
+
+MOUNTS = re.compile(r"(?i)\bmount\s+([A-Za-z0-9_.-]+):")
+ASSIGNS_TO = re.compile(
+    r"(?i)\bassign\s+(?:>nil:\s+)?(?:add\s+)?[A-Za-z0-9_.-]+:\s+"
+    r"([A-Za-z0-9_.-]+):")
+MAKES_ASSIGN = re.compile(
+    r"(?i)^\s*(?:c:)?assign\s+(?:>nil:\s+)?(?:add\s+)?([A-Za-z0-9_.-]+):")
+
+
+@dataclasses.dataclass(frozen=True)
+class Broken:
+    """Software on the drive that cannot work on the card being built."""
+    drawer: str
+    reasons: tuple[str, ...]
+
+
+def volumes_on_the_card(reader, named: Iterable[str] = ()) -> set[str]:
+    """Every volume and assign a script could reasonably expect to find.
+
+    The drives this build makes, whatever the drive assigns for itself in
+    its own startup files, and what AmigaOS provides. Read rather than
+    assumed: a distribution makes its own assigns, and calling those missing
+    would condemn most of what it ships.
+    """
+    out = {str(n).strip(":").lower() for n in named if str(n).strip(":")}
+    out |= STOCK_VOLUMES
+    for path in ("S/Startup-Sequence", "S/User-Startup"):
+        entry = reader.find(path)
+        if entry is None:
+            continue
+        try:
+            text = reader.read_file(entry).decode("latin-1", "replace")
+        except Exception:                                   # noqa: BLE001
+            continue
+        for line in text.splitlines():
+            found = MAKES_ASSIGN.match(line)
+            if found:
+                out.add(found.group(1).lower())
+    return out
+
+
+def cannot_work(reader, volumes: Iterable[str],
+                dosdrivers: Iterable[str] = ()) -> list[Broken]:
+    """Programs on the drive that cannot run on the card being built.
+
+    A ready-made distribution carries software written for the machine it
+    was assembled on. ClassicWB's FMSsys is the example: its MountFMS does
+    "assign FMS: A-Programs:FMSsys" and "mount FF0:", and this card has
+    neither an A-Programs: volume nor a DEVS:DOSDrivers/FF0 - so it asks a
+    question and then fails, every time, and nothing says why.
+
+    Only what can be shown from the files: a binary for another processor,
+    a script mounting a device this card has not got, or one needing a
+    volume that will not exist. Everything else is left alone.
+    """
+    known = {str(v).strip(":").lower() for v in volumes}
+    drivers = {str(d).lower() for d in dosdrivers}
+    out: list[Broken] = []
+    for drawer, name in installed_programs(reader):
+        where = f"{drawer}/{name}"
+        entry = reader.find(where)
+        if entry is None or not entry.is_dir:
+            continue
+        why: list[str] = []
+        try:
+            inside = reader.listdir(_locator(entry))
+        except Exception:                                   # noqa: BLE001
+            continue
+        for kid in inside:
+            if kid.is_dir or kid.name.lower().endswith(NOT_A_SCRIPT):
+                continue
+            try:
+                data = reader.read_file(kid)
+            except Exception:                               # noqa: BLE001
+                continue
+            if data[:4] == b"\x7fELF":
+                why.append(f"{kid.name} is built for another processor")
+                continue
+            #  Only small text files: a script, not a program or a payload.
+            if data[:4] == b"\x00\x00\x03\xf3" or len(data) > 20000:
+                continue
+            text = data.decode("latin-1", "replace")
+            for found in MOUNTS.finditer(text):
+                device = found.group(1)
+                if device.lower() not in drivers:
+                    why.append(f"{kid.name} mounts {device}:, and this card "
+                               f"has no DEVS:DOSDrivers/{device}")
+            for found in ASSIGNS_TO.finditer(text):
+                volume = found.group(1)
+                if volume.lower() not in known:
+                    why.append(f"{kid.name} needs the volume {volume}:, "
+                               f"which this card has not got")
+        if why:
+            out.append(Broken(where, tuple(dict.fromkeys(why))))
+    return out
+
+
 def installed_programs(reader) -> list[tuple[str, str]]:
     """What a prepared drive already has installed, as (drawer, program).
 

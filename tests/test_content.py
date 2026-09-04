@@ -2846,6 +2846,146 @@ class SoftwareTheDriveArrivesWithCanBeLeftOut(unittest.TestCase):
             self.assertNotIn(never, names)
 
 
+class SoftwareThatCannotWorkIsFlagged(unittest.TestCase):
+    """A distribution carries software written for the machine it was built on.
+
+    ClassicWB's FMSsys is the example the user named: MountFMS does
+    "assign FMS: A-Programs:FMSsys" and "mount FF0:", and a card built here
+    has neither an A-Programs: volume nor a DEVS:DOSDrivers/FF0. So it asks
+    a question, fails, and nothing says why. Only what can be shown from the
+    files counts - a binary for another processor, a device that will not be
+    there, a volume that will not exist.
+    """
+
+    def _reader(self, files):
+        """A volume made of the paths given, with drawers implied by them."""
+        dirs = set()
+        for path in files:
+            parts = path.split("/")
+            for depth in range(1, len(parts)):
+                dirs.add("/".join(parts[:depth]))
+
+        class Entry:
+            def __init__(self, path, is_dir):
+                self.path, self.name = path, path.rpartition("/")[2]
+                self.is_dir = is_dir
+                self.anode = self.block = abs(hash(path)) & 0xFFFFFF
+
+        by_locator = {}
+        def entry(path, is_dir):
+            made = Entry(path, is_dir)
+            by_locator[made.anode] = path
+            return made
+
+        class Reader:
+            def listdir(self, where=None):
+                parent = "" if where is None else by_locator.get(where, "\0")
+                out = []
+                for path in sorted(dirs | set(files)):
+                    head, _, tail = path.rpartition("/")
+                    if head == parent and tail:
+                        out.append(entry(path, path in dirs))
+                return out
+            def find(self, path):
+                if path in dirs: return entry(path, True)
+                if path in files: return entry(path, False)
+                return None
+            def read_file(self, e):
+                return files.get(getattr(e, "path", ""), b"")
+        return Reader()
+
+    def _drive(self, script):
+        return self._reader({"Programs/Thing/DoIt": script})
+
+    def test_a_missing_device_is_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.cannot_work(self._drive(b"mount FF0:\n"),
+                                    volumes=["sys"], dosdrivers=["AUDIO"])
+        self.assertEqual(len(found), 1)
+        self.assertIn("FF0", found[0].reasons[0])
+
+    def test_a_device_that_is_there_is_not_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        self.assertEqual(content.cannot_work(self._drive(b"mount FF0:\n"),
+                                             volumes=["sys"],
+                                             dosdrivers=["FF0"]), [])
+
+    def test_a_missing_volume_is_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.cannot_work(
+            self._drive(b"assign FMS: A-Programs:FMSsys\n"),
+            volumes=["sys", "games"], dosdrivers=[])
+        self.assertEqual(len(found), 1)
+        self.assertIn("A-Programs", found[0].reasons[0])
+
+    def test_a_volume_this_card_will_have_is_not_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        self.assertEqual(content.cannot_work(
+            self._drive(b"assign X: Games:stuff\n"),
+            volumes=["sys", "games"], dosdrivers=[]), [])
+
+    def test_a_binary_for_another_processor_is_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.cannot_work(self._drive(b"\x7fELF and the rest"),
+                                    volumes=["sys"], dosdrivers=[])
+        self.assertEqual(len(found), 1)
+        self.assertIn("another processor", found[0].reasons[0])
+
+    def test_documentation_is_not_evidence(self):
+        #  A guide explaining how to mount PC: is not a script that tries to,
+        #  and quoting one is how a check like this stops being believed.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        reader = self._reader(
+            {"Programs/Thing/Notes.guide": b"you can mount PC: like so"})
+        self.assertEqual(content.cannot_work(reader, ["sys"], []), [])
+
+    def test_a_programs_own_binary_is_left_alone(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        reader = self._reader(
+            {"Programs/Thing/Thing": b"\x00\x00\x03\xf3 a 68k program"})
+        self.assertEqual(content.cannot_work(reader, ["sys"], []), [])
+
+    def test_the_drives_own_assigns_count_as_volumes(self):
+        #  A distribution makes its own assigns; calling those missing would
+        #  condemn most of what it ships.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        class Reader:
+            def find(self, path):
+                class E: name, is_dir = path, False
+                return E() if path == "S/User-Startup" else None
+            def read_file(self, _e):
+                return b"Assign >NIL: A-Programs: SYS:Programs\n"
+            def listdir(self, where=None): return []
+        found = content.volumes_on_the_card(Reader(), ["DH0", "Games"])
+        self.assertIn("a-programs", found)
+        self.assertIn("games", found)
+        self.assertIn("sys", found)
+
+    def test_it_finds_what_the_user_pointed_at(self):
+        from pistorm_imager.core import amigaos, content          # noqa: PLC0415
+        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if not image.exists():
+            self.skipTest("ClassicWB FULL is not on this machine")
+        reader, _label = amigaos.open_amiga_volume(str(image), "")
+        try:
+            volumes = content.volumes_on_the_card(
+                reader, ["DH0", "Games", "Demos", "Work"])
+            entry = reader.find("Devs/DOSDrivers")
+            drivers = ([e.name for e in reader.listdir(content._locator(entry))]
+                       if entry is not None else [])
+            found = content.cannot_work(reader, volumes, drivers)
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                     # noqa: BLE001
+                pass
+        drawers = {b.drawer for b in found}
+        self.assertIn("Programs/FMSsys", drawers)
+        #  And it stays quiet about the thirty-five that are fine.
+        self.assertLess(len(drawers), 6, f"too eager: {sorted(drawers)}")
+
+
+
 class TheADFHelperIsClickable(unittest.TestCase):
     """The archive ships no Workbench front end at all.
 
