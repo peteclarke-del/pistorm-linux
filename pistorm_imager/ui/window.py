@@ -406,6 +406,11 @@ class PartitionRow(Adw.ExpanderRow):
         )
 
 
+def _version(pair) -> str:
+    """A (version, revision) pair as an Amiga would write it."""
+    return f"{pair[0]}.{pair[1]}" if pair else "an unreadable version"
+
+
 class ImagerWindow(Adw.ApplicationWindow):
     def __init__(self, application: Adw.Application):
         super().__init__(application=application, title="PiStorm Imager",
@@ -2314,41 +2319,46 @@ class ImagerWindow(Adw.ApplicationWindow):
         for row in list(self.partition_rows) + list(self.extra_rows):
             row.reload_categories()
 
-    def _older_copies_on_the_drive(self) -> dict[str, str]:
-        """Which superseded drawers are really on the drive being built on.
+    def _older_copies_on_the_drive(self) -> dict[str, tuple[str, str]]:
+        """Copies of chosen software already on the drive, somewhere else.
 
-        Asked of the drive rather than assumed: a package naming a drawer to
-        replace is a statement about one distribution, and the user may be
-        building on another that has no such thing. Listing a drawer that is
-        not there would offer to remove something that does not exist.
+        Discovered, never declared. The names come from the archives the
+        chosen packages install, and the drive is searched for them - so this
+        works on any prepared drive rather than only on the one distribution
+        somebody checked by hand. Each answer is (drawer, what to say).
         """
-        found: dict[str, str] = {}
-        source = getattr(self, "quick_hdf", None)
-        path = getattr(source, "path", "") if source is not None else ""
-        if not path:
-            return found
-        wanted = [(package, drawer)
-                  for key in packages.expand(self._chosen_packages())
-                  if (package := packages.CATALOGUE_BY_KEY.get(key))
-                  for drawer in package.supersedes]
-        if not wanted:
+        found: dict[str, tuple[str, str]] = {}
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        chosen = self._chosen_packages()
+        if not path or not chosen:
             return found
         try:
-            from ..core import amigaos                    # noqa: PLC0415
+            from ..core import amigaos, content, packages as _p  # noqa: PLC0415
+            wanted, filling = _p.principal_programs(chosen)
+            if not wanted:
+                return found
             reader, _label = amigaos.open_amiga_volume(path, "")
-        except Exception:                                 # noqa: BLE001
+        except Exception:                                    # noqa: BLE001
             return found
         try:
-            for package, drawer in wanted:
-                try:
-                    if reader.find(drawer) is not None:
-                        found[drawer] = package.label
-                except Exception:                         # noqa: BLE001
-                    continue
+            #  The walk is the slow part, so it is kept and reused: without
+            #  that, every tick of a package would search the drive again.
+            if getattr(self, "_scanned_drive", None) != path:
+                self._scanned_drive = path
+                self._drive_listing = content.list_files(reader)
+            for copy in content.find_duplicates(reader, wanted, filling,
+                                                self._drive_listing):
+                shown = (f"{copy.label} {_version(copy.theirs)} is in "
+                         f"{copy.drawer}; you chose {_version(copy.ours)}")
+                if not copy.certain:
+                    shown += " - the same version, or one that cannot be read"
+                found[copy.drawer] = (shown, "sure" if copy.certain else "ask")
+        except Exception:                                    # noqa: BLE001
+            return found
         finally:
             try:
                 reader.f.close()
-            except Exception:                             # noqa: BLE001
+            except Exception:                                # noqa: BLE001
                 pass
         return found
 
@@ -2397,14 +2407,14 @@ class ImagerWindow(Adw.ApplicationWindow):
             if drawer not in found:
                 self.older_group.remove(row)
                 del self.older_rows[drawer]
-        for drawer, label in found.items():
+        for drawer, (shown, how) in found.items():
             if drawer in self.older_rows:
                 continue
-            row = Adw.SwitchRow(
-                title=f"Remove {drawer}",
-                subtitle=f"An older copy of {label}, which is being "
-                         f"installed from its current release.")
-            row.set_active(True)
+            row = Adw.SwitchRow(title=f"Remove {drawer}", subtitle=shown)
+            #  On only where the version it carries is provably older than
+            #  the one being installed. Anything else is a question, and the
+            #  answer that keeps somebody's software is the safe one.
+            row.set_active(how == "sure")
             row.connect("notify::active", lambda *_a: self._update_summary())
             self.older_rows[drawer] = row
             self.older_group.add(row)
