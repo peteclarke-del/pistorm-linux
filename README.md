@@ -1331,6 +1331,33 @@ install - `ENVARC:mui`, `ENVARC:AWeb3` and `ENVARC:ClassAct`, and the
 
 ### Drawers you can actually see
 
+#### And that look like the desktop they are joining
+
+Having an icon is not the same as having the right one. A drive being imported
+brings a desktop somebody designed — ClassicWB's drawers are MagicWB-styled —
+and the drawers this build adds beside them were given a stock Workbench 3.1
+drawer, because the only icons on offer came off the floppies. The result was a
+desktop where the software the user chose was the part that looked foreign.
+
+The drive's own drawer icons are now taken from it and offered **first**, with
+the floppies as the fallback that still covers a card built from floppies
+alone. Only real drawer icons, and only from the root, which is where a
+distribution's style is set — ClassicWB FULL yields 24 of them. Because
+`_drawer_icon_sources` merges with `setdefault`, first offered is first kept,
+so the drive beats the floppies by ordering alone.
+
+Worth knowing about the layout while you are here: **the destinations already
+match.** ClassicWB FULL ships `Programs`, `Utilities`, `Internet`, `Audio`,
+`Tools` and `System` at the root, which is where these packages were going
+anyway, so software lands in the drawer a ClassicWB user would look in. What it
+does not do is notice that a distribution already carries its own copy of
+something under a different name — `Tools/SysInfo` beside our
+`Utilities/SysInfo`, `Programs/DirOpus4` beside our `Programs/DirectoryOpus`.
+Both are on the card, only one of each is reached, and the displacement that
+replaces an older copy matches on path, so it cannot see them. That is clutter
+rather than breakage, and it is left alone rather than guessed at.
+
+
 A drawer with no `.info` beside it does not appear on Workbench — it can only be
 reached from a Shell or by turning on **Window/Show/All Files**. That is correct
 for `C:` and `LIBS:`, which is why Commodore ships them without icons, but this

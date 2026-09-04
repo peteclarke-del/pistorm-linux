@@ -1311,6 +1311,33 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
             progress.log(f"  overlay: {source.name} -> {destination or ':'}")
 
 
+def _drawer_icons_from_the_drive(spec: AmigaPartitionSpec,
+                                 progress: Progress) -> Path | None:
+    """The imported drive's own drawer icons, to copy the desktop's style."""
+    if not spec.content_hdf:
+        return None
+    borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drive-icon-"))
+    try:
+        reader, _label = amigaos.open_amiga_volume(spec.content_hdf,
+                                                   spec.content_hdf_partition)
+    except Exception as error:                              # noqa: BLE001
+        progress.log(f"  could not read the drive's own drawer icons "
+                     f"({error}); the Workbench disks will be used instead")
+        return None
+    try:
+        found = amigaos.drawer_icons_from_volume(reader, borrowed)
+    finally:
+        try:
+            reader.f.close()
+        except Exception:                                   # noqa: BLE001
+            pass
+    if not found:
+        return None
+    progress.log(f"  {found} drawer icon(s) taken from the drive, so new "
+                 f"drawers match the desktop it came with")
+    return borrowed
+
+
 def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
                         config: "BuildConfig", progress: Progress) -> None:
     """Make the drawers this build created visible on Workbench.
@@ -1334,9 +1361,15 @@ def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
                 wanted.append(path)
             path = path.rpartition("/")[0]
 
-    #  Where to find real drawer icons: the Workbench disks, which is the
-    #  only source left now that no icon set is shipped.
+    #  Where to find real drawer icons. The drive being imported comes first:
+    #  its own drawers are the style the desktop is already in, and a drawer
+    #  this build adds beside them should not be the one that looks foreign.
+    #  The Workbench disks are the fallback, and the only source when a card
+    #  is built from floppies alone.
     sources: list[Path] = []
+    borrowed_from_drive = _drawer_icons_from_the_drive(spec, progress)
+    if borrowed_from_drive is not None:
+        sources.append(borrowed_from_drive)
     if config.adf_folder:
         borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drawer-icon-"))
         if amigaos.drawer_icon_from_disks(config.adf_folder, borrowed):
