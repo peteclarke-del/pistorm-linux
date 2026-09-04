@@ -121,6 +121,12 @@ class BuildConfig:
     #  so whichever lands first wins - and that used to be settled by the
     #  order the build happened to run in rather than by anybody's choice.
     replace_older_software: bool = True
+    #  Older copies the user looked at and chose to keep, lower-cased. Empty
+    #  by default: the point of choosing a package is to get its version, and
+    #  a distribution's own 1993 copy of the same program beside it is
+    #  clutter nobody asked for. But it is theirs to overrule, one at a time
+    #  rather than all or nothing.
+    keep_older_copies: list[str] = dataclasses.field(default_factory=list)
     package_chipset: str = ""          # a machines.Chipset value
     package_display: str = ""          # a machines.Display value
 
@@ -736,6 +742,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         if spec is not None else []
     if extra and config.replace_older_software:
         fixer.displace(_landing_paths(extra))
+        fixer.supersede(_older_copies_to_remove(config))
     #  Any record an imported drive brings describes a card that no longer
     #  exists; this build writes its own in its place.
     fixer.displace([MANIFEST_PATH])
@@ -1101,6 +1108,27 @@ def _write_manifest_now(volume, config: "BuildConfig",
                       check_existing=False)
     lines = sum(1 for line in body.splitlines() if not line.startswith(";"))
     progress.log(f"  S:{name} written: {lines} path(s) this build added")
+
+
+def _older_copies_to_remove(config: "BuildConfig") -> list[str]:
+    """Drawers a chosen package replaces outright, wherever they sit.
+
+    Displacement handles a file the package writes in the same place. This is
+    the other shape: the distribution keeps its own copy of the same program
+    somewhere this build would never write, so both land and only one is ever
+    opened - ClassicWB's Tools/SysInfo (3.24, from 1993) beside the package's
+    Utilities/SysInfo (4.4).
+    """
+    out: list[str] = []
+    for key in packages.expand(config.package_keys or []):
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is None:
+            continue
+        kept = {str(p).strip("/").lower()
+                for p in (config.keep_older_copies or ())}
+        out += [path for path in package.supersedes
+                if path.strip("/").lower() not in kept]
+    return out
 
 
 def _landing_paths(pairs: list[tuple[str, str]]) -> list[str]:
@@ -1575,6 +1603,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                                  progress)
         if extra and config.replace_older_software:
             fixer.displace(_landing_paths(extra))
+            fixer.supersede(_older_copies_to_remove(config))
         if spec.bootable:
             #  See above: an earlier build's record is not left standing in
             #  front of this one's.

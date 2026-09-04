@@ -1346,16 +1346,39 @@ distribution's style is set — ClassicWB FULL yields 24 of them. Because
 `_drawer_icon_sources` merges with `setdefault`, first offered is first kept,
 so the drive beats the floppies by ordering alone.
 
+**A distribution's own older copy is replaced too.** ClassicWB FULL keeps
+SysInfo **3.24, from 1993** in `Tools/SysInfo` while the package installs 4.4
+into `Utilities/SysInfo`, and Directory Opus **4.16** in `Programs/DirOpus4`
+beside the package's 4.18.22 — both landed, and only one of each was ever
+opened. Displacement could not see them: it matches on path, and these sit
+where this build would never write.
+
+A package can now name drawers it `supersedes`, and each is left out whole.
+That is a strong thing to do, so it is fenced in three ways:
+
+- **The match is a path boundary, not a prefix.** `Tools/SysInfo` does not
+  take `Tools/SysInfoExtra` with it.
+- **It is a separate set from displacement**, which stays exact-match. Making
+  displacement prefix-match would have turned every drawer overlay from a
+  merge into a wipe — MUI's overlay claims the name `System/MUI` so a *file*
+  of that name cannot block it, and must still merge into ClassicWB's own MUI.
+- **Each entry is checked against a real distribution, never inferred from a
+  name.** ClassicWB's `System/FBlit` looks like a duplicate and is not: it
+  carries the same FBlit build as the package *plus* FBlitGUI, which the
+  package does not ship, so removing it would take a program away.
+  `System/FWheel` is FreeWheel's C source. Neither is named, and a test asserts
+  both are still there.
+
+Removing somebody's software is not a thing to do quietly, so the Packages page
+lists each older copy it actually found **on the drive in front of you** — the
+drive is asked, rather than the catalogue believed — and any one of them can be
+switched off and kept.
+
 Worth knowing about the layout while you are here: **the destinations already
 match.** ClassicWB FULL ships `Programs`, `Utilities`, `Internet`, `Audio`,
 `Tools` and `System` at the root, which is where these packages were going
-anyway, so software lands in the drawer a ClassicWB user would look in. What it
-does not do is notice that a distribution already carries its own copy of
-something under a different name — `Tools/SysInfo` beside our
-`Utilities/SysInfo`, `Programs/DirOpus4` beside our `Programs/DirectoryOpus`.
-Both are on the card, only one of each is reached, and the displacement that
-replaces an older copy matches on path, so it cannot see them. That is clutter
-rather than breakage, and it is left alone rather than guessed at.
+anyway, so software lands in the drawer a ClassicWB user would look in. Software lands in the drawer a
+ClassicWB user would look in without anything being moved.
 
 
 A drawer with no `.info` beside it does not appear on Workbench — it can only be

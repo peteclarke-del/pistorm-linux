@@ -1,4 +1,5 @@
 """What a collection is divided into, and what a given Amiga can run."""
+import dataclasses
 import os
 import shutil
 import sys
@@ -2400,3 +2401,125 @@ class NewDrawersLookLikeTheDesktopTheyJoin(unittest.TestCase):
         from pistorm_imager.core import builder                  # noqa: PLC0415
         spec = builder.AmigaPartitionSpec(name="DH0", bootable=True)
         self.assertIsNone(builder._drawer_icons_from_the_drive(spec, Progress()))
+
+
+class ADistributionsOwnOlderCopyIsReplaced(unittest.TestCase):
+    """A prepared drive can carry the same program under its own name.
+
+    ClassicWB FULL keeps SysInfo 3.24 from 1993 in Tools/SysInfo while the
+    package installs 4.4 into Utilities/SysInfo, and Directory Opus 4.16 in
+    Programs/DirOpus4 beside the package's 4.18.22 in Programs/DirectoryOpus.
+    Both copies landed and only one of each was ever opened, because the
+    displacement that replaces an older copy matches on path and these sit
+    somewhere this build would never write.
+    """
+
+    def _fixer(self):
+        from pistorm_imager.core import compat                   # noqa: PLC0415
+        return compat.Compatibility(Progress())
+
+    def test_the_whole_drawer_goes(self):
+        fixer = self._fixer()
+        fixer.supersede(["Tools/SysInfo"])
+        for path in ("Tools/SysInfo", "Tools/SysInfo/SysInfo",
+                     "Tools/SysInfo/Docs/SysInfo.guide"):
+            self.assertTrue(fixer.skip(path), path)
+
+    def test_it_does_not_reach_past_the_drawer(self):
+        #  The dangerous direction: a prefix match that is not a path
+        #  boundary would take Tools/SysInfoExtra with it.
+        fixer = self._fixer()
+        fixer.supersede(["Tools/SysInfo"])
+        for path in ("Tools/SysInfoExtra/SysInfo", "Tools/Other/SysInfo",
+                     "Utilities/SysInfo/SysInfo", "Tools/SysInfoDocs"):
+            self.assertFalse(fixer.skip(path), path)
+
+    def test_the_newer_copy_this_build_installs_is_untouched(self):
+        #  The point of removing theirs is to leave ours.
+        fixer = self._fixer()
+        fixer.supersede(["Tools/SysInfo"])
+        self.assertFalse(fixer.skip("Utilities/SysInfo/SysInfo"))
+
+    def test_it_is_reported_once_not_once_per_file(self):
+        fixer = self._fixer()
+        fixer.supersede(["Programs/DirOpus4"])
+        for path in ("Programs/DirOpus4/DirectoryOpus",
+                     "Programs/DirOpus4/Docs/a", "Programs/DirOpus4/libs/b"):
+            fixer.skip(path)
+        replaced = [f for f in fixer.fixes if "DirOpus4" in str(f)]
+        self.assertEqual(len(replaced), 1, replaced)
+        self.assertEqual(fixer.superseded_drawers(), ["Programs/DirOpus4"],
+                         "the log should name the drawer as the drive does")
+
+    def test_a_drawer_overlay_still_merges(self):
+        #  Superseding is a separate set from displacement for a reason: MUI's
+        #  overlay claims the name System/MUI so a *file* of that name cannot
+        #  block it, and must still merge into ClassicWB's own MUI rather
+        #  than replace it. Making displacement prefix-match would have
+        #  emptied that drawer.
+        fixer = self._fixer()
+        fixer.displace(["System/MUI"])
+        self.assertTrue(fixer.skip("System/MUI"))
+        self.assertFalse(fixer.skip("System/MUI/muimaster.library"),
+                         "the drive's own MUI files must still be copied")
+
+    def test_only_verified_drawers_are_named(self):
+        #  Each entry is removed whole, so each must hold that program and
+        #  nothing else. ClassicWB's System/FBlit carries the same FBlit build
+        #  as the package plus FBlitGUI, which the package does not ship, so
+        #  naming it would take a program away; System/FWheel is FreeWheel's
+        #  C source. Neither is listed.
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        named = {path.lower() for package in packages.CATALOGUE
+                 for path in package.supersedes}
+        self.assertIn("tools/sysinfo", named)
+        self.assertIn("programs/diropus4", named)
+        for wrong in ("system/fblit", "system/fwheel", "c", "libs", "s",
+                      "system", "tools", "programs", "utilities"):
+            self.assertNotIn(wrong, named,
+                             f"{wrong} holds more than one program, or is a "
+                             f"system drawer, and would be removed whole")
+
+    def test_the_user_can_keep_one(self):
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        both = builder.BuildConfig(target="/tmp/x",
+                                   package_keys=["sysinfo", "diropus4"])
+        self.assertEqual(sorted(builder._older_copies_to_remove(both)),
+                         ["Programs/DirOpus4", "Tools/SysInfo"])
+        kept = dataclasses.replace(both, keep_older_copies=["tools/sysinfo"])
+        self.assertEqual(builder._older_copies_to_remove(kept),
+                         ["Programs/DirOpus4"])
+
+    def test_nothing_is_removed_for_a_package_not_chosen(self):
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/x", package_keys=["whdload"])
+        self.assertEqual(builder._older_copies_to_remove(config), [])
+
+    def test_the_named_drawers_are_really_on_the_distribution(self):
+        #  The whole mechanism removes drawers whole, so the paths have to be
+        #  right about a real distribution rather than plausible. Checked
+        #  against ClassicWB FULL when it is on this machine.
+        from pistorm_imager.core import amigaos, packages         # noqa: PLC0415
+        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if not image.exists():
+            self.skipTest("ClassicWB FULL is not on this machine")
+        reader, _label = amigaos.open_amiga_volume(str(image), "")
+        try:
+            for key in ("sysinfo", "diropus4"):
+                package = packages.CATALOGUE_BY_KEY[key]
+                for drawer in package.supersedes:
+                    with self.subTest(package=key, drawer=drawer):
+                        entry = reader.find(drawer)
+                        self.assertIsNotNone(
+                            entry, f"{drawer} is not on ClassicWB FULL, so "
+                                   f"{key} would offer to remove nothing")
+                        self.assertTrue(entry.is_dir, f"{drawer} is a file")
+            #  And the ones deliberately left out really are on it, so the
+            #  reason for leaving them out is a real judgement not an oversight.
+            for present in ("System/FBlit", "System/FWheel"):
+                self.assertIsNotNone(reader.find(present), present)
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                     # noqa: BLE001
+                pass

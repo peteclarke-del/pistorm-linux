@@ -1209,6 +1209,29 @@ def on_activate(app: ImagerApplication) -> None:
         window._set_customising(False)
         pump()
 
+        #  Older copies the drive already carries, offered one at a time.
+        print("\nolder copies on the drive")
+        window.quick_hdf.set_path(str(HDF_IMAGE))
+        pump()
+        for key in ("sysinfo", "diropus4"):
+            row = window.package_rows.get(key)
+            if row is not None:
+                row.set_active(True)
+        pump()
+        #  The test drive is an empty one, so nothing should be offered: a
+        #  drawer that is not there must never be listed for removal.
+        check(not window.older_rows,
+              f"nothing offered for a drive that carries none of it "
+              f"({sorted(window.older_rows)})")
+        check(not window.older_group.get_visible(),
+              "and the group stays out of the way")
+        gathered = window.gather()
+        check(list(gathered.keep_older_copies) == [],
+              f"nothing is kept when nothing was offered "
+              f"({gathered.keep_older_copies})")
+        window.quick_hdf.set_path("")
+        pump()
+
         #  The size box, which cost a written card. A 64 GB card was shown as
         #  "59.48 GiB", building an image file read that back as 1.6 MB more
         #  than the card holds, and the box was locked so it could not be

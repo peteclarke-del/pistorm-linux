@@ -171,6 +171,19 @@ class Package:
     #  that needed it; one that is useful on its own stays, because turning
     #  off a browser should not take MUI away from everything else.
     support_only: bool = False
+    #  Drawers on a prepared drive that hold an older copy of this very
+    #  program, under a name or in a place this build would never write. A
+    #  distribution can carry its own: ClassicWB FULL keeps SysInfo 3.24 from
+    #  1993 in Tools/SysInfo while this installs 4.4 into Utilities/SysInfo,
+    #  so both land on the card and only one is ever opened.
+    #
+    #  Each entry is taken out **whole**, so each one has to be a drawer that
+    #  holds this program and nothing else - checked against a real
+    #  distribution, never inferred from a name. ClassicWB's System/FBlit
+    #  looks like a duplicate and is not: it carries the same FBlit build as
+    #  the package plus FBlitGUI, which the package does not ship, so
+    #  removing it would take a program away.
+    supersedes: tuple[str, ...] = ()
 
     @property
     def manual(self) -> bool:
@@ -622,6 +635,9 @@ CATALOGUE: list[Package] = [
         #  "68040/68060 non FPU guru fixed, again!" in 4.4 - and 4.4 is what
         #  this address serves, so the patch is not needed.
         download=Download("util/moni/SysInfo.lha", stage="Utilities/SysInfo"),
+        #  Verified on ClassicWB FULL v28: Tools/SysInfo holds SysInfo 3.24
+        #  (07-Nov-93) and its own docs, and nothing else.
+        supersedes=("Tools/SysInfo",),
         note="Unpacked into Utilities/SysInfo, ready to run.",
     ),
     Package(
@@ -650,6 +666,11 @@ CATALOGUE: list[Package] = [
              ("DOpus4/C", "C"),
              ("DOpus4/Libs", "Libs"),
              ("DOpus4/S", "S"))),
+        #  Verified on ClassicWB FULL v28: Programs/DirOpus4 holds Directory
+        #  Opus 4.16 (Jun 2001) with its own Docs, c, libs and modules - the
+        #  same program this installs as 4.18.22, under the distribution's
+        #  own name for it.
+        supersedes=("Programs/DirOpus4",),
     ),
 
     # ------------------------------------------------------ music and pictures

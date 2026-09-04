@@ -206,6 +206,13 @@ class Compatibility:
         #  Refusing it during the copy leaves the name free for the package.
         self._displace: set[str] = set()
         self._displaced: list[str] = []
+        #  Drawers left out whole, because a newer copy of what they hold is
+        #  being installed elsewhere. Reported once each rather than per file.
+        #  Keyed on the lower-cased path for matching, valued with the way
+        #  it is actually written, so the log names the drawer as the drive
+        #  does rather than as this code happens to compare it.
+        self._supersede: dict[str, str] = {}
+        self._superseded: set[str] = set()
         self._seen_picasso = False
         self._picasso_expected = False
         self._finished = False
@@ -276,6 +283,28 @@ class Compatibility:
         """
         return self._finish_classicwb
 
+    def supersede(self, paths: Iterable[str]) -> None:
+        """Leave out a drawer holding an older copy of chosen software.
+
+        Different from ``displace``, and deliberately a separate set. A
+        displaced path is one exact file the package writes in that same
+        place, so the match is exact and a drawer of the same name is still
+        merged into - that is what lets MUI's overlay add to ClassicWB's own
+        System/MUI rather than replace it.
+
+        This is the other case: the distribution carries its own copy of the
+        same program somewhere else entirely, under its own name. ClassicWB
+        keeps SysInfo 3.24 from 1993 in Tools/SysInfo while the package
+        installs 4.4 into Utilities/SysInfo, so both land and only one is
+        ever opened. Superseding takes the whole drawer, contents and all,
+        which is why it is only ever given drawers that hold one program and
+        nothing else - a judgement made per package and checked against a
+        real distribution, never guessed from a name.
+        """
+        for path in paths:
+            tidy = path.replace("\\", "/").strip("/")
+            self._supersede.setdefault(tidy.lower(), tidy)
+
     def displace(self, paths: Iterable[str]) -> None:
         """Refuse these paths while copying, so a package can supply them.
 
@@ -288,6 +317,10 @@ class Compatibility:
     def keep_user_startup(self) -> None:
         """Hold back the drive's S:User-Startup so it can be added to."""
         self._want_user_startup = True
+
+    def superseded_drawers(self) -> list[str]:
+        """Which drawers were actually left out, as the drive spells them."""
+        return sorted(self._supersede[key] for key in self._superseded)
 
     def stop_displacing(self) -> None:
         """The copying is over; the packages may now write their own files.
@@ -307,6 +340,14 @@ class Compatibility:
         #  at all: it is the user's own choice of software, and it has to
         #  hold whether or not the compatibility pass is switched on.
         posix = relative.replace("\\", "/").strip("/").lower()
+        for drawer in self._supersede:
+            if posix == drawer or posix.startswith(drawer + "/"):
+                if drawer not in self._superseded:
+                    self._superseded.add(drawer)
+                    self.note("replaced",
+                              f"{self._supersede[drawer]} left out whole - "
+                              f"you chose a newer copy of what it holds")
+                return True
         if posix in self._displace:
             self._displaced.append(relative)
             self.note("replaced",
