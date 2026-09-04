@@ -1377,6 +1377,27 @@ same directory.
 asserts each of these still checks its provenance, so the next cache added has
 to as well.
 
+### A launcher for each drive, not one for all of them
+
+iGame keeps the drawers it scans in `repos.prefs` and its archive ships none,
+so installed cleanly it comes up with nothing to scan on a card whose drives
+are full. The build knows which drives it filled, so it says so.
+
+It used to say so in **one** list covering every drive, which put four hundred
+games and a few hundred demos in the same window. A demo is not a game, and
+scrolling past one to reach the other is nobody's idea of a launcher.
+
+Each content drive gets its own installation now, the way PiMiga does it. The
+first keeps the familiar name; every drive after it gets a launcher named for
+the drive, so a card with Games and Demos arrives with **iGame** and **iDemos**
+side by side, each scanning only its own. A second installation is the whole
+program again, not just a preferences file — a `repos.prefs` on its own is a
+launcher with nothing to launch it.
+
+Nothing here names a drive. `Games`, `Demos` and the rest come from the
+partitions the user set up, so a drive called `Cracktros` arrives as
+`iCracktros`, and a drive this build did not fill is not named at all.
+
 ### iGame is told where the games are
 
 iGame keeps the drawers it scans in `repos.prefs`, and its Aminet archive
