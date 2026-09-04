@@ -2428,6 +2428,33 @@ class NewDrawersLookLikeTheDesktopTheyJoin(unittest.TestCase):
         self.assertEqual(found["utilities"], mine,
                          "the floppies' icon overwrote the drive's own")
 
+    def test_the_generic_icon_comes_from_the_drive_too(self):
+        #  The whole point, and it did not work: the drive's icons were
+        #  harvested and merged, but the stand-in for a drawer whose name
+        #  matched nothing was chosen by name across all sources - and the
+        #  Workbench floppies contribute one called literally "drawer",
+        #  which beat every name after it. So a MagicWB desktop still got
+        #  plain 3.1 drawers for exactly the software the user chose. Found
+        #  by building a card and comparing the icons byte for byte.
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        drive = self.folder / "drive"
+        floppy = self.folder / "floppy"
+        drive.mkdir(); floppy.mkdir()
+        mine = self._icon(2)
+        (drive / "Utilities.info").write_bytes(mine)
+        (floppy / "drawer.info").write_bytes(self._icon(2) + b"\0" * 8)
+        self.assertEqual(amigaos._generic_drawer_icon([drive, floppy]), mine,
+                         "the floppies' drawer icon won again")
+
+    def test_the_floppies_are_still_there_to_fall_back_on(self):
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        floppy = self.folder / "only-floppy"
+        floppy.mkdir()
+        theirs = self._icon(2) + b"\0" * 8
+        (floppy / "drawer.info").write_bytes(theirs)
+        self.assertEqual(amigaos._generic_drawer_icon([floppy]), theirs)
+        self.assertIsNone(amigaos._generic_drawer_icon([]))
+
     def test_a_card_with_no_drive_still_gets_icons(self):
         #  Built from floppies alone there is no drive to copy from, and the
         #  drawers must still be visible.
