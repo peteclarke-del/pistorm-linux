@@ -2818,3 +2818,74 @@ class SoftwareTheDriveArrivesWithCanBeLeftOut(unittest.TestCase):
         self.assertIn("Boum", names)
         for never in ("Commodities", "Catalogs", "A", "B"):
             self.assertNotIn(never, names)
+
+
+class TheADFHelperIsClickable(unittest.TestCase):
+    """The archive ships no Workbench front end at all.
+
+    Its own scripts want a Shell and a filename, and the author's suggestion
+    was to drive them from ToolsDaemon or DOpus. So this package writes a
+    small script of its own that asks for the file with RequestFile, and
+    borrows an icon from the archive to make it double-clickable.
+    """
+
+    def test_the_helper_is_clickable_and_named_for_its_icon(self):
+        #  Workbench pairs a file with the icon of the same name plus .info.
+        #  A script called MountADF beside an icon called anything else is
+        #  two things that do nothing, and nothing says so.
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        adf = packages.CATALOGUE_BY_KEY["adfdevice"].download
+        written = {name: dest for name, dest, _text in adf.write}
+        self.assertIn("MountADF", written)
+        for _inside, dest, icon, tool in adf.retool:
+            self.assertEqual(icon, "MountADF.info")
+            self.assertEqual(dest, written["MountADF"],
+                             "the icon has to land in the same drawer")
+            self.assertEqual(tool, "IconX",
+                             "IconX is what runs a script from Workbench")
+
+    def test_the_helper_hands_over_to_the_archives_own_script(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        adf = packages.CATALOGUE_BY_KEY["adfdevice"]
+        text = next(t for n, _d, t in adf.download.write if n == "MountADF")
+        self.assertIn(".key NAME/F", text.splitlines()[0],
+                      "without a .key line <NAME> is never substituted")
+        self.assertIn("RequestFile", text)
+        target = "SYS:Utilities/ADF_Device/Insert.script"
+        self.assertIn(target, text)
+        landed = {f"{dest}/{Path(src).name}"
+                  for src, dest in adf.download.items}
+        self.assertIn(target.removeprefix("SYS:"), landed,
+                      "the script it calls has to be one this package installs")
+
+    def test_a_retooled_icon_keeps_working_as_an_icon(self):
+        #  Rewriting the DefaultTool moves everything after it. Getting that
+        #  wrong leaves an icon Workbench cannot read, which looks exactly
+        #  like the file having no icon at all.
+        from pistorm_imager.core import amigainfo, packages       # noqa: PLC0415
+        cache = packages.cache_dir() / "ADF_Device.unpacked"
+        if not cache.is_dir():
+            self.skipTest("the ADF Device archive is not unpacked here")
+        source = cache / "ADF_Device_v1.3/ADF_Device.guide.info"
+        original = source.read_bytes()
+        before = amigainfo.read_tooltypes(original)
+        after = amigainfo.set_default_tool(original, "IconX")
+        self.assertEqual(amigainfo.read_default_tool(after), "IconX")
+        self.assertEqual(amigainfo.read_tooltypes(after), before,
+                         "the tool types moved or were lost")
+
+    def test_setting_the_tool_twice_does_not_grow_the_icon(self):
+        from pistorm_imager.core import amigainfo, packages       # noqa: PLC0415
+        cache = packages.cache_dir() / "ADF_Device.unpacked"
+        if not cache.is_dir():
+            self.skipTest("the ADF Device archive is not unpacked here")
+        data = (cache / "ADF_Device_v1.3/ADF_Device.guide.info").read_bytes()
+        once = amigainfo.set_default_tool(data, "IconX")
+        twice = amigainfo.set_default_tool(once, "IconX")
+        self.assertEqual(once, twice)
+
+    def test_an_icon_it_cannot_read_is_left_out_not_mangled(self):
+        from pistorm_imager.core import amigainfo                 # noqa: PLC0415
+        with self.assertRaises(amigainfo.InfoError):
+            amigainfo.set_default_tool(b"\x89PNG\r\n\x1a\n" + b"\0" * 200,
+                                       "IconX")
