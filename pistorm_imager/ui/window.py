@@ -493,6 +493,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  hidden until it is asked for.
         self.stack.add_titled_with_icon(amiga_page, "amiga", "Amiga",
                                         "applications-system-symbolic")
+        self.stack.add_titled_with_icon(self._page_packages(), "packages",
+                                        "Packages", "package-x-generic-symbolic")
         self.stack.add_titled_with_icon(self._page_options(), "options", "Options",
                                         "preferences-system-symbolic")
         self.stack.add_titled_with_icon(self._page_target(), "target", "Target",
@@ -681,7 +683,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         thing there is to do.
         """
         self._customising = bool(on)
-        for name in ("source", "storage", "amiga", "options", "target"):
+        for name in ("source", "storage", "amiga", "packages", "options",
+                     "target"):
             page = self.stack.get_page(self.stack.get_child_by_name(name))
             if page is not None:
                 page.set_visible(self._customising)
@@ -1688,6 +1691,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.os_group.add(self.os_disks)
         page.add(self.os_group)
 
+        return page
+
+
+    def _page_packages(self) -> Adw.PreferencesPage:
+        """The software to add, on a page of its own.
+
+        It shared the Amiga page with the model, the Kickstart and the
+        Workbench disks, which are facts about the hardware; this is a
+        shopping list, and it is longer than everything else put together.
+        """
+        page = Adw.PreferencesPage()
+        self.page_packages = page
         self.packages_group = Adw.PreferencesGroup(
             title="Software to add",
             description="A Workbench built from the original disks is exactly "
@@ -2322,6 +2337,56 @@ class ImagerWindow(Adw.ApplicationWindow):
         finally:
             self._settling_packages = False
         self._on_layout_changed()
+        if row is not None and row.get_active():
+            self._ask_about_rivals(key)
+
+    def _rivals(self, key: str) -> list[str]:
+        """Anything switched on that does the same job as ``key``."""
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is None or not package.role:
+            return []
+        return [other for other, row in self.package_rows.items()
+                if other != key and row.get_active()
+                and packages.CATALOGUE_BY_KEY[other].role == package.role]
+
+    def _ask_about_rivals(self, key: str) -> None:
+        """Two packages doing one job is rarely what anybody means.
+
+        Asked rather than decided: they patch the same part of the system and
+        the answer is usually to drop the older choice, but somebody may want
+        both and it is not this tool's place to overrule them.
+        """
+        rivals = self._rivals(key)
+        if not rivals:
+            return
+        package = packages.CATALOGUE_BY_KEY[key]
+        others = ", ".join(packages.CATALOGUE_BY_KEY[r].label for r in rivals)
+        dialog = Adw.AlertDialog(
+            heading=f"{others} does the same job",
+            body=(f"{package.label} and {others} are both a {package.role} "
+                  f"system, and they patch the same part of Workbench. "
+                  f"Would you like {others} taken off the card?"))
+        dialog.add_response("keep", "Keep both")
+        dialog.add_response("remove", f"Remove {others}")
+        dialog.set_response_appearance("remove",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("remove")
+        dialog.set_close_response("keep")
+
+        def answered(_dialog, response) -> None:
+            if response != "remove":
+                return
+            was, self._settling_packages = self._settling_packages, True
+            try:
+                for other in rivals:
+                    self.package_rows[other].set_active(False)
+            finally:
+                self._settling_packages = was
+            self._toast(f"{others} removed")
+            self._on_layout_changed()
+
+        dialog.connect("response", answered)
+        dialog.present(self)
 
     def _chosen_packages(self) -> list[str]:
         #  Not "and sensitive": a package the display makes essential is

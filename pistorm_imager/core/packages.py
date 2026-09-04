@@ -159,6 +159,13 @@ class Package:
     #  whether or not the user thought to tick it.
     requires: tuple[str, ...] = ()
     note: str = ""
+    #  What job this does, where two packages doing it are alternatives
+    #  rather than companions. Ticking one while the other is on is worth a
+    #  question - it is rarely what anybody means, and the two patch the same
+    #  part of the system. Left empty for the great majority, which coexist
+    #  perfectly well: three module players on one card is a preference, not
+    #  a conflict.
+    role: str = ""
     #  True when nobody would choose this for its own sake - it is here to
     #  satisfy something else. Such a package goes away with the last thing
     #  that needed it; one that is useful on its own stays, because turning
@@ -498,6 +505,7 @@ CATALOGUE: list[Package] = [
         category=Category.LOOK,
         download=Download("util/wb/NewIcons46.lha", stage=STAGING + "/NewIcons"),
         note="Run its Installer from Storage/Install on the Amiga.",
+        role="default icons",
     ),
     Package(
         "birdie", "Birdie",
@@ -538,6 +546,7 @@ CATALOGUE: list[Package] = [
                            ("DefIcons44/deficons.prefs",
                             "Prefs/Env-Archive"))),
         default=True,
+        role="default icons",
     ),
     Package(
         "freewheel", "FreeWheel",
@@ -575,6 +584,19 @@ CATALOGUE: list[Package] = [
         category=Category.EXTRAS,
         download=Download("gfx/show/Visage.lha", stage="Utilities/Visage"),
         note="Unpacked into Utilities/Visage, ready to run.",
+    ),
+    Package(
+        "sysinfo", "SysInfo",
+        "What this Amiga actually is and how fast it goes - CPU, chipset, "
+        "boards, and the benchmarks everyone quotes at each other.",
+        category=Category.EXTRAS,
+        #  4.0 gurus on a 68040 with no FPU, which is exactly what Emu68
+        #  provides, and Aminet still carries a patch for it. Its own history
+        #  records the fix twice over - "68040 non FPU guru fixed" in 4.3 and
+        #  "68040/68060 non FPU guru fixed, again!" in 4.4 - and 4.4 is what
+        #  this address serves, so the patch is not needed.
+        download=Download("util/moni/SysInfo.lha", stage="Utilities/SysInfo"),
+        note="Unpacked into Utilities/SysInfo, ready to run.",
     ),
     Package(
         "snoopdos", "SnoopDos",
