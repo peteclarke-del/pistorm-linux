@@ -1763,6 +1763,37 @@ package had been installed. The fixes are:
   anything is copied, while a copy merely staged in `Storage/Install` for you
   to install later does not - staging is not installing;
 
+### Leaving out what the drive arrives with
+
+A ready-made distribution has its own idea of what belongs on a card. ClassicWB
+FULL carries thirty programs in `Programs` alone and seven little games in
+`WBGames`, some obsolete, some unfinished, some simply not to taste — and the
+only choice was all of it or none.
+
+The Packages page now lists what the chosen drive already holds, one row per
+program, all on. Turn one off and it is left out: **the drawer, everything in
+it, and its icon**, by the same rule that removes a superseded older copy — the
+rule that had to be fixed once already, when leaving the files out but keeping
+the drawer produced an empty `Tools/SysInfo` with its icon still on the desktop.
+
+Only the drawers software actually lives in are offered — `Programs`,
+`WBGames`, `Internet`, `Audio`, `Extras` — and only one level down. `Utilities`
+and `Tools` are left alone deliberately: they hold Workbench's own commands, and
+a list offering to delete `Tools/Commodities` is a trap rather than a choice. On
+a system drive `Games` and `Demos` are the letter drawers a distribution creates
+for a games partition to be assigned to, so they are not offered either; the
+games themselves are chosen on their own drive.
+
+Unticking is independent of *Replace older copies*: that switch decides which of
+two copies of the same thing wins, while this is software named for removal, and
+it goes whatever else is set. Both lists describe the drive that was chosen, so
+dropping the drive drops them — otherwise a build with no drive selected would
+still be leaving things out of it.
+
+An older exclusion chooser existed and did not help here: it was built for a
+games drive indexed by letter, and asked of a system drive it returned fifty-one
+groups with nothing in any of them.
+
 ### Nothing is taken from the drive being built on
 
 Every file a card needs comes from a package fetched from its publisher. Where

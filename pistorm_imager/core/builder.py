@@ -127,6 +127,12 @@ class BuildConfig:
     #  clutter nobody asked for. But it is theirs to overrule, one at a time
     #  rather than all or nothing.
     keep_older_copies: list[str] = dataclasses.field(default_factory=list)
+    #  Software the prepared drive arrives with that the user does not want.
+    #  A ready-made distribution has its own idea of what belongs on a card -
+    #  ClassicWB FULL carries thirty of them in Programs alone - and until
+    #  now it was all of it or none. Each entry is a drawer, left out whole
+    #  by the same rule that removes a superseded older copy.
+    leave_out: list[str] = dataclasses.field(default_factory=list)
     package_chipset: str = ""          # a machines.Chipset value
     package_display: str = ""          # a machines.Display value
 
@@ -742,7 +748,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         if spec is not None else []
     if extra and config.replace_older_software:
         fixer.displace(_landing_paths(extra))
-        fixer.supersede(_older_copies_to_remove(config))
+    fixer.supersede(_older_copies_to_remove(config))
     #  Any record an imported drive brings describes a card that no longer
     #  exists; this build writes its own in its place.
     fixer.displace([MANIFEST_PATH])
@@ -1120,14 +1126,22 @@ def _older_copies_to_remove(config: "BuildConfig") -> list[str]:
     Utilities/SysInfo (4.4).
     """
     out: list[str] = []
-    for key in packages.expand(config.package_keys or []):
-        package = packages.CATALOGUE_BY_KEY.get(key)
-        if package is None:
-            continue
-        kept = {str(p).strip("/").lower()
-                for p in (config.keep_older_copies or ())}
-        out += [path for path in package.supersedes
-                if path.strip("/").lower() not in kept]
+    kept = {str(p).strip("/").lower()
+            for p in (config.keep_older_copies or ())}
+    #  Replacing an older copy is governed by that switch. Leaving software
+    #  out is not: it is a thing the user asked for by name, and it happens
+    #  whether or not they also want newer copies to win.
+    if config.replace_older_software:
+        for key in packages.expand(config.package_keys or []):
+            package = packages.CATALOGUE_BY_KEY.get(key)
+            if package is None:
+                continue
+            out += [path for path in package.supersedes
+                    if path.strip("/").lower() not in kept]
+    #  What the user asked to be rid of goes by the same route: it is the
+    #  same operation, and the drawer's own icon has to go with it or the
+    #  desktop keeps an icon that opens nothing.
+    out += [str(path) for path in (config.leave_out or [])]
     return out
 
 
@@ -1603,6 +1617,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                                  progress)
         if extra and config.replace_older_software:
             fixer.displace(_landing_paths(extra))
+        if spec.bootable:
             fixer.supersede(_older_copies_to_remove(config))
         if spec.bootable:
             #  See above: an earlier build's record is not left standing in

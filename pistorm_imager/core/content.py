@@ -165,6 +165,54 @@ def _locator(entry) -> int:
     return getattr(entry, "anode", None) or getattr(entry, "block", 0)
 
 
+#  Where a distribution keeps the software somebody might not want. Only
+#  these, and only one level down: a drawer directly inside one of them is a
+#  program, while anything deeper is that program's own business, and the
+#  system drawers - C, Libs, Devs, S - are not software at all.
+#  Not Utilities or Tools: those hold Workbench's own commands, and a list
+#  offering to delete Tools/Commodities is a trap rather than a choice. Not
+#  Games or Demos either - on a system drive those are the letter drawers a
+#  distribution creates for a games partition to be assigned to, and the
+#  games themselves are chosen on their own drive.
+SOFTWARE_DRAWERS = ("Programs", "WBGames", "Internet", "Audio", "Extras")
+
+
+def installed_programs(reader) -> list[tuple[str, str]]:
+    """What a prepared drive already has installed, as (drawer, program).
+
+    A ready-made distribution arrives with its own idea of what you want -
+    ClassicWB FULL carries thirty-one things in Programs alone, some of them
+    unfinished, obsolete or simply not to taste - and until now the only
+    choice was all of it or none. This lists them so they can be left out one
+    at a time.
+
+    Read one drawer at a time rather than by walking the drive: on a volume
+    holding twenty gigabytes of games, walking it would take longer than the
+    build.
+    """
+    out: list[tuple[str, str]] = []
+    try:
+        top = {entry.name.lower(): entry for entry in reader.listdir()
+               if entry.is_dir}
+    except Exception:                                       # noqa: BLE001
+        return out
+    for drawer in SOFTWARE_DRAWERS:
+        entry = top.get(drawer.lower())
+        if entry is None:
+            continue
+        try:
+            inside = reader.listdir(_locator(entry))
+        except Exception:                                   # noqa: BLE001
+            continue
+        for child in sorted(inside, key=lambda e: e.name.lower()):
+            #  A drawer, because that is what a program is here. A loose file
+            #  in Utilities is one command, and removing it one at a time is
+            #  not worth a list sixty rows long.
+            if child.is_dir and not child.name.startswith("."):
+                out.append((entry.name, child.name))
+    return out
+
+
 def discover_volume(reader) -> list[Category]:
     """The same, read out of an Amiga volume rather than a host folder.
 
