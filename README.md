@@ -379,6 +379,48 @@ Writing **straight to a card** was never affected: the build takes `card.size`
 directly and never goes near the box. It is building an **image file** sized
 from a card that went through the rounded text.
 
+### Trimming an image that overshoots, without rebuilding it
+
+An image a little too big for its card does not have to be built again, and
+these builds take an hour. The overshoot is at the end of the card, which is
+where the last drive is, so if that drive has room to give the whole thing can
+be trimmed in place.
+
+The one that prompted this was over by 1,593,835 bytes — **exactly one
+cylinder** of the 1 MiB cylinders the geometry uses — and entirely inside an
+empty `DH3`, so nothing else had to move:
+
+| | before | after |
+| --- | --- | --- |
+| image file | 63,866,163,691 | 63,864,569,856 (the card, to the byte) |
+| MBR partition 2 | ends 63,866,163,200 | ends 63,864,569,856 |
+| `rdb_Cylinders` | 60647 | 60646 |
+| `DH3` `de_HighCyl` | 60646 | 60645 |
+
+**Patch the RDB in place; never read it and write it back.** `Rdb.read` parses
+the RigidDiskBlock, the partition list and the filesystem headers, but it does
+**not** keep the embedded handler's payload — `FileSystem.data` comes back
+empty. Calling `Rdb.write` after a read therefore produces a structurally valid
+RDB with the 59,532-byte `pfs3aio` binary gone, and a card whose PFS3
+partitions cannot be mounted by anything. Edit `de_HighCyl` in the partition
+block and the cylinder fields in the RigidDiskBlock directly, recompute each
+block's checksum with `_checksum(block, 64)`, and leave every other byte alone.
+
+The order matters, because only the last step cannot be undone:
+
+1. Patch `de_HighCyl` on the last partition, and `rdb_Cylinders` (offsets 64,
+   80, 96, 100, and `rdb_HiCylinder` at 140 as `cylinders - 1`).
+2. Re-read the RDB and check the Amiga area now ends at or before the card.
+3. **Reformat the trimmed drive** — its file system was laid out for the old
+   cylinder count. Check it is empty first; if it is not, it has to be emptied
+   or the trim has to come from somewhere else.
+4. Shrink the MBR partition entry to end on the card's last sector.
+5. Truncate the file.
+
+Then verify against the card rather than against the arithmetic: MBR signature,
+both partitions ending within the capacity, every drive mounting, and the files
+the build was checked on still present.
+
 ### The box has to be reachable when it matters
 
 The size box is locked while a card is the target, because a card's capacity is
