@@ -477,7 +477,16 @@ CATALOGUE: list[Package] = [
         "trip to the top of the screen.",
         category=Category.LOOK,
         download=Download("util/wb/MagicMenu_3.1.lha",
-                          (("MagicMenu/WBStartup/MagicMenu", "WBStartup"),)),
+                          #  The icon comes from a drawer of its own, and
+                          #  without one Workbench never starts the program.
+                          #  Of the two sets the archive ships, DualPNG is a
+                          #  PNG file with an .info name - an OS4 icon, which
+                          #  Workbench 3.1 cannot read - so the classic one
+                          #  is the only one that works here. It carries
+                          #  DONOTWAIT and STARTPRI=80 already.
+                          (("MagicMenu/WBStartup/MagicMenu", "WBStartup"),
+                           ("MagicMenu/Icons/MagicWB/MagicMenu.info",
+                            "WBStartup"))),
     ),
     Package(
         "visualprefs", "VisualPrefs",
@@ -496,6 +505,7 @@ CATALOGUE: list[Package] = [
         native_only=True,
         download=Download("util/wb/FullPalette22.lha",
                           (("FullPalette/FullPalette", "WBStartup"),
+                           ("FullPalette/FullPalette.info", "WBStartup"),
                            ("FullPalette/FPPrefs", "Prefs"))),
     ),
     Package(
@@ -542,6 +552,7 @@ CATALOGUE: list[Package] = [
         category=Category.LOOK,
         download=Download("util/wb/DefIcons44.lha",
                           (("DefIcons44/DefIcons44", "WBStartup"),
+                           ("DefIcons44/DefIcons44.info", "WBStartup"),
                            ("DefIcons44/DefIconsPrefs", "Prefs"),
                            ("DefIcons44/deficons.prefs",
                             "Prefs/Env-Archive"))),
@@ -553,20 +564,35 @@ CATALOGUE: list[Package] = [
         "Mouse wheel support: scrolls the window under the pointer. Its "
         "absence is one of the first things anyone notices.",
         category=Category.LOOK,
-        #  The 020 build, since a PiStorm is a 68040.
+        #  The 020 build, since a PiStorm is a 68040 - but installed under
+        #  the plain name. A drive that brings its own FreeWheel keeps it in
+        #  WBStartup under exactly that name, and leaving ours as
+        #  "FreeWheel_020" put a second copy of the same commodity beside it
+        #  rather than in place of it: two input handlers scrolling one
+        #  window. Under the same name it displaces the older copy, which is
+        #  what choosing the package asked for.
         download=Download("util/mouse/FreeWheel.lha",
-                          (("FreeWheel/FreeWheel_020", "WBStartup"),
-                           ("FreeWheel/FreeWheel.cfg", "S"))),
+                          (("FreeWheel/FreeWheel.cfg", "S"),),
+                          rename=(("FreeWheel/FreeWheel_020", "WBStartup",
+                                   "FreeWheel"),
+                                  ("FreeWheel/FreeWheel_020.info", "WBStartup",
+                                   "FreeWheel.info"))),
         default=True,
     ),
     Package(
         "clicktofront", "ClickToFront",
         "Click anywhere in a window to bring it to the front, instead of "
-        "aiming for the depth gadget.",
+        "aiming for the depth gadget. Bryce Nesbitt's 1987 original asks "
+        "before it patches, so it is put where you can run it rather than "
+        "started at boot.",
         category=Category.LOOK,
         download=Download("util/mouse/ClickToFront.lha",
-                          (("ClickToFront/ClickToFront", "WBStartup"),
-                           ("ClickToFront/ClickToFront.info", "WBStartup"))),
+                          (("ClickToFront/ClickToFront",
+                            "Utilities/ClickToFront"),
+                           ("ClickToFront/ClickToFront.info",
+                            "Utilities/ClickToFront"))),
+        note="In Utilities/ClickToFront. Run it once per boot; it asks "
+             "before installing its patch.",
     ),
     Package(
         "dockit", "Dock-It",

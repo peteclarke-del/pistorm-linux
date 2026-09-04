@@ -878,6 +878,46 @@ started — the build writes `S:User-Startup` to do it.
 
 ### What a package needs to actually run
 
+#### Workbench runs the icons in WBStartup, not the files
+
+Two opposite failures live here, and a card carried both.
+
+**A program with no icon is never started.** Workbench enumerates the *icons*
+in `WBStartup`; a file without one is simply not seen. DefIcons, FullPalette
+and MagicMenu were each copied in without theirs, so every card this tool built
+carried three programs that could not run — the missing colour icons DefIcons
+draws being the visible half of it. Each of those archives ships its own icon
+and it is copied now.
+
+**A program with an icon and no `DONOTWAIT` stops the boot**, because Workbench
+waits for it to exit and a commodity never does. FullPalette's own icon, as
+shipped, has no `DONOTWAIT` — so supplying the icons without also checking for
+it would have turned three inert programs into a card that does not finish
+booting. Every icon landing in `WBStartup` is checked and given one if it is
+missing, including icons from a drive being imported and from any package added
+later.
+
+**Not every icon in an archive is one Workbench 3.1 can read.** MagicMenu ships
+two sets, and the obvious pick was wrong: `Icons/DualPNG/MagicMenu.info` is a
+PNG file with an `.info` name — an OS4 icon — which would have left MagicMenu
+exactly as unstarted as no icon at all. `Icons/MagicWB/MagicMenu.info` is a real
+DiskObject, and already carries `DONOTWAIT` and `STARTPRI=80`. The catalogue
+cannot tell these apart by name, so a test reads every icon it names.
+
+**A program in `WBStartup` has to be one that can start unattended.**
+ClickToFront's archive holds Bryce Nesbitt's 1987 original, whose only mode is a
+requester offering *Install* or *Cancel*. In `WBStartup` it asked on every
+single boot. It is installed to `Utilities/ClickToFront` instead, to be run by
+hand, and the package says so.
+
+**It has to land under the name it is replacing.** FreeWheel's archive file is
+`FreeWheel_020`, and a drive that brings its own keeps it in `WBStartup` as
+`FreeWheel`. Installed under the archive's name, ours sat beside the older copy
+rather than in place of it — two input handlers scrolling one window, once the
+missing icon stopped hiding the problem. It is renamed on the way in, so the
+displacement that replaces an older copy can find it.
+
+
 Copying a program's drawer onto the card is not the same as installing it. A
 great deal of Amiga software draws itself with **MUI**, and iGame, AmFTP,
 WookieChat and NetSurf all do: copied on their own they land on the card, appear
