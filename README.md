@@ -1414,8 +1414,37 @@ beside the package's 4.18.22 — both landed, and only one of each was ever
 opened. Displacement could not see them: it matches on path, and these sit
 where this build would never write.
 
-A package can now name drawers it `supersedes`, and each is left out whole.
-That is a strong thing to do, so it is fenced in three ways:
+**These are discovered, not declared.** The candidates were once a curated
+tuple on each package — two entries, checked by hand against ClassicWB FULL v28
+and correct for nothing else. Build on another distribution and the feature
+found nothing and said nothing about it, which is the same shape of failure as
+RTG depending on the source drive. Nothing about which programs exist belongs in
+this source.
+
+So the names come from the archives the chosen packages install, and the drive
+is searched for them. What makes that safe rather than a guess:
+
+- **Only principal programs.** What a package puts at the *top* of a drawer, and
+  only real AmigaDOS executables. Matching every file inside a package's tree
+  turned a PFS3 tool in `MyFiles` into a duplicate of something buried in
+  Visage — and the version comparison made it look certain.
+- **Evidence, not names.** The `$VER:` strings decide. A copy is offered by
+  default only where both versions are readable and ours is strictly newer;
+  anything else is listed as a question, switched off, with what it found
+  spelled out. That is what separates the two real duplicates from the two
+  false ones: SysInfo is 3.24 against 4.4, while ClassicWB's `System/FBlit`
+  carries the *same* build as the package plus an FBlitGUI it does not ship.
+- **Never a drawer this build is filling**, nor anything inside one. Our MUI
+  overlay merges into the drive's own `System/MUI`, so every class in it matches
+  by name and none of them is a duplicate.
+- **One row per drawer**, because the drawer is what would go.
+
+On ClassicWB FULL that search returns exactly one confident answer —
+`Tools/SysInfo`, 3.24 against 4.4 — which is what the hand-written entry said,
+arrived at without being told.
+
+Each answer is left out whole, which is a strong thing to do, so it is fenced
+further:
 
 - **The match is a path boundary, not a prefix.** `Tools/SysInfo` does not
   take `Tools/SysInfoExtra` with it.

@@ -2494,66 +2494,24 @@ class ADistributionsOwnOlderCopyIsReplaced(unittest.TestCase):
         self.assertFalse(fixer.skip("System/MUI/muimaster.library"),
                          "the drive's own MUI files must still be copied")
 
-    def test_only_verified_drawers_are_named(self):
-        #  Each entry is removed whole, so each must hold that program and
-        #  nothing else. ClassicWB's System/FBlit carries the same FBlit build
-        #  as the package plus FBlitGUI, which the package does not ship, so
-        #  naming it would take a program away; System/FWheel is FreeWheel's
-        #  C source. Neither is listed.
-        from pistorm_imager.core import packages                 # noqa: PLC0415
-        named = {path.lower() for package in packages.CATALOGUE
-                 for path in package.supersedes}
-        self.assertIn("tools/sysinfo", named)
-        self.assertIn("programs/diropus4", named)
-        for wrong in ("system/fblit", "system/fwheel", "c", "libs", "s",
-                      "system", "tools", "programs", "utilities"):
-            self.assertNotIn(wrong, named,
-                             f"{wrong} holds more than one program, or is a "
-                             f"system drawer, and would be removed whole")
-
-    def test_the_user_can_keep_one(self):
+    def test_nothing_is_removed_unless_the_user_said_so(self):
+        #  Nothing about which programs exist is written into the source any
+        #  more: the removals are exactly the answers that came back from the
+        #  list, and a build with no answers removes nothing.
         from pistorm_imager.core import builder                  # noqa: PLC0415
-        both = builder.BuildConfig(target="/tmp/x",
-                                   package_keys=["sysinfo", "diropus4"])
-        self.assertEqual(sorted(builder._older_copies_to_remove(both)),
-                         ["Programs/DirOpus4", "Tools/SysInfo"])
-        kept = dataclasses.replace(both, keep_older_copies=["tools/sysinfo"])
-        self.assertEqual(builder._older_copies_to_remove(kept),
-                         ["Programs/DirOpus4"])
-
-    def test_nothing_is_removed_for_a_package_not_chosen(self):
-        from pistorm_imager.core import builder                  # noqa: PLC0415
-        config = builder.BuildConfig(target="/tmp/x", package_keys=["whdload"])
+        config = builder.BuildConfig(target="/tmp/x",
+                                     package_keys=["whdload", "sysinfo"])
         self.assertEqual(builder._older_copies_to_remove(config), [])
+        asked = dataclasses.replace(config, leave_out=["Tools/SysInfo"])
+        self.assertEqual(builder._older_copies_to_remove(asked),
+                         ["Tools/SysInfo"])
 
-    def test_the_named_drawers_are_really_on_the_distribution(self):
-        #  The whole mechanism removes drawers whole, so the paths have to be
-        #  right about a real distribution rather than plausible. Checked
-        #  against ClassicWB FULL when it is on this machine.
-        from pistorm_imager.core import amigaos, packages         # noqa: PLC0415
-        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
-        if not image.exists():
-            self.skipTest("ClassicWB FULL is not on this machine")
-        reader, _label = amigaos.open_amiga_volume(str(image), "")
-        try:
-            for key in ("sysinfo", "diropus4"):
-                package = packages.CATALOGUE_BY_KEY[key]
-                for drawer in package.supersedes:
-                    with self.subTest(package=key, drawer=drawer):
-                        entry = reader.find(drawer)
-                        self.assertIsNotNone(
-                            entry, f"{drawer} is not on ClassicWB FULL, so "
-                                   f"{key} would offer to remove nothing")
-                        self.assertTrue(entry.is_dir, f"{drawer} is a file")
-            #  And the ones deliberately left out really are on it, so the
-            #  reason for leaving them out is a real judgement not an oversight.
-            for present in ("System/FBlit", "System/FWheel"):
-                self.assertIsNotNone(reader.find(present), present)
-        finally:
-            try:
-                reader.f.close()
-            except Exception:                                     # noqa: BLE001
-                pass
+    def test_no_package_names_a_drawer_in_the_source(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        for package in packages.CATALOGUE:
+            self.assertFalse(getattr(package, "supersedes", ()),
+                             f"{package.key} still carries a hand-written "
+                             f"list of drawers to remove")
 
     def test_the_drawer_and_its_icon_really_go(self):
         #  The unit test asked skip() about files and passed while a card was
@@ -2889,3 +2847,131 @@ class TheADFHelperIsClickable(unittest.TestCase):
         with self.assertRaises(amigainfo.InfoError):
             amigainfo.set_default_tool(b"\x89PNG\r\n\x1a\n" + b"\0" * 200,
                                        "IconX")
+
+
+class OlderCopiesAreDiscoveredNotDeclared(unittest.TestCase):
+    """Which programs exist is never written into this source.
+
+    The candidates used to be a curated tuple on each package - two entries,
+    checked by hand against ClassicWB FULL v28 and correct for nothing else.
+    Build on another distribution and the feature found nothing and said
+    nothing, which is the shape of failure this project keeps meeting.
+
+    The names now come from the archives the chosen packages install, and the
+    drive is searched for them.
+    """
+
+    def test_the_names_come_from_the_archives(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        wanted, filling = packages.principal_programs(["sysinfo"])
+        if not wanted:
+            self.skipTest("the SysInfo archive is not cached on this machine")
+        self.assertIn("sysinfo", wanted)
+        key, label, version = wanted["sysinfo"]
+        self.assertEqual(key, "sysinfo")
+        self.assertIsNotNone(version, "its own version has to be readable")
+        self.assertTrue(filling)
+
+    def test_only_principal_programs_are_matched(self):
+        #  Matching every file inside a package's tree made a PFS3 tool in
+        #  MyFiles look like a duplicate of something buried in Visage, and
+        #  the version comparison made it look certain.
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        wanted, _filling = packages.principal_programs(["visage"])
+        if not wanted:
+            self.skipTest("the Visage archive is not cached on this machine")
+        self.assertIn("visage", wanted)
+        self.assertLess(len(wanted), 8,
+                        f"too many names to match safely: {sorted(wanted)}")
+
+    def _reader(self, files):
+        class Entry:
+            def __init__(self, name):
+                self.name, self.is_dir = name, False
+        class Reader:
+            def walk(self):
+                return [(path, Entry(path.rpartition("/")[2]))
+                        for path in files]
+            def read_file(self, entry):
+                return files[[p for p in files
+                              if p.endswith("/" + entry.name)][0]]
+        return Reader()
+
+    def test_ours_has_to_be_provably_newer_to_be_offered(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        older = b"\x00\x00\x03\xf3$VER: Thing 1.2 (1993)"
+        same = b"\x00\x00\x03\xf3$VER: Thing 4.4 (2020)"
+        for body, certain in ((older, True), (same, False)):
+            with self.subTest(certain=certain):
+                found = content.find_duplicates(
+                    self._reader({"Programs/Old/Thing": body}),
+                    {"thing": ("pkg", "Thing", (4, 4))})
+                self.assertEqual(len(found), 1)
+                self.assertEqual(found[0].certain, certain)
+
+    def test_a_copy_with_no_readable_version_is_not_offered(self):
+        #  Removing a drawer whole on a name match alone is how ClassicWB's
+        #  System/FBlit - the same build as the package, plus an FBlitGUI it
+        #  does not ship - would be taken away.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.find_duplicates(
+            self._reader({"Programs/Old/Thing": b"\x00\x00\x03\xf3no version"}),
+            {"thing": ("pkg", "Thing", (4, 4))})
+        self.assertEqual(found, [])
+
+    def test_a_system_drawer_is_never_the_thing_removed(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        body = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        for where in ("C/Thing", "Libs/Thing", "S/Thing", "Tools/Thing"):
+            with self.subTest(where=where):
+                self.assertEqual(
+                    content.find_duplicates(self._reader({where: body}),
+                                            {"thing": ("p", "Thing", (4, 4))}),
+                    [])
+
+    def test_a_drawer_this_build_fills_is_never_offered(self):
+        #  Our MUI overlay merges into the drive's own System/MUI, so every
+        #  class in it matches by name and none of them is a duplicate.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        body = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        files = {"System/MUI/Libs/Thing": body}
+        self.assertEqual(
+            content.find_duplicates(self._reader(files),
+                                    {"thing": ("p", "Thing", (4, 4))},
+                                    filling=["System/MUI"]), [])
+        self.assertEqual(len(content.find_duplicates(
+            self._reader(files), {"thing": ("p", "Thing", (4, 4))})), 1)
+
+    def test_one_row_per_drawer(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        old = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        found = content.find_duplicates(
+            self._reader({"Programs/Old/Thing": old,
+                          "Programs/Old/Other": old}),
+            {"thing": ("p", "Thing", (4, 4)), "other": ("p", "Other", (4, 4))})
+        self.assertEqual([d.drawer for d in found], ["Programs/Old"])
+
+    def test_it_finds_what_the_hand_written_list_used_to(self):
+        #  The real check: discovery on the real distribution must reach the
+        #  same answer the curated entry did, and no more.
+        from pistorm_imager.core import amigaos, content, packages  # noqa: PLC0415
+        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if not image.exists():
+            self.skipTest("ClassicWB FULL is not on this machine")
+        wanted, filling = packages.principal_programs(
+            ["sysinfo", "fblit", "ftext", "freewheel", "visage", "whdload"])
+        if not wanted:
+            self.skipTest("the archives are not cached on this machine")
+        reader, _label = amigaos.open_amiga_volume(str(image), "")
+        try:
+            found = content.find_duplicates(reader, wanted, filling)
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                    # noqa: BLE001
+                pass
+        offered = [d.drawer for d in found if d.certain]
+        self.assertIn("Tools/SysInfo", offered)
+        #  And the ones a name match would have got wrong stay out.
+        self.assertNotIn("System/FBlit", [d.drawer for d in found])
+        self.assertNotIn("System/FWheel", [d.drawer for d in found])

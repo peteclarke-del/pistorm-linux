@@ -1126,18 +1126,10 @@ def _older_copies_to_remove(config: "BuildConfig") -> list[str]:
     Utilities/SysInfo (4.4).
     """
     out: list[str] = []
-    kept = {str(p).strip("/").lower()
-            for p in (config.keep_older_copies or ())}
-    #  Replacing an older copy is governed by that switch. Leaving software
-    #  out is not: it is a thing the user asked for by name, and it happens
-    #  whether or not they also want newer copies to win.
-    if config.replace_older_software:
-        for key in packages.expand(config.package_keys or []):
-            package = packages.CATALOGUE_BY_KEY.get(key)
-            if package is None:
-                continue
-            out += [path for path in package.supersedes
-                    if path.strip("/").lower() not in kept]
+    #  Older copies are discovered on the drive rather than named here, and
+    #  the answers arrive as leave_out - one entry per drawer the user left
+    #  ticked for removal. Nothing about which programs exist is written
+    #  into this source.
     #  What the user asked to be rid of goes by the same route: it is the
     #  same operation, and the drawer's own icon has to go with it or the
     #  desktop keeps an icon that opens nothing.
