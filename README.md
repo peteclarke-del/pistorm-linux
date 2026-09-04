@@ -878,6 +878,36 @@ started — the build writes `S:User-Startup` to do it.
 
 ### What a package needs to actually run
 
+#### A driver has to go where the system looks for it
+
+AHI is the Amiga's standard audio interface, and it is a **device**: programs
+ask AHI for sound instead of driving Paula themselves, so they share the
+hardware rather than fighting over it, and a stock machine gets 14-bit output
+instead of 8. That only works if `ahi.device` is in `DEVS:`, so it is installed
+there rather than left as an archive to unpack on the Amiga.
+
+Three decisions in it are worth writing down, because each was a check rather
+than a guess:
+
+- **Which `ahi.device`.** The archive ships `.000`, `.060` and a plain 68020+
+  build. Emu68 presents a 68040, so the plain one is right — and none of the
+  binaries copied contains a floating point instruction, which was counted
+  rather than assumed.
+- **Which prefs program.** AHI ships MUI and BGUI builds side by side. The BGUI
+  one would avoid depending on MUI, and its `bgui.library` carries floating
+  point instructions — guru `8000000B` on an FPU-less 68040. So the MUI build
+  is used and `mui` is declared as a requirement. It also has to be **renamed**
+  to `AHI` as it lands, because the icon in the archive is `AHI.info` and would
+  otherwise point at nothing.
+- **The `AUDIO:` handler ships with its mountlist, or not at all.** ClassicWB's
+  Startup-Sequence runs `C:Mount >NIL: DEVS:DOSDrivers/~(#?.info)`, so a
+  DOSDriver copied without `L:AHI-Handler` beside it is an error requester on
+  every boot.
+
+Only the Paula driver is copied. The Toccata, Delfina, Prelude and Melody
+drivers in the archive are for sound cards this machine has not got, and a mode
+list full of hardware that is not there is worse than a short one.
+
 #### Workbench runs the icons in WBStartup, not the files
 
 Two opposite failures live here, and a card carried both.

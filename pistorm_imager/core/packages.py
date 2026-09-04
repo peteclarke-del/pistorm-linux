@@ -675,6 +675,44 @@ CATALOGUE: list[Package] = [
 
     # ------------------------------------------------------ music and pictures
     Package(
+        "ahi", "AHI",
+        "The Amiga's standard audio interface. Programs ask AHI for sound "
+        "instead of driving Paula themselves, so they share the hardware "
+        "rather than fighting over it, and a stock machine gets 14-bit "
+        "output instead of 8.",
+        category=Category.MEDIA,
+        #  Only the prefs program needs it, but it is the only way to choose
+        #  a mode afterwards. The BGUI build would avoid the dependency and
+        #  ships a bgui.library carrying floating point instructions, which
+        #  on a PiStorm's FPU-less 68040 is guru 8000000B.
+        requires=("mui",),
+        download=Download(
+            "driver/audio/ahiusr_4.18.lha",
+            #  What the archive's own installer copies, minus the drivers for
+            #  sound cards this machine has not got. The plain ahi.device is
+            #  the 68020+ build, which is what Emu68 presents; none of these
+            #  binaries contains a floating point instruction.
+            (("AHI/User/Devs/ahi.device", "Devs"),
+             ("AHI/User/Devs/AHI/paula.audio", "Devs/AHI"),
+             ("AHI/User/Devs/AudioModes/PAULA", "Devs/AudioModes"),
+             #  The AUDIO: handler and its mountlist go together: ClassicWB's
+             #  Startup-Sequence mounts DEVS:DOSDrivers/~(#?.info), so a
+             #  driver shipped without its handler is a boot-time error.
+             ("AHI/User/Devs/DOSDrivers/AUDIO", "Devs/DOSDrivers"),
+             ("AHI/User/Devs/DOSDrivers/AUDIO.info", "Devs/DOSDrivers"),
+             ("AHI/User/L/AHI-Handler", "L"),
+             ("AHI/User/C/AddAudioModes", "C"),
+             ("AHI/User/Prefs/AHI.info", "Prefs"),
+             ("AHI/User/Help/ahi.guide", "Storage/Install/AHI")),
+            #  The archive keeps two prefs programs side by side; the one
+            #  that lands has to be called AHI for its icon to find it.
+            rename=(("AHI/User/Prefs/AHI_MUI", "Prefs", "AHI"),)),
+        note="Installed, not staged: ahi.device and the Paula driver go "
+             "straight into DEVS:, and AHI Prefs into Prefs. Only the Paula "
+             "driver is copied - the Toccata and Delfina drivers are for "
+             "sound cards this machine has not got.",
+    ),
+    Package(
         "amplifier", "AMPlifier",
         "A multiformat audio player: modules, MP3 and the rest, with skins.",
         category=Category.MEDIA,
