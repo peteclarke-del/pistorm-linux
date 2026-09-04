@@ -1263,7 +1263,7 @@ def on_activate(app: ImagerApplication) -> None:
         print("\nolder copies on the drive")
         window.quick_hdf.set_path(str(HDF_IMAGE))
         pump()
-        for key in ("sysinfo", "diropus4"):
+        for key in ("sysinfo",):
             row = window.package_rows.get(key)
             if row is not None:
                 row.set_active(True)

@@ -909,6 +909,29 @@ it calls has to be one this same package installs, and the icon has to land in
 the same drawer under the script's own name plus `.info`, or the pair are two
 files that do nothing.
 
+#### A binary for another processor never reaches the card
+
+AmigaOS 3.1 loads **HUNK** executables. An `ELF` is a PowerPC, AROS or OS4
+build, and it cannot start on a 68k machine at all.
+
+Directory Opus 4 was in the catalogue for a long time as Aminet's
+`DirectoryOpus-4.18.22.lha`, whose own listing says **`Architecture:
+ppc-amigaos >= 4.0.0`** — the AmigaOS 4 port. Its `DirectoryOpus` begins
+`\x7fELF`. It went onto every card built with it and could never have run, and
+worse, the entry that replaced ClassicWB's own working 68k Opus 4.16 with it
+made those cards worse than leaving them alone. Nothing on Aminet carries a 68k
+build of Opus 4 — what is there is the MorphOS port, the GPL source, the
+catalogs and the manual — so the package is gone rather than pointed somewhere
+hopeful, and a card built on ClassicWB keeps the working 4.16 it came with.
+
+Removing one package is not the fix, though, because the same thing arrives
+quietly in other archives: iGame ships `iGame.OS4` and `iGame.MOS` beside the
+68k builds. So the compatibility pass refuses **any** file whose first four
+bytes are `\x7fELF`, whatever package it came from and whether or not anybody
+noticed it was there. A test walks every file the cached packages install,
+finds the ELF ones, and requires the pass to refuse each — it fails if it meets
+none, so it cannot quietly stop testing anything.
+
 #### A driver has to go where the system looks for it
 
 AHI is the Amiga's standard audio interface, and it is a **device**: programs
