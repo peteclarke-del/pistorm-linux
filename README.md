@@ -1358,9 +1358,17 @@ That is a strong thing to do, so it is fenced in three ways:
 
 - **The match is a path boundary, not a prefix.** `Tools/SysInfo` does not
   take `Tools/SysInfoExtra` with it.
-- **It is a separate set from displacement**, which stays exact-match. Making
-  displacement prefix-match would have turned every drawer overlay from a
-  merge into a wipe — MUI's overlay claims the name `System/MUI` so a *file*
+- **The drawer and its icon go, not just the files inside.** The first version
+  asked `skip()` about files only, and both copy paths create a drawer without
+  asking at all — so a card came out with an empty `Tools/SysInfo` whose icon
+  was still on the desktop, opening an empty window. That is worse than having
+  done nothing. `skip_drawer` is asked before a drawer is made, and
+  `<drawer>.info` counts as part of the drawer. Found by reading the finished
+  card, after the unit tests passed.
+- **It is a separate set from displacement**, which stays exact-match, and
+  `skip_drawer` consults only the superseded set. Making displacement
+  prefix-match, or asking it about drawers, would have turned every drawer
+  overlay from a merge into a wipe — MUI's overlay claims the name `System/MUI` so a *file*
   of that name cannot block it, and must still merge into ClassicWB's own MUI.
 - **Each entry is checked against a real distribution, never inferred from a
   name.** ClassicWB's `System/FBlit` looks like a duplicate and is not: it
