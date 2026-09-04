@@ -2215,9 +2215,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         wanted = set(packages.suggested(
             self._machine(), self._display(),
             networking=bool(self.wifi_ssid.get_text().strip())))
-        for key, row in self.package_rows.items():
-            if row.get_sensitive():
-                row.set_active(key in wanted)
+        #  A whole set arriving at once is the suggestion being taken, not a
+        #  person weighing one package against another; asking about each
+        #  clash inside it would be a queue of dialogs answering nothing.
+        was, self._settling_packages = self._settling_packages, True
+        try:
+            for key, row in self.package_rows.items():
+                if row.get_sensitive():
+                    row.set_active(key in wanted)
+        finally:
+            self._settling_packages = was
         self._tick_what_is_needed()
         self._refresh_packages()
 
@@ -2264,7 +2271,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  made. So it comes on with that display and cannot be dropped
             #  while it lasts.
             if fits and package.essential:
-                row.set_active(True)
+                was, self._settling_packages = self._settling_packages, True
+                try:
+                    row.set_active(True)
+                finally:
+                    self._settling_packages = was
                 row.set_sensitive(False)
                 note += "  -  required by the display you chose."
             else:
@@ -2349,6 +2360,19 @@ class ImagerWindow(Adw.ApplicationWindow):
                 if other != key and row.get_active()
                 and packages.CATALOGUE_BY_KEY[other].role == package.role]
 
+    def _asking_is_welcome(self) -> bool:
+        """Whether a question about the software would make any sense now.
+
+        Only when somebody is looking at the page the choice lives on. Rows
+        are also set by restoring a saved setup, by the suggested load and by
+        the display forcing Picasso96 on - and a question about two icon sets
+        arriving over the quick start, in answer to nothing the person did,
+        is a interruption rather than a choice.
+        """
+        if getattr(self, "_settling_packages", False):
+            return False
+        return self.stack.get_visible_child_name() == "packages"
+
     def _ask_about_rivals(self, key: str) -> None:
         """Two packages doing one job is rarely what anybody means.
 
@@ -2356,6 +2380,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         the answer is usually to drop the older choice, but somebody may want
         both and it is not this tool's place to overrule them.
         """
+        if not self._asking_is_welcome():
+            return
         rivals = self._rivals(key)
         if not rivals:
             return
@@ -3328,7 +3354,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  the display makes essential, and it keeps the tick it was given.
         self._refresh_packages()
         wanted = set(config.package_keys)
-        for key, row in self.package_rows.items():
-            if row.get_sensitive() or key in wanted:
-                row.set_active(key in wanted)
+        was, self._settling_packages = self._settling_packages, True
+        try:
+            for key, row in self.package_rows.items():
+                if row.get_sensitive() or key in wanted:
+                    row.set_active(key in wanted)
+        finally:
+            self._settling_packages = was
         self._tick_what_is_needed()

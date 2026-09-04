@@ -265,6 +265,17 @@ class Compatibility:
         """Carry out on the card what its installer would do on the Amiga."""
         self._finish_classicwb = True
 
+    @property
+    def writes_its_own_startup(self) -> bool:
+        """Whether the boot script will come from the distribution itself.
+
+        When it does, it is written out verbatim and the editor that inserts
+        lines into a Workbench install never sees it - so anything that needs
+        a line in S:Startup-Sequence to work cannot be installed on such a
+        card.
+        """
+        return self._finish_classicwb
+
     def displace(self, paths: Iterable[str]) -> None:
         """Refuse these paths while copying, so a package can supply them.
 
