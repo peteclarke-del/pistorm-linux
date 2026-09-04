@@ -1511,6 +1511,13 @@ Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
 VisualPrefs. Networking — the Pi's WiFi as an Amiga network card, Roadshow,
 AmiSSL and NetSurf — is suggested when a WiFi network has been configured.
 
+**A switch that cannot be moved says why, first.** A package held on by the
+display is shown ticked and insensitive, and the reason used to be appended to
+its subtitle — after the description, the fetch note and the installation note,
+some three hundred characters in, where it was asked about rather than read. It
+now leads: *"Required by the display you chose, so it is on and cannot be turned
+off - change the display on the Amiga page to release it."*
+
 **An RTG display brings Picasso96 with it, and holds it on.** Picasso96 *is*
 the RTG subsystem; Emu68's driver is a card for it, and without it a card set
 up for the Pi's HDMI output has no RTG screen modes to open on. It was an
