@@ -1911,6 +1911,41 @@ package had been installed. The fixes are:
   anything is copied, while a copy merely staged in `Storage/Install` for you
   to install later does not - staging is not installing;
 
+### Software that cannot work here at all
+
+A ready-made distribution carries software written for the machine it was
+assembled on, and some of it cannot run on the card being built. That is a
+different statement from "you may not want this", so it is asked separately and
+switched **on** by default, with the reason spelled out.
+
+ClassicWB's `FMSsys` is the example. Its `MountFMS` does:
+
+    assign FMS: A-Programs:FMSsys
+    C:mount FF0:
+
+A card built here has neither an `A-Programs:` volume nor a
+`DEVS:DOSDrivers/FF0`, so it asks a question, fails, and nothing says why. The
+drawer also arrives without the handler or device it needs, which is why it
+could never have mounted anything.
+
+Only what can be shown from the files counts:
+
+- a binary whose first four bytes are `\x7fELF` — built for PowerPC, AROS or
+  OS4, and unloadable here;
+- a script that mounts a device with no matching `DEVS:DOSDrivers` entry;
+- a script needing a volume the card will not have.
+
+The volumes it compares against are **read, not assumed**: the drives this build
+makes, plus every assign the drive makes in its own `S:Startup-Sequence` and
+`S:User-Startup`. A distribution assigns plenty for itself, and calling those
+missing would condemn most of what it ships.
+
+Documentation is not evidence. A `.guide` explaining how to mount `PC:` is not
+a script that tries to, and quoting one is how a check like this stops being
+believed. On ClassicWB FULL the result is two: `Programs/FMSsys` and
+`Programs/Ami-pc`, which mounts a `PC:` that is not there either — out of
+thirty-seven programs, the other thirty-five are left alone.
+
 ### Leaving out what the drive arrives with
 
 A ready-made distribution has its own idea of what belongs on a card. ClassicWB
