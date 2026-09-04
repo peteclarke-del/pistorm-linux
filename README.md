@@ -1055,9 +1055,32 @@ owns — WHDLoad puts three commands into `C` — is listed file by file, becaus
 naming the drawer there would read as an instruction to delete `SYS:C` and take
 AmigaDOS with it.
 
+**The destination decides which of those it is, never the name it arrived
+under.** The first version asked whether the source drawer's name matched the
+destination's, which sounds equivalent and is the opposite: a package merging
+into a system drawer does so under exactly that drawer's own name, and the
+build log is full of `Libs/ -> Libs`, `C/ -> C` and `S/ -> S`. That rule would
+have written `C`, `Libs` and `S` into a file whose header says to delete what
+it lists. So `SYSTEM_DRAWERS` names the drawers AmigaOS, Workbench and this
+build own — including the ones several packages share, like `Internet` and
+`Storage/Install` — and anything landing in one of those is listed file by
+file. Everything else is the package's own drawer, whatever the archive
+unpacked as: WookieChat arrives as `WookieChat2.11_OS3_Installer` and lands in
+`Internet/WookieChat`, which is one line rather than 145.
+
 The lines added to `S:User-Startup` are recorded too, commented out. A line left
 behind runs a program that is no longer there, which is a boot-time error every
 time the machine starts.
+
+Nothing this file does can end a build. It is written at the very last step of
+a build that takes an hour, and the first version of it ended one: MUI ships
+`Locale/Catalogs/français`, whose name arrives from the host as a lone
+surrogate, and a plain `latin-1` encode raised on it *after* every file had
+been copied — taking the volume with it, unclosed and unformatted, 413 MB
+allocated out of nine gigabytes. Names are now encoded through
+`surrogateescape`, which puts back the byte the Amiga had in the first place,
+and the whole write is wrapped so that any other failure is a warning and the
+card is finished regardless. A convenience is not worth an hour.
 
 A card built from a drive this tool produced earlier brings that earlier
 build's record with it, describing software that is not there and missing

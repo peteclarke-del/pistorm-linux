@@ -1838,3 +1838,99 @@ class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
             text = volume.read_file(entry).decode("latin-1")
         self.assertIn("Utilities/PowerWindows", text)
         self.assertIn("whole drawer, 1 file", text)
+
+    def test_a_name_that_is_not_utf8_does_not_end_the_build(self):
+        #  MUI ships Locale/Catalogs/francais with a latin-1 cedilla, which
+        #  arrives from the host as a lone surrogate. A plain latin-1 encode
+        #  raises on it, and this file is written at the very last step of a
+        #  build that takes an hour: it took the whole card with it, unclosed
+        #  and unformatted, after every file had already been copied.
+        from pistorm_imager.core import amigaos, pfs3, rdb      # noqa: PLC0415
+        merged = self.folder / "catalogs"
+        (merged / "fran\udce7ais").mkdir(parents=True)
+        (merged / "fran\udce7ais" / "mui.catalog").write_bytes(b"cat")
+        pairs = [(str(merged), "Locale/Catalogs")]
+        config = self.builder.BuildConfig(target="/tmp/x")
+
+        text = self.builder._manifest_text(config, pairs, {})
+        self.assertIn("Locale/Catalogs/fran\udce7ais/mui.catalog", text)
+        #  Written back as the byte the Amiga had in the first place.
+        self.assertIn(b"fran\xe7ais", self.builder._amiga_bytes(text))
+
+        image = self.folder / "cat.hdf"
+        size = 8 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            self.builder._write_manifest(volume, config, pairs, {}, Progress())
+            volume.close()
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            self.assertIsNotNone(back.find(self.builder.MANIFEST_PATH))
+
+    def test_nothing_it_can_do_ends_a_build(self):
+        #  Whatever else goes wrong in here, an hour of copying is not thrown
+        #  away for a file that is only a convenience.
+        class Broken:
+            def makedirs(self, _where):
+                raise RuntimeError("the drive said no")
+
+        progress = Progress()
+        said = []
+        progress.log = said.append
+        config = self.builder.BuildConfig(target="/tmp/x")
+        pairs = [(self._package_with_its_own_drawer(),
+                  "Utilities/PowerWindows")]
+        self.builder._write_manifest(Broken(), config, pairs,
+                                     {pairs[0]: "powerwindows"}, progress)
+        self.assertTrue(any("WARNING" in line and "card is unaffected" in line
+                            for line in said),
+                        f"the failure has to be reported, not swallowed: {said}")
+
+    def test_a_drawer_the_system_owns_is_never_named_however_it_arrived(self):
+        #  The near-miss. Every package that merges into a system drawer does
+        #  so under exactly that drawer's own name - the build log shows
+        #  "Libs/ -> Libs", "C/ -> C" and "S/ -> S" - so deciding by whether
+        #  the source drawer's name matched the destination would have written
+        #  "C ; whole drawer" into a file whose header says to delete what it
+        #  lists. That is "Delete SYS:C ALL", and the end of AmigaDOS.
+        for name in ("C", "Libs", "S", "L", "Devs", "WBStartup", "Prefs"):
+            with self.subTest(drawer=name):
+                source = self.folder / "same" / name
+                source.mkdir(parents=True, exist_ok=True)
+                (source / "thing").write_bytes(b"x")
+                pairs = [(str(source), name)]
+                listed = self.builder._manifest_entries(pairs, {})[0][1]
+                self.assertEqual(listed, [f"{name}/thing"],
+                                 f"{name} must be listed file by file")
+                for line in listed:
+                    self.assertNotIn("whole drawer", line, line)
+
+    def test_a_drawer_the_package_brought_is_named_even_if_renamed(self):
+        #  WookieChat unpacks as "WookieChat2.11_OS3_Installer" and lands in
+        #  Internet/WookieChat. Matching on the source name listed all 145 of
+        #  its files; the destination is the package's own drawer, so one line
+        #  says it.
+        source = self.folder / "WookieChat2.11_OS3_Installer"
+        (source / "Docs").mkdir(parents=True)
+        (source / "WookieChat").write_bytes(b"x")
+        (source / "Docs" / "readme").write_bytes(b"x")
+        pairs = [(str(source), "Internet/WookieChat")]
+        listed = self.builder._manifest_entries(pairs, {})[0][1]
+        self.assertEqual(len(listed), 1, listed)
+        self.assertIn("Internet/WookieChat  ; whole drawer, 2 files", listed[0])
+
+    def test_the_drawers_this_build_shares_out_are_not_named_either(self):
+        #  Several packages land side by side in Internet, Audio and Programs.
+        #  Naming one of those as a package's own drawer would take the others
+        #  with it.
+        for name in ("Internet", "Audio", "Programs", "Storage/Install"):
+            with self.subTest(drawer=name):
+                source = self.folder / "shared" / name.replace("/", "-")
+                source.mkdir(parents=True, exist_ok=True)
+                (source / "thing").write_bytes(b"x")
+                pairs = [(str(source), name)]
+                listed = self.builder._manifest_entries(pairs, {})[0][1]
+                self.assertEqual(listed, [f"{name}/thing"])

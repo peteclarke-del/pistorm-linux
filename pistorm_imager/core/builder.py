@@ -898,6 +898,29 @@ MANIFEST_PATH = "S/PiStorm-Installed"
 #  removal list nobody can read is no better than none.
 MANIFEST_FILE_LIMIT = 200
 
+#  Drawers that belong to AmigaOS, to Workbench, or to the card itself, and
+#  are therefore never named in the record as something to delete.  Getting
+#  this wrong in the other direction is the only way this file can do harm:
+#  "Delete SYS:C ALL" takes AmigaDOS with it.
+#
+#  The bare drawers are the dangerous ones, and every package that merges into
+#  one does so under exactly its own name - WHDLoad's commands into "C",
+#  MUI's classes into "Libs" - so a rule based on the source drawer's name
+#  matching would name C, Libs and S as whole drawers.  It is the destination
+#  that decides, not the name it arrived under.
+SYSTEM_DRAWERS = {
+    "", "c", "s", "l", "libs", "devs", "prefs", "fonts", "locale",
+    "utilities", "tools", "system", "wbstartup", "storage", "classes",
+    "expansion", "rexx", "trashcan", "monitors", "disk",
+    #  Ones this build creates to hold other things, which several packages
+    #  land in side by side.
+    "programs", "internet", "audio", "games", "demos", "storage/install",
+    #  Nested drawers AmigaOS owns.
+    "locale/catalogs", "locale/help", "prefs/env-archive", "prefs/presets",
+    "devs/networks", "devs/dosdrivers", "devs/monitors", "devs/keymaps",
+    "devs/printers", "libs/mui", "system/mui/libs/mui",
+}
+
 
 def _manifest_entries(pairs: list[tuple[str, str]],
                       credit: dict[tuple[str, str], str]
@@ -931,9 +954,15 @@ def _manifest_entries(pairs: list[tuple[str, str]],
         if source.is_file():
             landed.append(f"{where}/{source.name}" if where else source.name)
         elif source.is_dir():
-            own_drawer = (where
-                          and source.name.lower()
-                          == where.rpartition("/")[2].lower())
+            #  The package brought a drawer of its own if the destination is
+            #  not one the system already owns.  A destination with a parent -
+            #  Internet/NetSurf, Utilities/SysInfo - is the package's own
+            #  even when the archive unpacked under a different name, which
+            #  is why the source name is only consulted at the top level.
+            system = where.lower() in SYSTEM_DRAWERS
+            own_drawer = bool(where) and not system and (
+                "/" in where
+                or source.name.lower() == where.rpartition("/")[2].lower())
             if own_drawer:
                 inside = sum(1 for child in source.rglob("*")
                              if child.is_file())
@@ -1001,11 +1030,52 @@ def _manifest_text(config: "BuildConfig", pairs: list[tuple[str, str]],
     return "\n".join(out) + "\n"
 
 
+def _amiga_bytes(text: str) -> bytes:
+    """Encode text for the Amiga, whatever a file name turns out to contain.
+
+    File names come off the host with ``surrogateescape``: a byte that is not
+    valid UTF-8 arrives as a lone surrogate, and MUI's ``Locale/Catalogs``
+    holds several - ``fran\udce7ais`` among them.  A plain latin-1 encode
+    raises on those, which ended an hour-long build at its very last step.
+    Encoding them back through ``surrogateescape`` restores the original byte,
+    which is the byte the Amiga had in the first place.
+
+    Anything genuinely outside latin-1 - a name that really is UTF-8, from a
+    host folder rather than an Amiga archive - has no Amiga representation at
+    all, so it becomes a question mark rather than an exception.
+    """
+    try:
+        return text.encode("latin-1", "surrogateescape")
+    except UnicodeEncodeError:
+        cleaned = "".join(
+            character if (ord(character) < 256
+                          or 0xDC80 <= ord(character) <= 0xDCFF) else "?"
+            for character in text)
+        return cleaned.encode("latin-1", "surrogateescape")
+
+
 def _write_manifest(volume, config: "BuildConfig",
                     pairs: list[tuple[str, str]],
                     credit: dict[tuple[str, str], str],
                     progress: Progress) -> None:
     """Write that record onto the drive the machine boots from."""
+    try:
+        _write_manifest_now(volume, config, pairs, credit, progress)
+    except Exception as error:                              # noqa: BLE001
+        #  This file is a convenience, written at the very end of a build
+        #  that takes an hour.  Nothing about it is worth losing that build
+        #  for, and the first version of it did exactly that: a latin-1
+        #  encode raised on a French catalogue's name and took the card with
+        #  it, unclosed and unformatted.
+        progress.log(f"  WARNING: the record of what was installed could not "
+                     f"be written ({error}). The card is unaffected.")
+
+
+def _write_manifest_now(volume, config: "BuildConfig",
+                        pairs: list[tuple[str, str]],
+                        credit: dict[tuple[str, str], str],
+                        progress: Progress) -> None:
+    """Write it, and let anything that goes wrong reach the caller."""
     body = _manifest_text(config, pairs, credit)
     if not body:
         return
@@ -1018,7 +1088,7 @@ def _write_manifest(volume, config: "BuildConfig",
         progress.log(f"  S:{name} already exists and describes an earlier "
                      f"build; this build's record could not replace it")
         return
-    volume.write_file(folder, name, body.encode("latin-1"),
+    volume.write_file(folder, name, _amiga_bytes(body),
                       check_existing=False)
     lines = sum(1 for line in body.splitlines() if not line.startswith(";"))
     progress.log(f"  S:{name} written: {lines} path(s) this build added")
