@@ -359,6 +359,82 @@ formatting bug in this tool and was not.
 
 ## How big is the card, and which gigabyte do you mean
 
+### A card's size must survive being shown
+
+Reading a card's capacity and showing it are not the same operation, and the
+difference cost a written card. The size box was filled with `human_size(...)`,
+which rounds to two decimals of a GiB — **steps of 10.7 MB** — and building an
+image file reads that box back through `parse_size`. A 64 GB card holding
+63,864,569,856 bytes was shown as `59.48 GiB`, which reads back as
+63,866,163,691: an image **1.59 MB too big for the card it was measured from**.
+Every one of five real card capacities round-trips wrongly through that text,
+three of them upwards.
+
+`exact_size_text` exists for precisely this — it is the shortest text
+`parse_size` turns back into exactly the number it was given, falling back to a
+plain byte count when no unit divides evenly — and it is what the box is filled
+with now. That card comes out as `60906M`.
+
+Writing **straight to a card** was never affected: the build takes `card.size`
+directly and never goes near the box. It is building an **image file** sized
+from a card that went through the rounded text.
+
+### Trimming an image that overshoots, without rebuilding it
+
+An image a little too big for its card does not have to be built again, and
+these builds take an hour. The overshoot is at the end of the card, which is
+where the last drive is, so if that drive has room to give the whole thing can
+be trimmed in place.
+
+The one that prompted this was over by 1,593,835 bytes — **exactly one
+cylinder** of the 1 MiB cylinders the geometry uses — and entirely inside an
+empty `DH3`, so nothing else had to move:
+
+| | before | after |
+| --- | --- | --- |
+| image file | 63,866,163,691 | 63,864,569,856 (the card, to the byte) |
+| MBR partition 2 | ends 63,866,163,200 | ends 63,864,569,856 |
+| `rdb_Cylinders` | 60647 | 60646 |
+| `DH3` `de_HighCyl` | 60646 | 60645 |
+
+**Patch the RDB in place; never read it and write it back.** `Rdb.read` parses
+the RigidDiskBlock, the partition list and the filesystem headers, but it does
+**not** keep the embedded handler's payload — `FileSystem.data` comes back
+empty. Calling `Rdb.write` after a read therefore produces a structurally valid
+RDB with the 59,532-byte `pfs3aio` binary gone, and a card whose PFS3
+partitions cannot be mounted by anything. Edit `de_HighCyl` in the partition
+block and the cylinder fields in the RigidDiskBlock directly, recompute each
+block's checksum with `_checksum(block, 64)`, and leave every other byte alone.
+
+The order matters, because only the last step cannot be undone:
+
+1. Patch `de_HighCyl` on the last partition, and `rdb_Cylinders` (offsets 64,
+   80, 96, 100, and `rdb_HiCylinder` at 140 as `cylinders - 1`).
+2. Re-read the RDB and check the Amiga area now ends at or before the card.
+3. **Reformat the trimmed drive** — its file system was laid out for the old
+   cylinder count. Check it is empty first; if it is not, it has to be emptied
+   or the trim has to come from somewhere else.
+4. Shrink the MBR partition entry to end on the card's last sector.
+5. Truncate the file.
+
+Then verify against the card rather than against the arithmetic: MBR signature,
+both partitions ending within the capacity, every drive mounting, and the files
+the build was checked on still present.
+
+### The box has to be reachable when it matters
+
+The size box is locked while a card is the target, because a card's capacity is
+not a matter of opinion. Switching the Target page's own "Write to" across to
+an image file only re-laid the page out — it never asked again — so the box
+stayed locked at whatever a card had last put in it, and a size that did not fit
+could not be corrected. That switch now re-runs the same question the card
+chooser does.
+
+And when a size is a little larger than a card that is actually in the reader —
+within five percent, so a deliberately bigger image is not nagged about — the
+size line says so, by how much, and what to type instead.
+
+
 A size typed for a card is a guess at what the card holds, and the two meanings
 of "GB" make it a bad guess. `125G` is 125 GiB - **9.22 GB more** than a card
 sold as 125 GB - so an image built from it does not fit the card it was built
