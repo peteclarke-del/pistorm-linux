@@ -1055,8 +1055,27 @@ owns — WHDLoad puts three commands into `C` — is listed file by file, becaus
 naming the drawer there would read as an instruction to delete `SYS:C` and take
 AmigaDOS with it.
 
-**The destination decides which of those it is, never the name it arrived
-under.** The first version asked whether the source drawer's name matched the
+**Only what was really written is listed.** The first version walked the
+source tree instead, and claimed five of ClassicWB's own libraries as
+NewInstaller's — because the overlay offered them and the drive already had
+them, which its own log said plainly:
+
+    skipped guigfx.library: guigfx.library already exists
+
+Following that record would have deleted somebody else's files under a
+package's name. `install_tree` now reports the path of every file it actually
+wrote, and the record is built from that: a file the drive already had, one a
+compatibility rule refused, and one that could not be written are all absent.
+
+**A drawer is named as one line only when this build created it**, so that
+everything inside it really did come from the package. ClassicWB brings its
+own `System/MUI`, and ours merges 56 files into it while skipping 339 — naming
+that drawer would hand over the drive's MUI as though this build had put it
+there, so its 56 files are listed instead. `Internet/NetSurf`, which did not
+exist until this build made it, stays one line.
+
+**The destination decides whether a drawer may be named at all, never the name
+it arrived under.** The first version asked whether the source drawer's name matched the
 destination's, which sounds equivalent and is the opposite: a package merging
 into a system drawer does so under exactly that drawer's own name, and the
 build log is full of `Libs/ -> Libs`, `C/ -> C` and `S/ -> S`. That rule would
