@@ -2350,8 +2350,17 @@ class ImagerWindow(Adw.ApplicationWindow):
                                                 self._drive_listing):
                 shown = (f"{copy.label} {_version(copy.theirs)} is in "
                          f"{copy.drawer}; you chose {_version(copy.ours)}")
-                if not copy.certain:
-                    shown += " - the same version, or one that cannot be read"
+                #  Say which way round it is. "The same version, or one that
+                #  cannot be read" covered three different situations and was
+                #  wrong about at least one of them: ClassicWB's Scalos is
+                #  39.222 against the package's 39.218, so the drive has the
+                #  newer copy and removing it would be a downgrade.
+                if copy.ours and copy.theirs and copy.theirs > copy.ours:
+                    shown += " - the drive's copy is the newer one"
+                elif copy.ours and copy.theirs and copy.theirs == copy.ours:
+                    shown += " - the same version either way"
+                elif not copy.certain:
+                    shown += " - the versions cannot be compared"
                 found[copy.drawer] = (shown, "sure" if copy.certain else "ask")
         except Exception:                                    # noqa: BLE001
             return found

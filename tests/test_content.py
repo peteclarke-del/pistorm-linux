@@ -2974,7 +2974,7 @@ class OlderCopiesAreDiscoveredNotDeclared(unittest.TestCase):
         for body, certain in ((older, True), (same, False)):
             with self.subTest(certain=certain):
                 found = content.find_duplicates(
-                    self._reader({"Programs/Old/Thing": body}),
+                    self._reader({"Programs/Thing/Thing": body}),
                     {"thing": ("pkg", "Thing", (4, 4))})
                 self.assertEqual(len(found), 1)
                 self.assertEqual(found[0].certain, certain)
@@ -2985,26 +2985,30 @@ class OlderCopiesAreDiscoveredNotDeclared(unittest.TestCase):
         #  does not ship - would be taken away.
         from pistorm_imager.core import content                  # noqa: PLC0415
         found = content.find_duplicates(
-            self._reader({"Programs/Old/Thing": b"\x00\x00\x03\xf3no version"}),
+            self._reader({"Programs/Thing/Thing": b"\x00\x00\x03\xf3no version"}),
             {"thing": ("pkg", "Thing", (4, 4))})
         self.assertEqual(found, [])
 
     def test_a_system_drawer_is_never_the_thing_removed(self):
+        #  Reachable only where a program shares its name with the drawer it
+        #  sits in - a file called "Tools" inside Tools - but that is exactly
+        #  the case where the naming rule would say yes and the answer is no.
         from pistorm_imager.core import content                  # noqa: PLC0415
         body = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
-        for where in ("C/Thing", "Libs/Thing", "S/Thing", "Tools/Thing"):
-            with self.subTest(where=where):
+        for drawer in ("C", "Libs", "S", "Tools", "Devs", "WBStartup"):
+            with self.subTest(drawer=drawer):
                 self.assertEqual(
-                    content.find_duplicates(self._reader({where: body}),
-                                            {"thing": ("p", "Thing", (4, 4))}),
-                    [])
+                    content.find_duplicates(
+                        self._reader({f"{drawer}/{drawer}": body}),
+                        {drawer.lower(): ("p", drawer, (4, 4))}),
+                    [], f"{drawer} would have been removed whole")
 
     def test_a_drawer_this_build_fills_is_never_offered(self):
         #  Our MUI overlay merges into the drive's own System/MUI, so every
         #  class in it matches by name and none of them is a duplicate.
         from pistorm_imager.core import content                  # noqa: PLC0415
         body = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
-        files = {"System/MUI/Libs/Thing": body}
+        files = {"System/MUI/Thing/Thing": body}
         self.assertEqual(
             content.find_duplicates(self._reader(files),
                                     {"thing": ("p", "Thing", (4, 4))},
@@ -3013,13 +3017,49 @@ class OlderCopiesAreDiscoveredNotDeclared(unittest.TestCase):
             self._reader(files), {"thing": ("p", "Thing", (4, 4))})), 1)
 
     def test_one_row_per_drawer(self):
+        #  A drawer named for one program can still hold others the packages
+        #  install; the drawer is what goes, so it is named once.
         from pistorm_imager.core import content                  # noqa: PLC0415
         old = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
         found = content.find_duplicates(
-            self._reader({"Programs/Old/Thing": old,
-                          "Programs/Old/Other": old}),
+            self._reader({"Programs/Thing/Thing": old,
+                          "Programs/Thing/Other": old}),
             {"thing": ("p", "Thing", (4, 4)), "other": ("p", "Other", (4, 4))})
-        self.assertEqual([d.drawer for d in found], ["Programs/Old"])
+        self.assertEqual([d.drawer for d in found], ["Programs/Thing"])
+
+    def test_the_drawer_has_to_be_named_for_the_program(self):
+        #  What goes is the whole drawer, so a program sitting inside
+        #  somebody else's is not a duplicate of anything. Without this the
+        #  search offered to delete Programs/DiskSalv, because Picasso96
+        #  ships an "Installer" and DiskSalv's drawer has one too - and
+        #  Tools/Commodities, holding Exchange, Blanker and CrossDOS,
+        #  because Commodore's ClickToFront commodity lives in it.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        old = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        offered = content.find_duplicates(
+            self._reader({"Programs/Thing/Thing": old}),
+            {"thing": ("p", "Thing", (4, 4))})
+        self.assertEqual([d.drawer for d in offered], ["Programs/Thing"])
+        for elsewhere in ("Programs/DiskSalv/Thing",
+                          "Tools/Commodities/Thing",
+                          "Programs/Other/Sub/Thing"):
+            with self.subTest(where=elsewhere):
+                self.assertEqual(
+                    content.find_duplicates(self._reader({elsewhere: old}),
+                                            {"thing": ("p", "Thing", (4, 4))}),
+                    [], f"{elsewhere} is not a drawer about Thing")
+
+    def test_a_newer_copy_on_the_drive_is_never_offered_by_default(self):
+        #  ClassicWB's Scalos is 39.222 against the package's 39.218, so
+        #  removing it would be a downgrade.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        newer = b"\x00\x00\x03\xf3$VER: Thing 9.9 (2020)"
+        found = content.find_duplicates(
+            self._reader({"Programs/Thing/Thing": newer}),
+            {"thing": ("p", "Thing", (4, 4))})
+        self.assertEqual(len(found), 1)
+        self.assertFalse(found[0].certain)
+        self.assertGreater(found[0].theirs, found[0].ours)
 
     def test_it_finds_what_the_hand_written_list_used_to(self):
         #  The real check: discovery on the real distribution must reach the
