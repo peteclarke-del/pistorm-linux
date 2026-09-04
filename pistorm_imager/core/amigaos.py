@@ -1080,6 +1080,45 @@ def _drawer_icon_sources(folders: Iterable[str | Path]) -> dict[str, bytes]:
     return found
 
 
+def drawer_icons_from_volume(reader, into: Path, limit: int = 40) -> int:
+    """Copy an Amiga volume's own drawer icons out, to be copied from.
+
+    A drive being imported brings a desktop that was designed: ClassicWB's
+    drawers are MagicWB-styled, and the drawers this tool adds beside them -
+    ``Internet/NetSurf``, ``Utilities/SysInfo`` - were given a stock
+    Workbench 3.1 drawer instead, because the only icons offered came off the
+    floppies. The result is a desktop where the software the user chose is
+    the part that looks foreign.
+
+    The drive's own icons are the right thing to copy, so they are taken from
+    it and offered first. Only real drawer icons, and only from the root,
+    which is where a distribution's own style is set.
+    """
+    into.mkdir(parents=True, exist_ok=True)
+    written = 0
+    try:
+        entries = reader.listdir()
+    except Exception:                                       # noqa: BLE001
+        return 0
+    names = {entry.name.lower() for entry in entries}
+    for entry in entries:
+        if written >= limit or not entry.name.lower().endswith(".info"):
+            continue
+        stem = entry.name[:-5]
+        #  An icon whose drawer is not there belongs to something else.
+        if stem.lower() not in names:
+            continue
+        try:
+            data = reader.read_file(entry)
+        except Exception:                                   # noqa: BLE001
+            continue
+        if not amigainfo.is_drawer_icon(data):
+            continue
+        (into / entry.name).write_bytes(data)
+        written += 1
+    return written
+
+
 def drawer_icon_from_disks(folder: str | Path, into: Path) -> Path | None:
     """Take one real drawer icon out of the Workbench floppies.
 

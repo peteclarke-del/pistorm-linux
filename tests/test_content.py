@@ -2323,3 +2323,80 @@ def _an_icon() -> bytes:
     amigainfo.read_tooltypes(bytes(data))        # it has to parse
     return bytes(data)
 
+
+
+class NewDrawersLookLikeTheDesktopTheyJoin(unittest.TestCase):
+    """A drive being imported brings a desktop that somebody designed.
+
+    ClassicWB's drawers are MagicWB-styled. The drawers this tool adds beside
+    them - Internet/NetSurf, Utilities/SysInfo - were given a stock Workbench
+    3.1 drawer icon, because the only icons on offer came off the floppies, so
+    the software the user chose was the part of the desktop that looked
+    foreign. Reported after a card was written.
+    """
+
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp(prefix="pistorm-drawericon-"))
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
+
+    @staticmethod
+    def _icon(kind: int) -> bytes:
+        """A DiskObject the icon reader accepts, drawer or tool."""
+        import struct                                            # noqa: PLC0415
+        from pistorm_imager.core import amigainfo                # noqa: PLC0415
+        data = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">H", data, 0, amigainfo.MAGIC)
+        struct.pack_into(">H", data, 2, 1)
+        data[amigainfo.TYPE_OFFSET] = kind
+        if kind == amigainfo.WBDRAWER:
+            #  A drawer icon has to carry DrawerData, or it cannot open a
+            #  window and is no use to a drawer.
+            struct.pack_into(">I", data, amigainfo.DRAWER_DATA, 1)
+        return bytes(data) + struct.pack(">I", 4)
+
+    def _reader(self, entries):
+        icon = self._icon
+        class Entry:
+            def __init__(self, name): self.name = name
+        class Reader:
+            def listdir(self, *_a): return [Entry(n) for n in entries]
+            def read_file(self, entry): return entries[entry.name]
+        return Reader()
+
+    def test_the_drives_own_drawer_icons_are_taken(self):
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        entries = {
+            "Utilities": b"", "Utilities.info": self._icon(2),
+            "Internet": b"", "Internet.info": self._icon(2),
+            #  A tool icon is not a drawer icon: opening a drawer with one
+            #  gave "unable to open script" the last time it was tried.
+            "Shell": b"", "Shell.info": self._icon(3),
+            #  An icon whose drawer is not there belongs to something else.
+            "Gone.info": self._icon(2),
+        }
+        into = self.folder / "borrowed"
+        found = amigaos.drawer_icons_from_volume(self._reader(entries), into)
+        self.assertEqual(found, 2)
+        self.assertEqual(sorted(p.name for p in into.iterdir()),
+                         ["Internet.info", "Utilities.info"])
+
+    def test_the_drive_is_preferred_over_the_floppies(self):
+        #  Both offer a "utilities" drawer icon. The one already on the
+        #  desktop has to win, or the new drawers stay the odd ones out.
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        drive = self.folder / "drive"
+        floppy = self.folder / "floppy"
+        drive.mkdir(); floppy.mkdir()
+        mine, theirs = self._icon(2), self._icon(2) + b"\0" * 8
+        (drive / "Utilities.info").write_bytes(mine)
+        (floppy / "Utilities.info").write_bytes(theirs)
+        found = amigaos._drawer_icon_sources([drive, floppy])
+        self.assertEqual(found["utilities"], mine,
+                         "the floppies' icon overwrote the drive's own")
+
+    def test_a_card_with_no_drive_still_gets_icons(self):
+        #  Built from floppies alone there is no drive to copy from, and the
+        #  drawers must still be visible.
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        spec = builder.AmigaPartitionSpec(name="DH0", bootable=True)
+        self.assertIsNone(builder._drawer_icons_from_the_drive(spec, Progress()))
