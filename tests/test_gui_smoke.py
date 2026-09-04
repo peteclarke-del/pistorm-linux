@@ -1209,6 +1209,25 @@ def on_activate(app: ImagerApplication) -> None:
         window._set_customising(False)
         pump()
 
+        #  A switch that is on and cannot be moved has to say why, at the
+        #  front: Picasso96 is held on by choosing an RTG display, and the
+        #  reason used to arrive after three hundred characters of notes.
+        print("\na locked package says why")
+        from pistorm_imager.core import machines as _m           # noqa: PLC0415
+        rtg = next(i for i, d in enumerate(_m.Display) if d.uses_rtg)
+        was_display = window.quick_display.get_selected()
+        window.quick_display.set_selected(rtg)
+        pump()
+        locked = [(k, r) for k, r in window.package_rows.items()
+                  if not r.get_sensitive() and r.get_active()]
+        check(bool(locked),
+              f"something is held on by this display ({[k for k, _ in locked]})")
+        for key, row in locked:
+            check(row.get_subtitle().startswith("Required by the display"),
+                  f"{key} says why first: {row.get_subtitle()[:60]!r}")
+        window.quick_display.set_selected(was_display)
+        pump()
+
         #  What the drive already carries, offered one at a time.
         print("\nsoftware the drive arrives with")
         window.quick_hdf.set_path(str(HDF_IMAGE))
