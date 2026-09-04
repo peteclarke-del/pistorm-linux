@@ -1472,6 +1472,14 @@ is searched for them. What makes that safe rather than a guess:
   only real AmigaDOS executables. Matching every file inside a package's tree
   turned a PFS3 tool in `MyFiles` into a duplicate of something buried in
   Visage — and the version comparison made it look certain.
+- **The drawer has to be named for the program.** What goes is the whole
+  drawer, so a program sitting inside somebody else's is not a duplicate of
+  anything. Without this the search offered — *switched on* — to delete
+  `Programs/DiskSalv`, because Picasso96 ships an `Installer` and DiskSalv's
+  drawer has one too; part of `Programs/SysSpeed`, because a `cruncher` drawer
+  contains an `LhA`; and `Tools/Commodities`, holding Exchange, Blanker,
+  CrossDOS and the rest, because Commodore's own `ClickToFront` commodity lives
+  in it. Nine offers became two, and both of those are real.
 - **Evidence, not names.** The `$VER:` strings decide. A copy is offered by
   default only where both versions are readable and ours is strictly newer;
   anything else is listed as a question, switched off, with what it found
@@ -1483,9 +1491,12 @@ is searched for them. What makes that safe rather than a guess:
   by name and none of them is a duplicate.
 - **One row per drawer**, because the drawer is what would go.
 
-On ClassicWB FULL that search returns exactly one confident answer —
-`Tools/SysInfo`, 3.24 against 4.4 — which is what the hand-written entry said,
-arrived at without being told.
+On ClassicWB FULL, with a full package selection, that search returns exactly
+one confident answer — `Tools/SysInfo`, 3.24 against 4.4, which is what the
+hand-written entry said, arrived at without being told — and one question:
+`System/Scalos`, where **the drive's copy is the newer one** (39.222 against
+39.218), so removing it would be a downgrade. Each row says which way round it
+is rather than lumping "same version" together with "cannot be compared".
 
 Each answer is left out whole, which is a strong thing to do, so it is fenced
 further:

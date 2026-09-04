@@ -271,6 +271,15 @@ def find_duplicates(reader, wanted: dict[str, tuple[str, str, tuple | None]],
         package, label, ours = key
         drawer = path.rpartition("/")[0]
         lowered = drawer.lower()
+        #  The drawer has to be *about* this program, which means named for
+        #  it. What goes is the whole drawer, and a program sitting inside
+        #  somebody else's is not a duplicate of anything: matching on the
+        #  file alone offered to delete Programs/DiskSalv because Picasso96
+        #  ships an "Installer" and DiskSalv's drawer has one too, and
+        #  Tools/Commodities - Exchange, Blanker, CrossDOS and the rest -
+        #  because Commodore's ClickToFront commodity lives in it.
+        if lowered.rpartition("/")[2] != entry.name.lower():
+            continue
         #  Never offer a drawer the system owns: that is how a duplicate in
         #  C or Libs would take AmigaDOS with it.
         if not drawer or lowered in SYSTEM_DRAWERS_LOWER:
