@@ -1273,7 +1273,9 @@ def on_activate(app: ImagerApplication) -> None:
                        if k.endswith("/FinalWriter"))
             window.arrives_rows[key].set_active(False)
             pump()
-            check(list(window.gather().leave_out) == [key],
+            #  Not the only entry: software that cannot work here is in the
+            #  same list, switched on by itself.
+            check(key in window.gather().leave_out,
                   f"unticking one leaves it out ({window.gather().leave_out})")
             window.arrives_rows[key].set_active(True)
             window.quick_hdf.set_path("")
@@ -1300,6 +1302,34 @@ def on_activate(app: ImagerApplication) -> None:
         check(list(gathered.leave_out) == [],
               f"nothing is removed when nothing was offered "
               f"({gathered.leave_out})")
+        #  Software the drive carries that cannot work here at all.
+        print("\nsoftware that cannot work")
+        real0 = Path.home()/"Downloads/ClassicWB_FULL_v28/System.hdf"
+        if real0.exists():
+            window.quick_hdf.set_path(str(real0))
+            pump()
+            check(bool(window.broken_rows),
+                  f"the check found something ({sorted(window.broken_rows)})")
+            check(any("FMSsys" in k for k in window.broken_rows),
+                  "FMSsys among it, which cannot mount anything as it ships")
+            for key, row in window.broken_rows.items():
+                check(row.get_active(), f"{key} defaults to being removed")
+                check(len(row.get_subtitle()) > 20,
+                      f"and says why: {row.get_subtitle()[:70]!r}")
+                break
+            out = window.gather().leave_out
+            check(all(k in out for k in window.broken_rows),
+                  "and they all reach the build")
+            first = sorted(window.broken_rows)[0]
+            window.broken_rows[first].set_active(False)
+            pump()
+            check(first not in window.gather().leave_out,
+                  "turning one back on keeps it")
+            window.broken_rows[first].set_active(True)
+            window.quick_hdf.set_path("")
+            pump()
+            check(not window.broken_rows, "and clearing the drive clears it")
+
         #  Both lists mean the same thing and must reach the same place: a
         #  drawer of the drive's software switched OFF, and an older copy
         #  switched ON. The second was written to a config field nobody read,
