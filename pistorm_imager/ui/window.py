@@ -1089,14 +1089,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         meanings of "GB" make it a bad one: "125G" is 125 GiB, nine gigabytes
         more than a card sold as 125 GB. When there is a card in front of us
         its capacity is known exactly, so it is shown and the box is closed.
+
+        **Exactly** is the word that matters. This wrote ``human_size`` into
+        the box, which rounds to two decimals of a GiB - steps of 10.7 MB -
+        and building an image file reads that text back. A 64 GB card holding
+        63,864,569,856 bytes came back as "59.48 GiB", which is
+        63,866,163,691: an image 1.6 MB too big for the card it was measured
+        from, written and found not to fit. ``exact_size_text`` is the one
+        that survives being read back, which is what it is for.
         """
         card = self._selected_device()
         for row in (self.quick_card_size, self.file_size_row):
             if card is not None and card.size:
-                if row.get_text() != human_size(card.size):
-                    row.set_text(human_size(card.size))
+                wanted = exact_size_text(card.size)
+                if row.get_text() != wanted:
+                    row.set_text(wanted)
                 row.set_sensitive(False)
             else:
+                #  Writing to an image file: the size is the user's to choose,
+                #  and nothing else knows what card it is going onto. The box
+                #  stayed locked from whenever a card was last selected, so a
+                #  size that did not fit could not be corrected.
                 row.set_sensitive(True)
         if card is not None and card.size:
             self.quick_card_size.set_title(
@@ -1122,6 +1135,31 @@ class ImagerWindow(Adw.ApplicationWindow):
                  else "")
         return merge_cmdline(owned, self.extra_row.get_text().strip()).strip()
 
+    def _target_changed(self) -> None:
+        """The Target page's own "Write to" changed.
+
+        It only re-laid out the page. The size box is locked while a card is
+        selected, because a card's capacity is not a matter of opinion - but
+        switching to an image file here never asked again, so the box stayed
+        locked at whatever a card had last put in it and a size that did not
+        fit could not be corrected.
+        """
+        self._sync_visibility()
+        self._follow_the_card()
+
+    def _card_it_will_not_fit(self, size: int):
+        """A card this image is nearly the size of, but slightly too big for.
+
+        Not any smaller card: someone building a 128 GB image with a 64 GB
+        card in the reader has not made a mistake. One that overshoots by a
+        few percent is a different thing - it was meant for that card - and
+        that is the case that costs a write and an hour.
+        """
+        for card in self.device_list or []:
+            if card.size and card.size < size <= card.size * 1.05:
+                return card
+        return None
+
     def _boot_size(self) -> int:
         """The boot partition size, as typed on the Target page."""
         try:
@@ -1145,6 +1183,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         card = size / 1000 ** 3
         if self.quick_target.get_selected() == 1:
             note += f" - needs a card of at least {card:.0f} GB"
+        wont_fit = self._card_it_will_not_fit(size)
+        if wont_fit is not None:
+            over = size - wont_fit.size
+            note += (f" - WARNING: {human_size(over)} too big for "
+                     f"{wont_fit.name}, which holds "
+                     f"{describe_size(wont_fit.size)}. Set the size to "
+                     f"{exact_size_text(wont_fit.size)} to fit it.")
         #  A bare G is binary, and that is the reading people do not expect: a
         #  card sold as 125 GB is 9 GB smaller than the 125 GiB "125G" asks
         #  for, and the image simply will not fit it.
@@ -1902,7 +1947,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Write to",
             model=combo(["SD card", "SD card image file",
                          "Amiga hard disk image (.hdf)"]))
-        self.target_row.connect("notify::selected", lambda *_a: self._sync_visibility())
+        self.target_row.connect("notify::selected",
+                                lambda *_a: self._target_changed())
         group.add(self.target_row)
         page.add(group)
 

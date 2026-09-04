@@ -2122,3 +2122,50 @@ class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
         self.assertEqual(written, ["Libs/new"],
                          "the file the drive already had was not written by "
                          f"this build and must not be reported: {written}")
+
+
+class TheCardSizeSurvivesBeingShown(unittest.TestCase):
+    """An image built to a card's size has to actually fit that card.
+
+    A 64 GB card holding 63,864,569,856 bytes was written into the size box
+    as "59.48 GiB" - human_size rounds to two decimals of a GiB, which is
+    steps of 10.7 MB - and building an image file reads that box back. It
+    came back as 63,866,163,691: an image 1.6 MB too big for the card it was
+    measured from. Found by writing it.
+    """
+
+    #  Real capacities, all multiples of the sector size.
+    CARDS = (63864569856, 31914983424, 127865454592, 15931539456,
+             255013289984)
+
+    def test_a_cards_size_reads_back_as_the_same_number(self):
+        from pistorm_imager.core.util import exact_size_text     # noqa: PLC0415
+        from pistorm_imager.ui.window import parse_size          # noqa: PLC0415
+        for size in self.CARDS:
+            with self.subTest(card=size):
+                self.assertEqual(parse_size(exact_size_text(size)), size)
+
+    def test_the_rounded_text_is_the_one_that_does_not(self):
+        #  The guard is only worth anything if it fails for the old text.
+        #  Rounding to two decimals of a GiB misses in both directions: a
+        #  card that reads back smaller quietly wastes up to 10 MB, and one
+        #  that reads back larger will not take the image at all. Every one
+        #  of these five real capacities is wrong one way or the other.
+        from pistorm_imager.core.util import human_size          # noqa: PLC0415
+        from pistorm_imager.ui.window import parse_size          # noqa: PLC0415
+        wrong = {size: parse_size(human_size(size)) for size in self.CARDS
+                 if parse_size(human_size(size)) != size}
+        self.assertEqual(len(wrong), len(self.CARDS),
+                         "human_size is lossy for every real card capacity")
+        too_big = [size for size, back in wrong.items() if back > size]
+        self.assertTrue(too_big, "the case that costs a write: an image "
+                                 "larger than the card it was measured from")
+
+    def test_an_image_measured_from_a_card_is_never_bigger_than_it(self):
+        from pistorm_imager.core.util import exact_size_text     # noqa: PLC0415
+        from pistorm_imager.ui.window import parse_size          # noqa: PLC0415
+        for size in self.CARDS:
+            with self.subTest(card=size):
+                self.assertLessEqual(parse_size(exact_size_text(size)), size,
+                                     "an image larger than the card it was "
+                                     "measured from cannot be written to it")
