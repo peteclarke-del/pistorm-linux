@@ -805,10 +805,18 @@ class Compatibility:
                 self.note("retargeted",
                           f"Devs/Monitors/{EMU68_BOARD}.info BOARDTYPE="
                           f"{EMU68_BOARD}")
+        elif self._picasso_expected:
+            #  Picasso96 was chosen as a package, so it brings its own
+            #  monitor, settings and API library. Nothing to adapt, and
+            #  nothing missing - which is the point of installing it from its
+            #  own archive rather than from whatever the source drive had.
+            self.note("note", "Picasso96 supplies its own monitor and "
+                              f"settings, with {EMU68_CARD} as the board")
         else:
-            self.note("note", "no emulator monitor file was present, so no "
-                              f"Devs/Monitors/{EMU68_BOARD} was created; add "
-                              f"one with the Picasso96 installer")
+            self.note("note", "no emulator monitor file was present and "
+                              "Picasso96 was not chosen, so no "
+                              f"Devs/Monitors/{EMU68_BOARD} was created; tick "
+                              f"Picasso96, or install it on the Amiga")
 
     def summary(self) -> str:
         if not self.enabled:
