@@ -2455,7 +2455,14 @@ class ImagerWindow(Adw.ApplicationWindow):
                 finally:
                     self._settling_packages = was
                 row.set_sensitive(False)
-                note += "  -  required by the display you chose."
+                #  First, not last. A switch that is on and cannot be moved
+                #  is a question - "why can I not change this?" - and the
+                #  answer was arriving at the end of three hundred characters
+                #  of description and installation notes, where it was asked
+                #  about rather than read.
+                note = ("Required by the display you chose, so it is on and "
+                        "cannot be turned off - change the display on the "
+                        "Amiga page to release it.  -  " + note)
             else:
                 row.set_sensitive(fits)
                 if not fits:
