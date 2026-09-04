@@ -545,7 +545,8 @@ class NiceToHaves(unittest.TestCase):
                                      "digibooster", "ahi"}),
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
-                                     "diropus4", "kingcon", "sysinfo"})):
+                                     "diropus4", "kingcon", "sysinfo",
+                                     "adfdevice"})):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
 
@@ -2720,3 +2721,100 @@ class AHIIsInstalledNotStaged(unittest.TestCase):
                                  f"{inside} has {fpu} floating point "
                                  f"instruction(s); a PiStorm has no FPU")
         self.assertTrue(checked, "no AHI binaries were checked")
+
+
+class SoftwareTheDriveArrivesWithCanBeLeftOut(unittest.TestCase):
+    """A ready-made distribution has its own idea of what belongs on a card.
+
+    ClassicWB FULL carries thirty programs in Programs alone, some obsolete,
+    some unfinished, some simply not to taste - and the only choice was all
+    of it or none. The exclusion chooser that already existed was built for a
+    games drive indexed by letter, and asked of a system drive it returned
+    fifty-one groups with nothing in them.
+    """
+
+    def _reader(self, tree):
+        class Entry:
+            def __init__(self, name, is_dir):
+                self.name, self.is_dir = name, is_dir
+                self.anode = self.block = hash(name) & 0xFFFF
+        class Reader:
+            def listdir(self, where=None):
+                if where is None:
+                    return [Entry(n, True) for n in tree]
+                for name, kids in tree.items():
+                    if (hash(name) & 0xFFFF) == where:
+                        return [Entry(k, d) for k, d in kids]
+                return []
+        return Reader()
+
+    def test_only_the_drawers_software_lives_in_are_offered(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.installed_programs(self._reader({
+            "Programs": [("FinalWriter", True), ("ReadMe", False)],
+            "WBGames": [("Boum", True)],
+            #  Not offered: these hold Workbench's own commands, and a list
+            #  offering to delete Tools/Commodities is a trap.
+            "Tools": [("Commodities", True)],
+            "Utilities": [("Catalogs", True)],
+            "Libs": [("mui", True)],
+            #  On a system drive these are the letter drawers a distribution
+            #  makes for a games partition, not games.
+            "Games": [("A", True), ("B", True)],
+        }))
+        self.assertEqual(found, [("Programs", "FinalWriter"),
+                                 ("WBGames", "Boum")])
+
+    def test_a_loose_file_is_not_offered(self):
+        #  Only drawers: removing one command out of Programs is not worth a
+        #  list sixty rows long.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.installed_programs(self._reader({
+            "Programs": [("Find", True), ("Find.info", False)]}))
+        self.assertEqual(found, [("Programs", "Find")])
+
+    def test_what_was_unticked_is_left_out_whatever_else_is_set(self):
+        #  Replacing an older copy is governed by a switch; leaving software
+        #  out is not - it was asked for by name.
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        for replace in (True, False):
+            config = builder.BuildConfig(
+                target="/tmp/x", replace_older_software=replace,
+                leave_out=["Programs/FinalWriter"])
+            self.assertIn("Programs/FinalWriter",
+                          builder._older_copies_to_remove(config))
+
+    def test_it_goes_by_the_route_that_takes_the_icon_too(self):
+        #  The same rule that removes a superseded drawer, so the drawer, its
+        #  contents and its .info all go - a leftover icon opening an empty
+        #  window is what that rule was fixed for.
+        from pistorm_imager.core import compat                   # noqa: PLC0415
+        fixer = compat.Compatibility(Progress())
+        fixer.supersede(["Programs/FinalWriter"])
+        for path in ("Programs/FinalWriter",
+                     "Programs/FinalWriter/FinalWriter",
+                     "Programs/FinalWriter.info"):
+            self.assertTrue(fixer.skip(path), path)
+        self.assertTrue(fixer.skip_drawer("Programs/FinalWriter"))
+        self.assertFalse(fixer.skip("Programs/FinalWriterPro/x"))
+
+    def test_the_real_distribution_offers_what_it_should(self):
+        from pistorm_imager.core import amigaos, content         # noqa: PLC0415
+        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if not image.exists():
+            self.skipTest("ClassicWB FULL is not on this machine")
+        reader, _label = amigaos.open_amiga_volume(str(image), "")
+        try:
+            found = content.installed_programs(reader)
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                    # noqa: BLE001
+                pass
+        drawers = {drawer for drawer, _name in found}
+        self.assertEqual(drawers, {"Programs", "WBGames"})
+        names = {name for _drawer, name in found}
+        self.assertIn("FinalWriter", names)
+        self.assertIn("Boum", names)
+        for never in ("Commodities", "Catalogs", "A", "B"):
+            self.assertNotIn(never, names)

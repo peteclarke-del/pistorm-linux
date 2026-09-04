@@ -1209,6 +1209,37 @@ def on_activate(app: ImagerApplication) -> None:
         window._set_customising(False)
         pump()
 
+        #  What the drive already carries, offered one at a time.
+        print("\nsoftware the drive arrives with")
+        window.quick_hdf.set_path(str(HDF_IMAGE))
+        pump()
+        check(not window.arrives_rows,
+              f"an empty drive offers nothing ({sorted(window.arrives_rows)})")
+        check(not window.arrives_group.get_visible(),
+              "and the group stays hidden")
+        real = Path.home()/"Downloads/ClassicWB_FULL_v28/System.hdf"
+        if real.exists():
+            window.quick_hdf.set_path(str(real))
+            pump()
+            check(len(window.arrives_rows) > 20,
+                  f"ClassicWB's own software is listed "
+                  f"({len(window.arrives_rows)} programs)")
+            check(any(k.endswith("/FinalWriter") for k in window.arrives_rows),
+                  "FinalWriter among them")
+            check(not any(k.startswith("Tools/") or k.startswith("Utilities/")
+                          for k in window.arrives_rows),
+                  "and Workbench's own tools are not offered for deletion")
+            key = next(k for k in window.arrives_rows
+                       if k.endswith("/FinalWriter"))
+            window.arrives_rows[key].set_active(False)
+            pump()
+            check(list(window.gather().leave_out) == [key],
+                  f"unticking one leaves it out ({window.gather().leave_out})")
+            window.arrives_rows[key].set_active(True)
+            window.quick_hdf.set_path("")
+            pump()
+            check(not window.arrives_rows, "and clearing the drive clears it")
+
         #  Older copies the drive already carries, offered one at a time.
         print("\nolder copies on the drive")
         window.quick_hdf.set_path(str(HDF_IMAGE))
