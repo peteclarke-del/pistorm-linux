@@ -542,7 +542,7 @@ class NiceToHaves(unittest.TestCase):
     def test_media_and_extras_are_offered_as_their_own_groups(self):
         for category, expected in ((packages.Category.MEDIA,
                                     {"amplifier", "hippoplayer",
-                                     "digibooster"}),
+                                     "digibooster", "ahi"}),
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
                                      "diropus4", "kingcon", "sysinfo"})):
@@ -2617,3 +2617,76 @@ class ADistributionsOwnOlderCopyIsReplaced(unittest.TestCase):
             self.assertIsNone(back.find("Tools/SysInfo.info"))
             self.assertIsNone(back.find("Tools/SysInfo/Docs/guide"))
             self.assertIsNotNone(back.find("Tools/SysInfoExtra/keep"))
+
+
+class AHIIsInstalledNotStaged(unittest.TestCase):
+    """AHI is a device driver, so it has to be in DEVS: to be any use."""
+
+    def setUp(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        self.packages = packages
+        self.ahi = packages.CATALOGUE_BY_KEY["ahi"]
+
+    def _lands(self):
+        out = {}
+        for inside, dest in self.ahi.download.items:
+            out[f"{dest}/{Path(inside).name}"] = inside
+        for inside, dest, new in self.ahi.download.rename:
+            out[f"{dest}/{new}"] = inside
+        return out
+
+    def test_the_device_and_its_driver_reach_devs(self):
+        landed = self._lands()
+        for path in ("Devs/ahi.device", "Devs/AHI/paula.audio",
+                     "Devs/AudioModes/PAULA"):
+            self.assertIn(path, landed)
+
+    def test_the_prefs_program_lands_under_the_name_its_icon_uses(self):
+        #  The archive holds AHI_MUI and AHI_BGUI side by side, and the icon
+        #  is called AHI.info - so whichever is chosen has to be renamed or
+        #  the icon points at nothing.
+        landed = self._lands()
+        self.assertIn("Prefs/AHI", landed)
+        self.assertIn("Prefs/AHI.info", landed)
+        self.assertTrue(landed["Prefs/AHI"].endswith("AHI_MUI"),
+                        landed["Prefs/AHI"])
+
+    def test_the_audio_handler_ships_with_its_mountlist(self):
+        #  ClassicWB's Startup-Sequence runs
+        #  "C:Mount >NIL: DEVS:DOSDrivers/~(#?.info)", so a DOSDriver whose
+        #  handler is missing is an error requester on every boot.
+        landed = self._lands()
+        if "Devs/DOSDrivers/AUDIO" in landed:
+            self.assertIn("L/AHI-Handler", landed,
+                          "AUDIO: is mounted at boot and needs its handler")
+
+    def test_the_prefs_dependency_is_declared(self):
+        #  AHI Prefs is a MUI program. The BGUI alternative would avoid that
+        #  and brings a bgui.library carrying floating point instructions,
+        #  which on a PiStorm's FPU-less 68040 is guru 8000000B.
+        self.assertIn("mui", self.packages.expand(["ahi"]))
+
+    def test_no_floating_point_reaches_this_machine(self):
+        #  The rule for any package shipping a binary: count F-line opcodes,
+        #  which are the first word of an FPU instruction.
+        import struct                                             # noqa: PLC0415
+        cache = self.packages.cache_dir() / "ahiusr_4.18.unpacked"
+        if not cache.is_dir():
+            self.skipTest("the AHI archive is not unpacked on this machine")
+        checked = 0
+        for inside, _dest in self.ahi.download.items:
+            path = cache / inside
+            if not path.is_file() or path.suffix in (".info", ".guide"):
+                continue
+            data = path.read_bytes()
+            if data[:4] != b"\x00\x00\x03\xf3":
+                continue                      # not an executable
+            checked += 1
+            fpu = sum(1 for i in range(0, len(data) - 1, 2)
+                      if 0xF200 <= struct.unpack_from(">H", data, i)[0]
+                      <= 0xF23F)
+            with self.subTest(file=inside):
+                self.assertEqual(fpu, 0,
+                                 f"{inside} has {fpu} floating point "
+                                 f"instruction(s); a PiStorm has no FPU")
+        self.assertTrue(checked, "no AHI binaries were checked")
