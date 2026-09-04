@@ -493,6 +493,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  hidden until it is asked for.
         self.stack.add_titled_with_icon(amiga_page, "amiga", "Amiga",
                                         "applications-system-symbolic")
+        self.stack.add_titled_with_icon(self._page_packages(), "packages",
+                                        "Packages", "package-x-generic-symbolic")
         self.stack.add_titled_with_icon(self._page_options(), "options", "Options",
                                         "preferences-system-symbolic")
         self.stack.add_titled_with_icon(self._page_target(), "target", "Target",
@@ -681,7 +683,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         thing there is to do.
         """
         self._customising = bool(on)
-        for name in ("source", "storage", "amiga", "options", "target"):
+        for name in ("source", "storage", "amiga", "packages", "options",
+                     "target"):
             page = self.stack.get_page(self.stack.get_child_by_name(name))
             if page is not None:
                 page.set_visible(self._customising)
@@ -1688,6 +1691,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.os_group.add(self.os_disks)
         page.add(self.os_group)
 
+        return page
+
+
+    def _page_packages(self) -> Adw.PreferencesPage:
+        """The software to add, on a page of its own.
+
+        It shared the Amiga page with the model, the Kickstart and the
+        Workbench disks, which are facts about the hardware; this is a
+        shopping list, and it is longer than everything else put together.
+        """
+        page = Adw.PreferencesPage()
+        self.page_packages = page
         self.packages_group = Adw.PreferencesGroup(
             title="Software to add",
             description="A Workbench built from the original disks is exactly "
@@ -2200,9 +2215,17 @@ class ImagerWindow(Adw.ApplicationWindow):
         wanted = set(packages.suggested(
             self._machine(), self._display(),
             networking=bool(self.wifi_ssid.get_text().strip())))
-        for key, row in self.package_rows.items():
-            if row.get_sensitive():
-                row.set_active(key in wanted)
+        #  A whole set arriving at once is the suggestion being taken, not a
+        #  person weighing one package against another; asking about each
+        #  clash inside it would be a queue of dialogs answering nothing.
+        was = getattr(self, "_settling_packages", False)
+        self._settling_packages = True
+        try:
+            for key, row in self.package_rows.items():
+                if row.get_sensitive():
+                    row.set_active(key in wanted)
+        finally:
+            self._settling_packages = was
         self._tick_what_is_needed()
         self._refresh_packages()
 
@@ -2249,7 +2272,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  made. So it comes on with that display and cannot be dropped
             #  while it lasts.
             if fits and package.essential:
-                row.set_active(True)
+                was = getattr(self, "_settling_packages", False)
+                self._settling_packages = True
+                try:
+                    row.set_active(True)
+                finally:
+                    self._settling_packages = was
                 row.set_sensitive(False)
                 note += "  -  required by the display you chose."
             else:
@@ -2322,6 +2350,72 @@ class ImagerWindow(Adw.ApplicationWindow):
         finally:
             self._settling_packages = False
         self._on_layout_changed()
+        if row is not None and row.get_active():
+            self._ask_about_rivals(key)
+
+    def _rivals(self, key: str) -> list[str]:
+        """Anything switched on that does the same job as ``key``."""
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is None or not package.role:
+            return []
+        return [other for other, row in self.package_rows.items()
+                if other != key and row.get_active()
+                and packages.CATALOGUE_BY_KEY[other].role == package.role]
+
+    def _asking_is_welcome(self) -> bool:
+        """Whether a question about the software would make any sense now.
+
+        Only when somebody is looking at the page the choice lives on. Rows
+        are also set by restoring a saved setup, by the suggested load and by
+        the display forcing Picasso96 on - and a question about two icon sets
+        arriving over the quick start, in answer to nothing the person did,
+        is a interruption rather than a choice.
+        """
+        if getattr(self, "_settling_packages", False):
+            return False
+        return self.stack.get_visible_child_name() == "packages"
+
+    def _ask_about_rivals(self, key: str) -> None:
+        """Two packages doing one job is rarely what anybody means.
+
+        Asked rather than decided: they patch the same part of the system and
+        the answer is usually to drop the older choice, but somebody may want
+        both and it is not this tool's place to overrule them.
+        """
+        if not self._asking_is_welcome():
+            return
+        rivals = self._rivals(key)
+        if not rivals:
+            return
+        package = packages.CATALOGUE_BY_KEY[key]
+        others = ", ".join(packages.CATALOGUE_BY_KEY[r].label for r in rivals)
+        dialog = Adw.AlertDialog(
+            heading=f"{others} does the same job",
+            body=(f"{package.label} and {others} are both a {package.role} "
+                  f"system, and they patch the same part of Workbench. "
+                  f"Would you like {others} taken off the card?"))
+        dialog.add_response("keep", "Keep both")
+        dialog.add_response("remove", f"Remove {others}")
+        dialog.set_response_appearance("remove",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("remove")
+        dialog.set_close_response("keep")
+
+        def answered(_dialog, response) -> None:
+            if response != "remove":
+                return
+            was = getattr(self, "_settling_packages", False)
+            self._settling_packages = True
+            try:
+                for other in rivals:
+                    self.package_rows[other].set_active(False)
+            finally:
+                self._settling_packages = was
+            self._toast(f"{others} removed")
+            self._on_layout_changed()
+
+        dialog.connect("response", answered)
+        dialog.present(self)
 
     def _chosen_packages(self) -> list[str]:
         #  Not "and sensitive": a package the display makes essential is
@@ -3263,7 +3357,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  the display makes essential, and it keeps the tick it was given.
         self._refresh_packages()
         wanted = set(config.package_keys)
-        for key, row in self.package_rows.items():
-            if row.get_sensitive() or key in wanted:
-                row.set_active(key in wanted)
+        was = getattr(self, "_settling_packages", False)
+        self._settling_packages = True
+        try:
+            for key, row in self.package_rows.items():
+                if row.get_sensitive() or key in wanted:
+                    row.set_active(key in wanted)
+        finally:
+            self._settling_packages = was
         self._tick_what_is_needed()

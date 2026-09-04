@@ -533,7 +533,7 @@ class NiceToHaves(unittest.TestCase):
                                      "digibooster"}),
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
-                                     "diropus4", "kingcon"})):
+                                     "diropus4", "kingcon", "sysinfo"})):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
 
@@ -1347,6 +1347,112 @@ class IgameIsToldWhereTheGamesAre(unittest.TestCase):
             self.part("DH1", "Games", str(games))]), Progress())
         self.assertEqual(pairs[0][1], "Programs/iGame")
         self.assertTrue(pairs[0][0].endswith("repos.prefs"))
+
+
+class SoftwareThatNeedsTheBootScriptIsLeftOut(unittest.TestCase):
+    """PeterK's icon.library boot-looped a card on real hardware.
+
+    It only works if a line goes into S:Startup-Sequence to soft-kick it over
+    the one in ROM. A distribution that carries its own boot script has that
+    script written out verbatim, so the line never lands - and the library
+    then sits in LIBS: where DefIcons, which asks for icon.library 44, makes
+    AmigaOS load it after Workbench has already started on the ROM's v40.
+    """
+
+    class Fixer:
+        def __init__(self, own_startup):
+            self.writes_its_own_startup = own_startup
+
+    def pairs(self):
+        return [("/tmp/x/icon.library", "Libs"), ("/tmp/x/WHDLoad", "C")]
+
+    def config(self, keys):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        return builder.BuildConfig(target="/tmp/x", package_keys=list(keys))
+
+    def test_it_is_dropped_when_the_drive_brings_its_own_boot_script(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        kept = builder._drop_what_needs_the_boot_script(
+            self.pairs(), self.config(["iconlib", "whdload"]),
+            self.Fixer(True), Progress())
+        self.assertEqual([Path(s).name for s, _d in kept], ["WHDLoad"])
+
+    def test_it_is_installed_when_the_boot_script_is_ours_to_edit(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        kept = builder._drop_what_needs_the_boot_script(
+            self.pairs(), self.config(["iconlib", "whdload"]),
+            self.Fixer(False), Progress())
+        self.assertEqual(len(kept), 2)
+
+    def test_everything_else_is_untouched_either_way(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        kept = builder._drop_what_needs_the_boot_script(
+            self.pairs(), self.config(["whdload"]), self.Fixer(True),
+            Progress())
+        self.assertEqual(len(kept), 2)
+
+    def test_the_warning_names_the_package_and_why(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        said = []
+
+        class Loud(Progress):
+            def log(self, message):
+                said.append(message)
+
+        builder._drop_what_needs_the_boot_script(
+            self.pairs(), self.config(["iconlib"]), self.Fixer(True), Loud())
+        joined = " ".join(said)
+        self.assertIn("icon.library", joined)
+        self.assertIn("S:Startup-Sequence", joined)
+
+
+class TwoPackagesDoingOneJobAreAlternatives(unittest.TestCase):
+    """Ticking a second icon set is rarely what anybody means.
+
+    A role names the job, and two packages sharing one are alternatives that
+    patch the same part of Workbench. The catalogue is deliberately sparing
+    with these: three module players on one card is a preference, not a
+    conflict, and a false clash would nag about a choice that is fine.
+    """
+
+    def test_the_two_default_icon_systems_share_a_role(self):
+        deficons = packages.CATALOGUE_BY_KEY["deficons"]
+        newicons = packages.CATALOGUE_BY_KEY["newicons"]
+        self.assertTrue(deficons.role)
+        self.assertEqual(deficons.role, newicons.role)
+
+    def test_things_that_happily_coexist_have_no_role(self):
+        for key in ("amplifier", "hippoplayer", "digibooster", "whdload",
+                    "lha", "netsurf", "snoopdos", "sysinfo"):
+            self.assertEqual(packages.CATALOGUE_BY_KEY[key].role, "",
+                             f"{key} does not exclude anything")
+
+    def test_a_role_never_names_only_one_package(self):
+        """A role with a single member could never raise a question."""
+        from collections import Counter                       # noqa: PLC0415
+        counted = Counter(p.role for p in packages.CATALOGUE if p.role)
+        alone = [role for role, n in counted.items() if n < 2]
+        self.assertEqual(alone, [], f"roles with nothing to clash with: {alone}")
+
+
+class SysInfoIsTheVersionThatSurvivesNoFpu(unittest.TestCase):
+    """SysInfo 4.0 gurus on a 68040 with no FPU - which is what Emu68 gives.
+
+    Aminet still carries a patch for that bug, which makes the package look
+    unsafe; its own history records the fix twice over, in 4.3 and again in
+    4.4, and 4.4 is what the address used here serves.
+    """
+
+    def test_it_comes_from_the_address_that_serves_the_current_release(self):
+        download = packages.CATALOGUE_BY_KEY["sysinfo"].download
+        self.assertEqual(download.path, "util/moni/SysInfo.lha")
+        self.assertNotIn("noFPU", download.path,
+                         "the no-FPU patch is a .pch for 4.0, not a program")
+
+    def test_it_lands_somewhere_it_can_be_run_from(self):
+        package = packages.CATALOGUE_BY_KEY["sysinfo"]
+        self.assertTrue(package.download.stage.startswith("Utilities/"))
+        self.assertNotIn("Storage/Install", package.download.stage)
 
 
 class MagicWbIsGone(unittest.TestCase):
