@@ -852,10 +852,15 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
     skip = [e.replace("\\", "/").strip("/").lower() for e in (exclude or [])]
     entries: list[tuple[Path, str, bool]] = []
     skipped_paths = 0
+    #  Everything rglob returns is under `source`, so the path relative to it
+    #  is a slice of the string. Path.relative_to re-parses both paths and
+    #  walks their parts, and on a games drive of 337,000 files it was half
+    #  the time this loop took - more than writing the data.
+    prefix = len(str(source)) + 1
     for path in sorted(source.rglob("*")):
         if path.is_symlink():
             continue
-        relative = str(path.relative_to(source)).replace(os.sep, "/")
+        relative = str(path)[prefix:].replace(os.sep, "/")
         lowered = relative.lower()
         if _excluded(lowered, skip):
             skipped_paths += 1

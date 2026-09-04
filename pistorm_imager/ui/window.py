@@ -430,7 +430,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.outer = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.toasts.set_child(self.outer)
         self.outer.add_named(self._build_setup(), "setup")
-        self.outer.add_named(self._build_progress(), "progress")
+        #  The build log used to be a page of this same window, so it inherited
+        #  whatever size the setup pages wanted and had to be resized by hand
+        #  every time. It is a window of its own now, sized for reading a log.
+        self.progress_window = Adw.Window(
+            modal=True, transient_for=self, hide_on_close=True,
+            default_width=900, default_height=720, title="Writing")
+        self.progress_window.set_content(self._build_progress())
+        self.progress_window.connect("close-request", self._on_progress_close)
 
         #  Long values - a disk description, a screen mode, a board name - are
         #  ellipsised in a combo row's value slot; show them in full instead.
@@ -2036,7 +2043,7 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _build_progress(self) -> Gtk.Widget:
         view = Adw.ToolbarView()
-        header = Adw.HeaderBar(show_start_title_buttons=False)
+        header = Adw.HeaderBar()
         header.set_title_widget(Adw.WindowTitle(title="Writing", subtitle=""))
         self.progress_title = header.get_title_widget()
         view.add_top_bar(header)
@@ -2066,7 +2073,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.back_button = Gtk.Button(label="Back")
         self.back_button.set_visible(False)
         self.back_button.connect("clicked",
-                                 lambda _b: self.outer.set_visible_child_name("setup"))
+                                 lambda _b: self.progress_window.close())
         buttons.append(self.back_button)
         self.save_log_button = Gtk.Button(label="Save log…")
         self.save_log_button.set_visible(False)
@@ -3015,6 +3022,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         if response == "write":
             self._start(config)
 
+    def _on_progress_close(self, _window) -> bool:
+        """Keep the log up while the build is still running.
+
+        Closing it would leave an hour-long build with nowhere to report,
+        and no way back to it. Cancel is the way to stop; the window closes
+        by itself once there is nothing left to say.
+        """
+        if self.cancel_button.get_visible():
+            self._toast("The build is still running - use Cancel to stop it")
+            return True                       # refuse the close
+        return False
+
     def _start(self, config: builder.BuildConfig) -> None:
         self.cancel_flag.clear()
         self.log_buffer.set_text("")
@@ -3024,7 +3043,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.cancel_button.set_visible(True)
         self.back_button.set_visible(False)
         self.save_log_button.set_visible(False)
-        self.outer.set_visible_child_name("progress")
+        self.progress_window.present()
 
         if config.target_is_device:
             threading.Thread(target=self._run_privileged, args=(config,),

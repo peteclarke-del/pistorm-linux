@@ -331,6 +331,32 @@ one rule rather than two, and the same card reads:
 
     vc4.mem=64 chip_slowdown dbf_slowdown blitwait enable_c0_slow enable_c8_slow enable_d0_slow move_slow_to_chip
 
+## Why a build takes as long as it does
+
+Most of it is not this program. On the machine it was measured on, the source
+content and the output image live on **the same USB spinning disk**, and the
+source is a loop-mounted `.img` sitting on that same disk — so one set of heads
+is reading eleven gigabytes of small files through a loop device while writing
+eight gigabytes to another large file beside it. Reading alone, with nothing
+being written, measured **32 MB/s**; with the writes competing for the same
+spindle it is far worse.
+
+Two ways round it, both worth more than any change here:
+
+- **Build straight to the card.** Reads come off the USB disk and writes go to
+  the SD card, so nothing contends, and it saves writing the image out
+  afterwards as a separate pass. The size box also locks to the card's real
+  capacity, which is the other thing that has bitten.
+- **Put the image on a different disk** from the source content — an internal
+  SSD rather than the same external one.
+
+What *was* this program's fault: `install_tree` worked out each file's path
+with `Path.relative_to`, which re-parses both paths and walks their parts.
+Everything `rglob` returns is under the folder it was given, so the relative
+path is a slice of the string. On a synthetic games drive that one line was
+**half the time the copy took** — more than writing the data — and removing it
+took the copy from 785 to 1,845 files a second.
+
 ## Testing a card in an emulator
 
 The Amiga to emulate is the one the card was built for, and that description
