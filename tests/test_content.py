@@ -2484,6 +2484,47 @@ class ADistributionsOwnOlderCopyIsReplaced(unittest.TestCase):
         self.assertEqual(fixer.superseded_drawers(), ["Programs/DirOpus4"],
                          "the log should name the drawer as the drive does")
 
+    def test_the_package_still_lands_in_the_drawer_it_emptied(self):
+        #  Read off a written card: "Programs/iGame left out whole" followed
+        #  by "overlay: iGame-v2.6.1/ -> Programs/iGame (0 files)". Removing
+        #  the drive's older copy so the chosen one can take its place then
+        #  refused the chosen one too, because it lands in the very drawer
+        #  being emptied - so the card arrived with a launcher drawer holding
+        #  an icon and nothing else.
+        from pistorm_imager.core import amigaos, compat, pfs3, rdb  # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-supersede3-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        drive = folder / "drive"
+        (drive / "Programs/iGame").mkdir(parents=True)
+        (drive / "Programs/iGame/iGame").write_bytes(b"the drive's old one")
+        ours = folder / "ours"
+        ours.mkdir()
+        (ours / "iGame").write_bytes(b"the one that was chosen")
+
+        image = folder / "out.hdf"
+        size = 16 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            fixer = compat.Compatibility(Progress())
+            fixer.supersede(["Programs/iGame"])
+            amigaos.install_tree(volume, drive, "", Progress(), compat=fixer)
+            #  What the build does between filling the drive and laying the
+            #  packages on top.
+            fixer.stop_displacing()
+            amigaos.install_tree(volume, ours, "Programs/iGame", Progress(),
+                                 compat=fixer, merge=True)
+            volume.close()
+
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            entry = back.find("Programs/iGame/iGame")
+            self.assertIsNotNone(entry, "the chosen copy never landed")
+            self.assertEqual(back.read_file(entry), b"the one that was chosen",
+                             "the drive's older copy is what survived")
+
     def test_a_drawer_overlay_still_merges(self):
         #  Superseding is a separate set from displacement for a reason: MUI's
         #  overlay claims the name System/MUI so a *file* of that name cannot
