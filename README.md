@@ -954,6 +954,35 @@ whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
 
+### The software has a page of its own
+
+**Packages** is now a page in its own right. The list had been sharing the
+Amiga page with the model, the Kickstart and the Workbench disks — which are
+facts about the hardware — while being longer than everything else on that page
+put together.
+
+**Two packages that do the same job are alternatives, and you are asked.** A
+package can name the `role` it fills; ticking one while another with the same
+role is on raises a question naming both, offering *Keep both* or *Remove the
+other*. Nothing is taken away without an answer, and *Keep both* is a perfectly
+good answer — they patch the same part of Workbench, which is a reason to ask
+rather than a reason to forbid.
+
+The catalogue is deliberately sparing with roles. **DefIcons** and **NewIcons**
+share one, because both answer "what icon does a file without one get?".
+Almost nothing else does: three module players on one card is a preference, not
+a conflict, and a false clash would nag about a choice that was fine. A role
+naming only one package is refused by a test, since it could never raise a
+question.
+
+**SysInfo** joins the extras, and it is worth saying which one. Version 4.0
+gurus on a 68040 with no FPU — precisely what Emu68 provides — and Aminet still
+carries a patch for that bug, which makes the package look unsafe. Its own
+history records the fix twice: *"68040 non FPU guru fixed"* in 4.3 and
+*"68040/68060 non FPU guru fixed, again!"* in 4.4. `util/moni/SysInfo.lha`
+serves 4.4, so the patch is not needed and the 53 floating point instructions
+still in the binary are behind a CPU check.
+
 ### Leaving out what this machine cannot run
 
 A collection keeps its titles in a container drawer — `WHDLOAD` is the usual

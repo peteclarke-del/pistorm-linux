@@ -533,7 +533,7 @@ class NiceToHaves(unittest.TestCase):
                                      "digibooster"}),
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
-                                     "diropus4", "kingcon"})):
+                                     "diropus4", "kingcon", "sysinfo"})):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
 
@@ -1347,6 +1347,55 @@ class IgameIsToldWhereTheGamesAre(unittest.TestCase):
             self.part("DH1", "Games", str(games))]), Progress())
         self.assertEqual(pairs[0][1], "Programs/iGame")
         self.assertTrue(pairs[0][0].endswith("repos.prefs"))
+
+
+class TwoPackagesDoingOneJobAreAlternatives(unittest.TestCase):
+    """Ticking a second icon set is rarely what anybody means.
+
+    A role names the job, and two packages sharing one are alternatives that
+    patch the same part of Workbench. The catalogue is deliberately sparing
+    with these: three module players on one card is a preference, not a
+    conflict, and a false clash would nag about a choice that is fine.
+    """
+
+    def test_the_two_default_icon_systems_share_a_role(self):
+        deficons = packages.CATALOGUE_BY_KEY["deficons"]
+        newicons = packages.CATALOGUE_BY_KEY["newicons"]
+        self.assertTrue(deficons.role)
+        self.assertEqual(deficons.role, newicons.role)
+
+    def test_things_that_happily_coexist_have_no_role(self):
+        for key in ("amplifier", "hippoplayer", "digibooster", "whdload",
+                    "lha", "netsurf", "snoopdos", "sysinfo"):
+            self.assertEqual(packages.CATALOGUE_BY_KEY[key].role, "",
+                             f"{key} does not exclude anything")
+
+    def test_a_role_never_names_only_one_package(self):
+        """A role with a single member could never raise a question."""
+        from collections import Counter                       # noqa: PLC0415
+        counted = Counter(p.role for p in packages.CATALOGUE if p.role)
+        alone = [role for role, n in counted.items() if n < 2]
+        self.assertEqual(alone, [], f"roles with nothing to clash with: {alone}")
+
+
+class SysInfoIsTheVersionThatSurvivesNoFpu(unittest.TestCase):
+    """SysInfo 4.0 gurus on a 68040 with no FPU - which is what Emu68 gives.
+
+    Aminet still carries a patch for that bug, which makes the package look
+    unsafe; its own history records the fix twice over, in 4.3 and again in
+    4.4, and 4.4 is what the address used here serves.
+    """
+
+    def test_it_comes_from_the_address_that_serves_the_current_release(self):
+        download = packages.CATALOGUE_BY_KEY["sysinfo"].download
+        self.assertEqual(download.path, "util/moni/SysInfo.lha")
+        self.assertNotIn("noFPU", download.path,
+                         "the no-FPU patch is a .pch for 4.0, not a program")
+
+    def test_it_lands_somewhere_it_can_be_run_from(self):
+        package = packages.CATALOGUE_BY_KEY["sysinfo"]
+        self.assertTrue(package.download.stage.startswith("Utilities/"))
+        self.assertNotIn("Storage/Install", package.download.stage)
 
 
 class MagicWbIsGone(unittest.TestCase):
