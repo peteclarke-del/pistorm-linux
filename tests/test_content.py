@@ -1346,8 +1346,10 @@ class IgameIsToldWhereTheGamesAre(unittest.TestCase):
                                           volume_name=volume)
 
     def written(self, config):
+        """What the first launcher is told to scan."""
         from pistorm_imager.core import builder                # noqa: PLC0415
-        pairs = builder._igame_repositories(config, Progress())
+        pairs = [p for p in builder._igame_instances(config, Progress(), [])
+                 if p[0].endswith("repos.prefs")]
         if not pairs:
             return None
         return Path(pairs[0][0]).read_text()
@@ -1386,8 +1388,8 @@ class IgameIsToldWhereTheGamesAre(unittest.TestCase):
         from pistorm_imager.core import builder                # noqa: PLC0415
         games = self.folder / "g3"
         (games / "WHDLOAD").mkdir(parents=True)
-        pairs = builder._igame_repositories(self.config([
-            self.part("DH1", "Games", str(games))]), Progress())
+        pairs = builder._igame_instances(self.config([
+            self.part("DH1", "Games", str(games))]), Progress(), [])
         self.assertEqual(pairs[0][1], "Programs/iGame")
         self.assertTrue(pairs[0][0].endswith("repos.prefs"))
 
@@ -3045,3 +3047,82 @@ class NothingShipsABinaryThisMachineCannotRun(unittest.TestCase):
         hunk = b"\x00\x00\x03\xf3 a real Amiga executable"
         fixer.offer("C/Thing", hunk)
         self.assertFalse(fixer.skip("C/Thing"))
+
+
+class EachContentDriveGetsItsOwnLauncher(unittest.TestCase):
+    """Games and demos are not the same thing and do not share a window.
+
+    One iGame with one repos.prefs covering every drive put four hundred
+    games and a few hundred demos in the same list, which is not what either
+    is for. Each content drive gets its own installation instead, the way
+    PiMiga does it - the first keeps the familiar name, and a Demos drive
+    arrives as iDemos beside it.
+    """
+
+    def setUp(self):
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        self.builder = builder
+        self.folder = Path(tempfile.mkdtemp(prefix="pistorm-launcher-"))
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
+
+    def _config(self, drives, keys=("igame",)):
+        specs = [self.builder.AmigaPartitionSpec(name="DH0", bootable=True,
+                                                 volume_name="System")]
+        for index, (volume, whdload) in enumerate(drives, start=1):
+            where = self.folder / volume
+            (where / "WHDLoad").mkdir(parents=True) if whdload else where.mkdir()
+            specs.append(self.builder.AmigaPartitionSpec(
+                name=f"DH{index}", volume_name=volume,
+                content_folder=str(where)))
+        return self.builder.BuildConfig(target="/tmp/x", package_keys=list(keys),
+                                        amiga_partitions=specs)
+
+    def _instances(self, config, pairs=()):
+        return self.builder._igame_instances(config, Progress(), list(pairs))
+
+    def test_a_second_drive_gets_a_launcher_of_its_own(self):
+        made = self._instances(self._config([("Games", True), ("Demos", True)]),
+                               [("/tmp/tree", "Programs/iGame")])
+        where = {dest for _src, dest in made}
+        self.assertEqual(where, {"Programs/iGame", "Programs/iDemos"})
+
+    def test_each_scans_only_its_own_drive(self):
+        made = self._instances(self._config([("Games", True), ("Demos", True)]))
+        scans = {dest: Path(src).read_text().strip()
+                 for src, dest in made if src.endswith("repos.prefs")}
+        self.assertEqual(scans["Programs/iGame"], "Games:WHDLoad")
+        self.assertEqual(scans["Programs/iDemos"], "Demos:WHDLoad")
+
+    def test_the_second_installation_is_the_whole_program(self):
+        #  A repos.prefs on its own is a launcher with nothing to launch it.
+        pairs = [("/tmp/iGame-v2.6.1", "Programs/iGame"),
+                 ("/tmp/iGame", "Programs/iGame")]
+        made = self._instances(self._config([("Games", True), ("Demos", True)]),
+                               pairs)
+        copied = [src for src, dest in made if dest == "Programs/iDemos"]
+        self.assertEqual(len(copied), len(pairs) + 1,
+                         f"the program itself was not copied: {copied}")
+
+    def test_one_drive_still_gets_just_iGame(self):
+        made = self._instances(self._config([("Games", True)]),
+                               [("/tmp/tree", "Programs/iGame")])
+        self.assertEqual({dest for _src, dest in made}, {"Programs/iGame"})
+
+    def test_a_drawer_that_is_not_there_is_not_named(self):
+        #  Pointing a launcher at a WHDLoad drawer that does not exist is how
+        #  a donor's own list behaved.
+        made = self._instances(self._config([("Music", False)]))
+        text = next(Path(src).read_text().strip() for src, _d in made)
+        self.assertEqual(text, "Music:")
+
+    def test_nothing_is_made_without_the_package(self):
+        self.assertEqual(self._instances(
+            self._config([("Games", True)], keys=("whdload",))), [])
+
+    def test_the_names_come_from_the_partitions(self):
+        #  Not from anything written down here: a drive the user calls
+        #  Cracktros gets iCracktros.
+        made = self._instances(
+            self._config([("Games", True), ("Cracktros", True)]),
+            [("/tmp/tree", "Programs/iGame")])
+        self.assertIn("Programs/iCracktros", {dest for _src, dest in made})
