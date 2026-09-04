@@ -1027,6 +1027,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  so without this the option to add them never appeared.
         self._sync_visibility()
         self._relayout_partitions()
+        self._refresh_older_copies()
         self._quick_preview()
 
     def _primary(self) -> str:
@@ -1784,6 +1785,22 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.packages_group.add(suggest)
         page.add(self.packages_group)
 
+        #  A prepared drive can carry its own copy of a chosen program under
+        #  a different name entirely - ClassicWB keeps SysInfo 3.24 from 1993
+        #  in Tools/SysInfo while the package installs 4.4 into
+        #  Utilities/SysInfo - so both land and only one is ever opened.
+        #  Removing somebody's software is not a thing to do quietly, so each
+        #  one is listed and can be kept.
+        self.older_group = Adw.PreferencesGroup(
+            title="Older copies already on the drive",
+            description="The drive you are building on carries its own copy "
+                        "of some of what you ticked, under its own name. "
+                        "These are removed so only the version you chose is "
+                        "on the card. Turn one off to keep both.")
+        self.older_rows: dict[str, Adw.SwitchRow] = {}
+        self.older_group.set_visible(False)
+        page.add(self.older_group)
+
         #  One group per category, so a long list reads as a few short ones.
         self.package_rows: dict[str, Adw.SwitchRow] = {}
         self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
@@ -2280,6 +2297,66 @@ class ImagerWindow(Adw.ApplicationWindow):
         for row in list(self.partition_rows) + list(self.extra_rows):
             row.reload_categories()
 
+    def _older_copies_on_the_drive(self) -> dict[str, str]:
+        """Which superseded drawers are really on the drive being built on.
+
+        Asked of the drive rather than assumed: a package naming a drawer to
+        replace is a statement about one distribution, and the user may be
+        building on another that has no such thing. Listing a drawer that is
+        not there would offer to remove something that does not exist.
+        """
+        found: dict[str, str] = {}
+        source = getattr(self, "quick_hdf", None)
+        path = getattr(source, "path", "") if source is not None else ""
+        if not path:
+            return found
+        wanted = [(package, drawer)
+                  for key in packages.expand(self._chosen_packages())
+                  if (package := packages.CATALOGUE_BY_KEY.get(key))
+                  for drawer in package.supersedes]
+        if not wanted:
+            return found
+        try:
+            from ..core import amigaos                    # noqa: PLC0415
+            reader, _label = amigaos.open_amiga_volume(path, "")
+        except Exception:                                 # noqa: BLE001
+            return found
+        try:
+            for package, drawer in wanted:
+                try:
+                    if reader.find(drawer) is not None:
+                        found[drawer] = package.label
+                except Exception:                         # noqa: BLE001
+                    continue
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                             # noqa: BLE001
+                pass
+        return found
+
+    def _refresh_older_copies(self) -> None:
+        """Show one row per older copy actually found, keeping any answers."""
+        if not hasattr(self, "older_group"):
+            return
+        found = self._older_copies_on_the_drive()
+        for drawer, row in list(self.older_rows.items()):
+            if drawer not in found:
+                self.older_group.remove(row)
+                del self.older_rows[drawer]
+        for drawer, label in found.items():
+            if drawer in self.older_rows:
+                continue
+            row = Adw.SwitchRow(
+                title=f"Remove {drawer}",
+                subtitle=f"An older copy of {label}, which is being "
+                         f"installed from its current release.")
+            row.set_active(True)
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.older_rows[drawer] = row
+            self.older_group.add(row)
+        self.older_group.set_visible(bool(self.older_rows))
+
     def _refresh_packages(self) -> None:
         """Offer the software that suits this machine and this screen.
 
@@ -2396,6 +2473,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         finally:
             self._settling_packages = False
         self._on_layout_changed()
+        #  After the settling, never during it: what the drive already
+        #  carries follows from the final set of packages, not from each
+        #  intermediate state as dependencies are switched on and off.
+        self._refresh_older_copies()
         if row is not None and row.get_active():
             self._ask_about_rivals(key)
 
@@ -2780,6 +2861,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  from the pages themselves quietly built a card without it.
             package_keys=self._chosen_packages(),
             replace_older_software=self.replace_older_row.get_active(),
+            #  A row switched off is one the user looked at and chose to
+            #  keep, so it is named here and left on the card.
+            keep_older_copies=sorted(
+                drawer.strip("/").lower()
+                for drawer, row in getattr(self, "older_rows", {}).items()
+                if not row.get_active()),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
