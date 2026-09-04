@@ -954,6 +954,24 @@ whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
 
+### Software that needs a line in the boot script
+
+PeterK's `icon.library` only works if something soft-kicks it over the one in
+ROM, and that line goes into `S:Startup-Sequence`. A distribution that carries
+its own boot script has that script written out **verbatim** — the editor which
+inserts lines into a Workbench install never sees it — so on such a card the
+line never lands and the library cannot do its job.
+
+Worse, it does not simply sit there harmlessly. **DefIcons asks for
+`icon.library` version 44**, which the ROM's v40 cannot answer, so AmigaOS
+loads the disk copy *after* Workbench has already started on the ROM one. On
+real hardware that boot-looped a card.
+
+So a package whose startup line cannot be installed is now **left off the card
+entirely**, with the reason said plainly in the log rather than discovered on
+the Amiga. Installing something that cannot work, in a place where something
+else will trip over it, is worse than not installing it at all.
+
 ### The software has a page of its own
 
 **Packages** is now a page in its own right. The list had been sharing the

@@ -1162,6 +1162,42 @@ def _check_the_system_can_boot(config: BuildConfig, progress: Progress) -> None:
                 f"they will fill in what it does not have.")
 
 
+#  Packages that only work if a line goes into S:Startup-Sequence, and the
+#  file each of them installs. A distribution that carries its own boot script
+#  has that script written out verbatim, so the line never lands - and the
+#  library then sits in LIBS: where something else can open it at the wrong
+#  moment. PeterK's icon.library did exactly that: DefIcons asks for
+#  icon.library 44, which the ROM's v40 cannot answer, so AmigaOS loaded the
+#  disk copy after Workbench had already started on the ROM one, and the card
+#  boot-looped on real hardware.
+NEEDS_THE_BOOT_SCRIPT = {"iconlib": "icon.library"}
+
+
+def _drop_what_needs_the_boot_script(pairs: list[tuple[str, str]],
+                                     config: "BuildConfig", fixer,
+                                     progress: Progress
+                                     ) -> list[tuple[str, str]]:
+    """Leave out software whose startup line cannot be installed here."""
+    if not getattr(fixer, "writes_its_own_startup", False):
+        return pairs
+    chosen = set(packages.expand(config.package_keys or []))
+    unusable = {name.lower() for key, name in NEEDS_THE_BOOT_SCRIPT.items()
+                if key in chosen}
+    if not unusable:
+        return pairs
+    kept = [pair for pair in pairs
+            if Path(pair[0]).name.lower() not in unusable]
+    for key, name in NEEDS_THE_BOOT_SCRIPT.items():
+        if key in chosen:
+            progress.log(
+                f"  WARNING: {packages.CATALOGUE_BY_KEY[key].label} is being "
+                f"left out. It only works when a line can be added to "
+                f"S:Startup-Sequence, and this drive brings its own boot "
+                f"script. Installed anyway, {name} sits where something else "
+                f"opens it at the wrong moment - which boot-looped a card.")
+    return kept
+
+
 def _follow_launchers(spec: AmigaPartitionSpec, reader, source: Path | None,
                       progress: Progress) -> list[str]:
     """Leave out what an excluded launcher was the only thing running.
@@ -1220,6 +1256,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         #  older copy already in the image - if that is what was asked for.
         extra = (_package_overlays(config, list(spec.overlays), progress)
                  if spec.bootable else [])
+        extra = _drop_what_needs_the_boot_script(extra, config, fixer,
+                                                 progress)
         if extra and config.replace_older_software:
             fixer.displace(_landing_paths(extra))
         #  The drive brings its own S:User-Startup and this file system never
