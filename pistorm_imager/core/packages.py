@@ -1119,6 +1119,19 @@ def overlays_for(keys: list[str],
                  display: Display | None = None,
                  progress: Progress | None = None,
                  allow_download: bool = True) -> list[tuple[str, str]]:
+    """The pairs alone, for callers that do not care which package gave them."""
+    return [pair for _key, pairs in overlays_by_package(
+        keys, rtg, chipset, display, progress, allow_download)
+        for pair in pairs]
+
+
+def overlays_by_package(keys: list[str],
+                        rtg: bool = True,
+                        chipset: Chipset = Chipset.AGA,
+                        display: Display | None = None,
+                        progress: Progress | None = None,
+                        allow_download: bool = True
+                        ) -> list[tuple[str, list[tuple[str, str]]]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
     Everything comes from its publisher - Aminet, or the project that makes
@@ -1142,6 +1155,7 @@ def overlays_for(keys: list[str],
                 seen.add(pair)
                 out.append(pair)
 
+    by_package: list[tuple[str, list[tuple[str, str]]]] = []
     for key in expand(keys):
         package = CATALOGUE_BY_KEY.get(key)
         if package is None or not package.suits(chipset, display):
@@ -1153,8 +1167,14 @@ def overlays_for(keys: list[str],
             progress.log(f"  WARNING: {package.label} could not be fetched "
                          f"from {package.download.where}, so it is not on "
                          f"this card")
+        before = len(out)
         add(fetched)
-    return out
+        #  Only what this package actually contributed: a library two of them
+        #  want belongs to whichever asked first, and listing it twice would
+        #  say the card has two of it.
+        if len(out) > before:
+            by_package.append((key, out[before:]))
+    return by_package
 
 
 def default_keys(rtg: bool = True) -> list[str]:
