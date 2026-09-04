@@ -1209,6 +1209,27 @@ def on_activate(app: ImagerApplication) -> None:
         window._set_customising(False)
         pump()
 
+        #  The build log is a window of its own now, not a page of this one:
+        #  as a page it inherited whatever size the setup wanted and had to be
+        #  resized by hand for every build.
+        print("\nthe build log is its own window")
+        check(hasattr(window, "progress_window"), "there is a progress window")
+        pw = window.progress_window
+        check(pw.get_modal(), "it is modal")
+        check(pw.get_transient_for() is window, "and belongs to the main window")
+        check(pw.get_default_size()[1] >= 600,
+              f"sized for reading a log ({pw.get_default_size()})")
+        check("progress" not in [window.outer.get_page(c).get_name()
+                                 for c in window.outer.observe_children()],
+              "and the main window has no progress page left")
+        #  It must refuse to close while a build is running.
+        window.cancel_button.set_visible(True)
+        check(window._on_progress_close(pw) is True,
+              "closing is refused while the build runs")
+        window.cancel_button.set_visible(False)
+        check(window._on_progress_close(pw) is False,
+              "and allowed once it has finished")
+
         #  A switch that is on and cannot be moved has to say why, at the
         #  front: Picasso96 is held on by choosing an RTG display, and the
         #  reason used to arrive after three hundred characters of notes.
