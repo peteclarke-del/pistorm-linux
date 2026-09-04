@@ -545,7 +545,7 @@ class NiceToHaves(unittest.TestCase):
                                      "digibooster", "ahi"}),
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
-                                     "diropus4", "kingcon", "sysinfo",
+                                     "kingcon", "sysinfo",
                                      "adfdevice"})):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
@@ -2975,3 +2975,73 @@ class OlderCopiesAreDiscoveredNotDeclared(unittest.TestCase):
         #  And the ones a name match would have got wrong stay out.
         self.assertNotIn("System/FBlit", [d.drawer for d in found])
         self.assertNotIn("System/FWheel", [d.drawer for d in found])
+
+
+class NothingShipsABinaryThisMachineCannotRun(unittest.TestCase):
+    """AmigaOS 3.1 loads HUNK executables. It cannot load ELF.
+
+    Directory Opus 4 was in the catalogue for a long time as Aminet's
+    DirectoryOpus-4.18.22.lha, which is listed "Architecture:
+    ppc-amigaos >= 4.0.0" - the AmigaOS 4 PowerPC port. Its DirectoryOpus
+    binary begins \\x7fELF, so it was written to every card and could never
+    have started, and the entry that replaced ClassicWB's own working 68k
+    4.16 with it made the card worse than leaving it alone.
+
+    Nothing on Aminet carries a 68k build of Opus 4: what is there is the
+    MorphOS port, the GPL source, catalogs and the manual. So the package is
+    gone rather than pointed somewhere hopeful.
+    """
+
+    def test_directory_opus_is_not_offered(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        self.assertNotIn("diropus4", packages.CATALOGUE_BY_KEY)
+
+    def test_no_elf_binary_reaches_the_card(self):
+        #  Archives ship OS4, MorphOS and AROS builds beside the 68k one -
+        #  iGame carries iGame.OS4 and iGame.MOS - so the question is not
+        #  whether one is in the archive but whether it lands. Every one
+        #  found among the files a package installs must be refused by the
+        #  compatibility pass.
+        from pistorm_imager.core import compat, packages          # noqa: PLC0415
+        from pistorm_imager.core.util import Progress             # noqa: PLC0415
+        cache = packages.cache_dir()
+        fixer = compat.Compatibility(Progress())
+        checked = elves = 0
+        for package in packages.CATALOGUE:
+            url = getattr(package.download, "url", "") or ""
+            stem = Path(url).name
+            for suffix in (".lha", ".zip", ".run", ".tar.gz"):
+                stem = stem.removesuffix(suffix)
+            if not stem or not (cache / f"{stem}.unpacked").is_dir():
+                continue                    # not fetched on this machine
+            for source, dest in packages.overlays_for([package.key],
+                                                      progress=Progress()):
+                path = Path(source)
+                files = ([path] if path.is_file()
+                         else [c for c in path.rglob("*") if c.is_file()])
+                for item in files:
+                    try:
+                        data = item.read_bytes()
+                    except OSError:
+                        continue
+                    checked += 1
+                    if data[:4] != b"\x7fELF":
+                        continue
+                    elves += 1
+                    landed = f"{dest}/{item.name}"
+                    fixer.offer(landed, data)
+                    with self.subTest(package=package.key, file=item.name):
+                        self.assertTrue(
+                            fixer.skip(landed),
+                            f"{package.key} would put {item.name} on the card "
+                            f"and AmigaOS 3.1 cannot load an ELF binary")
+        if not checked:
+            self.skipTest("no package archives are cached on this machine")
+        self.assertTrue(elves, "no ELF binary was met, so nothing was proved")
+
+    def test_a_68k_binary_is_left_alone(self):
+        from pistorm_imager.core import compat                    # noqa: PLC0415
+        fixer = compat.Compatibility(Progress())
+        hunk = b"\x00\x00\x03\xf3 a real Amiga executable"
+        fixer.offer("C/Thing", hunk)
+        self.assertFalse(fixer.skip("C/Thing"))

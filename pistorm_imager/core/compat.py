@@ -21,6 +21,10 @@ from .util import Progress
 
 #  Picasso96 finds its board through the BOARDTYPE tool type of the icon in
 #  DEVS:Monitors, and loads LIBS:Picasso96/<BOARDTYPE>.card to drive it.
+#  The first four bytes of an ELF executable. An AmigaDOS one starts with
+#  the HUNK header 0x000003F3 instead.
+ELF_MAGIC = b"\x7fELF"
+
 EMU68_BOARD = "VideoCore"
 EMU68_CARD = "VideoCore.card"
 EMU68_TOOLS_URL = ("https://github.com/michalsc/Emu68-tools/releases/download/"
@@ -378,6 +382,16 @@ class Compatibility:
             return True
         if not self.enabled:
             return False
+        #  A binary for another processor cannot run here and has no business
+        #  on the card. AmigaOS 3.1 loads HUNK executables; an ELF is a
+        #  PowerPC, AROS or OS4 build, and several archives ship one beside
+        #  the 68k version - iGame carries iGame.OS4 and iGame.MOS, and
+        #  Directory Opus 4.18.22 turned out to be *only* the OS4 port, which
+        #  went onto every card and could never have started.
+        if self._pending_data[:4] == ELF_MAGIC:
+            self.note("removed", f"{relative} (built for another processor; "
+                                 f"this machine runs 68k code)")
+            return True
         name = Path(relative).name
         parent = Path(relative).parent.name.lower()
         if parent == "picasso96" and name.lower() in EMULATOR_CARDS:

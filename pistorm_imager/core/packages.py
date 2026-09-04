@@ -644,26 +644,6 @@ CATALOGUE: list[Package] = [
         note="Unpacked into Utilities/SnoopDos, ready to run.",
     ),
     Package(
-        "diropus4", "Directory Opus 4",
-        "A two-pane file manager, and a considerable step up from moving "
-        "things about in Workbench windows. Released under the GPL, so this "
-        "is the current 4.18 rather than whatever a donor happened to hold.",
-        category=Category.EXTRAS,
-        download=Download(
-            "util/dopus/DirectoryOpus-4.18.22.lha",
-            #  Its own installer copies these four into the system drawers and
-            #  the program into one of its own; doing it here means the card
-            #  arrives with Opus working rather than with an installer on it.
-            (("DOpus4/DirectoryOpus", "Programs/DirectoryOpus"),
-             ("DOpus4/DirectoryOpus.info", "Programs/DirectoryOpus"),
-             ("DOpus4/Modules", "Programs/DirectoryOpus/Modules"),
-             ("DOpus4/C", "C"),
-             ("DOpus4/Libs", "Libs"),
-             ("DOpus4/S", "S"))),
-    ),
-
-    # ------------------------------------------------------ music and pictures
-    Package(
         "adfdevice", "ADF Device",
         "Mount an .adf file as a floppy drive and read it like a disk, "
         "without writing it to real media. Insert one, and AD0: appears on "
