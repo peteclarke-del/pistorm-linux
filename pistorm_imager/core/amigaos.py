@@ -312,6 +312,13 @@ def copy_volume(source, target, destination: str, progress: Progress,
         if parent is None:
             continue                    # its directory was skipped
         if entry.is_dir:
+            #  A drawer whose whole contents are being left out must not be
+            #  made either. Leaving it out of dir_blocks is what stops
+            #  everything inside it as well, by the check just above.
+            if compat is not None and getattr(compat, "skip_drawer", None) \
+                    and compat.skip_drawer(landed_path(destination, path)):
+                skipped += 1
+                continue
             dir_blocks[path] = target.mkdir(
                 parent, name, protect=entry.protect, comment=entry.comment,
                 days=entry.days, mins=entry.mins, ticks=entry.ticks)
@@ -896,6 +903,13 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
             progress.log(f"  {_printable(relative)} -> {_printable(placed.name)}")
         try:
             if is_dir:
+                #  A drawer whose whole contents are being left out is not
+                #  made either - see copy_volume, where the same omission put
+                #  an empty Tools/SysInfo on a card.
+                if compat is not None and getattr(compat, "skip_drawer", None) \
+                        and compat.skip_drawer(landed_path(destination,
+                                                           placed.path)):
+                    continue
                 #  A drawer merged into one already made keeps that one; other
                 #  than that nothing can exist on a freshly formatted volume,
                 #  and checking would mean walking the directory per entry.

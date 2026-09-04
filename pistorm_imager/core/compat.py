@@ -322,6 +322,24 @@ class Compatibility:
         """Which drawers were actually left out, as the drive spells them."""
         return sorted(self._supersede[key] for key in self._superseded)
 
+    def skip_drawer(self, relative: str) -> bool:
+        """Whether a *drawer* should not be created on the target at all.
+
+        Only the superseded set, never the displaced one, and the difference
+        matters: a drawer overlay puts its destination in the displaced set
+        purely to claim the name against a *file* - ClassicWB keeps Visage as
+        a file where a drawer is wanted - and must still merge into a drawer
+        of that name. Asking the displaced set here would have stopped
+        System/MUI being created and taken ClassicWB's whole MUI with it.
+
+        Without this the files inside a superseded drawer were skipped one by
+        one and the drawer itself was still made, so a card carried an empty
+        Tools/SysInfo with its icon still on the desktop.
+        """
+        posix = relative.replace("\\", "/").strip("/").lower()
+        return any(posix == drawer or posix.startswith(drawer + "/")
+                   for drawer in self._supersede)
+
     def stop_displacing(self) -> None:
         """The copying is over; the packages may now write their own files.
 
@@ -341,7 +359,11 @@ class Compatibility:
         #  hold whether or not the compatibility pass is switched on.
         posix = relative.replace("\\", "/").strip("/").lower()
         for drawer in self._supersede:
-            if posix == drawer or posix.startswith(drawer + "/"):
+            #  ...and the drawer's own icon with it. Left behind, it stays on
+            #  Workbench and opens an empty window, which is worse than
+            #  having done nothing at all.
+            if (posix == drawer or posix.startswith(drawer + "/")
+                    or posix == drawer + ".info"):
                 if drawer not in self._superseded:
                     self._superseded.add(drawer)
                     self.note("replaced",
