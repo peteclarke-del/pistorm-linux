@@ -1763,6 +1763,38 @@ package had been installed. The fixes are:
   anything is copied, while a copy merely staged in `Storage/Install` for you
   to install later does not - staging is not installing;
 
+### Nothing is taken from the drive being built on
+
+Every file a card needs comes from a package fetched from its publisher. Where
+something is only *adapted* — an emulator's monitor rewritten for this board,
+its RTG driver swapped for Emu68's — that is the compatibility pass doing its
+job. What must never happen is a feature **depending** on the source drive
+having carried something, because then it works or does not according to which
+distribution somebody started from, and nothing on screen says which.
+
+RTG was exactly that. `LIBS:Picasso96/VideoCore.card` was always installed, but
+`DEVS:Monitors/VideoCore` was written *only* when a monitor file had been seen
+during the copy — an emulator's, from a PiMiga image. Build on ClassicWB, which
+has none, and the card came out with the graphics driver present, no screenmode
+to select it, and a line in an hour-old build log as the only explanation.
+
+Picasso96 is installed from its own archive now: `Picasso96API.library`, its own
+`Devs/Monitors/Picasso96` and icon, `Devs/Picasso96Settings`, `fastlayers.library`
+and `Prefs/Picasso96Mode`, with Emu68's `VideoCore.card` as the board. The full
+archive is still staged in `Storage/Install` for the datatypes and the drivers
+for painting programs.
+
+**The library and the monitor have to travel together**, and a test enforces it.
+The earlier failure was not caused by supplying a monitor; it was caused by that
+monitor bringing the board up against *the donor's* 1999 `rtg.library`. A
+monitor with the matching `Picasso96API.library` beside it is a different thing
+from a monitor alone, and reading the old lesson as "never supply a monitor" is
+what left RTG half-installed on every ClassicWB card.
+
+Of the settings files the archive ships — one per monitor frequency, which its
+installer asks about — the 64 kHz one is used, because Emu68's output is HDMI
+and the others cut the mode list short for no reason.
+
 A card built from floppies is **not** given a monitor file, and this is
 deliberate. Making one by renaming the emulator's monitor looked right - every
 Picasso96 monitor is the same loader with its board named in its icon - and

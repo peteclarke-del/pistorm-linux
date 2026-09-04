@@ -918,21 +918,51 @@ class TheLayoutMustFitTheCard(unittest.TestCase):
         self.assertIn("too small to be a drive", problems[0])
 
 
-class NoMonitorIsInventedForACard(unittest.TestCase):
-    """Renaming the emulator's Picasso96 monitor made a card that would not
-    boot - a software error in VideoCore, which is that monitor bringing the
-    board up against the rtg.library the donor happens to carry. The driver
-    goes on the card; the monitor is left to Picasso96's own installer."""
+class RTGIsInstalledFromItsOwnArchive(unittest.TestCase):
+    """No part of RTG is scavenged from the drive being built on.
 
-    def test_the_package_supplies_no_monitor(self):
-        package = packages.CATALOGUE_BY_KEY["picasso96"]
-        taken = [source for source, _dest in package.download.items]
-        self.assertEqual([t for t in taken if "Monitors" in t], [],
-                         f"a monitor is being supplied again: {taken}")
+    Renaming the *emulator's* Picasso96 monitor made a card that would not
+    boot: a software error in VideoCore, which was that monitor bringing the
+    board up against the rtg.library the donor happened to carry. The lesson
+    was read as "do not supply a monitor", and the result was a feature that
+    worked or did not depending on where the drive came from - build on
+    ClassicWB, which has no monitor to adapt, and the card got VideoCore.card
+    in LIBS: with nothing able to load it.
 
-    def test_the_note_says_where_the_monitor_comes_from(self):
+    The cause was the foreign library, not the monitor. Picasso96 now brings
+    its own API library, monitor and settings from its own archive, and the
+    two have to travel together: a monitor without the library beside it is
+    the original failure.
+    """
+
+    def _taken(self):
         package = packages.CATALOGUE_BY_KEY["picasso96"]
-        self.assertIn("Installer", package.note)
+        return [source for source, _dest in package.download.items]
+
+    def test_the_monitor_never_travels_without_its_library(self):
+        taken = self._taken()
+        monitor = [t for t in taken if t.endswith("Devs/Monitors/Picasso96")]
+        library = [t for t in taken if t.endswith("Picasso96API.library")]
+        self.assertEqual(bool(monitor), bool(library),
+                         "a monitor brings the board up, and it must be the "
+                         "library shipped with it that receives it - not "
+                         f"whatever the drive already had: {taken}")
+
+    def test_everything_it_needs_comes_from_the_archive(self):
+        landed = {dest + "/" + Path(src).name
+                  for src, dest in packages.CATALOGUE_BY_KEY[
+                      "picasso96"].download.items}
+        landed |= {dest + "/" + new for _src, dest, new
+                   in packages.CATALOGUE_BY_KEY["picasso96"].download.rename}
+        for path in ("Libs/Picasso96API.library", "Devs/Monitors/Picasso96",
+                     "Devs/Picasso96Settings"):
+            self.assertIn(path, landed)
+
+    def test_the_note_says_it_is_installed_not_staged(self):
+        package = packages.CATALOGUE_BY_KEY["picasso96"]
+        self.assertIn("Installed", package.note)
+        self.assertIn("Storage/Install", package.note,
+                      "the full archive is still there for the extras")
 
     def test_an_adapted_system_still_has_its_monitor_retargeted(self):
         """A system that already had one is a different case: it is being
