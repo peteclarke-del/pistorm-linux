@@ -1026,6 +1026,44 @@ already carries them. They were written with `check_existing=True`, so a card
 built by this tool once before would end the *next* build at its last step,
 an hour in, over a script that was already correct.
 
+### The card says what was put on it
+
+AmigaOS has no uninstaller. Commodore's Installer only ever installed — it has
+no removal facility — and the third-party tools on Aminet that fill the gap
+either read Installer's log file (`util/wb/Uninstaller.lha`) or watch an
+installation as it happens and record what changed (`util/misc/DeInstaller.lha`).
+Neither helps here, because nothing this tool installs goes through Installer
+at all: the files are copied into place directly, which is the whole point of
+installing rather than staging. So there is no log to undo.
+
+Taking a package back off a finished card therefore meant reading an hour-old
+build log, if it was still on the screen. Every build now writes its own record
+to `S:PiStorm-Installed` on the drive the machine boots from — readable on the
+Amiga with `Type`, and grouped by the package that asked for each path:
+
+    ; WHDLoad
+    C/WHDLoad
+    C/WHDLoadCD32
+
+    ; SysInfo
+    Utilities/SysInfo  ; whole drawer, 34 files
+
+The distinction in that example is the one that matters. A package bringing its
+own drawer is named as the drawer, because deleting it removes exactly that
+package and nothing else. A package that merges into a drawer the *system*
+owns — WHDLoad puts three commands into `C` — is listed file by file, because
+naming the drawer there would read as an instruction to delete `SYS:C` and take
+AmigaDOS with it.
+
+The lines added to `S:User-Startup` are recorded too, commented out. A line left
+behind runs a program that is no longer there, which is a boot-time error every
+time the machine starts.
+
+A card built from a drive this tool produced earlier brings that earlier
+build's record with it, describing software that is not there and missing
+software that is. It is held back during the copy, the same way the drive's
+`S:User-Startup` is, so this build's record lands in its place.
+
 ### Anything kept from a previous run has to say where it came from
 
 Three rebuilds were lost to one shape of bug, in three different places: a
