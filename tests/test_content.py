@@ -1349,6 +1349,63 @@ class IgameIsToldWhereTheGamesAre(unittest.TestCase):
         self.assertTrue(pairs[0][0].endswith("repos.prefs"))
 
 
+class SoftwareThatNeedsTheBootScriptIsLeftOut(unittest.TestCase):
+    """PeterK's icon.library boot-looped a card on real hardware.
+
+    It only works if a line goes into S:Startup-Sequence to soft-kick it over
+    the one in ROM. A distribution that carries its own boot script has that
+    script written out verbatim, so the line never lands - and the library
+    then sits in LIBS: where DefIcons, which asks for icon.library 44, makes
+    AmigaOS load it after Workbench has already started on the ROM's v40.
+    """
+
+    class Fixer:
+        def __init__(self, own_startup):
+            self.writes_its_own_startup = own_startup
+
+    def pairs(self):
+        return [("/tmp/x/icon.library", "Libs"), ("/tmp/x/WHDLoad", "C")]
+
+    def config(self, keys):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        return builder.BuildConfig(target="/tmp/x", package_keys=list(keys))
+
+    def test_it_is_dropped_when_the_drive_brings_its_own_boot_script(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        kept = builder._drop_what_needs_the_boot_script(
+            self.pairs(), self.config(["iconlib", "whdload"]),
+            self.Fixer(True), Progress())
+        self.assertEqual([Path(s).name for s, _d in kept], ["WHDLoad"])
+
+    def test_it_is_installed_when_the_boot_script_is_ours_to_edit(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        kept = builder._drop_what_needs_the_boot_script(
+            self.pairs(), self.config(["iconlib", "whdload"]),
+            self.Fixer(False), Progress())
+        self.assertEqual(len(kept), 2)
+
+    def test_everything_else_is_untouched_either_way(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        kept = builder._drop_what_needs_the_boot_script(
+            self.pairs(), self.config(["whdload"]), self.Fixer(True),
+            Progress())
+        self.assertEqual(len(kept), 2)
+
+    def test_the_warning_names_the_package_and_why(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        said = []
+
+        class Loud(Progress):
+            def log(self, message):
+                said.append(message)
+
+        builder._drop_what_needs_the_boot_script(
+            self.pairs(), self.config(["iconlib"]), self.Fixer(True), Loud())
+        joined = " ".join(said)
+        self.assertIn("icon.library", joined)
+        self.assertIn("S:Startup-Sequence", joined)
+
+
 class TwoPackagesDoingOneJobAreAlternatives(unittest.TestCase):
     """Ticking a second icon set is rarely what anybody means.
 
