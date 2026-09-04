@@ -25,7 +25,9 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402
 
-from pistorm_imager.core import bootcfg, builder, jobs, machines  # noqa: E402
+from pistorm_imager.core import (bootcfg, builder, jobs,  # noqa: E402
+                                 machines,
+                                 packages as packages_mod)
 from pistorm_imager.ui.window import MODES  # noqa: E402
 
 import tempfile  # noqa: E402
@@ -330,6 +332,36 @@ def on_activate(app: ImagerApplication) -> None:
         window._on_display_changed()
         check(not window.package_rows["picasso96"].get_active(),
               "and a native-only display does not carry it")
+
+        #  The software now has a page of its own; it used to share the
+        #  Amiga page with the model, the Kickstart and the Workbench disks,
+        #  which are facts about the hardware rather than a shopping list.
+        from gi.repository import Adw as _A                   # noqa: PLC0415
+        group = window.package_rows["whdload"].get_ancestor(_A.PreferencesGroup)
+        check(group.get_ancestor(_A.PreferencesPage) is window.page_packages,
+              "the software lives on the Packages page")
+        check(window.stack.get_child_by_name("packages") is not None,
+              "and the Packages page is in the switcher")
+
+        #  Two packages doing one job are alternatives, and the user is asked
+        #  before either is taken away.
+        check(packages_mod.CATALOGUE_BY_KEY["deficons"].role
+              == packages_mod.CATALOGUE_BY_KEY["newicons"].role != "",
+              "DefIcons and NewIcons are both a default-icon system")
+        window.package_rows["newicons"].set_active(False)
+        window.package_rows["deficons"].set_active(True)
+        window.package_rows["newicons"].set_active(True)
+        check(sorted(window._rivals("newicons")) == ["deficons"],
+              f"the rival is found ({window._rivals('newicons')})")
+        check(window.package_rows["deficons"].get_active(),
+              "and nothing is removed without being asked")
+        check(window._rivals("whdload") == [],
+              "a package with no rival raises no question")
+        window.package_rows["newicons"].set_active(False)
+
+        #  SysInfo, whose 4.0 gurus on an FPU-less 68040 - fixed in 4.4,
+        #  which is what its Aminet address serves.
+        check("sysinfo" in window.package_rows, "SysInfo is on offer")
 
         #  Dependencies are linked both ways, and a package worth having on
         #  its own is not dragged off with the thing that needed it.
