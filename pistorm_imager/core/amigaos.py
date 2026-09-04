@@ -815,13 +815,21 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
                  progress: Progress,
                  compat: "compat_module.Compatibility | None" = None,
                  exclude: list[str] | None = None,
-                 merge: bool = False) -> tuple[int, int]:
+                 merge: bool = False,
+                 written: list[str] | None = None) -> tuple[int, int]:
     """Copy a host directory tree into an Amiga volume.
 
     This is how a directory-based drive from an emulator - PiMiga's
     ``disks/System`` and friends, which Amiberry mounts straight off the Linux
     file system - becomes a real Amiga partition that AmigaOS can boot from on
     bare metal.
+
+    ``written``, if given, is filled in with the path of every file this call
+    really wrote, under the name it was written as.  Not the same list as the
+    source tree: a file the volume already had, one a compatibility rule
+    refused, and one that could not be written are all absent from it.  What
+    was asked for and what arrived are different things, and only the second
+    is worth recording.
 
     ``merge`` is for a tree laid on top of a volume that already has files in
     it - an overlay.  Without it a drawer the volume already has is created a
@@ -913,6 +921,8 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
                 target.write_file(parent, placed.name, data,
                                   check_existing=merge)
                 copied += 1
+                if written is not None:
+                    written.append(landed_path(destination, placed.path))
         except (amigafs.AmigaFsError, pfs3.Pfs3Error) as error:
             progress.log(f"  skipped {_printable(relative)}: {error}")
         if index % 200 == 0 or index == len(entries):

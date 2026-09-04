@@ -1721,8 +1721,12 @@ class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
     def test_a_packages_own_drawer_is_named_as_a_drawer(self):
         pairs = [(self._package_with_its_own_drawer(),
                   "Utilities/PowerWindows")]
+        landed = {pairs[0]: (["Utilities/PowerWindows/PowerWindows",
+                              "Utilities/PowerWindows/Docs/PowerWindows.guide"],
+                             True)}
         entries = self.builder._manifest_entries(pairs,
-                                                 {pairs[0]: "powerwindows"})
+                                                 {pairs[0]: "powerwindows"},
+                                                 landed)
         self.assertEqual([label for label, _ in entries], ["PowerWindows"],
                          "the package's own name is what a reader can act on, "
                          "not the key this code happens to file it under")
@@ -1752,8 +1756,9 @@ class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
                                           package_keys=["fblit"])
         pairs = [(self._package_with_its_own_drawer(),
                   "Utilities/PowerWindows")]
-        text = self.builder._manifest_text(config, pairs,
-                                           {pairs[0]: "powerwindows"})
+        text = self.builder._manifest_text(
+            config, pairs, {pairs[0]: "powerwindows"},
+            {pairs[0]: (["Utilities/PowerWindows/PowerWindows"], True)})
         self.assertIn("User-Startup", text,
                       "a line left behind in User-Startup runs a program that "
                       "is no longer there")
@@ -1807,9 +1812,17 @@ class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
         drive = self.folder / "drive"
         (drive / "S").mkdir(parents=True)
         (drive / "S" / "Startup-Sequence").write_bytes(b"Echo hello\n")
+        #  The drive brings a library of its own, and an overlay offers the
+        #  same one. It is not written, so it is not this build's to claim.
+        (drive / "Libs").mkdir()
+        (drive / "Libs" / "guigfx.library").write_bytes(b"the drive's own")
         overlay = self.folder / "PowerWindows"
         overlay.mkdir()
         (overlay / "PowerWindows").write_bytes(b"prog")
+        offered = self.folder / "libs-overlay"
+        offered.mkdir()
+        (offered / "guigfx.library").write_bytes(b"ours")
+        (offered / "identify.library").write_bytes(b"ours")
 
         image = self.folder / "out.hdf"
         size = 200 * 1024 * 1024
@@ -1820,7 +1833,8 @@ class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
             amiga_partitions=[self.builder.AmigaPartitionSpec(
                 name="DH0", size=180 * 1024 * 1024, bootable=True,
                 volume_name="System", content_folder=str(drive),
-                overlays=[(str(overlay), "Utilities/PowerWindows")])])
+                overlays=[(str(overlay), "Utilities/PowerWindows"),
+                          (str(offered), "Libs")])])
         progress = Progress()
         with open(image, "r+b") as handle:
             table = self.builder._build_rdb(config, size // 512, progress)
@@ -1838,6 +1852,12 @@ class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
             text = volume.read_file(entry).decode("latin-1")
         self.assertIn("Utilities/PowerWindows", text)
         self.assertIn("whole drawer, 1 file", text)
+        self.assertIn("Libs/identify.library", text,
+                      "the library this build really wrote is missing")
+        self.assertNotIn("guigfx", text,
+                         "the drive's own library was skipped as already "
+                         "present, so claiming it is an instruction to delete "
+                         "somebody else's file")
 
     def test_a_name_that_is_not_utf8_does_not_end_the_build(self):
         #  MUI ships Locale/Catalogs/francais with a latin-1 cedilla, which
@@ -1918,7 +1938,9 @@ class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
         (source / "WookieChat").write_bytes(b"x")
         (source / "Docs" / "readme").write_bytes(b"x")
         pairs = [(str(source), "Internet/WookieChat")]
-        listed = self.builder._manifest_entries(pairs, {})[0][1]
+        landed = {pairs[0]: (["Internet/WookieChat/WookieChat",
+                              "Internet/WookieChat/Docs/readme"], True)}
+        listed = self.builder._manifest_entries(pairs, {}, landed)[0][1]
         self.assertEqual(len(listed), 1, listed)
         self.assertIn("Internet/WookieChat  ; whole drawer, 2 files", listed[0])
 
@@ -1934,3 +1956,63 @@ class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
                 pairs = [(str(source), name)]
                 listed = self.builder._manifest_entries(pairs, {})[0][1]
                 self.assertEqual(listed, [f"{name}/thing"])
+
+    def test_only_what_was_really_written_is_claimed(self):
+        #  Read off a finished card. NewInstaller's overlay offers five
+        #  libraries the drive already had - the log says "skipped
+        #  guigfx.library: already exists" - and the record claimed all five
+        #  as its own. Following it would have deleted ClassicWB's copies
+        #  under NewInstaller's name.
+        source = self.folder / "newinstaller"
+        source.mkdir()
+        for name in ("NewInstaller", "guigfx.library", "render.library"):
+            (source / name).write_bytes(b"x")
+        pairs = [(str(source), "Libs")]
+        #  Only the first was actually written; the drive already had the
+        #  other two.
+        landed = {pairs[0]: (["Libs/NewInstaller"], False)}
+        listed = self.builder._manifest_entries(pairs, {}, landed)[0][1]
+        self.assertEqual(listed, ["Libs/NewInstaller"])
+        self.assertNotIn("Libs/guigfx.library", listed,
+                         "a file this build did not write must never be "
+                         "offered up for deletion")
+
+    def test_a_drawer_the_drive_already_had_is_not_claimed_whole(self):
+        #  ClassicWB brings its own System/MUI. Our MUI merges 56 files into
+        #  it and skips 339, so naming the drawer would hand over the drive's
+        #  MUI as though this build had put it there.
+        source = self.folder / "MUI"
+        source.mkdir()
+        (source / "muimaster.library").write_bytes(b"x")
+        pairs = [(str(source), "System/MUI")]
+        landed = {pairs[0]: (["System/MUI/muimaster.library"], False)}
+        listed = self.builder._manifest_entries(pairs, {}, landed)[0][1]
+        self.assertEqual(listed, ["System/MUI/muimaster.library"])
+        for line in listed:
+            self.assertNotIn("whole drawer", line, line)
+
+    def test_the_copy_reports_only_the_files_it_wrote(self):
+        #  The plumbing this rests on: install_tree's report must exclude a
+        #  file the volume already had.
+        from pistorm_imager.core import amigaos, rdb                # noqa: PLC0415
+        source = self.folder / "overlay"
+        source.mkdir()
+        (source / "new").write_bytes(b"new")
+        (source / "old").write_bytes(b"ours")
+        image = self.folder / "landings.hdf"
+        size = 8 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            drawer = volume.makedirs("Libs")
+            volume.write_file(drawer, "old", b"the drive's own",
+                              check_existing=False)
+            written = []
+            amigaos.install_tree(volume, source, "Libs", Progress(),
+                                 merge=True, written=written)
+            volume.close()
+        self.assertEqual(written, ["Libs/new"],
+                         "the file the drive already had was not written by "
+                         f"this build and must not be reported: {written}")
