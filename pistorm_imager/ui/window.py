@@ -2218,7 +2218,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  A whole set arriving at once is the suggestion being taken, not a
         #  person weighing one package against another; asking about each
         #  clash inside it would be a queue of dialogs answering nothing.
-        was, self._settling_packages = self._settling_packages, True
+        was = getattr(self, "_settling_packages", False)
+        self._settling_packages = True
         try:
             for key, row in self.package_rows.items():
                 if row.get_sensitive():
@@ -2271,7 +2272,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  made. So it comes on with that display and cannot be dropped
             #  while it lasts.
             if fits and package.essential:
-                was, self._settling_packages = self._settling_packages, True
+                was = getattr(self, "_settling_packages", False)
+                self._settling_packages = True
                 try:
                     row.set_active(True)
                 finally:
@@ -2402,7 +2404,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         def answered(_dialog, response) -> None:
             if response != "remove":
                 return
-            was, self._settling_packages = self._settling_packages, True
+            was = getattr(self, "_settling_packages", False)
+            self._settling_packages = True
             try:
                 for other in rivals:
                     self.package_rows[other].set_active(False)
@@ -3354,7 +3357,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  the display makes essential, and it keeps the tick it was given.
         self._refresh_packages()
         wanted = set(config.package_keys)
-        was, self._settling_packages = self._settling_packages, True
+        was = getattr(self, "_settling_packages", False)
+        self._settling_packages = True
         try:
             for key, row in self.package_rows.items():
                 if row.get_sensitive() or key in wanted:
