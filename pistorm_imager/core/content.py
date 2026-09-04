@@ -15,6 +15,7 @@ nothing assumed about it.
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -174,7 +175,130 @@ def _locator(entry) -> int:
 #  Games or Demos either - on a system drive those are the letter drawers a
 #  distribution creates for a games partition to be assigned to, and the
 #  games themselves are chosen on their own drive.
+#  Drawers AmigaOS, Workbench or the card itself own. A duplicate found
+#  inside one of these is never offered, because what would be removed is
+#  the drawer, and "Delete SYS:C ALL" is the end of AmigaDOS.
+SYSTEM_DRAWERS_LOWER = {
+    "c", "s", "l", "libs", "devs", "prefs", "fonts", "locale", "utilities",
+    "tools", "system", "wbstartup", "storage", "classes", "expansion",
+    "rexxc", "rexx", "trashcan", "t", "temp", "programs", "internet",
+    "audio", "games", "demos", "wbgames", "icons", "myfiles",
+    "storage/install", "locale/catalogs", "prefs/env-archive",
+    "devs/monitors", "devs/dosdrivers", "devs/networks", "libs/mui",
+}
+
 SOFTWARE_DRAWERS = ("Programs", "WBGames", "Internet", "Audio", "Extras")
+
+
+#  An Amiga binary carries its version in a "$VER:" string. It is the only
+#  evidence about age that is actually in the file, so it is what decides
+#  whether a copy on a drive is older than the one a package installs.
+VER_STRING = re.compile(rb"\$VER:? ?([ -~]{3,60})")
+VERSION_NUMBER = re.compile(r"(\d+)\.(\d+)")
+
+
+def version_of(data: bytes) -> tuple[int, int] | None:
+    """The (version, revision) a binary claims, or None if it claims none."""
+    for raw in VER_STRING.findall(data[:200000]):
+        text = raw.decode("latin-1")
+        found = VERSION_NUMBER.search(text)
+        if found:
+            return int(found.group(1)), int(found.group(2))
+    return None
+
+
+@dataclasses.dataclass(frozen=True)
+class Duplicate:
+    """A copy of chosen software already on the drive, somewhere else."""
+    package: str            # the package key that installs it
+    label: str              # what to call it on screen
+    program: str            # the file name that matched
+    where: str              # full path of the copy found on the drive
+    drawer: str             # what would be removed - the drawer holding it
+    theirs: tuple[int, int] | None
+    ours: tuple[int, int] | None
+
+    @property
+    def certain(self) -> bool:
+        """Whether ours is provably newer, and so safe to offer by default.
+
+        Both versions have to be readable and ours strictly greater. Anything
+        else is a question rather than an answer: ClassicWB's System/FBlit
+        holds the *same* FBlit build as the package, plus an FBlitGUI the
+        package does not ship, so removing it on a name match alone would
+        take a program away.
+        """
+        return bool(self.ours and self.theirs and self.ours > self.theirs)
+
+
+def list_files(reader, limit: int = 40000) -> list[tuple[str, object]]:
+    """Every file on a volume, once, so a repeated search need not walk again.
+
+    Walking a system drive is a few seconds. Doing it again each time a
+    package is ticked would make the list unusable, so the caller keeps this
+    and passes it back.
+    """
+    out = []
+    for path, entry in reader.walk():
+        if len(out) >= limit:
+            break
+        if not entry.is_dir:
+            out.append((path, entry))
+    return out
+
+
+def find_duplicates(reader, wanted: dict[str, tuple[str, str, tuple | None]],
+                    filling: Iterable[str] = (),
+                    listing: list[tuple[str, object]] | None = None,
+                    limit: int = 40000) -> list[Duplicate]:
+    """Copies of ``wanted`` already on this drive, in some other place.
+
+    ``wanted`` maps a program's file name to (package key, label, our
+    version). Nothing is named in the source: the caller works the names out
+    from what the chosen packages install, and this looks for them.
+
+    Only files, only outside the place the package installs to - a copy in
+    the same place is an older *file*, which displacement already replaces -
+    and only where the drawer holding it is not one the system owns.
+    """
+    ours_too = [d.strip("/").lower() for d in filling if d.strip("/")]
+    found: dict[str, Duplicate] = {}
+    for path, entry in (listing if listing is not None
+                        else list_files(reader, limit)):
+        key = wanted.get(entry.name.lower())
+        if key is None:
+            continue
+        package, label, ours = key
+        drawer = path.rpartition("/")[0]
+        lowered = drawer.lower()
+        #  Never offer a drawer the system owns: that is how a duplicate in
+        #  C or Libs would take AmigaDOS with it.
+        if not drawer or lowered in SYSTEM_DRAWERS_LOWER:
+            continue
+        #  Nor one this build is itself filling, or anything inside it. Our
+        #  MUI overlay merges into the drive's own System/MUI, so every class
+        #  in it matches by name and none of them is a duplicate.
+        if any(lowered == d or lowered.startswith(d + "/") for d in ours_too):
+            continue
+        try:
+            theirs = version_of(reader.read_file(entry))
+        except Exception:                                   # noqa: BLE001
+            theirs = None
+        #  Some evidence is required. Removing a drawer whole on a name
+        #  match alone is how ClassicWB's System/FBlit - the same FBlit
+        #  build as the package, plus an FBlitGUI it does not ship - would
+        #  be taken away.
+        if theirs is None:
+            continue
+        candidate = Duplicate(package=package, label=label,
+                              program=entry.name, where=path, drawer=drawer,
+                              theirs=theirs, ours=ours)
+        #  One row per drawer: five matches inside Programs/DirOpus4 are one
+        #  older copy, and the drawer is what would go.
+        best = found.get(lowered)
+        if best is None or (candidate.certain and not best.certain):
+            found[lowered] = candidate
+    return sorted(found.values(), key=lambda d: (not d.certain, d.where))
 
 
 def installed_programs(reader) -> list[tuple[str, str]]:
