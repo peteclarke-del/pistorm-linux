@@ -550,7 +550,12 @@ CATALOGUE: list[Package] = [
                            ("Patterns", "Prefs/Presets/Birdie"))),
         #  Its own documentation gives this line, and says it has to come
         #  after IPrefs - which is where package startup lines go anyway.
-        startup=("C:Run >NIL: C:Birdie",),
+        #  "Run", not "C:Run". Run is one of the shell's ROM-internal
+        #  commands and is not a file at all: AmigaOS 3.1 ships no C:Run, so
+        #  the pathed form failed on every boot and Birdie never started.
+        #  ClassicWB's own User-Startup says "Run >NIL: C:XpkMasterPrefs",
+        #  which is the form that works.
+        startup=("Run >NIL: C:Birdie",),
         note="Installed into C: with its patterns in Prefs/Presets/Birdie, "
              "and started from S:User-Startup.",
     ),

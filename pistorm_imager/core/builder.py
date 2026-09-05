@@ -766,7 +766,8 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                        overlays=list(spec.overlays) + extra)
             _apply_overlays(volume, spec, fixer, progress, landings)
         _give_drawers_icons(volume, spec, config, progress)
-    _write_user_startup(volume, config, progress, fixer.kept_user_startup)
+    _write_user_startup(volume, config, progress,
+                        fixer.kept_user_startup, fixer.boot_scripts)
     _write_manifest(volume, config,
                     list(spec.overlays) if spec is not None else [],
                     credit, progress, landings)
@@ -847,7 +848,8 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
          "EndIF"], progress)
 
 
-def _package_startup_lines(config: "BuildConfig") -> list[str]:
+def _package_startup_lines(config: "BuildConfig", boot: str = "",
+                           progress: Progress | None = None) -> list[str]:
     """The lines the chosen software needs in S:User-Startup."""
     lines: list[str] = []
     #  expand() so that a package pulled in as a dependency gets its lines
@@ -855,13 +857,56 @@ def _package_startup_lines(config: "BuildConfig") -> list[str]:
     #  cannot be found however completely its files were copied.
     for key in packages.expand(config.package_keys):
         package = packages.CATALOGUE_BY_KEY.get(key)
-        if package is not None and package.startup:
-            lines += list(package.startup)
+        if package is None or not package.startup:
+            continue
+        commands = _commands_run(package.startup)
+        if _already_started(commands, boot):
+            if progress is not None:
+                progress.log(f"  {package.label} is already started by the "
+                             f"drive's own boot, so no line is added for it")
+            continue
+        lines += list(package.startup)
     return lines
 
 
+def _commands_run(lines: tuple[str, ...] | list[str]) -> list[str]:
+    """The C: commands a package's startup lines actually run.
+
+    Only those: a line that makes an assign or opens an IF is part of a block
+    and says nothing about what is started. MUI's lines are all assigns, so
+    it names no command and can never be mistaken for one already running.
+    """
+    out = []
+    for line in lines:
+        found = re.match(r"^\s*(?:Run\s+)?(?:>NIL:\s+)?C:([A-Za-z0-9_.-]+)",
+                         line)
+        if found:
+            out.append(found.group(1).lower())
+    return out
+
+
+def _already_started(commands: list[str], boot: str) -> bool:
+    """Whether the drive's own boot scripts already run all of these.
+
+    ClassicWB starts FBlit, FText and BlazeWCP from its Startup-Sequence, so
+    adding the packages' lines to User-Startup started each of them a second
+    time - pointless, and it made the log read as though the software were
+    not installed unless you looked twice.
+
+    All of them, not any: a package that runs two commands is only redundant
+    when the drive runs both. And it is judged per package rather than per
+    line, because a line on its own can be half of an IF block.
+    """
+    if not commands or not boot:
+        return False
+    return all(re.search(rf"(?:C:|/){re.escape(name)}(?![A-Za-z0-9_])",
+                         boot, re.IGNORECASE)
+               for name in commands)
+
+
 def _write_user_startup(volume, config: "BuildConfig",
-                        progress: Progress, kept: bytes = b"") -> None:
+                        progress: Progress, kept: bytes = b"",
+                        boot: str = "") -> None:
     """Add the lines the chosen packages need to S:User-Startup.
 
     Workbench 3.1 runs this from its own Startup-Sequence if it is there, so
@@ -869,7 +914,7 @@ def _write_user_startup(volume, config: "BuildConfig",
     module, gets its chance.  Copying the file into LIBS: alone would leave
     the ROM version in use and the whole package inert.
     """
-    lines = _package_startup_lines(config)
+    lines = _package_startup_lines(config, boot, progress)
     if not lines:
         return
     folder = volume.makedirs("S")
@@ -1703,7 +1748,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             #  nothing that needed a startup line ever ran.
             _give_drawers_icons(volume, spec, config, progress)
             _write_user_startup(volume, config, progress,
-                                fixer.kept_user_startup)
+                                fixer.kept_user_startup, fixer.boot_scripts)
             _write_manifest(volume, config, list(spec.overlays), credit,
                             progress, landings)
             #  Only the drive the machine boots from: Games and Demos were

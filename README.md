@@ -988,6 +988,31 @@ Only the Paula driver is copied. The Toccata, Delfina, Prelude and Melody
 drivers in the archive are for sound cards this machine has not got, and a mode
 list full of hardware that is not there is worse than a short one.
 
+#### Startup lines that work, and are not repeated
+
+Two faults in the lines added to `S:User-Startup`, both found by reading a
+finished card rather than the code.
+
+Birdie's line said **`C:Run`**, and there is no `C:Run`. `Run` is one of the
+shell's ROM-internal commands and AmigaOS 3.1 ships no file for it, so the
+pathed form failed on every boot and Birdie never started. ClassicWB's own
+User-Startup says `Run >NIL: C:XpkMasterPrefs`, which is the form that works.
+
+And ClassicWB already starts FBlit, FText and BlazeWCP from its own boot
+script, so the lines added for those started each of them a **second** time. A
+package's lines are now left out when the drive's own boot already runs
+everything they run — judged per package rather than per line, because a line
+on its own can be half of an `IF` block, and by all of a package's commands
+rather than any, so a package that runs two is only redundant when both are
+covered. MUI's lines are assigns and name no command, so they can never be
+dropped.
+
+Finding what the drive starts needed one correction: the distribution's real
+boot script is **not** `S:Startup-Sequence` — that is its *installer* — but
+`T:Science`, which the installer renames into place. Looking in the obvious
+file found the installer, which starts nothing, so nothing was ever recognised
+as already running.
+
 #### An icon's tool has to be findable
 
 Workbench runs the tool an icon names and does **not** search for it the way a

@@ -1230,6 +1230,40 @@ def on_activate(app: ImagerApplication) -> None:
         check(window._on_progress_close(pw) is False,
               "and allowed once it has finished")
 
+        #  The suggested load must both tick and untick, for whatever the
+        #  machine and screen happen to be now.
+        print("\nthe suggested load follows the conditions")
+        from pistorm_imager.core import machines as _mm, packages as _pk  # noqa: PLC0415
+        for want_rtg in (True, False):
+            index = next(i for i, d in enumerate(_mm.Display)
+                         if d.uses_rtg == want_rtg)
+            window.quick_display.set_selected(index)
+            pump()
+            #  Tick something the suggestion will not want, to prove it is
+            #  turned back off rather than merely left alone.
+            noise = [k for k, r in window.package_rows.items()
+                     if r.get_sensitive() and not r.get_active()]
+            if noise:
+                window.package_rows[noise[0]].set_active(True)
+                pump()
+            window._apply_suggested_packages()
+            pump()
+            wanted = set(_pk.suggested(
+                window._machine(), window._display(),
+                networking=bool(window.ssid_row.get_text().strip())))
+            chosen = set(window._chosen_packages())
+            #  Everything suggested is on...
+            short = sorted(k for k in wanted if k not in chosen)
+            check(not short, f"rtg={want_rtg}: nothing suggested is left off "
+                             f"({short})")
+            #  ...and anything extra is there because something needs it, or
+            #  because the display holds it on.
+            extra = sorted(k for k in chosen - wanted
+                           if not any(k in _pk.expand([w]) for w in wanted)
+                           and not _pk.CATALOGUE_BY_KEY[k].essential)
+            check(not extra, f"rtg={want_rtg}: nothing unwanted is left on "
+                             f"({extra})")
+
         #  A switch that is on and cannot be moved has to say why, at the
         #  front: Picasso96 is held on by choosing an RTG display, and the
         #  reason used to arrive after three hundred characters of notes.
