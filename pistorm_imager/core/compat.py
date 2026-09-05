@@ -395,6 +395,9 @@ class Compatibility:
         posix = relative.replace("\\", "/")
         if any(posix.lower() == f.lower() for f in STARTUP_FILES):
             return self._clean_startup(posix, data)
+        if len(parts) >= 2 and parts[-2] == "wbstartup" \
+                and parts[-1].endswith(".info"):
+            return self._starts_without_waiting(posix, data)
         name = Path(posix).name.lower()
         if name in WHDLOAD_PREFS:
             return self._clean_whdload_prefs(posix, data)
@@ -475,6 +478,41 @@ class Compatibility:
                       f"will not be on the card ("
                       + ", ".join(sorted(dropped)) + ")")
         return "".join(out).encode("latin-1")
+
+    def _starts_without_waiting(self, relative: str, data: bytes) -> bytes:
+        """Give a WBStartup icon DONOTWAIT, so the boot does not stop on it.
+
+        Workbench runs the *icons* in WBStartup, not the files, and it waits
+        for each program to exit unless its icon says DONOTWAIT. A commodity
+        never exits, so an icon without it stops the boot there - and the two
+        failures are opposite ends of the same mistake:
+
+        - a program with **no icon** is never started at all. DefIcons,
+          FullPalette and MagicMenu were all copied in without theirs, so
+          every card this tool has built carried three programs that could
+          not run. The colour icons DefIcons draws were the visible half of
+          that.
+        - a program **with** an icon and no DONOTWAIT hangs the machine on the
+          Workbench screen. FullPalette's own icon, as shipped, has no
+          DONOTWAIT, so supplying it without this rule would have turned
+          three inert programs into a card that does not finish booting.
+
+        So the icons come with the programs now, and every one of them is
+        checked here rather than trusted - including any package added later,
+        and any icon a drive being imported already had.
+        """
+        try:
+            entries = amigainfo.read_tooltypes(data)
+        except amigainfo.InfoError:
+            #  Not an icon this code understands. Leaving it alone is right:
+            #  it is no worse than it was, and guessing at the format is how
+            #  a working icon gets broken.
+            return data
+        if any(entry.strip("() ").upper() == "DONOTWAIT" for entry in entries):
+            return data
+        self.note("edited", f"{relative}: added DONOTWAIT, without which "
+                            f"Workbench waits for it and the boot stops")
+        return amigainfo.write_tooltypes(data, ["DONOTWAIT"] + entries)
 
     def _clean_whdload_prefs(self, relative: str, data: bytes) -> bytes:
         """Take out what an emulator put in this file and a PiStorm cannot use.

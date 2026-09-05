@@ -521,11 +521,22 @@ class NiceToHaves(unittest.TestCase):
 
     def test_the_commodities_land_in_wbstartup(self):
         #  They have to be started at boot to do anything at all.
-        for key in ("deficons", "freewheel", "clicktofront"):
+        #
+        #  ClickToFront is not among them any more. The archive holds Bryce
+        #  Nesbitt's 1987 original, whose only mode is a requester offering
+        #  Install or Cancel, so in WBStartup it asked on every boot - read
+        #  off a finished card, and reported. It goes to Utilities now.
+        #
+        #  FreeWheel arrives under a renamed copy rather than a plain item:
+        #  the archive's file is FreeWheel_020 and a drive that brings its
+        #  own keeps it in WBStartup as FreeWheel, so ours has to land under
+        #  that name to take its place instead of running beside it.
+        for key in ("deficons", "freewheel", "magicmenu", "fullpalette"):
             package = packages.CATALOGUE_BY_KEY[key]
-            places = list(package.download.items)
-            self.assertTrue(any(d == "WBStartup" for _s, d in places),
-                            f"{key} never reaches WBStartup")
+            places = [d for _s, d in package.download.items]
+            places += [d for _s, d, _new in package.download.rename]
+            self.assertIn("WBStartup", places,
+                          f"{key} never reaches WBStartup")
 
     def test_media_and_extras_are_offered_as_their_own_groups(self):
         for category, expected in ((packages.Category.MEDIA,
@@ -2169,3 +2180,146 @@ class TheCardSizeSurvivesBeingShown(unittest.TestCase):
                 self.assertLessEqual(parse_size(exact_size_text(size)), size,
                                      "an image larger than the card it was "
                                      "measured from cannot be written to it")
+
+
+class AnythingInWBStartupHasToActuallyStart(unittest.TestCase):
+    """Workbench runs the icons in WBStartup, not the files.
+
+    Two opposite failures, both found by reading a finished card:
+
+    A program with **no icon** is never started at all. DefIcons, FullPalette
+    and MagicMenu were each copied into WBStartup without theirs, so every
+    card this tool has built carried three programs that could not run - the
+    missing colour icons being the visible half of it.
+
+    A program **with** an icon and no DONOTWAIT stops the boot, because
+    Workbench waits for it to exit and a commodity never does. FullPalette's
+    own icon, as shipped, has no DONOTWAIT: supplying the icons without also
+    checking for it would have turned three inert programs into a card that
+    does not finish booting.
+    """
+
+    def _wbstartup_items(self):
+        from pistorm_imager.core import packages                # noqa: PLC0415
+        for package in packages.CATALOGUE:
+            download = getattr(package, "download", None)
+            if download is None:
+                continue
+            landings = [(inside, dest) for inside, dest in download.items]
+            landings += [(inside, dest) for inside, dest, _new
+                         in download.rename]
+            for inside, dest in landings:
+                if str(dest).strip("/").lower() == "wbstartup":
+                    yield package, inside, dest
+
+    def test_every_program_put_in_wbstartup_brings_its_icon(self):
+        from pistorm_imager.core import packages                # noqa: PLC0415
+        for package in packages.CATALOGUE:
+            download = getattr(package, "download", None)
+            if download is None:
+                continue
+            #  The name each item lands under, which for a rename is the new
+            #  one - that is what Workbench matches an icon against.
+            landed = [Path(inside).name for inside, dest in download.items
+                      if str(dest).strip("/").lower() == "wbstartup"]
+            landed += [new for _inside, dest, new in download.rename
+                       if str(dest).strip("/").lower() == "wbstartup"]
+            programs = [n for n in landed if not n.lower().endswith(".info")]
+            icons = {n.lower() for n in landed if n.lower().endswith(".info")}
+            for program in programs:
+                with self.subTest(package=package.key, program=program):
+                    self.assertIn(f"{program.lower()}.info", icons,
+                                  f"{package.label} puts {program} in "
+                                  f"WBStartup with no icon, so Workbench "
+                                  f"will never start it")
+
+    def test_an_icon_without_donotwait_is_given_one(self):
+        from pistorm_imager.core import amigainfo, compat        # noqa: PLC0415
+        plain = amigainfo.write_tooltypes(_an_icon(), ["CX_PRIORITY=0"])
+        self.assertNotIn("DONOTWAIT", amigainfo.read_tooltypes(plain))
+        fixer = compat.Compatibility(Progress())
+        fixed = fixer.offer("WBStartup/FullPalette.info", plain)
+        self.assertIn("DONOTWAIT", amigainfo.read_tooltypes(fixed))
+        self.assertIn("CX_PRIORITY=0", amigainfo.read_tooltypes(fixed),
+                      "the icon's own tool types must survive")
+
+    def test_an_icon_that_has_it_is_left_exactly_alone(self):
+        from pistorm_imager.core import amigainfo, compat        # noqa: PLC0415
+        already = amigainfo.write_tooltypes(_an_icon(), ["DONOTWAIT"])
+        fixer = compat.Compatibility(Progress())
+        self.assertEqual(fixer.offer("WBStartup/FreeWheel.info", already),
+                         already)
+
+    def test_only_wbstartup_is_touched(self):
+        #  ClickToFront's icon has no DONOTWAIT and does not need one: it
+        #  lives in Utilities, where nothing starts it.
+        from pistorm_imager.core import amigainfo, compat        # noqa: PLC0415
+        plain = amigainfo.write_tooltypes(_an_icon(), [])
+        fixer = compat.Compatibility(Progress())
+        self.assertEqual(
+            fixer.offer("Utilities/ClickToFront/ClickToFront.info", plain),
+            plain)
+
+    def test_something_that_is_not_an_icon_is_not_mangled(self):
+        #  MagicMenu ships an "icon" that is a PNG file with an .info name.
+        #  Workbench 3.1 cannot read it, and neither can this - but it must
+        #  come through untouched rather than half-rewritten.
+        from pistorm_imager.core import compat                   # noqa: PLC0415
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 200
+        fixer = compat.Compatibility(Progress())
+        self.assertEqual(fixer.offer("WBStartup/MagicMenu.info", png), png)
+
+    def test_each_icon_named_is_one_workbench_can_read(self):
+        #  MagicMenu ships two icon sets, and the obvious pick was wrong:
+        #  Icons/DualPNG/MagicMenu.info is a PNG file with an .info name, an
+        #  OS4 icon that Workbench 3.1 does not read. Supplying it would have
+        #  left MagicMenu exactly as unstarted as no icon at all, and the
+        #  catalogue cannot tell the difference by name.
+        from pistorm_imager.core import amigainfo, packages      # noqa: PLC0415
+        cache = packages.cache_dir()
+        checked = 0
+        for package, inside, _dest in self._wbstartup_items():
+            if not inside.lower().endswith(".info"):
+                continue
+            archive = getattr(package.download, "url", "") or ""
+            stem = Path(archive).name
+            for suffix in (".lha", ".zip", ".run"):
+                stem = stem.removesuffix(suffix)
+            path = cache / f"{stem}.unpacked" / inside
+            if not path.exists():
+                continue                     # not fetched on this machine
+            checked += 1
+            with self.subTest(package=package.key, icon=inside):
+                try:
+                    amigainfo.read_tooltypes(path.read_bytes())
+                except amigainfo.InfoError as error:
+                    self.fail(f"{package.label} names {inside}, which is not "
+                              f"an icon Workbench 3.1 can read ({error})")
+        if not checked:
+            self.skipTest("no package archives are unpacked on this machine")
+
+    def test_the_installer_that_asks_is_not_started_at_boot(self):
+        #  ClickToFront's archive holds Bryce Nesbitt's 1987 original, whose
+        #  only mode is a requester offering Install or Cancel. In WBStartup
+        #  it asked on every single boot.
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        where = {dest for _inside, dest
+                 in packages.CATALOGUE_BY_KEY["clicktofront"].download.items}
+        self.assertNotIn("WBStartup", where)
+        for dest in where:
+            self.assertTrue(dest.startswith("Utilities/"), dest)
+
+
+def _an_icon() -> bytes:
+    """The smallest DiskObject this project's icon reader accepts."""
+    import struct                                                # noqa: PLC0415
+    from pistorm_imager.core import amigainfo                    # noqa: PLC0415
+    data = bytearray(78)
+    struct.pack_into(">H", data, 0, 0xE310)      # ic_Magic
+    struct.pack_into(">H", data, 2, 1)           # ic_Version
+    data[48] = 3                                 # do_Type: a tool
+    struct.pack_into(">I", data, 54, 1)          # do_ToolTypes, non-zero
+    data += struct.pack(">I", 4)                 # an empty tool type array
+    amigainfo.read_tooltypes(bytes(data))        # it has to parse
+    return bytes(data)
+
