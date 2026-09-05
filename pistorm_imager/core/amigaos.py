@@ -312,6 +312,13 @@ def copy_volume(source, target, destination: str, progress: Progress,
         if parent is None:
             continue                    # its directory was skipped
         if entry.is_dir:
+            #  A drawer whose whole contents are being left out must not be
+            #  made either. Leaving it out of dir_blocks is what stops
+            #  everything inside it as well, by the check just above.
+            if compat is not None and getattr(compat, "skip_drawer", None) \
+                    and compat.skip_drawer(landed_path(destination, path)):
+                skipped += 1
+                continue
             dir_blocks[path] = target.mkdir(
                 parent, name, protect=entry.protect, comment=entry.comment,
                 days=entry.days, mins=entry.mins, ticks=entry.ticks)
@@ -845,10 +852,15 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
     skip = [e.replace("\\", "/").strip("/").lower() for e in (exclude or [])]
     entries: list[tuple[Path, str, bool]] = []
     skipped_paths = 0
+    #  Everything rglob returns is under `source`, so the path relative to it
+    #  is a slice of the string. Path.relative_to re-parses both paths and
+    #  walks their parts, and on a games drive of 337,000 files it was half
+    #  the time this loop took - more than writing the data.
+    prefix = len(str(source)) + 1
     for path in sorted(source.rglob("*")):
         if path.is_symlink():
             continue
-        relative = str(path.relative_to(source)).replace(os.sep, "/")
+        relative = str(path)[prefix:].replace(os.sep, "/")
         lowered = relative.lower()
         if _excluded(lowered, skip):
             skipped_paths += 1
@@ -896,6 +908,13 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
             progress.log(f"  {_printable(relative)} -> {_printable(placed.name)}")
         try:
             if is_dir:
+                #  A drawer whose whole contents are being left out is not
+                #  made either - see copy_volume, where the same omission put
+                #  an empty Tools/SysInfo on a card.
+                if compat is not None and getattr(compat, "skip_drawer", None) \
+                        and compat.skip_drawer(landed_path(destination,
+                                                           placed.path)):
+                    continue
                 #  A drawer merged into one already made keeps that one; other
                 #  than that nothing can exist on a freshly formatted volume,
                 #  and checking would mean walking the directory per entry.
@@ -1080,6 +1099,45 @@ def _drawer_icon_sources(folders: Iterable[str | Path]) -> dict[str, bytes]:
     return found
 
 
+def drawer_icons_from_volume(reader, into: Path, limit: int = 40) -> int:
+    """Copy an Amiga volume's own drawer icons out, to be copied from.
+
+    A drive being imported brings a desktop that was designed: ClassicWB's
+    drawers are MagicWB-styled, and the drawers this tool adds beside them -
+    ``Internet/NetSurf``, ``Utilities/SysInfo`` - were given a stock
+    Workbench 3.1 drawer instead, because the only icons offered came off the
+    floppies. The result is a desktop where the software the user chose is
+    the part that looks foreign.
+
+    The drive's own icons are the right thing to copy, so they are taken from
+    it and offered first. Only real drawer icons, and only from the root,
+    which is where a distribution's own style is set.
+    """
+    into.mkdir(parents=True, exist_ok=True)
+    written = 0
+    try:
+        entries = reader.listdir()
+    except Exception:                                       # noqa: BLE001
+        return 0
+    names = {entry.name.lower() for entry in entries}
+    for entry in entries:
+        if written >= limit or not entry.name.lower().endswith(".info"):
+            continue
+        stem = entry.name[:-5]
+        #  An icon whose drawer is not there belongs to something else.
+        if stem.lower() not in names:
+            continue
+        try:
+            data = reader.read_file(entry)
+        except Exception:                                   # noqa: BLE001
+            continue
+        if not amigainfo.is_drawer_icon(data):
+            continue
+        (into / entry.name).write_bytes(data)
+        written += 1
+    return written
+
+
 def drawer_icon_from_disks(folder: str | Path, into: Path) -> Path | None:
     """Take one real drawer icon out of the Workbench floppies.
 
@@ -1117,6 +1175,29 @@ def drawer_icon_from_disks(folder: str | Path, into: Path) -> Path | None:
     return None
 
 
+def _generic_drawer_icon(folders: Iterable[str | Path]) -> bytes | None:
+    """A stand-in for a drawer whose own name matched nothing.
+
+    Taken from the *first* source that can supply one, so the order the
+    caller offered them in decides. Choosing by name across all of them
+    looked equivalent and was not: the Workbench floppies contribute an icon
+    called literally "drawer", which beat every name after it, so a card
+    built on a MagicWB-styled drive still got plain 3.1 drawers for exactly
+    the software the user had chosen. Read off a finished card, where none of
+    the new drawers' icons was one of the drive's twenty-four.
+    """
+    for folder in folders:
+        found = _drawer_icon_sources([folder])
+        if not found:
+            continue
+        for name in ("drawer", "tools", "utilities", "storage", "system"):
+            if name in found:
+                return found[name]
+        #  Any drawer icon from this source beats one from a later source.
+        return next(iter(found.values()))
+    return None
+
+
 def ensure_drawer_icons(volume, drawers: Iterable[str],
                         sources: Iterable[str | Path],
                         progress: Progress) -> int:
@@ -1136,14 +1217,11 @@ def ensure_drawer_icons(volume, drawers: Iterable[str],
     and otherwise any drawer icon among them, because one drawer icon is as
     good as another and having one is what matters.
     """
+    sources = list(sources)
     icons = _drawer_icon_sources(sources)
     if not icons:
         return 0
-    #  A stand-in for a drawer whose name nothing matched.  Preferring the
-    #  plain Workbench drawers keeps it looking like a drawer.
-    generic = next((icons[name] for name in ("drawer", "tools", "utilities",
-                                             "storage", "system")
-                    if name in icons), None)
+    generic = _generic_drawer_icon(sources)
     written = 0
     for drawer in drawers:
         path = drawer.strip("/")
