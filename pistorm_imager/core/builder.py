@@ -194,24 +194,40 @@ class BuildConfig:
         names = " ".join((p.volume_name or p.name) + " " + (p.content_folder or "")
                          for p in filled).lower()
 
-        if ("whdload" not in keys
-                and any(word in names for word in ("game", "demo", "whdload"))):
-            said.append(
-                "There are games or demos on this card and WHDLoad is not "
-                "installed, so nothing on it can launch them.")
-        if "igame" in keys and not any(
-                "game" in (p.volume_name or p.name).lower() for p in filled):
-            said.append(
-                "iGame is installed and no drive is being filled with games, "
-                "so it will open on an empty list.")
-        if self.rtg_display and "picasso96" not in keys \
-                and not any(p.content_hdf or p.content_folder
-                            for p in self.amiga_partitions if p.bootable):
-            said.append(
-                "This card is set up for an RTG screen on the Pi's HDMI "
-                "output, but Picasso96 is not being installed and no system "
-                "is being imported that might carry it, so there will be no "
-                "RTG screen to open on.")
+        #  Which packages are about content, and which words in a drive's
+        #  name say so, are declared on the packages themselves.  Naming
+        #  WHDLoad and iGame here meant a package added later got no such
+        #  check, and it read as though those two were the only software a
+        #  card's content could depend on.
+        for package in packages.CATALOGUE:
+            if not package.content_words:
+                continue
+            about = any(word in names for word in package.content_words)
+            if package.needed_for_content and about and package.key not in keys:
+                said.append(
+                    f"There are games or demos on this card and "
+                    f"{package.label} is not installed, so nothing on it can "
+                    f"launch them.")
+            if package.wants_content and package.key in keys and not any(
+                    word in (p.volume_name or p.name).lower()
+                    for p in filled for word in package.content_words):
+                said.append(
+                    f"{package.label} is installed and no drive is being "
+                    f"filled with games, so it will open on an empty list.")
+        #  Whatever the catalogue says an RTG screen cannot do without.  The
+        #  package used to be named here, which meant this warning and the
+        #  ``essential`` flag it is really about could disagree.
+        for package in packages.CATALOGUE:
+            if not (package.rtg_only and package.essential):
+                continue
+            if self.rtg_display and package.key not in keys \
+                    and not any(p.content_hdf or p.content_folder
+                                for p in self.amiga_partitions if p.bootable):
+                said.append(
+                    f"This card is set up for an RTG screen on the Pi's HDMI "
+                    f"output, but {package.label} is not being installed and "
+                    f"no system is being imported that might carry it, so "
+                    f"there will be no RTG screen to open on.")
         if self.workbench_on_rtg and not self.rtg_display:
             said.append(
                 "Workbench is set to open on the RTG screen, and this card "
@@ -820,7 +836,7 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
     live in ``S:User-Startup`` with the rest of the package startup lines.
     """
     chosen = packages.expand(config.package_keys)
-    if "iconlib" not in chosen:
+    if not any(p.boot_library and p.key in chosen for p in packages.CATALOGUE):
         return None
     #  LoadModule, not LoadResident.  LoadResident cannot displace a library
     #  that is already in the system list, and icon.library is there from the
@@ -1222,14 +1238,21 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     out = [pair for pair in resolved if pair not in already]
     #  A second launcher is the same package's files again under another
     #  destination, so it is built from what iGame itself resolved to.
-    igame_pairs = [pair for key, pairs in by_package if key == "igame"
-                   for pair in pairs]
-    launchers = _igame_instances(config, progress, igame_pairs)
-    if credit is not None:
-        for pair in launchers:
-            credit.setdefault(pair, "igame")
-    out += launchers
+    for launcher in packages.CATALOGUE:
+        if not launcher.per_content_drive:
+            continue
+        its_pairs = [pair for key, pairs in by_package if key == launcher.key
+                     for pair in pairs]
+        extra = _igame_instances(config, progress, its_pairs, launcher)
+        if credit is not None:
+            for pair in extra:
+                credit.setdefault(pair, launcher.key)
+        out += extra
     return out
+
+
+#  The drawer a game collection keeps its WHDLoad installs in, by convention.
+WHDLOAD_DRAWER = "whdload"
 
 
 def _content_drives(config: "BuildConfig") -> list[tuple[str, str]]:
@@ -1251,10 +1274,14 @@ def _content_drives(config: "BuildConfig") -> list[tuple[str, str]]:
             continue
         inside = ""
         try:
+            #  A drawer on the content folder itself, not the package of the
+            #  same name: every game collection ever assembled puts its
+            #  installs in one called WHDLoad, and that is what a launcher
+            #  has to be pointed at.
             inside = next((child.name for child in Path(spec.content_folder)
                            .iterdir()
                            if child.is_dir()
-                           and child.name.lower() == "whdload"), "")
+                           and child.name.lower() == WHDLOAD_DRAWER), "")
         except OSError:
             inside = ""
         out.append((volume, inside))
@@ -1262,7 +1289,8 @@ def _content_drives(config: "BuildConfig") -> list[tuple[str, str]]:
 
 
 def _igame_instances(config: "BuildConfig", progress: Progress,
-                     igame_pairs: list[tuple[str, str]]
+                     launcher_pairs: list[tuple[str, str]],
+                     launcher: "packages.Package"
                      ) -> list[tuple[str, str]]:
     """One launcher per content drive, each scanning only its own.
 
@@ -1279,26 +1307,43 @@ def _igame_instances(config: "BuildConfig", progress: Progress,
     it gets a launcher named for the drive, so a card with a Demos drive
     arrives with iDemos beside iGame.
 
-    Nothing is named in this source: the drives, and the names, come from
-    the partitions the user set up.
+    Nothing is named in this source.  The drives and their names come from
+    the partitions the user set up; where the launcher lives, what it is
+    called and the name of the file listing what it scans all come from the
+    catalogue entry passed in - so a different launcher added later needs no
+    change here.
     """
-    if "igame" not in packages.expand(config.package_keys or []):
+    if launcher.key not in packages.expand(config.package_keys or []):
         return []
+    if not launcher.download or not launcher.content_list:
+        return []
+    #  Where the package installs itself: the shortest of its destinations,
+    #  which every other one is inside.
+    homes = {dest for _inside, dest in launcher.download.items}
+    if not homes:
+        return []
+    home = min(homes, key=len)
+    parent, _, drawer = home.rpartition("/")
+    #  A copy for a second drive is named for that drive, keeping whatever
+    #  the program's own name starts with - iGame gives iDemos.
+    prefix = re.match("[a-z]*", drawer).group()
+
     drives = _content_drives(config)
     if not drives:
         return []
     out: list[tuple[str, str]] = []
     for index, (volume, inside) in enumerate(drives):
-        where = ("Programs/iGame" if index == 0
-                 else f"Programs/i{volume.strip(':')}")
+        named = f"{prefix}{volume.strip(':')}"
+        where = home if index == 0 else f"{parent}/{named}" if parent else named
         if index:
             #  A second installation is the same program again, so the
             #  files it was given are copied a second time. Only the
             #  destination differs.
-            out += [(source, dest.replace("Programs/iGame", where, 1))
-                    for source, dest in igame_pairs]
+            out += [(source, dest.replace(home, where, 1))
+                    for source, dest in launcher_pairs]
         line = f"{volume}:{inside}" if inside else f"{volume}:"
-        written = Path(tempfile.mkdtemp(prefix="pistorm-igame-")) / "repos.prefs"
+        written = (Path(tempfile.mkdtemp(prefix="pistorm-launcher-"))
+                   / launcher.content_list)
         written.write_text(line + "\n")
         out.append((str(written), where))
         progress.log(f"  {where.rpartition('/')[2]} will scan {line}")
@@ -1472,7 +1517,11 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
                                  rtg=config.rtg_display,
                                  native=config.native_display,
                                  workbench_on_rtg=config.workbench_on_rtg)
-    if "picasso96" in (config.package_keys or ()):
+    #  The RTG subsystem, whichever package provides it: the one package that
+    #  an RTG screen cannot do without.  Named by what it is rather than by
+    #  its key, so the check follows the catalogue.
+    if any(p.rtg_only and p.essential and p.key in (config.package_keys or ())
+           for p in packages.CATALOGUE):
         fixer.expect_picasso()
     #  What each volume will be filled from, so a games list can be checked
     #  against what is actually going onto the card.
@@ -1569,7 +1618,13 @@ def _check_the_system_can_boot(config: BuildConfig, progress: Progress) -> None:
 #  icon.library 44, which the ROM's v40 cannot answer, so AmigaOS loaded the
 #  disk copy after Workbench had already started on the ROM one, and the card
 #  boot-looped on real hardware.
-NEEDS_THE_BOOT_SCRIPT = {"iconlib": "icon.library"}
+def _needs_the_boot_script() -> dict[str, str]:
+    """Packages whose library has to be soft-kicked from S:Startup-Sequence.
+
+    Declared on the packages, so a second one added later is covered without
+    anything here changing.
+    """
+    return {p.key: p.boot_library for p in packages.CATALOGUE if p.boot_library}
 
 
 def _drop_what_needs_the_boot_script(pairs: list[tuple[str, str]],
@@ -1580,13 +1635,13 @@ def _drop_what_needs_the_boot_script(pairs: list[tuple[str, str]],
     if not getattr(fixer, "writes_its_own_startup", False):
         return pairs
     chosen = set(packages.expand(config.package_keys or []))
-    unusable = {name.lower() for key, name in NEEDS_THE_BOOT_SCRIPT.items()
+    unusable = {name.lower() for key, name in _needs_the_boot_script().items()
                 if key in chosen}
     if not unusable:
         return pairs
     kept = [pair for pair in pairs
             if Path(pair[0]).name.lower() not in unusable]
-    for key, name in NEEDS_THE_BOOT_SCRIPT.items():
+    for key, name in _needs_the_boot_script().items():
         if key in chosen:
             progress.log(
                 f"  WARNING: {packages.CATALOGUE_BY_KEY[key].label} is being "
