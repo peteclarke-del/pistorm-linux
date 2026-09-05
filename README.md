@@ -1994,6 +1994,19 @@ makes, plus every assign the drive makes in its own `S:Startup-Sequence` and
 `S:User-Startup`. A distribution assigns plenty for itself, and calling those
 missing would condemn most of what it ships.
 
+**One program, one row.** These were listed here *and* in "software the drive
+already has" — where a switch that is **on** means *keep it*, the exact
+opposite of what it means here. So the page said two contradictory things about
+FMSsys, and the one that read as keeping it was the longer, more prominent
+list. It was in fact being removed, because the two lists are unioned into the
+same answer, but nobody could tell that by looking. Anything that cannot work
+is now left out of the other list entirely.
+
+Note that the **suggested load** button has nothing to say about any of this.
+It chooses *packages* — what to install, for this machine and screen — while
+these three lists are about the software the drive arrives with. Removing
+FMSsys was never something that button could do.
+
 Documentation is not evidence. A `.guide` explaining how to mount `PC:` is not
 a script that tries to, and quoting one is how a check like this stops being
 believed. On ClassicWB FULL the result is two: `Programs/FMSsys` and
