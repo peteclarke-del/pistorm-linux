@@ -3143,6 +3143,82 @@ class TheDaemonGoesInWBStartupNotTheEditor(unittest.TestCase):
         self.assertIn("WBStartup/FPPrefs.info", landed)
 
 
+class StartupLinesAreNeitherWrongNorRepeated(unittest.TestCase):
+    """Two faults in the lines this build adds to S:User-Startup.
+
+    Birdie's line said "C:Run", and there is no C:Run - Run is one of the
+    shell's ROM-internal commands and AmigaOS 3.1 ships no file for it. So
+    the line failed on every boot and Birdie never started. ClassicWB's own
+    User-Startup says "Run >NIL: C:XpkMasterPrefs", which is the form that
+    works.
+
+    And ClassicWB starts FBlit, FText and BlazeWCP from its Startup-Sequence
+    already, so the lines added for those started each of them a second time.
+    """
+
+    BOOT = ("IF EXISTS C:BlazeWCP\n C:BlazeWCP\n"
+            "IF EXISTS SYS:System/FBlit/FBlit\n"
+            " SYS:System/FBlit/FBlit\n SYS:System/FBlit/FText\n")
+
+    def test_run_is_never_given_a_path(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        for package in packages.CATALOGUE:
+            for line in package.startup:
+                with self.subTest(package=package.key):
+                    self.assertNotIn("C:Run", line,
+                                     "Run is a ROM command, not a file")
+
+    def test_birdie_still_runs_detached(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        line = packages.CATALOGUE_BY_KEY["birdie"].startup[0]
+        self.assertTrue(line.startswith("Run "), line)
+        self.assertIn("C:Birdie", line)
+
+    def test_a_line_the_drive_already_runs_is_left_out(self):
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/x",
+                                     package_keys=["fblit", "ftext",
+                                                   "blazewcp", "birdie"])
+        with_drive = builder._package_startup_lines(config, self.BOOT)
+        self.assertNotIn("C:FBlit >NIL:", with_drive)
+        self.assertNotIn("C:FText >NIL:", with_drive)
+        self.assertFalse(any("BlazeWCP" in line for line in with_drive))
+        #  Birdie is not started by that drive, so its line stays.
+        self.assertTrue(any("C:Birdie" in line for line in with_drive))
+
+    def test_without_a_drive_every_line_is_written(self):
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/x",
+                                     package_keys=["fblit", "ftext"])
+        self.assertIn("C:FBlit >NIL:",
+                      builder._package_startup_lines(config, ""))
+
+    def test_a_block_of_assigns_is_never_mistaken_for_a_command(self):
+        #  MUI's lines are all assigns inside an IF, so it names no command
+        #  and cannot be dropped. Judging this per line rather than per
+        #  package matched "System" in SYS:System/FBlit and threw MUI's
+        #  assigns away, which would have taken every MUI program with them.
+        from pistorm_imager.core import builder, packages        # noqa: PLC0415
+        mui = packages.CATALOGUE_BY_KEY["mui"].startup
+        self.assertEqual(builder._commands_run(mui), [])
+        config = builder.BuildConfig(target="/tmp/x", package_keys=["mui"])
+        lines = builder._package_startup_lines(config, self.BOOT)
+        self.assertTrue(any("Assign" in line and "MUI:" in line
+                            for line in lines), lines)
+
+    def test_all_of_a_packages_commands_have_to_be_running(self):
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        self.assertTrue(builder._already_started(["fblit"], self.BOOT))
+        self.assertFalse(builder._already_started(["fblit", "birdie"],
+                                                  self.BOOT))
+        self.assertFalse(builder._already_started([], self.BOOT))
+
+    def test_a_longer_name_is_not_a_match(self):
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        self.assertFalse(builder._already_started(
+            ["fblit"], "C:FBlitTool\n"))
+
+
 class TheADFHelperIsClickable(unittest.TestCase):
     """The archive ships no Workbench front end at all.
 
