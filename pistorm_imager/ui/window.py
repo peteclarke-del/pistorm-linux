@@ -1024,8 +1024,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  drive has to drop them: left standing, they would leave
             #  software out of a build that is no longer using that drive.
             self._refresh_older_copies()
-            self._refresh_what_arrives()
             self._refresh_what_cannot_work()
+            self._refresh_what_arrives()
             self._quick_preview()
             return
         scheme = presets.describe_image_scheme(path)
@@ -1046,8 +1046,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._sync_visibility()
         self._relayout_partitions()
         self._refresh_older_copies()
-        self._refresh_what_arrives()
         self._refresh_what_cannot_work()
+        self._refresh_what_arrives()
         self._quick_preview()
 
     def _primary(self) -> str:
@@ -2342,8 +2342,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  taking the suggestion has to bring them with it. Without this the
         #  older-copies list still described the set that was ticked before.
         self._refresh_older_copies()
-        self._refresh_what_arrives()
         self._refresh_what_cannot_work()
+        self._refresh_what_arrives()
 
     def _refresh_categories(self) -> None:
         """Re-default every partition's categories for the machine now chosen."""
@@ -2422,14 +2422,20 @@ class ImagerWindow(Adw.ApplicationWindow):
                         reader.f.close()
                     except Exception:                        # noqa: BLE001
                         pass
-        wanted = {f"{drawer}/{name}" for drawer, name in found}
+        #  Not what the other list already has. FMSsys was in both - on
+        #  here meaning "keep it", on there meaning "remove it" - so the page
+        #  said two opposite things about the same program, and the one that
+        #  read as keeping it was the longer list.
+        already = set(getattr(self, "broken_rows", {}))
+        wanted = {f"{drawer}/{name}" for drawer, name in found
+                  if f"{drawer}/{name}" not in already}
         for key, row in list(self.arrives_rows.items()):
             if key not in wanted:
                 self.arrives_group.remove(row)
                 del self.arrives_rows[key]
         for drawer, name in found:
             key = f"{drawer}/{name}"
-            if key in self.arrives_rows:
+            if key in self.arrives_rows or key in already:
                 continue
             row = Adw.SwitchRow(title=name, subtitle=f"in {drawer}")
             row.set_active(True)                 # keep it, unless told not to
