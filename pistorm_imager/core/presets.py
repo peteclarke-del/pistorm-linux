@@ -477,8 +477,13 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
         #  fetched from its publisher during the build, where there is a
         #  progress report to hang the download off, so the choice is all that
         #  travels with the configuration.
+        #  The same recommendation the packages page makes, so a quick setup
+        #  and the "suggest a set" button cannot disagree about what a
+        #  sensible card carries.  This used to ask for the catalogue's
+        #  ``default`` flags filtered by nothing but RTG, which knew nothing
+        #  about the chipset and so offered chipset patches to a bare Pi.
         config.package_keys = list(
-            packages.default_keys(display.uses_rtg)
+            packages.suggested(machine, display)
             if package_keys is None else package_keys)
         config.package_chipset = machine.chipset.value
         config.package_display = display.value
@@ -642,13 +647,16 @@ def describe_image_scheme(path: str | Path) -> str:
 #  not reliably recorded anywhere on disk - the obvious candidates give the
 #  version of the *command*, not the system - so report capabilities, which is
 #  what the choice actually turns on.
+#  The first two are properties of any AmigaOS drive rather than of a package,
+#  so they are stated here.  The rest are catalogue entries that said what
+#  proves they are already installed: naming WHDLoad, Scalos and Picasso96 a
+#  second time meant this list and the catalogue could disagree about where
+#  each one lives, and a package added later was invisible to it.
 SYSTEM_MARKERS = [
     ("bootable", "S/Startup-Sequence", "boots on its own"),
     ("workbench", "C/LoadWB", "has Workbench"),
-    ("rtg", "Libs/Picasso96", "has Picasso96 RTG"),
-    ("whdload", "C/WHDLoad", "has WHDLoad"),
-    ("scalos", "C/Scalos", "uses Scalos"),
-]
+] + [(package.key, where, f"has {package.label}")
+     for package in packages.CATALOGUE for where in package.evidence]
 
 
 @dataclasses.dataclass
