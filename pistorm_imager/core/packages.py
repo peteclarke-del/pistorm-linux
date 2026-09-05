@@ -514,9 +514,22 @@ CATALOGUE: list[Package] = [
         category=Category.LOOK,
         native_only=True,
         download=Download("util/wb/FullPalette22.lha",
-                          (("FullPalette/FullPalette", "WBStartup"),
-                           ("FullPalette/FullPalette.info", "WBStartup"),
-                           ("FullPalette/FPPrefs", "Prefs"))),
+                          #  These two are the other way round from how they
+                          #  read. The archive's own installer says it plainly:
+                          #  "FPPrefs (the FullPalette daemon that is run in
+                          #  the Startup-sequence)". FullPalette is the
+                          #  *editor* - its strings are Palette Preferences,
+                          #  Load, Save - and putting it in WBStartup opened
+                          #  the palette editor on every single boot.
+                          (("FullPalette/FPPrefs", "WBStartup"),
+                           ("FullPalette/FullPalette", "Prefs"),
+                           ("FullPalette/FullPalette.info", "Prefs")),
+                          #  The daemon has no icon of its own in the
+                          #  archive, and a program in WBStartup without one
+                          #  is never started at all - so it borrows the
+                          #  editor's under its own name.
+                          rename=(("FullPalette/FullPalette.info",
+                                   "WBStartup", "FPPrefs.info"),)),
     ),
     Package(
         "newicons", "NewIcons",
@@ -744,8 +757,13 @@ CATALOGUE: list[Package] = [
     Package(
         "scalos", "Scalos",
         "A complete Workbench replacement. Handsome, and hungry: worth it on "
-        "AGA or an RTG screen, a poor trade on a plain OCS desktop.",
+        "AGA or an RTG screen, a poor trade on a plain OCS desktop. Aminet's "
+        "copy is 1.2b from 2000, which is old - the maintained Scalos is not "
+        "on Aminet.",
         category=Category.LOOK,
+        #  Aminet's is 1.2b from April 2000 and is the newest there under
+        #  that name; the maintained Scalos lives elsewhere. Said plainly so
+        #  nobody assumes ticking this brings a current one.
         download=Download("util/wb/Scalos.lha", stage=STAGING + "/Scalos"),
         chipsets=(Chipset.AGA,),
         or_rtg=True,

@@ -988,6 +988,35 @@ Only the Paula driver is copied. The Toccata, Delfina, Prelude and Melody
 drivers in the archive are for sound cards this machine has not got, and a mode
 list full of hardware that is not there is worse than a short one.
 
+#### An icon's tool has to be findable
+
+Workbench runs the tool an icon names and does **not** search for it the way a
+shell would. ClassicWB's `def_project.info` — the icon every file falls back on
+— names simply `MultiView`, with no path, so double-clicking a file found
+nothing, while `def_view.info` beside it says `SYS:Utilities/MultiView` and
+works. Reported as *"MultiView is installed, but no app can find it to open
+files"*.
+
+A default icon whose tool is a bare name is now given the path, and only where
+the drive really has that program: one already carrying a path is untouched,
+and a name nothing answers to is left alone rather than guessed at.
+
+Finding it needs one wrinkle. ClassicWB's `Utilities` holds `MultiView.info`
+and **no `MultiView`** — it expects the Workbench floppies to supply one, and
+this build does, but not until after those icons have been copied. So an icon
+with no program beside it still counts as saying where the program is meant to
+be. On a real build that repairs six icons, including PPaint's and PictIcon's.
+
+#### The daemon goes in WBStartup, not the editor
+
+FullPalette ships two programs whose names read backwards from what they are.
+The archive's own installer says it plainly: *"FPPrefs (the FullPalette daemon
+that is run in the Startup-sequence)"*. `FullPalette` is the **editor** — its
+strings are Palette Preferences, Load, Save — and it was the one going into
+`WBStartup`, so the palette editor opened on **every single boot**. They are
+the right way round now, and the daemon borrows the editor's icon under its own
+name, because a program in `WBStartup` without one never starts at all.
+
 #### Workbench runs the icons in WBStartup, not the files
 
 Two opposite failures live here, and a card carried both.
