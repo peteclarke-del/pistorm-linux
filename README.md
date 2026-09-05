@@ -447,6 +447,42 @@ Then verify against the card rather than against the arithmetic: MBR signature,
 both partitions ending within the capacity, every drive mounting, and the files
 the build was checked on still present.
 
+### Choosing a card has to survive being chosen
+
+Selecting an SD card on the Target page and pressing Write **wrote an image
+file instead**. Not an error, not a warning - the build simply went somewhere
+else, on the one path whose whole purpose is to destroy a disk.
+
+The mirror between Quick setup and the Target page went one way, Quick setup
+onto Target, on the reasoning that there must be one source of truth. But the
+Target page writes into Quick setup as a side effect: choosing a card puts the
+card's exact capacity into the size box, that box has a `changed` handler, and
+that handler runs the mirror. So:
+
+1. Pick a card in the Target page's card list.
+2. `_follow_the_card` writes the card's size into Quick setup's size box.
+3. The box emits `changed`, which runs `_mirror_target`.
+4. The mirror sets the card row from Quick setup's - still on the placeholder -
+   and the "Write to" row with it, back to "SD card image file".
+
+The card deselected itself one signal later, through its own side effect. The
+page visibly snapped back, which is easy to miss on a page you have just
+finished with, and `gather()` then honestly reported an image file because that
+is genuinely what the widgets said.
+
+The fix is `_mirror_back`, the return path: the Target page's rows copy onto
+Quick setup the same way Quick setup copies onto them, both guarded by the same
+`_mirroring` flag so they cannot loop. That is what makes the two pages one
+state, which the one-way version already claimed to be.
+
+`tests/test_gui_smoke.py` drives it the way it was reported - start on an image
+file, switch the Target page to SD card, pick a card - and asserts
+`gather()` returns the device. Putting the one-way mirror back fails four
+checks, including the symptom itself, `is_device=False` with the image file's
+path. Switching back to an image file, and the `.hdf` option, are checked in
+the same place, because a return path is exactly the kind of change that fixes
+one direction by breaking another.
+
 ### The box has to be reachable when it matters
 
 The size box is locked while a card is the target, because a card's capacity is
