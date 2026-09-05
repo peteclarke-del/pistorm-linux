@@ -1,4 +1,5 @@
 """What a collection is divided into, and what a given Amiga can run."""
+import dataclasses
 import os
 import shutil
 import sys
@@ -541,10 +542,11 @@ class NiceToHaves(unittest.TestCase):
     def test_media_and_extras_are_offered_as_their_own_groups(self):
         for category, expected in ((packages.Category.MEDIA,
                                     {"amplifier", "hippoplayer",
-                                     "digibooster"}),
+                                     "digibooster", "ahi"}),
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
-                                     "diropus4", "kingcon", "sysinfo"})):
+                                     "kingcon", "sysinfo",
+                                     "adfdevice"})):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
 
@@ -917,21 +919,51 @@ class TheLayoutMustFitTheCard(unittest.TestCase):
         self.assertIn("too small to be a drive", problems[0])
 
 
-class NoMonitorIsInventedForACard(unittest.TestCase):
-    """Renaming the emulator's Picasso96 monitor made a card that would not
-    boot - a software error in VideoCore, which is that monitor bringing the
-    board up against the rtg.library the donor happens to carry. The driver
-    goes on the card; the monitor is left to Picasso96's own installer."""
+class RTGIsInstalledFromItsOwnArchive(unittest.TestCase):
+    """No part of RTG is scavenged from the drive being built on.
 
-    def test_the_package_supplies_no_monitor(self):
-        package = packages.CATALOGUE_BY_KEY["picasso96"]
-        taken = [source for source, _dest in package.download.items]
-        self.assertEqual([t for t in taken if "Monitors" in t], [],
-                         f"a monitor is being supplied again: {taken}")
+    Renaming the *emulator's* Picasso96 monitor made a card that would not
+    boot: a software error in VideoCore, which was that monitor bringing the
+    board up against the rtg.library the donor happened to carry. The lesson
+    was read as "do not supply a monitor", and the result was a feature that
+    worked or did not depending on where the drive came from - build on
+    ClassicWB, which has no monitor to adapt, and the card got VideoCore.card
+    in LIBS: with nothing able to load it.
 
-    def test_the_note_says_where_the_monitor_comes_from(self):
+    The cause was the foreign library, not the monitor. Picasso96 now brings
+    its own API library, monitor and settings from its own archive, and the
+    two have to travel together: a monitor without the library beside it is
+    the original failure.
+    """
+
+    def _taken(self):
         package = packages.CATALOGUE_BY_KEY["picasso96"]
-        self.assertIn("Installer", package.note)
+        return [source for source, _dest in package.download.items]
+
+    def test_the_monitor_never_travels_without_its_library(self):
+        taken = self._taken()
+        monitor = [t for t in taken if t.endswith("Devs/Monitors/Picasso96")]
+        library = [t for t in taken if t.endswith("Picasso96API.library")]
+        self.assertEqual(bool(monitor), bool(library),
+                         "a monitor brings the board up, and it must be the "
+                         "library shipped with it that receives it - not "
+                         f"whatever the drive already had: {taken}")
+
+    def test_everything_it_needs_comes_from_the_archive(self):
+        landed = {dest + "/" + Path(src).name
+                  for src, dest in packages.CATALOGUE_BY_KEY[
+                      "picasso96"].download.items}
+        landed |= {dest + "/" + new for _src, dest, new
+                   in packages.CATALOGUE_BY_KEY["picasso96"].download.rename}
+        for path in ("Libs/Picasso96API.library", "Devs/Monitors/Picasso96",
+                     "Devs/Picasso96Settings"):
+            self.assertIn(path, landed)
+
+    def test_the_note_says_it_is_installed_not_staged(self):
+        package = packages.CATALOGUE_BY_KEY["picasso96"]
+        self.assertIn("Installed", package.note)
+        self.assertIn("Storage/Install", package.note,
+                      "the full archive is still there for the extras")
 
     def test_an_adapted_system_still_has_its_monitor_retargeted(self):
         """A system that already had one is a different case: it is being
@@ -1314,8 +1346,10 @@ class IgameIsToldWhereTheGamesAre(unittest.TestCase):
                                           volume_name=volume)
 
     def written(self, config):
+        """What the first launcher is told to scan."""
         from pistorm_imager.core import builder                # noqa: PLC0415
-        pairs = builder._igame_repositories(config, Progress())
+        pairs = [p for p in builder._igame_instances(config, Progress(), [])
+                 if p[0].endswith("repos.prefs")]
         if not pairs:
             return None
         return Path(pairs[0][0]).read_text()
@@ -1354,8 +1388,8 @@ class IgameIsToldWhereTheGamesAre(unittest.TestCase):
         from pistorm_imager.core import builder                # noqa: PLC0415
         games = self.folder / "g3"
         (games / "WHDLOAD").mkdir(parents=True)
-        pairs = builder._igame_repositories(self.config([
-            self.part("DH1", "Games", str(games))]), Progress())
+        pairs = builder._igame_instances(self.config([
+            self.part("DH1", "Games", str(games))]), Progress(), [])
         self.assertEqual(pairs[0][1], "Programs/iGame")
         self.assertTrue(pairs[0][0].endswith("repos.prefs"))
 
@@ -2323,3 +2357,1175 @@ def _an_icon() -> bytes:
     amigainfo.read_tooltypes(bytes(data))        # it has to parse
     return bytes(data)
 
+
+
+class NewDrawersLookLikeTheDesktopTheyJoin(unittest.TestCase):
+    """A drive being imported brings a desktop that somebody designed.
+
+    ClassicWB's drawers are MagicWB-styled. The drawers this tool adds beside
+    them - Internet/NetSurf, Utilities/SysInfo - were given a stock Workbench
+    3.1 drawer icon, because the only icons on offer came off the floppies, so
+    the software the user chose was the part of the desktop that looked
+    foreign. Reported after a card was written.
+    """
+
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp(prefix="pistorm-drawericon-"))
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
+
+    @staticmethod
+    def _icon(kind: int) -> bytes:
+        """A DiskObject the icon reader accepts, drawer or tool."""
+        import struct                                            # noqa: PLC0415
+        from pistorm_imager.core import amigainfo                # noqa: PLC0415
+        data = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">H", data, 0, amigainfo.MAGIC)
+        struct.pack_into(">H", data, 2, 1)
+        data[amigainfo.TYPE_OFFSET] = kind
+        if kind == amigainfo.WBDRAWER:
+            #  A drawer icon has to carry DrawerData, or it cannot open a
+            #  window and is no use to a drawer.
+            struct.pack_into(">I", data, amigainfo.DRAWER_DATA, 1)
+        return bytes(data) + struct.pack(">I", 4)
+
+    def _reader(self, entries):
+        icon = self._icon
+        class Entry:
+            def __init__(self, name): self.name = name
+        class Reader:
+            def listdir(self, *_a): return [Entry(n) for n in entries]
+            def read_file(self, entry): return entries[entry.name]
+        return Reader()
+
+    def test_the_drives_own_drawer_icons_are_taken(self):
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        entries = {
+            "Utilities": b"", "Utilities.info": self._icon(2),
+            "Internet": b"", "Internet.info": self._icon(2),
+            #  A tool icon is not a drawer icon: opening a drawer with one
+            #  gave "unable to open script" the last time it was tried.
+            "Shell": b"", "Shell.info": self._icon(3),
+            #  An icon whose drawer is not there belongs to something else.
+            "Gone.info": self._icon(2),
+        }
+        into = self.folder / "borrowed"
+        found = amigaos.drawer_icons_from_volume(self._reader(entries), into)
+        self.assertEqual(found, 2)
+        self.assertEqual(sorted(p.name for p in into.iterdir()),
+                         ["Internet.info", "Utilities.info"])
+
+    def test_the_drive_is_preferred_over_the_floppies(self):
+        #  Both offer a "utilities" drawer icon. The one already on the
+        #  desktop has to win, or the new drawers stay the odd ones out.
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        drive = self.folder / "drive"
+        floppy = self.folder / "floppy"
+        drive.mkdir(); floppy.mkdir()
+        mine, theirs = self._icon(2), self._icon(2) + b"\0" * 8
+        (drive / "Utilities.info").write_bytes(mine)
+        (floppy / "Utilities.info").write_bytes(theirs)
+        found = amigaos._drawer_icon_sources([drive, floppy])
+        self.assertEqual(found["utilities"], mine,
+                         "the floppies' icon overwrote the drive's own")
+
+    def test_the_generic_icon_comes_from_the_drive_too(self):
+        #  The whole point, and it did not work: the drive's icons were
+        #  harvested and merged, but the stand-in for a drawer whose name
+        #  matched nothing was chosen by name across all sources - and the
+        #  Workbench floppies contribute one called literally "drawer",
+        #  which beat every name after it. So a MagicWB desktop still got
+        #  plain 3.1 drawers for exactly the software the user chose. Found
+        #  by building a card and comparing the icons byte for byte.
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        drive = self.folder / "drive"
+        floppy = self.folder / "floppy"
+        drive.mkdir(); floppy.mkdir()
+        mine = self._icon(2)
+        (drive / "Utilities.info").write_bytes(mine)
+        (floppy / "drawer.info").write_bytes(self._icon(2) + b"\0" * 8)
+        self.assertEqual(amigaos._generic_drawer_icon([drive, floppy]), mine,
+                         "the floppies' drawer icon won again")
+
+    def test_the_floppies_are_still_there_to_fall_back_on(self):
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        floppy = self.folder / "only-floppy"
+        floppy.mkdir()
+        theirs = self._icon(2) + b"\0" * 8
+        (floppy / "drawer.info").write_bytes(theirs)
+        self.assertEqual(amigaos._generic_drawer_icon([floppy]), theirs)
+        self.assertIsNone(amigaos._generic_drawer_icon([]))
+
+    def test_a_card_with_no_drive_still_gets_icons(self):
+        #  Built from floppies alone there is no drive to copy from, and the
+        #  drawers must still be visible.
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        spec = builder.AmigaPartitionSpec(name="DH0", bootable=True)
+        self.assertIsNone(builder._drawer_icons_from_the_drive(spec, Progress()))
+
+
+class ADistributionsOwnOlderCopyIsReplaced(unittest.TestCase):
+    """A prepared drive can carry the same program under its own name.
+
+    ClassicWB FULL keeps SysInfo 3.24 from 1993 in Tools/SysInfo while the
+    package installs 4.4 into Utilities/SysInfo, and Directory Opus 4.16 in
+    Programs/DirOpus4 beside the package's 4.18.22 in Programs/DirectoryOpus.
+    Both copies landed and only one of each was ever opened, because the
+    displacement that replaces an older copy matches on path and these sit
+    somewhere this build would never write.
+    """
+
+    def _fixer(self):
+        from pistorm_imager.core import compat                   # noqa: PLC0415
+        return compat.Compatibility(Progress())
+
+    def test_the_whole_drawer_goes(self):
+        fixer = self._fixer()
+        fixer.supersede(["Tools/SysInfo"])
+        for path in ("Tools/SysInfo", "Tools/SysInfo/SysInfo",
+                     "Tools/SysInfo/Docs/SysInfo.guide"):
+            self.assertTrue(fixer.skip(path), path)
+
+    def test_it_does_not_reach_past_the_drawer(self):
+        #  The dangerous direction: a prefix match that is not a path
+        #  boundary would take Tools/SysInfoExtra with it.
+        fixer = self._fixer()
+        fixer.supersede(["Tools/SysInfo"])
+        for path in ("Tools/SysInfoExtra/SysInfo", "Tools/Other/SysInfo",
+                     "Utilities/SysInfo/SysInfo", "Tools/SysInfoDocs"):
+            self.assertFalse(fixer.skip(path), path)
+
+    def test_the_newer_copy_this_build_installs_is_untouched(self):
+        #  The point of removing theirs is to leave ours.
+        fixer = self._fixer()
+        fixer.supersede(["Tools/SysInfo"])
+        self.assertFalse(fixer.skip("Utilities/SysInfo/SysInfo"))
+
+    def test_it_is_reported_once_not_once_per_file(self):
+        fixer = self._fixer()
+        fixer.supersede(["Programs/DirOpus4"])
+        for path in ("Programs/DirOpus4/DirectoryOpus",
+                     "Programs/DirOpus4/Docs/a", "Programs/DirOpus4/libs/b"):
+            fixer.skip(path)
+        replaced = [f for f in fixer.fixes if "DirOpus4" in str(f)]
+        self.assertEqual(len(replaced), 1, replaced)
+        self.assertEqual(fixer.superseded_drawers(), ["Programs/DirOpus4"],
+                         "the log should name the drawer as the drive does")
+
+    def test_the_package_still_lands_in_the_drawer_it_emptied(self):
+        #  Read off a written card: "Programs/iGame left out whole" followed
+        #  by "overlay: iGame-v2.6.1/ -> Programs/iGame (0 files)". Removing
+        #  the drive's older copy so the chosen one can take its place then
+        #  refused the chosen one too, because it lands in the very drawer
+        #  being emptied - so the card arrived with a launcher drawer holding
+        #  an icon and nothing else.
+        from pistorm_imager.core import amigaos, compat, pfs3, rdb  # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-supersede3-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        drive = folder / "drive"
+        (drive / "Programs/iGame").mkdir(parents=True)
+        (drive / "Programs/iGame/iGame").write_bytes(b"the drive's old one")
+        ours = folder / "ours"
+        ours.mkdir()
+        (ours / "iGame").write_bytes(b"the one that was chosen")
+
+        image = folder / "out.hdf"
+        size = 16 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            fixer = compat.Compatibility(Progress())
+            fixer.supersede(["Programs/iGame"])
+            amigaos.install_tree(volume, drive, "", Progress(), compat=fixer)
+            #  What the build does between filling the drive and laying the
+            #  packages on top.
+            fixer.stop_displacing()
+            amigaos.install_tree(volume, ours, "Programs/iGame", Progress(),
+                                 compat=fixer, merge=True)
+            volume.close()
+
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            entry = back.find("Programs/iGame/iGame")
+            self.assertIsNotNone(entry, "the chosen copy never landed")
+            self.assertEqual(back.read_file(entry), b"the one that was chosen",
+                             "the drive's older copy is what survived")
+
+    def test_a_drawer_overlay_still_merges(self):
+        #  Superseding is a separate set from displacement for a reason: MUI's
+        #  overlay claims the name System/MUI so a *file* of that name cannot
+        #  block it, and must still merge into ClassicWB's own MUI rather
+        #  than replace it. Making displacement prefix-match would have
+        #  emptied that drawer.
+        fixer = self._fixer()
+        fixer.displace(["System/MUI"])
+        self.assertTrue(fixer.skip("System/MUI"))
+        self.assertFalse(fixer.skip("System/MUI/muimaster.library"),
+                         "the drive's own MUI files must still be copied")
+
+    def test_nothing_is_removed_unless_the_user_said_so(self):
+        #  Nothing about which programs exist is written into the source any
+        #  more: the removals are exactly the answers that came back from the
+        #  lists, and a build with no answers removes nothing.
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/x",
+                                     package_keys=["whdload", "sysinfo"])
+        self.assertEqual(list(config.leave_out), [])
+        asked = dataclasses.replace(config, leave_out=["Tools/SysInfo"])
+        self.assertEqual(list(asked.leave_out), ["Tools/SysInfo"])
+
+    def test_no_package_names_a_drawer_in_the_source(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        for package in packages.CATALOGUE:
+            self.assertFalse(getattr(package, "supersedes", ()),
+                             f"{package.key} still carries a hand-written "
+                             f"list of drawers to remove")
+
+    def test_the_drawer_and_its_icon_really_go(self):
+        #  The unit test asked skip() about files and passed while a card was
+        #  built with an empty Tools/SysInfo whose icon was still on the
+        #  desktop: copy_volume creates a drawer without consulting skip at
+        #  all, and Tools/SysInfo.info is not inside Tools/SysInfo. Both were
+        #  found by reading the finished card, so this copies a real volume.
+        from pistorm_imager.core import amigaos, compat, rdb     # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-supersede-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        drive = folder / "drive"
+        for path in ("Tools/SysInfo/Docs", "Tools/SysInfoExtra", "System/MUI"):
+            (drive / path).mkdir(parents=True)
+        (drive / "Tools/SysInfo/SysInfo").write_bytes(b"old")
+        (drive / "Tools/SysInfo/Docs/guide").write_bytes(b"old")
+        (drive / "Tools/SysInfo.info").write_bytes(b"icon")
+        (drive / "Tools/SysInfoExtra/keep").write_bytes(b"keep")
+        (drive / "System/MUI/muimaster.library").write_bytes(b"keep")
+
+        image = folder / "out.hdf"
+        size = 16 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            fixer = compat.Compatibility(Progress())
+            fixer.supersede(["Tools/SysInfo"])
+            #  A drawer overlay claims its destination the other way, and
+            #  that must not stop the drive's own MUI being copied.
+            fixer.displace(["System/MUI"])
+            amigaos.install_tree(volume, drive, "", Progress(), compat=fixer)
+            volume.close()
+
+        from pistorm_imager.core import pfs3                     # noqa: PLC0415
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            def there(path):
+                return back.find(path) is not None
+            self.assertFalse(there("Tools/SysInfo"),
+                             "the drawer itself was still created")
+            self.assertFalse(there("Tools/SysInfo.info"),
+                             "its icon was left on the desktop, opening an "
+                             "empty window")
+            self.assertFalse(there("Tools/SysInfo/SysInfo"))
+            self.assertTrue(there("Tools/SysInfoExtra/keep"),
+                            "a drawer with a longer name was taken too")
+            self.assertTrue(there("System/MUI/muimaster.library"),
+                            "a displaced drawer must still be merged into")
+
+    def test_the_same_through_the_path_a_real_build_uses(self):
+        #  A boot drive filled from an .hdf goes through copy_volume, not
+        #  install_tree, and that is the path the card was built by. Testing
+        #  only the other one is how this shipped.
+        from pistorm_imager.core import amigaos, compat, pfs3, rdb  # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-supersede2-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        drive = folder / "drive"
+        (drive / "Tools/SysInfo/Docs").mkdir(parents=True)
+        (drive / "Tools/SysInfoExtra").mkdir(parents=True)
+        (drive / "Tools/SysInfo/SysInfo").write_bytes(b"old")
+        (drive / "Tools/SysInfo/Docs/guide").write_bytes(b"old")
+        (drive / "Tools/SysInfo.info").write_bytes(b"icon")
+        (drive / "Tools/SysInfoExtra/keep").write_bytes(b"keep")
+
+        size = 16 * 1024 * 1024
+        source_image = folder / "source.hdf"
+        with open(source_image, "wb") as handle:
+            handle.truncate(size)
+        with open(source_image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Source",
+                                         rdb.DOSTYPE_PFS3)
+            amigaos.install_tree(volume, drive, "", Progress())
+            volume.close()
+
+        target_image = folder / "target.hdf"
+        with open(target_image, "wb") as handle:
+            handle.truncate(size)
+        with open(source_image, "rb") as src, open(target_image, "r+b") as dst:
+            reader = pfs3.Pfs3Volume(src, 0)
+            volume = amigaos.make_volume(dst, 0, size // 512, "Target",
+                                         rdb.DOSTYPE_PFS3)
+            fixer = compat.Compatibility(Progress())
+            fixer.supersede(["Tools/SysInfo"])
+            amigaos.copy_volume(reader, volume, "", Progress(),
+                                skip_existing=False, compat=fixer)
+            volume.close()
+
+        with open(target_image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            self.assertIsNone(back.find("Tools/SysInfo"))
+            self.assertIsNone(back.find("Tools/SysInfo.info"))
+            self.assertIsNone(back.find("Tools/SysInfo/Docs/guide"))
+            self.assertIsNotNone(back.find("Tools/SysInfoExtra/keep"))
+
+
+class AHIIsInstalledNotStaged(unittest.TestCase):
+    """AHI is a device driver, so it has to be in DEVS: to be any use."""
+
+    def setUp(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        self.packages = packages
+        self.ahi = packages.CATALOGUE_BY_KEY["ahi"]
+
+    def _lands(self):
+        out = {}
+        for inside, dest in self.ahi.download.items:
+            out[f"{dest}/{Path(inside).name}"] = inside
+        for inside, dest, new in self.ahi.download.rename:
+            out[f"{dest}/{new}"] = inside
+        return out
+
+    def test_the_device_and_its_driver_reach_devs(self):
+        landed = self._lands()
+        for path in ("Devs/ahi.device", "Devs/AHI/paula.audio",
+                     "Devs/AudioModes/PAULA"):
+            self.assertIn(path, landed)
+
+    def test_the_prefs_program_lands_under_the_name_its_icon_uses(self):
+        #  The archive holds AHI_MUI and AHI_BGUI side by side, and the icon
+        #  is called AHI.info - so whichever is chosen has to be renamed or
+        #  the icon points at nothing.
+        landed = self._lands()
+        self.assertIn("Prefs/AHI", landed)
+        self.assertIn("Prefs/AHI.info", landed)
+        self.assertTrue(landed["Prefs/AHI"].endswith("AHI_MUI"),
+                        landed["Prefs/AHI"])
+
+    def test_the_audio_handler_ships_with_its_mountlist(self):
+        #  ClassicWB's Startup-Sequence runs
+        #  "C:Mount >NIL: DEVS:DOSDrivers/~(#?.info)", so a DOSDriver whose
+        #  handler is missing is an error requester on every boot.
+        landed = self._lands()
+        if "Devs/DOSDrivers/AUDIO" in landed:
+            self.assertIn("L/AHI-Handler", landed,
+                          "AUDIO: is mounted at boot and needs its handler")
+
+    def test_the_prefs_dependency_is_declared(self):
+        #  AHI Prefs is a MUI program. The BGUI alternative would avoid that
+        #  and brings a bgui.library carrying floating point instructions,
+        #  which on a PiStorm's FPU-less 68040 is guru 8000000B.
+        self.assertIn("mui", self.packages.expand(["ahi"]))
+
+    def test_no_floating_point_reaches_this_machine(self):
+        #  The rule for any package shipping a binary: count F-line opcodes,
+        #  which are the first word of an FPU instruction.
+        import struct                                             # noqa: PLC0415
+        cache = self.packages.cache_dir() / "ahiusr_4.18.unpacked"
+        if not cache.is_dir():
+            self.skipTest("the AHI archive is not unpacked on this machine")
+        checked = 0
+        for inside, _dest in self.ahi.download.items:
+            path = cache / inside
+            if not path.is_file() or path.suffix in (".info", ".guide"):
+                continue
+            data = path.read_bytes()
+            if data[:4] != b"\x00\x00\x03\xf3":
+                continue                      # not an executable
+            checked += 1
+            fpu = sum(1 for i in range(0, len(data) - 1, 2)
+                      if 0xF200 <= struct.unpack_from(">H", data, i)[0]
+                      <= 0xF23F)
+            with self.subTest(file=inside):
+                self.assertEqual(fpu, 0,
+                                 f"{inside} has {fpu} floating point "
+                                 f"instruction(s); a PiStorm has no FPU")
+        self.assertTrue(checked, "no AHI binaries were checked")
+
+
+class SoftwareTheDriveArrivesWithCanBeLeftOut(unittest.TestCase):
+    """A ready-made distribution has its own idea of what belongs on a card.
+
+    ClassicWB FULL carries thirty programs in Programs alone, some obsolete,
+    some unfinished, some simply not to taste - and the only choice was all
+    of it or none. The exclusion chooser that already existed was built for a
+    games drive indexed by letter, and asked of a system drive it returned
+    fifty-one groups with nothing in them.
+    """
+
+    def _reader(self, tree):
+        class Entry:
+            def __init__(self, name, is_dir):
+                self.name, self.is_dir = name, is_dir
+                self.anode = self.block = hash(name) & 0xFFFF
+        class Reader:
+            def listdir(self, where=None):
+                if where is None:
+                    return [Entry(n, True) for n in tree]
+                for name, kids in tree.items():
+                    if (hash(name) & 0xFFFF) == where:
+                        return [Entry(k, d) for k, d in kids]
+                return []
+        return Reader()
+
+    def test_only_the_drawers_software_lives_in_are_offered(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.installed_programs(self._reader({
+            "Programs": [("FinalWriter", True), ("ReadMe", False)],
+            "WBGames": [("Boum", True)],
+            #  Not offered: these hold Workbench's own commands, and a list
+            #  offering to delete Tools/Commodities is a trap.
+            "Tools": [("Commodities", True)],
+            "Utilities": [("Catalogs", True)],
+            "Libs": [("mui", True)],
+            #  On a system drive these are the letter drawers a distribution
+            #  makes for a games partition, not games.
+            "Games": [("A", True), ("B", True)],
+        }))
+        self.assertEqual(found, [("Programs", "FinalWriter"),
+                                 ("WBGames", "Boum")])
+
+    def test_a_loose_file_is_not_offered(self):
+        #  Only drawers: removing one command out of Programs is not worth a
+        #  list sixty rows long.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.installed_programs(self._reader({
+            "Programs": [("Find", True), ("Find.info", False)]}))
+        self.assertEqual(found, [("Programs", "Find")])
+
+    def test_what_was_unticked_is_left_out_whatever_else_is_set(self):
+        #  Replacing an older copy is governed by a switch; leaving software
+        #  out is not - it was asked for by name.
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        for replace in (True, False):
+            config = builder.BuildConfig(
+                target="/tmp/x", replace_older_software=replace,
+                leave_out=["Programs/FinalWriter"])
+            self.assertIn("Programs/FinalWriter", config.leave_out)
+
+    def test_it_goes_by_the_route_that_takes_the_icon_too(self):
+        #  The same rule that removes a superseded drawer, so the drawer, its
+        #  contents and its .info all go - a leftover icon opening an empty
+        #  window is what that rule was fixed for.
+        from pistorm_imager.core import compat                   # noqa: PLC0415
+        fixer = compat.Compatibility(Progress())
+        fixer.supersede(["Programs/FinalWriter"])
+        for path in ("Programs/FinalWriter",
+                     "Programs/FinalWriter/FinalWriter",
+                     "Programs/FinalWriter.info"):
+            self.assertTrue(fixer.skip(path), path)
+        self.assertTrue(fixer.skip_drawer("Programs/FinalWriter"))
+        self.assertFalse(fixer.skip("Programs/FinalWriterPro/x"))
+
+    def test_the_real_distribution_offers_what_it_should(self):
+        from pistorm_imager.core import amigaos, content         # noqa: PLC0415
+        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if not image.exists():
+            self.skipTest("ClassicWB FULL is not on this machine")
+        reader, _label = amigaos.open_amiga_volume(str(image), "")
+        try:
+            found = content.installed_programs(reader)
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                    # noqa: BLE001
+                pass
+        drawers = {drawer for drawer, _name in found}
+        self.assertEqual(drawers, {"Programs", "WBGames"})
+        names = {name for _drawer, name in found}
+        self.assertIn("FinalWriter", names)
+        self.assertIn("Boum", names)
+        for never in ("Commodities", "Catalogs", "A", "B"):
+            self.assertNotIn(never, names)
+
+
+class SoftwareThatCannotWorkIsFlagged(unittest.TestCase):
+    """A distribution carries software written for the machine it was built on.
+
+    ClassicWB's FMSsys is the example the user named: MountFMS does
+    "assign FMS: A-Programs:FMSsys" and "mount FF0:", and a card built here
+    has neither an A-Programs: volume nor a DEVS:DOSDrivers/FF0. So it asks
+    a question, fails, and nothing says why. Only what can be shown from the
+    files counts - a binary for another processor, a device that will not be
+    there, a volume that will not exist.
+    """
+
+    def _reader(self, files):
+        """A volume made of the paths given, with drawers implied by them."""
+        dirs = set()
+        for path in files:
+            parts = path.split("/")
+            for depth in range(1, len(parts)):
+                dirs.add("/".join(parts[:depth]))
+
+        class Entry:
+            def __init__(self, path, is_dir):
+                self.path, self.name = path, path.rpartition("/")[2]
+                self.is_dir = is_dir
+                self.anode = self.block = abs(hash(path)) & 0xFFFFFF
+
+        by_locator = {}
+        def entry(path, is_dir):
+            made = Entry(path, is_dir)
+            by_locator[made.anode] = path
+            return made
+
+        class Reader:
+            def listdir(self, where=None):
+                parent = "" if where is None else by_locator.get(where, "\0")
+                out = []
+                for path in sorted(dirs | set(files)):
+                    head, _, tail = path.rpartition("/")
+                    if head == parent and tail:
+                        out.append(entry(path, path in dirs))
+                return out
+            def find(self, path):
+                if path in dirs: return entry(path, True)
+                if path in files: return entry(path, False)
+                return None
+            def read_file(self, e):
+                return files.get(getattr(e, "path", ""), b"")
+        return Reader()
+
+    def _drive(self, script):
+        return self._reader({"Programs/Thing/DoIt": script})
+
+    def test_a_missing_device_is_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.cannot_work(self._drive(b"mount FF0:\n"),
+                                    volumes=["sys"], dosdrivers=["AUDIO"])
+        self.assertEqual(len(found), 1)
+        self.assertIn("FF0", found[0].reasons[0])
+
+    def test_a_device_that_is_there_is_not_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        self.assertEqual(content.cannot_work(self._drive(b"mount FF0:\n"),
+                                             volumes=["sys"],
+                                             dosdrivers=["FF0"]), [])
+
+    def test_a_missing_volume_is_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.cannot_work(
+            self._drive(b"assign FMS: A-Programs:FMSsys\n"),
+            volumes=["sys", "games"], dosdrivers=[])
+        self.assertEqual(len(found), 1)
+        self.assertIn("A-Programs", found[0].reasons[0])
+
+    def test_a_volume_this_card_will_have_is_not_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        self.assertEqual(content.cannot_work(
+            self._drive(b"assign X: Games:stuff\n"),
+            volumes=["sys", "games"], dosdrivers=[]), [])
+
+    def test_a_binary_for_another_processor_is_reported(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.cannot_work(self._drive(b"\x7fELF and the rest"),
+                                    volumes=["sys"], dosdrivers=[])
+        self.assertEqual(len(found), 1)
+        self.assertIn("another processor", found[0].reasons[0])
+
+    def test_documentation_is_not_evidence(self):
+        #  A guide explaining how to mount PC: is not a script that tries to,
+        #  and quoting one is how a check like this stops being believed.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        reader = self._reader(
+            {"Programs/Thing/Notes.guide": b"you can mount PC: like so"})
+        self.assertEqual(content.cannot_work(reader, ["sys"], []), [])
+
+    def test_a_programs_own_binary_is_left_alone(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        reader = self._reader(
+            {"Programs/Thing/Thing": b"\x00\x00\x03\xf3 a 68k program"})
+        self.assertEqual(content.cannot_work(reader, ["sys"], []), [])
+
+    def test_the_drives_own_assigns_count_as_volumes(self):
+        #  A distribution makes its own assigns; calling those missing would
+        #  condemn most of what it ships.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        class Reader:
+            def find(self, path):
+                class E: name, is_dir = path, False
+                return E() if path == "S/User-Startup" else None
+            def read_file(self, _e):
+                return b"Assign >NIL: A-Programs: SYS:Programs\n"
+            def listdir(self, where=None): return []
+        found = content.volumes_on_the_card(Reader(), ["DH0", "Games"])
+        self.assertIn("a-programs", found)
+        self.assertIn("games", found)
+        self.assertIn("sys", found)
+
+    def test_assigns_made_by_a_script_the_startup_runs_are_seen(self):
+        #  ClassicWB's User-Startup does "Execute S:Assign-Startup", and that
+        #  is where A-Programs:, A-Games: and the rest are made. Reading only
+        #  the two obvious files said those volumes did not exist, and called
+        #  perfectly good software broken.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        pages = {
+            "S/User-Startup": b"Execute S:Assign-Startup\n",
+            "S/Assign-Startup": b"Assign >NIL: A-Programs: SYS:Programs\n",
+        }
+        class Entry:
+            def __init__(self, name): self.name, self.is_dir = name, False
+        class Reader:
+            def find(self, path):
+                return Entry(path) if path in pages else None
+            def read_file(self, e): return pages[e.name]
+            def listdir(self, _where=None): return []
+        found = content.volumes_on_the_card(Reader(), ["DH0"])
+        self.assertIn("a-programs", found)
+
+    def test_a_script_running_itself_does_not_hang(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        class Entry:
+            def __init__(self, name): self.name, self.is_dir = name, False
+        class Reader:
+            def find(self, path):
+                return Entry(path) if path.startswith("S/") else None
+            def read_file(self, _e): return b"Execute S:User-Startup\n"
+            def listdir(self, _where=None): return []
+        self.assertIn("sys", content.volumes_on_the_card(Reader(), []))
+
+    def test_it_finds_what_the_user_pointed_at(self):
+        from pistorm_imager.core import amigaos, content          # noqa: PLC0415
+        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if not image.exists():
+            self.skipTest("ClassicWB FULL is not on this machine")
+        reader, _label = amigaos.open_amiga_volume(str(image), "")
+        try:
+            volumes = content.volumes_on_the_card(
+                reader, ["DH0", "Games", "Demos", "Work"])
+            entry = reader.find("Devs/DOSDrivers")
+            drivers = ([e.name for e in reader.listdir(content._locator(entry))]
+                       if entry is not None else [])
+            found = content.cannot_work(reader, volumes, drivers)
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                     # noqa: BLE001
+                pass
+        drawers = {b.drawer for b in found}
+        self.assertIn("Programs/FMSsys", drawers)
+        #  And it stays quiet about the thirty-five that are fine.
+        self.assertLess(len(drawers), 6, f"too eager: {sorted(drawers)}")
+
+
+
+class AnIconsToolHasToBeFindable(unittest.TestCase):
+    """Workbench runs the tool an icon names, and does not search for it.
+
+    ClassicWB's def_project.info - the icon every file falls back on - names
+    simply "MultiView", with no path. Double-clicking a file found nothing,
+    while def_view.info beside it says SYS:Utilities/MultiView and works.
+    Reported as "MultiView is installed, but no app can find it".
+    """
+
+    def _icon(self, tool):
+        from pistorm_imager.core import amigainfo                # noqa: PLC0415
+        import struct                                            # noqa: PLC0415
+        data = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">H", data, 0, amigainfo.MAGIC)
+        struct.pack_into(">H", data, 2, 1)
+        data[amigainfo.TYPE_OFFSET] = 4                          # a project
+        blank = bytes(data) + struct.pack(">I", 4)
+        return amigainfo.set_default_tool(blank, tool)
+
+    def _fixer(self, programs):
+        from pistorm_imager.core import compat                   # noqa: PLC0415
+        fixer = compat.Compatibility(Progress())
+        fixer.knows_where(programs)
+        return fixer
+
+    def test_a_bare_tool_is_given_its_path(self):
+        from pistorm_imager.core import amigainfo                # noqa: PLC0415
+        fixer = self._fixer({"multiview": "SYS:Utilities/MultiView"})
+        fixed = fixer.offer("Prefs/Env-Archive/Sys/def_project.info",
+                            self._icon("MultiView"))
+        self.assertEqual(amigainfo.read_default_tool(fixed),
+                         "SYS:Utilities/MultiView")
+
+    def test_a_tool_that_already_has_one_is_left_alone(self):
+        fixer = self._fixer({"multiview": "SYS:Utilities/MultiView"})
+        icon = self._icon("SYS:Utilities/MultiView")
+        self.assertEqual(fixer.offer("Prefs/Env-Archive/Sys/def_view.info",
+                                     icon), icon)
+
+    def test_a_name_nothing_answers_to_is_left_alone(self):
+        #  Guessing at a path is worse than leaving it as it was.
+        fixer = self._fixer({"multiview": "SYS:Utilities/MultiView"})
+        icon = self._icon("SomethingElse")
+        self.assertEqual(fixer.offer("Prefs/Env-Archive/Sys/def_x.info",
+                                     icon), icon)
+
+    def test_only_default_icons_are_touched(self):
+        fixer = self._fixer({"multiview": "SYS:Utilities/MultiView"})
+        icon = self._icon("MultiView")
+        self.assertEqual(fixer.offer("Utilities/Something.info", icon), icon)
+
+    def test_an_icon_with_no_program_beside_it_still_says_where(self):
+        #  ClassicWB's Utilities holds MultiView.info and no MultiView: it
+        #  expects the Workbench floppies to supply one, and this build does
+        #  - but only after these icons have been copied.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        class Entry:
+            def __init__(self, name, is_dir=False):
+                self.name, self.is_dir = name, is_dir
+                self.anode = self.block = abs(hash(name)) & 0xFFFF
+        class Reader:
+            def find(self, path):
+                return Entry(path, True) if path == "Utilities" else None
+            def listdir(self, _where=None):
+                return [Entry("MultiView.info"), Entry("Clock.info"),
+                        Entry("Say")]
+        found = content.programs_by_name(Reader())
+        self.assertEqual(found["multiview"], "SYS:Utilities/MultiView")
+        self.assertEqual(found["say"], "SYS:Utilities/Say")
+
+    def test_the_real_distribution_is_repaired(self):
+        from pistorm_imager.core import amigaos, amigainfo, content  # noqa: PLC0415
+        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if not image.exists():
+            self.skipTest("ClassicWB FULL is not on this machine")
+        reader, _label = amigaos.open_amiga_volume(str(image), "")
+        try:
+            fixer = self._fixer(content.programs_by_name(reader))
+            entry = reader.find("Prefs/Env-Archive/Sys/def_project.info")
+            before = reader.read_file(entry)
+            self.assertEqual(amigainfo.read_default_tool(before), "MultiView")
+            after = fixer.offer("Prefs/Env-Archive/Sys/def_project.info",
+                                before)
+            self.assertEqual(amigainfo.read_default_tool(after),
+                             "SYS:Utilities/MultiView")
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                     # noqa: BLE001
+                pass
+
+
+class TheDaemonGoesInWBStartupNotTheEditor(unittest.TestCase):
+    """FullPalette's two programs are the other way round from how they read.
+
+    The archive's own installer says it: "FPPrefs (the FullPalette daemon
+    that is run in the Startup-sequence)". FullPalette is the *editor* - its
+    strings are Palette Preferences, Load, Save - and it was the one going
+    into WBStartup, so the palette editor opened on every single boot.
+    """
+
+    def _lands(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        download = packages.CATALOGUE_BY_KEY["fullpalette"].download
+        out = {f"{dest}/{Path(inside).name}": inside
+               for inside, dest in download.items}
+        out.update({f"{dest}/{new}": inside
+                    for inside, dest, new in download.rename})
+        return out
+
+    def test_the_daemon_is_what_starts_at_boot(self):
+        landed = self._lands()
+        self.assertIn("WBStartup/FPPrefs", landed)
+        self.assertNotIn("WBStartup/FullPalette", landed,
+                         "the editor was going into WBStartup again")
+
+    def test_the_editor_goes_where_editors_go(self):
+        landed = self._lands()
+        self.assertIn("Prefs/FullPalette", landed)
+        self.assertIn("Prefs/FullPalette.info", landed)
+
+    def test_the_daemon_has_an_icon_or_it_never_runs(self):
+        landed = self._lands()
+        self.assertIn("WBStartup/FPPrefs.info", landed)
+
+
+class TheADFHelperIsClickable(unittest.TestCase):
+    """The archive ships no Workbench front end at all.
+
+    Its own scripts want a Shell and a filename, and the author's suggestion
+    was to drive them from ToolsDaemon or DOpus. So this package writes a
+    small script of its own that asks for the file with RequestFile, and
+    borrows an icon from the archive to make it double-clickable.
+    """
+
+    def test_the_helper_is_clickable_and_named_for_its_icon(self):
+        #  Workbench pairs a file with the icon of the same name plus .info.
+        #  A script called MountADF beside an icon called anything else is
+        #  two things that do nothing, and nothing says so.
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        adf = packages.CATALOGUE_BY_KEY["adfdevice"].download
+        written = {name: dest for name, dest, _text in adf.write}
+        self.assertIn("MountADF", written)
+        for _inside, dest, icon, tool in adf.retool:
+            self.assertEqual(icon, "MountADF.info")
+            self.assertEqual(dest, written["MountADF"],
+                             "the icon has to land in the same drawer")
+            self.assertEqual(tool, "IconX",
+                             "IconX is what runs a script from Workbench")
+
+    def test_the_helper_hands_over_to_the_archives_own_script(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        adf = packages.CATALOGUE_BY_KEY["adfdevice"]
+        text = next(t for n, _d, t in adf.download.write if n == "MountADF")
+        self.assertIn(".key NAME/F", text.splitlines()[0],
+                      "without a .key line <NAME> is never substituted")
+        self.assertIn("RequestFile", text)
+        target = "SYS:Utilities/ADF_Device/Insert.script"
+        self.assertIn(target, text)
+        landed = {f"{dest}/{Path(src).name}"
+                  for src, dest in adf.download.items}
+        self.assertIn(target.removeprefix("SYS:"), landed,
+                      "the script it calls has to be one this package installs")
+
+    def test_a_retooled_icon_keeps_working_as_an_icon(self):
+        #  Rewriting the DefaultTool moves everything after it. Getting that
+        #  wrong leaves an icon Workbench cannot read, which looks exactly
+        #  like the file having no icon at all.
+        from pistorm_imager.core import amigainfo, packages       # noqa: PLC0415
+        cache = packages.cache_dir() / "ADF_Device.unpacked"
+        if not cache.is_dir():
+            self.skipTest("the ADF Device archive is not unpacked here")
+        source = cache / "ADF_Device_v1.3/ADF_Device.guide.info"
+        original = source.read_bytes()
+        before = amigainfo.read_tooltypes(original)
+        after = amigainfo.set_default_tool(original, "IconX")
+        self.assertEqual(amigainfo.read_default_tool(after), "IconX")
+        self.assertEqual(amigainfo.read_tooltypes(after), before,
+                         "the tool types moved or were lost")
+
+    def test_setting_the_tool_twice_does_not_grow_the_icon(self):
+        from pistorm_imager.core import amigainfo, packages       # noqa: PLC0415
+        cache = packages.cache_dir() / "ADF_Device.unpacked"
+        if not cache.is_dir():
+            self.skipTest("the ADF Device archive is not unpacked here")
+        data = (cache / "ADF_Device_v1.3/ADF_Device.guide.info").read_bytes()
+        once = amigainfo.set_default_tool(data, "IconX")
+        twice = amigainfo.set_default_tool(once, "IconX")
+        self.assertEqual(once, twice)
+
+    def test_an_icon_it_cannot_read_is_left_out_not_mangled(self):
+        from pistorm_imager.core import amigainfo                 # noqa: PLC0415
+        with self.assertRaises(amigainfo.InfoError):
+            amigainfo.set_default_tool(b"\x89PNG\r\n\x1a\n" + b"\0" * 200,
+                                       "IconX")
+
+
+class OlderCopiesAreDiscoveredNotDeclared(unittest.TestCase):
+    """Which programs exist is never written into this source.
+
+    The candidates used to be a curated tuple on each package - two entries,
+    checked by hand against ClassicWB FULL v28 and correct for nothing else.
+    Build on another distribution and the feature found nothing and said
+    nothing, which is the shape of failure this project keeps meeting.
+
+    The names now come from the archives the chosen packages install, and the
+    drive is searched for them.
+    """
+
+    def test_the_names_come_from_the_archives(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        wanted, filling = packages.principal_programs(["sysinfo"])
+        if not wanted:
+            self.skipTest("the SysInfo archive is not cached on this machine")
+        self.assertIn("sysinfo", wanted)
+        key, label, version = wanted["sysinfo"]
+        self.assertEqual(key, "sysinfo")
+        self.assertIsNotNone(version, "its own version has to be readable")
+        self.assertTrue(filling)
+
+    def test_only_principal_programs_are_matched(self):
+        #  Matching every file inside a package's tree made a PFS3 tool in
+        #  MyFiles look like a duplicate of something buried in Visage, and
+        #  the version comparison made it look certain.
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        wanted, _filling = packages.principal_programs(["visage"])
+        if not wanted:
+            self.skipTest("the Visage archive is not cached on this machine")
+        self.assertIn("visage", wanted)
+        self.assertLess(len(wanted), 8,
+                        f"too many names to match safely: {sorted(wanted)}")
+
+    def _reader(self, files):
+        class Entry:
+            def __init__(self, name):
+                self.name, self.is_dir = name, False
+        class Reader:
+            def walk(self):
+                return [(path, Entry(path.rpartition("/")[2]))
+                        for path in files]
+            def read_file(self, entry):
+                return files[[p for p in files
+                              if p.endswith("/" + entry.name)][0]]
+        return Reader()
+
+    def test_ours_has_to_be_provably_newer_to_be_offered(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        older = b"\x00\x00\x03\xf3$VER: Thing 1.2 (1993)"
+        same = b"\x00\x00\x03\xf3$VER: Thing 4.4 (2020)"
+        for body, certain in ((older, True), (same, False)):
+            with self.subTest(certain=certain):
+                found = content.find_duplicates(
+                    self._reader({"Programs/Thing/Thing": body}),
+                    {"thing": ("pkg", "Thing", (4, 4))})
+                self.assertEqual(len(found), 1)
+                self.assertEqual(found[0].certain, certain)
+
+    def test_a_copy_with_no_readable_version_is_not_offered(self):
+        #  Removing a drawer whole on a name match alone is how ClassicWB's
+        #  System/FBlit - the same build as the package, plus an FBlitGUI it
+        #  does not ship - would be taken away.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        found = content.find_duplicates(
+            self._reader({"Programs/Thing/Thing": b"\x00\x00\x03\xf3no version"}),
+            {"thing": ("pkg", "Thing", (4, 4))})
+        self.assertEqual(found, [])
+
+    def test_a_system_drawer_is_never_the_thing_removed(self):
+        #  Reachable only where a program shares its name with the drawer it
+        #  sits in - a file called "Tools" inside Tools - but that is exactly
+        #  the case where the naming rule would say yes and the answer is no.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        body = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        for drawer in ("C", "Libs", "S", "Tools", "Devs", "WBStartup"):
+            with self.subTest(drawer=drawer):
+                self.assertEqual(
+                    content.find_duplicates(
+                        self._reader({f"{drawer}/{drawer}": body}),
+                        {drawer.lower(): ("p", drawer, (4, 4))}),
+                    [], f"{drawer} would have been removed whole")
+
+    def test_a_drawer_this_build_fills_is_never_offered(self):
+        #  Our MUI overlay merges into the drive's own System/MUI, so every
+        #  class in it matches by name and none of them is a duplicate.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        body = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        files = {"System/MUI/Thing/Thing": body}
+        self.assertEqual(
+            content.find_duplicates(self._reader(files),
+                                    {"thing": ("p", "Thing", (4, 4))},
+                                    filling=["System/MUI"]), [])
+        self.assertEqual(len(content.find_duplicates(
+            self._reader(files), {"thing": ("p", "Thing", (4, 4))})), 1)
+
+    def test_one_row_per_drawer(self):
+        #  A drawer named for one program can still hold others the packages
+        #  install; the drawer is what goes, so it is named once.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        old = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        found = content.find_duplicates(
+            self._reader({"Programs/Thing/Thing": old,
+                          "Programs/Thing/Other": old}),
+            {"thing": ("p", "Thing", (4, 4)), "other": ("p", "Other", (4, 4))})
+        self.assertEqual([d.drawer for d in found], ["Programs/Thing"])
+
+    def test_the_drawer_has_to_be_named_for_the_program(self):
+        #  What goes is the whole drawer, so a program sitting inside
+        #  somebody else's is not a duplicate of anything. Without this the
+        #  search offered to delete Programs/DiskSalv, because Picasso96
+        #  ships an "Installer" and DiskSalv's drawer has one too - and
+        #  Tools/Commodities, holding Exchange, Blanker and CrossDOS,
+        #  because Commodore's ClickToFront commodity lives in it.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        old = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        offered = content.find_duplicates(
+            self._reader({"Programs/Thing/Thing": old}),
+            {"thing": ("p", "Thing", (4, 4))})
+        self.assertEqual([d.drawer for d in offered], ["Programs/Thing"])
+        for elsewhere in ("Programs/DiskSalv/Thing",
+                          "Tools/Commodities/Thing",
+                          "Programs/Other/Sub/Thing"):
+            with self.subTest(where=elsewhere):
+                self.assertEqual(
+                    content.find_duplicates(self._reader({elsewhere: old}),
+                                            {"thing": ("p", "Thing", (4, 4))}),
+                    [], f"{elsewhere} is not a drawer about Thing")
+
+    def test_a_newer_copy_on_the_drive_is_never_offered_by_default(self):
+        #  ClassicWB's Scalos is 39.222 against the package's 39.218, so
+        #  removing it would be a downgrade.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        newer = b"\x00\x00\x03\xf3$VER: Thing 9.9 (2020)"
+        found = content.find_duplicates(
+            self._reader({"Programs/Thing/Thing": newer}),
+            {"thing": ("p", "Thing", (4, 4))})
+        self.assertEqual(len(found), 1)
+        self.assertFalse(found[0].certain)
+        self.assertGreater(found[0].theirs, found[0].ours)
+
+    def test_it_finds_what_the_hand_written_list_used_to(self):
+        #  The real check: discovery on the real distribution must reach the
+        #  same answer the curated entry did, and no more.
+        from pistorm_imager.core import amigaos, content, packages  # noqa: PLC0415
+        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if not image.exists():
+            self.skipTest("ClassicWB FULL is not on this machine")
+        wanted, filling = packages.principal_programs(
+            ["sysinfo", "fblit", "ftext", "freewheel", "visage", "whdload"])
+        if not wanted:
+            self.skipTest("the archives are not cached on this machine")
+        reader, _label = amigaos.open_amiga_volume(str(image), "")
+        try:
+            found = content.find_duplicates(reader, wanted, filling)
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                    # noqa: BLE001
+                pass
+        offered = [d.drawer for d in found if d.certain]
+        self.assertIn("Tools/SysInfo", offered)
+        #  And the ones a name match would have got wrong stay out.
+        self.assertNotIn("System/FBlit", [d.drawer for d in found])
+        self.assertNotIn("System/FWheel", [d.drawer for d in found])
+
+
+class NothingShipsABinaryThisMachineCannotRun(unittest.TestCase):
+    """AmigaOS 3.1 loads HUNK executables. It cannot load ELF.
+
+    Directory Opus 4 was in the catalogue for a long time as Aminet's
+    DirectoryOpus-4.18.22.lha, which is listed "Architecture:
+    ppc-amigaos >= 4.0.0" - the AmigaOS 4 PowerPC port. Its DirectoryOpus
+    binary begins \\x7fELF, so it was written to every card and could never
+    have started, and the entry that replaced ClassicWB's own working 68k
+    4.16 with it made the card worse than leaving it alone.
+
+    Nothing on Aminet carries a 68k build of Opus 4: what is there is the
+    MorphOS port, the GPL source, catalogs and the manual. So the package is
+    gone rather than pointed somewhere hopeful.
+    """
+
+    def test_directory_opus_is_not_offered(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        self.assertNotIn("diropus4", packages.CATALOGUE_BY_KEY)
+
+    def test_no_elf_binary_reaches_the_card(self):
+        #  Archives ship OS4, MorphOS and AROS builds beside the 68k one -
+        #  iGame carries iGame.OS4 and iGame.MOS - so the question is not
+        #  whether one is in the archive but whether it lands. Every one
+        #  found among the files a package installs must be refused by the
+        #  compatibility pass.
+        from pistorm_imager.core import compat, packages          # noqa: PLC0415
+        from pistorm_imager.core.util import Progress             # noqa: PLC0415
+        cache = packages.cache_dir()
+        fixer = compat.Compatibility(Progress())
+        checked = elves = 0
+        for package in packages.CATALOGUE:
+            url = getattr(package.download, "url", "") or ""
+            stem = Path(url).name
+            for suffix in (".lha", ".zip", ".run", ".tar.gz"):
+                stem = stem.removesuffix(suffix)
+            if not stem or not (cache / f"{stem}.unpacked").is_dir():
+                continue                    # not fetched on this machine
+            for source, dest in packages.overlays_for([package.key],
+                                                      progress=Progress()):
+                path = Path(source)
+                files = ([path] if path.is_file()
+                         else [c for c in path.rglob("*") if c.is_file()])
+                for item in files:
+                    try:
+                        data = item.read_bytes()
+                    except OSError:
+                        continue
+                    checked += 1
+                    if data[:4] != b"\x7fELF":
+                        continue
+                    elves += 1
+                    landed = f"{dest}/{item.name}"
+                    fixer.offer(landed, data)
+                    with self.subTest(package=package.key, file=item.name):
+                        self.assertTrue(
+                            fixer.skip(landed),
+                            f"{package.key} would put {item.name} on the card "
+                            f"and AmigaOS 3.1 cannot load an ELF binary")
+        if not checked:
+            self.skipTest("no package archives are cached on this machine")
+        self.assertTrue(elves, "no ELF binary was met, so nothing was proved")
+
+    def test_a_68k_binary_is_left_alone(self):
+        from pistorm_imager.core import compat                    # noqa: PLC0415
+        fixer = compat.Compatibility(Progress())
+        hunk = b"\x00\x00\x03\xf3 a real Amiga executable"
+        fixer.offer("C/Thing", hunk)
+        self.assertFalse(fixer.skip("C/Thing"))
+
+
+class EachContentDriveGetsItsOwnLauncher(unittest.TestCase):
+    """Games and demos are not the same thing and do not share a window.
+
+    One iGame with one repos.prefs covering every drive put four hundred
+    games and a few hundred demos in the same list, which is not what either
+    is for. Each content drive gets its own installation instead, the way
+    PiMiga does it - the first keeps the familiar name, and a Demos drive
+    arrives as iDemos beside it.
+    """
+
+    def setUp(self):
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        self.builder = builder
+        self.folder = Path(tempfile.mkdtemp(prefix="pistorm-launcher-"))
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
+
+    def _config(self, drives, keys=("igame",)):
+        specs = [self.builder.AmigaPartitionSpec(name="DH0", bootable=True,
+                                                 volume_name="System")]
+        for index, (volume, whdload) in enumerate(drives, start=1):
+            where = self.folder / volume
+            (where / "WHDLoad").mkdir(parents=True) if whdload else where.mkdir()
+            specs.append(self.builder.AmigaPartitionSpec(
+                name=f"DH{index}", volume_name=volume,
+                content_folder=str(where)))
+        return self.builder.BuildConfig(target="/tmp/x", package_keys=list(keys),
+                                        amiga_partitions=specs)
+
+    def _instances(self, config, pairs=()):
+        return self.builder._igame_instances(config, Progress(), list(pairs))
+
+    def test_a_second_drive_gets_a_launcher_of_its_own(self):
+        made = self._instances(self._config([("Games", True), ("Demos", True)]),
+                               [("/tmp/tree", "Programs/iGame")])
+        where = {dest for _src, dest in made}
+        self.assertEqual(where, {"Programs/iGame", "Programs/iDemos"})
+
+    def test_each_scans_only_its_own_drive(self):
+        made = self._instances(self._config([("Games", True), ("Demos", True)]))
+        scans = {dest: Path(src).read_text().strip()
+                 for src, dest in made if src.endswith("repos.prefs")}
+        self.assertEqual(scans["Programs/iGame"], "Games:WHDLoad")
+        self.assertEqual(scans["Programs/iDemos"], "Demos:WHDLoad")
+
+    def test_the_second_installation_is_the_whole_program(self):
+        #  A repos.prefs on its own is a launcher with nothing to launch it.
+        pairs = [("/tmp/iGame-v2.6.1", "Programs/iGame"),
+                 ("/tmp/iGame", "Programs/iGame")]
+        made = self._instances(self._config([("Games", True), ("Demos", True)]),
+                               pairs)
+        copied = [src for src, dest in made if dest == "Programs/iDemos"]
+        self.assertEqual(len(copied), len(pairs) + 1,
+                         f"the program itself was not copied: {copied}")
+
+    def test_one_drive_still_gets_just_iGame(self):
+        made = self._instances(self._config([("Games", True)]),
+                               [("/tmp/tree", "Programs/iGame")])
+        self.assertEqual({dest for _src, dest in made}, {"Programs/iGame"})
+
+    def test_a_drawer_that_is_not_there_is_not_named(self):
+        #  Pointing a launcher at a WHDLoad drawer that does not exist is how
+        #  a donor's own list behaved.
+        made = self._instances(self._config([("Music", False)]))
+        text = next(Path(src).read_text().strip() for src, _d in made)
+        self.assertEqual(text, "Music:")
+
+    def test_nothing_is_made_without_the_package(self):
+        self.assertEqual(self._instances(
+            self._config([("Games", True)], keys=("whdload",))), [])
+
+    def test_the_names_come_from_the_partitions(self):
+        #  Not from anything written down here: a drive the user calls
+        #  Cracktros gets iCracktros.
+        made = self._instances(
+            self._config([("Games", True), ("Cracktros", True)]),
+            [("/tmp/tree", "Programs/iGame")])
+        self.assertIn("Programs/iCracktros", {dest for _src, dest in made})

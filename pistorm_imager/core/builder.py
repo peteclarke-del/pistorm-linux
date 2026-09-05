@@ -121,6 +121,12 @@ class BuildConfig:
     #  so whichever lands first wins - and that used to be settled by the
     #  order the build happened to run in rather than by anybody's choice.
     replace_older_software: bool = True
+    #  Software the prepared drive arrives with that the user does not want.
+    #  A ready-made distribution has its own idea of what belongs on a card -
+    #  ClassicWB FULL carries thirty of them in Programs alone - and until
+    #  now it was all of it or none. Each entry is a drawer, left out whole
+    #  by the same rule that removes a superseded older copy.
+    leave_out: list[str] = dataclasses.field(default_factory=list)
     package_chipset: str = ""          # a machines.Chipset value
     package_display: str = ""          # a machines.Display value
 
@@ -736,6 +742,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         if spec is not None else []
     if extra and config.replace_older_software:
         fixer.displace(_landing_paths(extra))
+    fixer.supersede(config.leave_out or [])
     #  Any record an imported drive brings describes a card that no longer
     #  exists; this build writes its own in its place.
     fixer.displace([MANIFEST_PATH])
@@ -1168,55 +1175,89 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     #  nothing resolved them earlier.
     already = {(source, destination) for source, destination in existing}
     out = [pair for pair in resolved if pair not in already]
-    repositories = _igame_repositories(config, progress)
+    #  A second launcher is the same package's files again under another
+    #  destination, so it is built from what iGame itself resolved to.
+    igame_pairs = [pair for key, pairs in by_package if key == "igame"
+                   for pair in pairs]
+    launchers = _igame_instances(config, progress, igame_pairs)
     if credit is not None:
-        for pair in repositories:
+        for pair in launchers:
             credit.setdefault(pair, "igame")
-    out += repositories
+    out += launchers
     return out
 
 
-def _igame_repositories(config: "BuildConfig",
-                        progress: Progress) -> list[tuple[str, str]]:
-    """Tell iGame which drawers on this card hold games.
+def _content_drives(config: "BuildConfig") -> list[tuple[str, str]]:
+    """The drives this build fills with content, as (volume, WHDLoad drawer).
 
-    iGame keeps that list in ``repos.prefs``, and its Aminet archive ships
-    none: installed cleanly it comes up with nothing to scan and no way to
-    know where the games went, so "Scan Repositories" finds nothing and the
-    list stays empty. The build knows exactly which drives it filled, so it
-    says so.
-
-    Nothing is guessed. A drive is named only if this build put content on
-    it, and the WHDLoad drawer inside is named only if it is really there -
-    pointing iGame at a drawer that does not exist is how the donor's own
-    list behaved, and it is no better written by us.
+    Only drives this build actually put something on, and the WHDLoad drawer
+    inside is named only where it is really there: pointing a launcher at a
+    drawer that does not exist is how a donor's own list behaved, and it is
+    no better written by us.
     """
-    if "igame" not in packages.expand(config.package_keys or []):
-        return []
     boot = {spec.name.upper() for spec in config.amiga_partitions
             if spec.bootable}
-    lines: list[str] = []
+    out: list[tuple[str, str]] = []
     for spec in config.amiga_partitions:
         if spec.name.upper() in boot or not spec.content_folder:
             continue
         volume = (spec.volume_name or spec.name).strip()
         if not volume:
             continue
-        folder = Path(spec.content_folder)
         inside = ""
         try:
-            inside = next((child.name for child in folder.iterdir()
+            inside = next((child.name for child in Path(spec.content_folder)
+                           .iterdir()
                            if child.is_dir()
                            and child.name.lower() == "whdload"), "")
         except OSError:
             inside = ""
-        lines.append(f"{volume}:{inside}" if inside else f"{volume}:")
-    if not lines:
+        out.append((volume, inside))
+    return out
+
+
+def _igame_instances(config: "BuildConfig", progress: Progress,
+                     igame_pairs: list[tuple[str, str]]
+                     ) -> list[tuple[str, str]]:
+    """One launcher per content drive, each scanning only its own.
+
+    iGame keeps the drawers it scans in ``repos.prefs``, and its Aminet
+    archive ships none: installed cleanly it comes up with nothing to scan
+    and no way to know where anything went. The build knows which drives it
+    filled, so it says so.
+
+    One list covering every drive put games and demos in the same window,
+    which is not what either is for - a demo is not a game, and scrolling
+    past four hundred of one to reach the other is nobody's idea of a
+    launcher. So each content drive gets its own installation, the way
+    PiMiga does it: the first keeps the familiar name, and any drive after
+    it gets a launcher named for the drive, so a card with a Demos drive
+    arrives with iDemos beside iGame.
+
+    Nothing is named in this source: the drives, and the names, come from
+    the partitions the user set up.
+    """
+    if "igame" not in packages.expand(config.package_keys or []):
         return []
-    written = Path(tempfile.mkdtemp(prefix="pistorm-igame-")) / "repos.prefs"
-    written.write_text("\n".join(lines) + "\n")
-    progress.log("iGame will scan: " + ", ".join(lines))
-    return [(str(written), "Programs/iGame")]
+    drives = _content_drives(config)
+    if not drives:
+        return []
+    out: list[tuple[str, str]] = []
+    for index, (volume, inside) in enumerate(drives):
+        where = ("Programs/iGame" if index == 0
+                 else f"Programs/i{volume.strip(':')}")
+        if index:
+            #  A second installation is the same program again, so the
+            #  files it was given are copied a second time. Only the
+            #  destination differs.
+            out += [(source, dest.replace("Programs/iGame", where, 1))
+                    for source, dest in igame_pairs]
+        line = f"{volume}:{inside}" if inside else f"{volume}:"
+        written = Path(tempfile.mkdtemp(prefix="pistorm-igame-")) / "repos.prefs"
+        written.write_text(line + "\n")
+        out.append((str(written), where))
+        progress.log(f"  {where.rpartition('/')[2]} will scan {line}")
+    return out
 
 
 def _drawer_exists(volume, destination: str) -> bool:
@@ -1311,6 +1352,33 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
             progress.log(f"  overlay: {source.name} -> {destination or ':'}")
 
 
+def _drawer_icons_from_the_drive(spec: AmigaPartitionSpec,
+                                 progress: Progress) -> Path | None:
+    """The imported drive's own drawer icons, to copy the desktop's style."""
+    if not spec.content_hdf:
+        return None
+    borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drive-icon-"))
+    try:
+        reader, _label = amigaos.open_amiga_volume(spec.content_hdf,
+                                                   spec.content_hdf_partition)
+    except Exception as error:                              # noqa: BLE001
+        progress.log(f"  could not read the drive's own drawer icons "
+                     f"({error}); the Workbench disks will be used instead")
+        return None
+    try:
+        found = amigaos.drawer_icons_from_volume(reader, borrowed)
+    finally:
+        try:
+            reader.f.close()
+        except Exception:                                   # noqa: BLE001
+            pass
+    if not found:
+        return None
+    progress.log(f"  {found} drawer icon(s) taken from the drive, so new "
+                 f"drawers match the desktop it came with")
+    return borrowed
+
+
 def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
                         config: "BuildConfig", progress: Progress) -> None:
     """Make the drawers this build created visible on Workbench.
@@ -1334,9 +1402,15 @@ def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
                 wanted.append(path)
             path = path.rpartition("/")[0]
 
-    #  Where to find real drawer icons: the Workbench disks, which is the
-    #  only source left now that no icon set is shipped.
+    #  Where to find real drawer icons. The drive being imported comes first:
+    #  its own drawers are the style the desktop is already in, and a drawer
+    #  this build adds beside them should not be the one that looks foreign.
+    #  The Workbench disks are the fallback, and the only source when a card
+    #  is built from floppies alone.
     sources: list[Path] = []
+    borrowed_from_drive = _drawer_icons_from_the_drive(spec, progress)
+    if borrowed_from_drive is not None:
+        sources.append(borrowed_from_drive)
     if config.adf_folder:
         borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drawer-icon-"))
         if amigaos.drawer_icon_from_disks(config.adf_folder, borrowed):
@@ -1543,6 +1617,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         if extra and config.replace_older_software:
             fixer.displace(_landing_paths(extra))
         if spec.bootable:
+            fixer.supersede(config.leave_out or [])
+        if spec.bootable:
             #  See above: an earlier build's record is not left standing in
             #  front of this one's.
             fixer.displace([MANIFEST_PATH])
@@ -1567,6 +1643,13 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                 fixer.finish_classicwb_install()
             reader, label = amigaos.open_amiga_volume(spec.content_hdf,
                                                       spec.content_hdf_partition)
+            #  Where this drive keeps its programs, so a default icon naming
+            #  a bare tool can be given the path Workbench needs.
+            try:
+                fixer.knows_where(content.programs_by_name(reader))
+            except Exception as error:                      # noqa: BLE001
+                progress.log(f"  could not index the drive's programs "
+                             f"({error}); default tools are left as they are")
             progress.step(f"Filling {partition.drive_name} from {label}")
             volume = amigaos.make_volume(handle, offset,
                                          partition.blocks(table.geometry),

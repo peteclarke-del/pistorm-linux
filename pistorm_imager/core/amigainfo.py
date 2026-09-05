@@ -38,13 +38,17 @@ def _image_size(data: bytes, offset: int) -> int:
     return IMAGE_HEADER_SIZE + planes
 
 
-def _tooltype_region(data: bytes) -> tuple[int, int, list[str]]:
-    """Locate the tool type array, returning (start, end, entries)."""
+def _body_offset(data: bytes) -> tuple[int, int, int]:
+    """Where the DefaultTool string starts, and the two pointers after it.
+
+    The DiskObject is a fixed header followed by optional parts, each present
+    only when its pointer is non-zero, so everything after it has to be found
+    by walking rather than by a constant.
+    """
     if len(data) < DISKOBJECT_SIZE or struct.unpack_from(">H", data, 0)[0] != MAGIC:
         raise InfoError("not an Amiga .info file")
 
     gadget = GADGET_OFFSET
-    gadget_flags = struct.unpack_from(">H", data, gadget + 12)[0]
     gadget_render = struct.unpack_from(">I", data, gadget + 18)[0]
     select_render = struct.unpack_from(">I", data, gadget + 22)[0]
     default_tool = struct.unpack_from(">I", data, 50)[0]
@@ -62,7 +66,38 @@ def _tooltype_region(data: bytes) -> tuple[int, int, list[str]]:
     #  puts every following offset out by the size of a bitplane.
     if select_render:
         offset += _image_size(data, offset)
-    del gadget_flags
+    return offset, default_tool, tool_types
+
+
+def set_default_tool(data: bytes, tool: str) -> bytes:
+    """Return a copy of an icon whose DefaultTool is ``tool``.
+
+    A project icon runs its DefaultTool on the file beside it, which is how a
+    script becomes something you can double click: the tool is ``IconX``.
+    """
+    start, default_tool, _tool_types = _body_offset(data)
+    end = start
+    if default_tool:
+        end = start + 4 + struct.unpack_from(">I", data, start)[0]
+    raw = tool.encode("latin-1", errors="replace") + b"\0"
+    out = bytearray(data[:start]) + struct.pack(">I", len(raw)) + raw \
+        + bytearray(data[end:])
+    #  do_DefaultTool has to be non-zero or Workbench never reads the string.
+    struct.pack_into(">I", out, 50, 1)
+    return bytes(out)
+
+
+def read_default_tool(data: bytes) -> str:
+    start, default_tool, _tool_types = _body_offset(data)
+    if not default_tool:
+        return ""
+    length = struct.unpack_from(">I", data, start)[0]
+    return data[start + 4:start + 4 + length].split(b"\0")[0].decode("latin-1")
+
+
+def _tooltype_region(data: bytes) -> tuple[int, int, list[str]]:
+    """Locate the tool type array, returning (start, end, entries)."""
+    offset, default_tool, tool_types = _body_offset(data)
 
     if default_tool:
         length = struct.unpack_from(">I", data, offset)[0]

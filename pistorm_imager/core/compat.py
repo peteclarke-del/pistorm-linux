@@ -21,6 +21,10 @@ from .util import Progress
 
 #  Picasso96 finds its board through the BOARDTYPE tool type of the icon in
 #  DEVS:Monitors, and loads LIBS:Picasso96/<BOARDTYPE>.card to drive it.
+#  The first four bytes of an ELF executable. An AmigaDOS one starts with
+#  the HUNK header 0x000003F3 instead.
+ELF_MAGIC = b"\x7fELF"
+
 EMU68_BOARD = "VideoCore"
 EMU68_CARD = "VideoCore.card"
 EMU68_TOOLS_URL = ("https://github.com/michalsc/Emu68-tools/releases/download/"
@@ -206,6 +210,15 @@ class Compatibility:
         #  Refusing it during the copy leaves the name free for the package.
         self._displace: set[str] = set()
         self._displaced: list[str] = []
+        #  Drawers left out whole, because a newer copy of what they hold is
+        #  being installed elsewhere. Reported once each rather than per file.
+        #  Keyed on the lower-cased path for matching, valued with the way
+        #  it is actually written, so the log names the drawer as the drive
+        #  does rather than as this code happens to compare it.
+        self._supersede: dict[str, str] = {}
+        #  Where the drive's programs are, for default tools.
+        self._programs: dict[str, str] = {}
+        self._superseded: set[str] = set()
         self._seen_picasso = False
         self._picasso_expected = False
         self._finished = False
@@ -276,6 +289,28 @@ class Compatibility:
         """
         return self._finish_classicwb
 
+    def supersede(self, paths: Iterable[str]) -> None:
+        """Leave out a drawer holding an older copy of chosen software.
+
+        Different from ``displace``, and deliberately a separate set. A
+        displaced path is one exact file the package writes in that same
+        place, so the match is exact and a drawer of the same name is still
+        merged into - that is what lets MUI's overlay add to ClassicWB's own
+        System/MUI rather than replace it.
+
+        This is the other case: the distribution carries its own copy of the
+        same program somewhere else entirely, under its own name. ClassicWB
+        keeps SysInfo 3.24 from 1993 in Tools/SysInfo while the package
+        installs 4.4 into Utilities/SysInfo, so both land and only one is
+        ever opened. Superseding takes the whole drawer, contents and all,
+        which is why it is only ever given drawers that hold one program and
+        nothing else - a judgement made per package and checked against a
+        real distribution, never guessed from a name.
+        """
+        for path in paths:
+            tidy = path.replace("\\", "/").strip("/")
+            self._supersede.setdefault(tidy.lower(), tidy)
+
     def displace(self, paths: Iterable[str]) -> None:
         """Refuse these paths while copying, so a package can supply them.
 
@@ -289,6 +324,28 @@ class Compatibility:
         """Hold back the drive's S:User-Startup so it can be added to."""
         self._want_user_startup = True
 
+    def superseded_drawers(self) -> list[str]:
+        """Which drawers were actually left out, as the drive spells them."""
+        return sorted(self._supersede[key] for key in self._superseded)
+
+    def skip_drawer(self, relative: str) -> bool:
+        """Whether a *drawer* should not be created on the target at all.
+
+        Only the superseded set, never the displaced one, and the difference
+        matters: a drawer overlay puts its destination in the displaced set
+        purely to claim the name against a *file* - ClassicWB keeps Visage as
+        a file where a drawer is wanted - and must still merge into a drawer
+        of that name. Asking the displaced set here would have stopped
+        System/MUI being created and taken ClassicWB's whole MUI with it.
+
+        Without this the files inside a superseded drawer were skipped one by
+        one and the drawer itself was still made, so a card carried an empty
+        Tools/SysInfo with its icon still on the desktop.
+        """
+        posix = relative.replace("\\", "/").strip("/").lower()
+        return any(posix == drawer or posix.startswith(drawer + "/")
+                   for drawer in self._supersede)
+
     def stop_displacing(self) -> None:
         """The copying is over; the packages may now write their own files.
 
@@ -298,8 +355,16 @@ class Compatibility:
         refused those too - and the file landed nowhere at all. Whole drawers
         were unaffected, which is what made it look like a packaging problem
         rather than this.
+
+        Superseding is the same rule one drawer wider, and it had the same
+        fault: removing ClassicWB's own older iGame so the chosen one could
+        take its place then refused the chosen one as well, because it lands
+        in the drawer that was being emptied. The card came out with
+        Programs/iGame holding an icon and nothing else. Both sets stop here,
+        for the same reason and at the same moment.
         """
         self._displace.clear()
+        self._supersede.clear()
 
     def skip(self, relative: str) -> bool:
         """True when a file should not be copied to the target at all."""
@@ -307,6 +372,18 @@ class Compatibility:
         #  at all: it is the user's own choice of software, and it has to
         #  hold whether or not the compatibility pass is switched on.
         posix = relative.replace("\\", "/").strip("/").lower()
+        for drawer in self._supersede:
+            #  ...and the drawer's own icon with it. Left behind, it stays on
+            #  Workbench and opens an empty window, which is worse than
+            #  having done nothing at all.
+            if (posix == drawer or posix.startswith(drawer + "/")
+                    or posix == drawer + ".info"):
+                if drawer not in self._superseded:
+                    self._superseded.add(drawer)
+                    self.note("replaced",
+                              f"{self._supersede[drawer]} left out whole - "
+                              f"you chose a newer copy of what it holds")
+                return True
         if posix in self._displace:
             self._displaced.append(relative)
             self.note("replaced",
@@ -315,6 +392,16 @@ class Compatibility:
             return True
         if not self.enabled:
             return False
+        #  A binary for another processor cannot run here and has no business
+        #  on the card. AmigaOS 3.1 loads HUNK executables; an ELF is a
+        #  PowerPC, AROS or OS4 build, and several archives ship one beside
+        #  the 68k version - iGame carries iGame.OS4 and iGame.MOS, and
+        #  Directory Opus 4.18.22 turned out to be *only* the OS4 port, which
+        #  went onto every card and could never have started.
+        if self._pending_data[:4] == ELF_MAGIC:
+            self.note("removed", f"{relative} (built for another processor; "
+                                 f"this machine runs 68k code)")
+            return True
         name = Path(relative).name
         parent = Path(relative).parent.name.lower()
         if parent == "picasso96" and name.lower() in EMULATOR_CARDS:
@@ -395,6 +482,8 @@ class Compatibility:
         posix = relative.replace("\\", "/")
         if any(posix.lower() == f.lower() for f in STARTUP_FILES):
             return self._clean_startup(posix, data)
+        if parts[-1].startswith("def_") and parts[-1].endswith(".info"):
+            return self._point_at_a_real_tool(posix, data)
         if len(parts) >= 2 and parts[-2] == "wbstartup" \
                 and parts[-1].endswith(".info"):
             return self._starts_without_waiting(posix, data)
@@ -478,6 +567,42 @@ class Compatibility:
                       f"will not be on the card ("
                       + ", ".join(sorted(dropped)) + ")")
         return "".join(out).encode("latin-1")
+
+    def knows_where(self, programs: dict[str, str]) -> None:
+        """Tell the pass where the drive's programs are, by name."""
+        self._programs = dict(programs)
+
+    def _point_at_a_real_tool(self, relative: str, data: bytes) -> bytes:
+        """Give a default icon's tool the path it needs to be found.
+
+        Workbench runs the tool an icon names, and a bare name with no path
+        in front of it is not looked up the way a shell looks one up.
+        ClassicWB's def_project.info - the icon every file falls back on -
+        names simply "MultiView", so double-clicking a file found nothing,
+        while def_view.info beside it says SYS:Utilities/MultiView and works.
+
+        Only a bare name, and only one this drive really has: a tool already
+        carrying a path is left exactly alone, and a name nothing answers to
+        is left alone too rather than guessed at.
+        """
+        if not getattr(self, "_programs", None):
+            return data
+        try:
+            tool = amigainfo.read_default_tool(data)
+        except amigainfo.InfoError:
+            return data
+        if not tool or ":" in tool or "/" in tool:
+            return data
+        found = self._programs.get(tool.lower())
+        if not found:
+            return data
+        try:
+            fixed = amigainfo.set_default_tool(data, found)
+        except amigainfo.InfoError:
+            return data
+        self.note("edited", f"{relative}: opens with {found} rather than "
+                            f"{tool!r}, which Workbench cannot find")
+        return fixed
 
     def _starts_without_waiting(self, relative: str, data: bytes) -> bytes:
         """Give a WBStartup icon DONOTWAIT, so the boot does not stop on it.
@@ -742,10 +867,18 @@ class Compatibility:
                 self.note("retargeted",
                           f"Devs/Monitors/{EMU68_BOARD}.info BOARDTYPE="
                           f"{EMU68_BOARD}")
+        elif self._picasso_expected:
+            #  Picasso96 was chosen as a package, so it brings its own
+            #  monitor, settings and API library. Nothing to adapt, and
+            #  nothing missing - which is the point of installing it from its
+            #  own archive rather than from whatever the source drive had.
+            self.note("note", "Picasso96 supplies its own monitor and "
+                              f"settings, with {EMU68_CARD} as the board")
         else:
-            self.note("note", "no emulator monitor file was present, so no "
-                              f"Devs/Monitors/{EMU68_BOARD} was created; add "
-                              f"one with the Picasso96 installer")
+            self.note("note", "no emulator monitor file was present and "
+                              "Picasso96 was not chosen, so no "
+                              f"Devs/Monitors/{EMU68_BOARD} was created; tick "
+                              f"Picasso96, or install it on the Amiga")
 
     def summary(self) -> str:
         if not self.enabled:

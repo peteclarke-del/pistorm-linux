@@ -331,6 +331,32 @@ one rule rather than two, and the same card reads:
 
     vc4.mem=64 chip_slowdown dbf_slowdown blitwait enable_c0_slow enable_c8_slow enable_d0_slow move_slow_to_chip
 
+## Why a build takes as long as it does
+
+Most of it is not this program. On the machine it was measured on, the source
+content and the output image live on **the same USB spinning disk**, and the
+source is a loop-mounted `.img` sitting on that same disk — so one set of heads
+is reading eleven gigabytes of small files through a loop device while writing
+eight gigabytes to another large file beside it. Reading alone, with nothing
+being written, measured **32 MB/s**; with the writes competing for the same
+spindle it is far worse.
+
+Two ways round it, both worth more than any change here:
+
+- **Build straight to the card.** Reads come off the USB disk and writes go to
+  the SD card, so nothing contends, and it saves writing the image out
+  afterwards as a separate pass. The size box also locks to the card's real
+  capacity, which is the other thing that has bitten.
+- **Put the image on a different disk** from the source content — an internal
+  SSD rather than the same external one.
+
+What *was* this program's fault: `install_tree` worked out each file's path
+with `Path.relative_to`, which re-parses both paths and walks their parts.
+Everything `rglob` returns is under the folder it was given, so the relative
+path is a slice of the string. On a synthetic games drive that one line was
+**half the time the copy took** — more than writing the data — and removing it
+took the copy from 785 to 1,845 files a second.
+
 ## Testing a card in an emulator
 
 The Amiga to emulate is the one the card was built for, and that description
@@ -878,6 +904,119 @@ started — the build writes `S:User-Startup` to do it.
 
 ### What a package needs to actually run
 
+#### Where an archive ships no way to start it
+
+ADF Device mounts an `.adf` as a floppy drive, so a disk image appears on
+Workbench as `AD0:` without being written to real media — sixteen units, swapped
+in and out like disks. ClassicWB ships `Programs/FMSsys` for the same job and it
+cannot work as it arrives: the drawer has `ADF2FMS`, `MountFMS` and a mountlist,
+and neither the handler nor the device they need.
+
+What the archive does *not* ship is any way to start it from Workbench. Its own
+scripts want a Shell and a filename, and the author's suggestion was to drive
+them from ToolsDaemon or DOpus. So the package writes a small script of its own,
+`Utilities/ADF_Device/MountADF`, which asks for the file with `RequestFile` and
+then hands over to the archive's `Insert.script` — which asks which unit, mounts
+it if it is not mounted, and tells DOS the disk has changed.
+
+Making it double-clickable needs a **project icon**, whose DefaultTool is the
+program Workbench runs on the file beside it: `IconX`, the script runner. An
+icon invented from scratch would have no image and draw as nothing, so the
+package borrows one the archive already has and retargets it — that is what
+`Download.retool` does, and `amigainfo.set_default_tool` rewrites the string in
+place. Everything after the DefaultTool in a `.info` moves when it changes
+length, so a test checks the tool types still read back identically afterwards;
+getting that wrong leaves an icon Workbench cannot parse, which looks exactly
+like the file having no icon at all.
+
+The helper is part of this package rather than a loose extra, because it is no
+use without the device beside it — and a test ties the two together: the script
+it calls has to be one this same package installs, and the icon has to land in
+the same drawer under the script's own name plus `.info`, or the pair are two
+files that do nothing.
+
+#### A binary for another processor never reaches the card
+
+AmigaOS 3.1 loads **HUNK** executables. An `ELF` is a PowerPC, AROS or OS4
+build, and it cannot start on a 68k machine at all.
+
+Directory Opus 4 was in the catalogue for a long time as Aminet's
+`DirectoryOpus-4.18.22.lha`, whose own listing says **`Architecture:
+ppc-amigaos >= 4.0.0`** — the AmigaOS 4 port. Its `DirectoryOpus` begins
+`\x7fELF`. It went onto every card built with it and could never have run, and
+worse, the entry that replaced ClassicWB's own working 68k Opus 4.16 with it
+made those cards worse than leaving them alone. Nothing on Aminet carries a 68k
+build of Opus 4 — what is there is the MorphOS port, the GPL source, the
+catalogs and the manual — so the package is gone rather than pointed somewhere
+hopeful, and a card built on ClassicWB keeps the working 4.16 it came with.
+
+Removing one package is not the fix, though, because the same thing arrives
+quietly in other archives: iGame ships `iGame.OS4` and `iGame.MOS` beside the
+68k builds. So the compatibility pass refuses **any** file whose first four
+bytes are `\x7fELF`, whatever package it came from and whether or not anybody
+noticed it was there. A test walks every file the cached packages install,
+finds the ELF ones, and requires the pass to refuse each — it fails if it meets
+none, so it cannot quietly stop testing anything.
+
+#### A driver has to go where the system looks for it
+
+AHI is the Amiga's standard audio interface, and it is a **device**: programs
+ask AHI for sound instead of driving Paula themselves, so they share the
+hardware rather than fighting over it, and a stock machine gets 14-bit output
+instead of 8. That only works if `ahi.device` is in `DEVS:`, so it is installed
+there rather than left as an archive to unpack on the Amiga.
+
+Three decisions in it are worth writing down, because each was a check rather
+than a guess:
+
+- **Which `ahi.device`.** The archive ships `.000`, `.060` and a plain 68020+
+  build. Emu68 presents a 68040, so the plain one is right — and none of the
+  binaries copied contains a floating point instruction, which was counted
+  rather than assumed.
+- **Which prefs program.** AHI ships MUI and BGUI builds side by side. The BGUI
+  one would avoid depending on MUI, and its `bgui.library` carries floating
+  point instructions — guru `8000000B` on an FPU-less 68040. So the MUI build
+  is used and `mui` is declared as a requirement. It also has to be **renamed**
+  to `AHI` as it lands, because the icon in the archive is `AHI.info` and would
+  otherwise point at nothing.
+- **The `AUDIO:` handler ships with its mountlist, or not at all.** ClassicWB's
+  Startup-Sequence runs `C:Mount >NIL: DEVS:DOSDrivers/~(#?.info)`, so a
+  DOSDriver copied without `L:AHI-Handler` beside it is an error requester on
+  every boot.
+
+Only the Paula driver is copied. The Toccata, Delfina, Prelude and Melody
+drivers in the archive are for sound cards this machine has not got, and a mode
+list full of hardware that is not there is worse than a short one.
+
+#### An icon's tool has to be findable
+
+Workbench runs the tool an icon names and does **not** search for it the way a
+shell would. ClassicWB's `def_project.info` — the icon every file falls back on
+— names simply `MultiView`, with no path, so double-clicking a file found
+nothing, while `def_view.info` beside it says `SYS:Utilities/MultiView` and
+works. Reported as *"MultiView is installed, but no app can find it to open
+files"*.
+
+A default icon whose tool is a bare name is now given the path, and only where
+the drive really has that program: one already carrying a path is untouched,
+and a name nothing answers to is left alone rather than guessed at.
+
+Finding it needs one wrinkle. ClassicWB's `Utilities` holds `MultiView.info`
+and **no `MultiView`** — it expects the Workbench floppies to supply one, and
+this build does, but not until after those icons have been copied. So an icon
+with no program beside it still counts as saying where the program is meant to
+be. On a real build that repairs six icons, including PPaint's and PictIcon's.
+
+#### The daemon goes in WBStartup, not the editor
+
+FullPalette ships two programs whose names read backwards from what they are.
+The archive's own installer says it plainly: *"FPPrefs (the FullPalette daemon
+that is run in the Startup-sequence)"*. `FullPalette` is the **editor** — its
+strings are Palette Preferences, Load, Save — and it was the one going into
+`WBStartup`, so the palette editor opened on **every single boot**. They are
+the right way round now, and the daemon borrows the editor's icon under its own
+name, because a program in `WBStartup` without one never starts at all.
+
 #### Workbench runs the icons in WBStartup, not the files
 
 Two opposite failures live here, and a card carried both.
@@ -1293,6 +1432,27 @@ same directory.
 asserts each of these still checks its provenance, so the next cache added has
 to as well.
 
+### A launcher for each drive, not one for all of them
+
+iGame keeps the drawers it scans in `repos.prefs` and its archive ships none,
+so installed cleanly it comes up with nothing to scan on a card whose drives
+are full. The build knows which drives it filled, so it says so.
+
+It used to say so in **one** list covering every drive, which put four hundred
+games and a few hundred demos in the same window. A demo is not a game, and
+scrolling past one to reach the other is nobody's idea of a launcher.
+
+Each content drive gets its own installation now, the way PiMiga does it. The
+first keeps the familiar name; every drive after it gets a launcher named for
+the drive, so a card with Games and Demos arrives with **iGame** and **iDemos**
+side by side, each scanning only its own. A second installation is the whole
+program again, not just a preferences file — a `repos.prefs` on its own is a
+launcher with nothing to launch it.
+
+Nothing here names a drive. `Games`, `Demos` and the rest come from the
+partitions the user set up, so a drive called `Cracktros` arrives as
+`iCracktros`, and a drive this build did not fill is not named at all.
+
 ### iGame is told where the games are
 
 iGame keeps the drawers it scans in `repos.prefs`, and its Aminet archive
@@ -1330,6 +1490,104 @@ install - `ENVARC:mui`, `ENVARC:AWeb3` and `ENVARC:ClassAct`, and the
 `AWEB_APL:` assign that AWeb is found through.
 
 ### Drawers you can actually see
+
+#### And that look like the desktop they are joining
+
+Having an icon is not the same as having the right one. A drive being imported
+brings a desktop somebody designed — ClassicWB's drawers are MagicWB-styled —
+and the drawers this build adds beside them were given a stock Workbench 3.1
+drawer, because the only icons on offer came off the floppies. The result was a
+desktop where the software the user chose was the part that looked foreign.
+
+The drive's own drawer icons are now taken from it and offered **first**, with
+the floppies as the fallback that still covers a card built from floppies
+alone. Only real drawer icons, and only from the root, which is where a
+distribution's style is set — ClassicWB FULL yields 24 of them. Because
+`_drawer_icon_sources` merges with `setdefault`, first offered is first kept,
+so the drive beats the floppies by ordering alone.
+
+**A distribution's own older copy is replaced too.** ClassicWB FULL keeps
+SysInfo **3.24, from 1993** in `Tools/SysInfo` while the package installs 4.4
+into `Utilities/SysInfo`, and Directory Opus **4.16** in `Programs/DirOpus4`
+beside the package's 4.18.22 — both landed, and only one of each was ever
+opened. Displacement could not see them: it matches on path, and these sit
+where this build would never write.
+
+**These are discovered, not declared.** The candidates were once a curated
+tuple on each package — two entries, checked by hand against ClassicWB FULL v28
+and correct for nothing else. Build on another distribution and the feature
+found nothing and said nothing about it, which is the same shape of failure as
+RTG depending on the source drive. Nothing about which programs exist belongs in
+this source.
+
+So the names come from the archives the chosen packages install, and the drive
+is searched for them. What makes that safe rather than a guess:
+
+- **Only principal programs.** What a package puts at the *top* of a drawer, and
+  only real AmigaDOS executables. Matching every file inside a package's tree
+  turned a PFS3 tool in `MyFiles` into a duplicate of something buried in
+  Visage — and the version comparison made it look certain.
+- **The drawer has to be named for the program.** What goes is the whole
+  drawer, so a program sitting inside somebody else's is not a duplicate of
+  anything. Without this the search offered — *switched on* — to delete
+  `Programs/DiskSalv`, because Picasso96 ships an `Installer` and DiskSalv's
+  drawer has one too; part of `Programs/SysSpeed`, because a `cruncher` drawer
+  contains an `LhA`; and `Tools/Commodities`, holding Exchange, Blanker,
+  CrossDOS and the rest, because Commodore's own `ClickToFront` commodity lives
+  in it. Nine offers became two, and both of those are real.
+- **Evidence, not names.** The `$VER:` strings decide. A copy is offered by
+  default only where both versions are readable and ours is strictly newer;
+  anything else is listed as a question, switched off, with what it found
+  spelled out. That is what separates the two real duplicates from the two
+  false ones: SysInfo is 3.24 against 4.4, while ClassicWB's `System/FBlit`
+  carries the *same* build as the package plus an FBlitGUI it does not ship.
+- **Never a drawer this build is filling**, nor anything inside one. Our MUI
+  overlay merges into the drive's own `System/MUI`, so every class in it matches
+  by name and none of them is a duplicate.
+- **One row per drawer**, because the drawer is what would go.
+
+On ClassicWB FULL, with a full package selection, that search returns exactly
+one confident answer — `Tools/SysInfo`, 3.24 against 4.4, which is what the
+hand-written entry said, arrived at without being told — and one question:
+`System/Scalos`, where **the drive's copy is the newer one** (39.222 against
+39.218), so removing it would be a downgrade. Each row says which way round it
+is rather than lumping "same version" together with "cannot be compared".
+
+Each answer is left out whole, which is a strong thing to do, so it is fenced
+further:
+
+- **The match is a path boundary, not a prefix.** `Tools/SysInfo` does not
+  take `Tools/SysInfoExtra` with it.
+- **The drawer and its icon go, not just the files inside.** The first version
+  asked `skip()` about files only, and both copy paths create a drawer without
+  asking at all — so a card came out with an empty `Tools/SysInfo` whose icon
+  was still on the desktop, opening an empty window. That is worse than having
+  done nothing. `skip_drawer` is asked before a drawer is made, and
+  `<drawer>.info` counts as part of the drawer. Found by reading the finished
+  card, after the unit tests passed.
+- **It is a separate set from displacement**, which stays exact-match, and
+  `skip_drawer` consults only the superseded set. Making displacement
+  prefix-match, or asking it about drawers, would have turned every drawer
+  overlay from a merge into a wipe — MUI's overlay claims the name `System/MUI` so a *file*
+  of that name cannot block it, and must still merge into ClassicWB's own MUI.
+- **Each entry is checked against a real distribution, never inferred from a
+  name.** ClassicWB's `System/FBlit` looks like a duplicate and is not: it
+  carries the same FBlit build as the package *plus* FBlitGUI, which the
+  package does not ship, so removing it would take a program away.
+  `System/FWheel` is FreeWheel's C source. Neither is named, and a test asserts
+  both are still there.
+
+Removing somebody's software is not a thing to do quietly, so the Packages page
+lists each older copy it actually found **on the drive in front of you** — the
+drive is asked, rather than the catalogue believed — and any one of them can be
+switched off and kept.
+
+Worth knowing about the layout while you are here: **the destinations already
+match.** ClassicWB FULL ships `Programs`, `Utilities`, `Internet`, `Audio`,
+`Tools` and `System` at the root, which is where these packages were going
+anyway, so software lands in the drawer a ClassicWB user would look in. Software lands in the drawer a
+ClassicWB user would look in without anything being moved.
+
 
 A drawer with no `.info` beside it does not appear on Workbench — it can only be
 reached from a Shell or by turning on **Window/Show/All Files**. That is correct
@@ -1391,6 +1649,13 @@ right answer genuinely differs:
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
 VisualPrefs. Networking — the Pi's WiFi as an Amiga network card, Roadshow,
 AmiSSL and NetSurf — is suggested when a WiFi network has been configured.
+
+**A switch that cannot be moved says why, first.** A package held on by the
+display is shown ticked and insensitive, and the reason used to be appended to
+its subtitle — after the description, the fetch note and the installation note,
+some three hundred characters in, where it was asked about rather than read. It
+now leads: *"Required by the display you chose, so it is on and cannot be turned
+off - change the display on the Amiga page to release it."*
 
 **An RTG display brings Picasso96 with it, and holds it on.** Picasso96 *is*
 the RTG subsystem; Emu68's driver is a card for it, and without it a card set
@@ -1674,6 +1939,104 @@ package had been installed. The fixes are:
 * a Picasso96 that was *chosen as a package* counts as installed even before
   anything is copied, while a copy merely staged in `Storage/Install` for you
   to install later does not - staging is not installing;
+
+### Software that cannot work here at all
+
+A ready-made distribution carries software written for the machine it was
+assembled on, and some of it cannot run on the card being built. That is a
+different statement from "you may not want this", so it is asked separately and
+switched **on** by default, with the reason spelled out.
+
+ClassicWB's `FMSsys` is the example. Its `MountFMS` does:
+
+    assign FMS: A-Programs:FMSsys
+    C:mount FF0:
+
+A card built here has neither an `A-Programs:` volume nor a
+`DEVS:DOSDrivers/FF0`, so it asks a question, fails, and nothing says why. The
+drawer also arrives without the handler or device it needs, which is why it
+could never have mounted anything.
+
+Only what can be shown from the files counts:
+
+- a binary whose first four bytes are `\x7fELF` — built for PowerPC, AROS or
+  OS4, and unloadable here;
+- a script that mounts a device with no matching `DEVS:DOSDrivers` entry;
+- a script needing a volume the card will not have.
+
+The volumes it compares against are **read, not assumed**: the drives this build
+makes, plus every assign the drive makes in its own `S:Startup-Sequence` and
+`S:User-Startup`. A distribution assigns plenty for itself, and calling those
+missing would condemn most of what it ships.
+
+Documentation is not evidence. A `.guide` explaining how to mount `PC:` is not
+a script that tries to, and quoting one is how a check like this stops being
+believed. On ClassicWB FULL the result is two: `Programs/FMSsys` and
+`Programs/Ami-pc`, which mounts a `PC:` that is not there either — out of
+thirty-seven programs, the other thirty-five are left alone.
+
+### Leaving out what the drive arrives with
+
+A ready-made distribution has its own idea of what belongs on a card. ClassicWB
+FULL carries thirty programs in `Programs` alone and seven little games in
+`WBGames`, some obsolete, some unfinished, some simply not to taste — and the
+only choice was all of it or none.
+
+The Packages page now lists what the chosen drive already holds, one row per
+program, all on. Turn one off and it is left out: **the drawer, everything in
+it, and its icon**, by the same rule that removes a superseded older copy — the
+rule that had to be fixed once already, when leaving the files out but keeping
+the drawer produced an empty `Tools/SysInfo` with its icon still on the desktop.
+
+Only the drawers software actually lives in are offered — `Programs`,
+`WBGames`, `Internet`, `Audio`, `Extras` — and only one level down. `Utilities`
+and `Tools` are left alone deliberately: they hold Workbench's own commands, and
+a list offering to delete `Tools/Commodities` is a trap rather than a choice. On
+a system drive `Games` and `Demos` are the letter drawers a distribution creates
+for a games partition to be assigned to, so they are not offered either; the
+games themselves are chosen on their own drive.
+
+Unticking is independent of *Replace older copies*: that switch decides which of
+two copies of the same thing wins, while this is software named for removal, and
+it goes whatever else is set. Both lists describe the drive that was chosen, so
+dropping the drive drops them — otherwise a build with no drive selected would
+still be leaving things out of it.
+
+An older exclusion chooser existed and did not help here: it was built for a
+games drive indexed by letter, and asked of a system drive it returned fifty-one
+groups with nothing in any of them.
+
+### Nothing is taken from the drive being built on
+
+Every file a card needs comes from a package fetched from its publisher. Where
+something is only *adapted* — an emulator's monitor rewritten for this board,
+its RTG driver swapped for Emu68's — that is the compatibility pass doing its
+job. What must never happen is a feature **depending** on the source drive
+having carried something, because then it works or does not according to which
+distribution somebody started from, and nothing on screen says which.
+
+RTG was exactly that. `LIBS:Picasso96/VideoCore.card` was always installed, but
+`DEVS:Monitors/VideoCore` was written *only* when a monitor file had been seen
+during the copy — an emulator's, from a PiMiga image. Build on ClassicWB, which
+has none, and the card came out with the graphics driver present, no screenmode
+to select it, and a line in an hour-old build log as the only explanation.
+
+Picasso96 is installed from its own archive now: `Picasso96API.library`, its own
+`Devs/Monitors/Picasso96` and icon, `Devs/Picasso96Settings`, `fastlayers.library`
+and `Prefs/Picasso96Mode`, with Emu68's `VideoCore.card` as the board. The full
+archive is still staged in `Storage/Install` for the datatypes and the drivers
+for painting programs.
+
+**The library and the monitor have to travel together**, and a test enforces it.
+The earlier failure was not caused by supplying a monitor; it was caused by that
+monitor bringing the board up against *the donor's* 1999 `rtg.library`. A
+monitor with the matching `Picasso96API.library` beside it is a different thing
+from a monitor alone, and reading the old lesson as "never supply a monitor" is
+what left RTG half-installed on every ClassicWB card.
+
+Of the settings files the archive ships — one per monitor frequency, which its
+installer asks about — the 64 kHz one is used, because Emu68's output is HDMI
+and the others cut the mode list short for no reason.
 
 A card built from floppies is **not** given a monitor file, and this is
 deliberate. Making one by renaming the emulator's monitor looked right - every

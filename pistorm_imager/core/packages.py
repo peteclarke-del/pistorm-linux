@@ -37,6 +37,7 @@ import urllib.request
 from collections.abc import Iterable
 from pathlib import Path
 
+from . import amigainfo
 from .machines import Chipset, Display, Machine
 from .util import Progress, human_size
 
@@ -105,6 +106,12 @@ class Download:
     #  archive that ships one binary per processor: the card wants the one
     #  its machine has, under the name the icon launches.
     rename: tuple[tuple[str, str, str], ...] = ()
+    #  (icon inside the archive, destination, name on the card, DefaultTool).
+    #  A project icon runs its DefaultTool on the file beside it, which is
+    #  how a script becomes something that can be double clicked. Borrowing
+    #  an icon the archive already has and retargeting it beats inventing
+    #  one: a hand-built DiskObject with no image draws as nothing at all.
+    retool: tuple[tuple[str, str, str, str], ...] = ()
 
     @property
     def url(self) -> str:
@@ -194,6 +201,9 @@ class Package:
 
 
 STAGING = "Storage/Install"          # where self-installing packages land
+
+
+MOUNT_ADF_SCRIPT = '.key NAME/F\n;\n; MountADF - choose a disk image and mount it as a floppy drive.\n;\n; Written by the PiStorm imager. Double click it and it asks for the file,\n; or pass one:  Execute SYS:Utilities/ADF_Device/MountADF <file>.adf\n; Either way it hands the job to the ADF Device\'s own Insert.script, which\n; asks which unit, mounts it if it is not mounted, and tells DOS the disk\n; has changed - after which AD0: is on Workbench like any other floppy.\n;\nIF "<NAME>" EQ ""\n  RequestFile >ENV:PiStormADF TITLE "Choose a disk image to mount" PATTERN "#?.adf" NOICONS\n  IF EXISTS ENV:PiStormADF\n    IF NOT "$PiStormADF" EQ ""\n      Execute SYS:Utilities/ADF_Device/Insert.script $PiStormADF\n    ENDIF\n    Delete >NIL: ENV:PiStormADF\n  ENDIF\nELSE\n  Execute SYS:Utilities/ADF_Device/Insert.script <NAME>\nENDIF\n'
 
 
 CATALOGUE: list[Package] = [
@@ -504,9 +514,22 @@ CATALOGUE: list[Package] = [
         category=Category.LOOK,
         native_only=True,
         download=Download("util/wb/FullPalette22.lha",
-                          (("FullPalette/FullPalette", "WBStartup"),
-                           ("FullPalette/FullPalette.info", "WBStartup"),
-                           ("FullPalette/FPPrefs", "Prefs"))),
+                          #  These two are the other way round from how they
+                          #  read. The archive's own installer says it plainly:
+                          #  "FPPrefs (the FullPalette daemon that is run in
+                          #  the Startup-sequence)". FullPalette is the
+                          #  *editor* - its strings are Palette Preferences,
+                          #  Load, Save - and putting it in WBStartup opened
+                          #  the palette editor on every single boot.
+                          (("FullPalette/FPPrefs", "WBStartup"),
+                           ("FullPalette/FullPalette", "Prefs"),
+                           ("FullPalette/FullPalette.info", "Prefs")),
+                          #  The daemon has no icon of its own in the
+                          #  archive, and a program in WBStartup without one
+                          #  is never started at all - so it borrows the
+                          #  editor's under its own name.
+                          rename=(("FullPalette/FullPalette.info",
+                                   "WBStartup", "FPPrefs.info"),)),
     ),
     Package(
         "newicons", "NewIcons",
@@ -634,25 +657,79 @@ CATALOGUE: list[Package] = [
         note="Unpacked into Utilities/SnoopDos, ready to run.",
     ),
     Package(
-        "diropus4", "Directory Opus 4",
-        "A two-pane file manager, and a considerable step up from moving "
-        "things about in Workbench windows. Released under the GPL, so this "
-        "is the current 4.18 rather than whatever a donor happened to hold.",
+        "adfdevice", "ADF Device",
+        "Mount an .adf file as a floppy drive and read it like a disk, "
+        "without writing it to real media. Insert one, and AD0: appears on "
+        "Workbench.",
         category=Category.EXTRAS,
         download=Download(
-            "util/dopus/DirectoryOpus-4.18.22.lha",
-            #  Its own installer copies these four into the system drawers and
-            #  the program into one of its own; doing it here means the card
-            #  arrives with Opus working rather than with an installer on it.
-            (("DOpus4/DirectoryOpus", "Programs/DirectoryOpus"),
-             ("DOpus4/DirectoryOpus.info", "Programs/DirectoryOpus"),
-             ("DOpus4/Modules", "Programs/DirectoryOpus/Modules"),
-             ("DOpus4/C", "C"),
-             ("DOpus4/Libs", "Libs"),
-             ("DOpus4/S", "S"))),
+            "disk/misc/ADF_Device.lha",
+            #  adf.device and its mountlist have to be in DEVS: together: the
+            #  scripts mount "from devs:adf.ml", and the device is what that
+            #  mountlist names.
+            (("ADF_Device_v1.3/adf.device", "Devs"),
+             ("ADF_Device_v1.3/ADF.ml", "Devs"),
+             ("ADF_Device_v1.3/InsertDisk", "C"),
+             ("ADF_Device_v1.3/RemoveDisk", "C"),
+             ("ADF_Device_v1.3/Insert.script", "Utilities/ADF_Device"),
+             ("ADF_Device_v1.3/Remove.script", "Utilities/ADF_Device"),
+             ("ADF_Device_v1.3/ADF_Device.guide", "Utilities/ADF_Device"),
+             ("ADF_Device_v1.3/ADF_Device.guide.info",
+              "Utilities/ADF_Device")),
+            #  The archive has no Workbench front end at all: its own scripts
+            #  want a Shell and a filename. This one asks for the file with
+            #  RequestFile and then hands over to theirs, so it works by
+            #  double click - and it is part of this package, not a loose
+            #  extra, because it is no use without the device beside it.
+            write=(("MountADF", "Utilities/ADF_Device", MOUNT_ADF_SCRIPT),),
+            #  ...and the icon that makes double clicking it run it. IconX is
+            #  Workbench's script runner; the guide's own icon is borrowed
+            #  and retargeted, because an invented one would have no image.
+            retool=(("ADF_Device_v1.3/ADF_Device.guide.info",
+                     "Utilities/ADF_Device", "MountADF.info", "IconX"),)),
+        note="Bjoern Fuglsang's adf.device goes into DEVS: with its "
+             "mountlist, and Utilities/ADF_Device holds MountADF - double "
+             "click it, pick an .adf, pick a unit, and the disk appears on "
+             "Workbench as AD0:. Sixteen units are mountable.",
     ),
-
-    # ------------------------------------------------------ music and pictures
+    Package(
+        "ahi", "AHI",
+        "The Amiga's standard audio interface. Programs ask AHI for sound "
+        "instead of driving Paula themselves, so they share the hardware "
+        "rather than fighting over it, and a stock machine gets 14-bit "
+        "output instead of 8.",
+        category=Category.MEDIA,
+        #  Only the prefs program needs it, but it is the only way to choose
+        #  a mode afterwards. The BGUI build would avoid the dependency and
+        #  ships a bgui.library carrying floating point instructions, which
+        #  on a PiStorm's FPU-less 68040 is guru 8000000B.
+        requires=("mui",),
+        download=Download(
+            "driver/audio/ahiusr_4.18.lha",
+            #  What the archive's own installer copies, minus the drivers for
+            #  sound cards this machine has not got. The plain ahi.device is
+            #  the 68020+ build, which is what Emu68 presents; none of these
+            #  binaries contains a floating point instruction.
+            (("AHI/User/Devs/ahi.device", "Devs"),
+             ("AHI/User/Devs/AHI/paula.audio", "Devs/AHI"),
+             ("AHI/User/Devs/AudioModes/PAULA", "Devs/AudioModes"),
+             #  The AUDIO: handler and its mountlist go together: ClassicWB's
+             #  Startup-Sequence mounts DEVS:DOSDrivers/~(#?.info), so a
+             #  driver shipped without its handler is a boot-time error.
+             ("AHI/User/Devs/DOSDrivers/AUDIO", "Devs/DOSDrivers"),
+             ("AHI/User/Devs/DOSDrivers/AUDIO.info", "Devs/DOSDrivers"),
+             ("AHI/User/L/AHI-Handler", "L"),
+             ("AHI/User/C/AddAudioModes", "C"),
+             ("AHI/User/Prefs/AHI.info", "Prefs"),
+             ("AHI/User/Help/ahi.guide", "Storage/Install/AHI")),
+            #  The archive keeps two prefs programs side by side; the one
+            #  that lands has to be called AHI for its icon to find it.
+            rename=(("AHI/User/Prefs/AHI_MUI", "Prefs", "AHI"),)),
+        note="Installed, not staged: ahi.device and the Paula driver go "
+             "straight into DEVS:, and AHI Prefs into Prefs. Only the Paula "
+             "driver is copied - the Toccata and Delfina drivers are for "
+             "sound cards this machine has not got.",
+    ),
     Package(
         "amplifier", "AMPlifier",
         "A multiformat audio player: modules, MP3 and the rest, with skins.",
@@ -680,8 +757,13 @@ CATALOGUE: list[Package] = [
     Package(
         "scalos", "Scalos",
         "A complete Workbench replacement. Handsome, and hungry: worth it on "
-        "AGA or an RTG screen, a poor trade on a plain OCS desktop.",
+        "AGA or an RTG screen, a poor trade on a plain OCS desktop. Aminet's "
+        "copy is 1.2b from 2000, which is old - the maintained Scalos is not "
+        "on Aminet.",
         category=Category.LOOK,
+        #  Aminet's is 1.2b from April 2000 and is the newest there under
+        #  that name; the maintained Scalos lives elsewhere. Said plainly so
+        #  nobody assumes ticking this brings a current one.
         download=Download("util/wb/Scalos.lha", stage=STAGING + "/Scalos"),
         chipsets=(Chipset.AGA,),
         or_rtg=True,
@@ -689,9 +771,13 @@ CATALOGUE: list[Package] = [
         #  its script picks between three builds of every module for the
         #  machine it finds, and replacing the desktop half-way is how a card
         #  stops booting.
-        note="Unpacked into Storage/Install/Scalos. Run its Install.Scalos on "
-             "the Amiga - it chooses between three builds of each module for "
-             "the machine it finds, which cannot be decided from here.",
+        note="Unpacked into Storage/Install/Scalos - staged, not installed. "
+             "Run its Install.Scalos on the Amiga: it chooses between three "
+             "builds of each module for the machine it finds, which cannot "
+             "be decided from here. Check the version first if your drive "
+             "already carries Scalos - Aminet's is 1.2b from February 2000, "
+             "and ClassicWB FULL ships 1.2d from January 2001, so running "
+             "this installer over it is a step backwards.",
     ),
 
     # ------------------------------------------------------------- speed
@@ -720,18 +806,40 @@ CATALOGUE: list[Package] = [
         "The RTG subsystem. Only useful where there is an RTG display to draw "
         "on - the Pi's HDMI output.",
         category=Category.SPEED,
-        download=Download("driver/video/Picasso96.lha",
-                          stage=STAGING + "/Picasso96"),
+        download=Download(
+            "driver/video/Picasso96.lha",
+            #  Installed from its own archive, not assembled out of whatever
+            #  the source drive happened to carry. RTG used to depend on the
+            #  imported system having a Picasso96 monitor to adapt: build on
+            #  a distribution without one - ClassicWB has none - and the card
+            #  came out with VideoCore.card in LIBS: and nothing able to load
+            #  it, which is a feature that works or does not depending on
+            #  where the drive came from.
+            (("Picasso96Install", STAGING + "/Picasso96"),
+             ("Picasso96Install/Libs/Picasso96API.library", "Libs"),
+             ("Picasso96Install/Libs/Picasso96/fastlayers.library",
+              "Libs/Picasso96"),
+             ("Picasso96Install/Devs/Monitors/Picasso96", "Devs/Monitors"),
+             ("Picasso96Install/Devs/Monitors/Picasso96.info",
+              "Devs/Monitors"),
+             ("Picasso96Install/Prefs/Picasso96Mode", "Prefs"),
+             ("Picasso96Install/Prefs/Picasso96Mode.info", "Prefs")),
+            #  The archive ships one settings file per monitor frequency and
+            #  its installer asks which. Emu68's output is HDMI, so the most
+            #  permissive of them is the one that does not needlessly cut the
+            #  mode list short.
+            rename=(("Picasso96Install/Devs/Picasso96Settings.64", "Devs",
+                     "Picasso96Settings"),)),
         rtg_only=True,
         #  Choosing an RTG display *is* choosing Picasso96: it is the RTG
         #  subsystem, and Emu68's driver is a card for it. Leaving it to be
         #  ticked separately meant asking for the Pi's HDMI output and being
         #  handed a card with no screen modes to show on it.
         essential=True,
-        note="Emu68's VideoCore driver is installed for it. Run the Installer "
-             "from Storage/Install on the Amiga to create the monitor and "
-             "screen modes - doing that here produced a card that would not "
-             "boot.",
+        note="Installed, not staged: Picasso96API.library, its own monitor "
+             "and settings, with Emu68's VideoCore driver as the board. The "
+             "full archive is still in Storage/Install if you want the "
+             "datatypes and painting-program drivers as well.",
     ),
 
     # -------------------------------------------------------- networking
@@ -1107,11 +1215,29 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
     #  files by `rename` or wrote its own returned here instead, and its whole
     #  archive went to `stage` - which for such a package is "", the volume
     #  root.
-    if not (download.items or download.rename or download.write):
+    if not (download.items or download.rename or download.write
+            or download.retool):
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
         return [(str(source), download.stage)]
     out: list[tuple[str, str]] = _written(package, progress)
+    for inside, destination, newname, tool in download.retool:
+        source = root / inside
+        if not source.exists():
+            progress.log(f"  {package.label}: {inside} is not in the archive")
+            continue
+        try:
+            icon = amigainfo.set_default_tool(source.read_bytes(), tool)
+        except amigainfo.InfoError as error:
+            progress.log(f"  {package.label}: {inside} is not an icon this "
+                         f"understands ({error}); leaving it out rather than "
+                         f"writing one that opens the wrong thing")
+            continue
+        staged = cache_dir() / f"{package.key}-retooled" / destination
+        staged.mkdir(parents=True, exist_ok=True)
+        (staged / newname).write_bytes(icon)
+        out.append((str(staged / newname), destination))
+        progress.log(f"  {package.label}: {newname} set to open with {tool}")
     for inside, destination, newname in download.rename:
         source = root / inside
         if not source.exists():
@@ -1137,6 +1263,53 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
 def suits(key: str, chipset: Chipset, display: Display) -> bool:
     package = CATALOGUE_BY_KEY.get(key)
     return package is not None and package.suits(chipset, display)
+
+
+HUNK_HEADER = b"\x00\x00\x03\xf3"
+
+
+def principal_programs(keys: list[str], progress: Progress | None = None,
+                       **kw) -> tuple[dict[str, tuple[str, str, tuple | None]],
+                                      set[str]]:
+    """What the chosen packages install, by program name, and where they go.
+
+    Nothing is written down in the catalogue: the names come from the
+    archives themselves, so a duplicate can be looked for on any drive
+    rather than only on the one distribution somebody checked by hand.
+
+    Only *principal* programs - what a package puts at the top of a drawer,
+    and only real AmigaDOS executables. A file buried three levels inside a
+    package's tree is support, and its name is not the program's: matching on
+    those turned a PFS3 tool into a duplicate of something inside Visage.
+    """
+    from . import content                                   # noqa: PLC0415
+    wanted: dict[str, tuple[str, str, tuple | None]] = {}
+    filling: set[str] = set()
+    for key in expand(keys):
+        package = CATALOGUE_BY_KEY.get(key)
+        if package is None or package.download is None:
+            continue
+        for source, destination in overlays_for([key], progress=progress, **kw):
+            filling.add(destination)
+            path = Path(source)
+            try:
+                candidates = ([path] if path.is_file()
+                              else [c for c in path.iterdir() if c.is_file()])
+            except OSError:
+                continue
+            for item in candidates:
+                if not item.name:
+                    continue
+                try:
+                    data = item.read_bytes()
+                except OSError:
+                    continue
+                if data[:4] != HUNK_HEADER:
+                    continue
+                wanted.setdefault(item.name.lower(),
+                                  (key, package.label,
+                                   content.version_of(data)))
+    return wanted, filling
 
 
 def overlays_for(keys: list[str],

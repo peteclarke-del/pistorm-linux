@@ -406,6 +406,11 @@ class PartitionRow(Adw.ExpanderRow):
         )
 
 
+def _version(pair) -> str:
+    """A (version, revision) pair as an Amiga would write it."""
+    return f"{pair[0]}.{pair[1]}" if pair else "an unreadable version"
+
+
 class ImagerWindow(Adw.ApplicationWindow):
     def __init__(self, application: Adw.Application):
         super().__init__(application=application, title="PiStorm Imager",
@@ -425,7 +430,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.outer = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.toasts.set_child(self.outer)
         self.outer.add_named(self._build_setup(), "setup")
-        self.outer.add_named(self._build_progress(), "progress")
+        #  The build log used to be a page of this same window, so it inherited
+        #  whatever size the setup pages wanted and had to be resized by hand
+        #  every time. It is a window of its own now, sized for reading a log.
+        self.progress_window = Adw.Window(
+            modal=True, transient_for=self, hide_on_close=True,
+            default_width=900, default_height=720, title="Writing")
+        self.progress_window.set_content(self._build_progress())
+        self.progress_window.connect("close-request", self._on_progress_close)
 
         #  Long values - a disk description, a screen mode, a board name - are
         #  ellipsised in a combo row's value slot; show them in full instead.
@@ -1008,6 +1020,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         if not path:
             self.quick_hdf_info.set_subtitle("No image selected")
             self._relayout_partitions()
+            #  Both lists describe the drive that was chosen, so dropping the
+            #  drive has to drop them: left standing, they would leave
+            #  software out of a build that is no longer using that drive.
+            self._refresh_older_copies()
+            self._refresh_what_arrives()
+            self._refresh_what_cannot_work()
             self._quick_preview()
             return
         scheme = presets.describe_image_scheme(path)
@@ -1027,6 +1045,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  so without this the option to add them never appeared.
         self._sync_visibility()
         self._relayout_partitions()
+        self._refresh_older_copies()
+        self._refresh_what_arrives()
+        self._refresh_what_cannot_work()
         self._quick_preview()
 
     def _primary(self) -> str:
@@ -1784,6 +1805,46 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.packages_group.add(suggest)
         page.add(self.packages_group)
 
+        #  A prepared drive can carry its own copy of a chosen program under
+        #  a different name entirely - ClassicWB keeps SysInfo 3.24 from 1993
+        #  in Tools/SysInfo while the package installs 4.4 into
+        #  Utilities/SysInfo - so both land and only one is ever opened.
+        #  Removing somebody's software is not a thing to do quietly, so each
+        #  one is listed and can be kept.
+        self.older_group = Adw.PreferencesGroup(
+            title="Older copies already on the drive",
+            description="The drive you are building on carries its own copy "
+                        "of some of what you ticked, under its own name. "
+                        "These are removed so only the version you chose is "
+                        "on the card. Turn one off to keep both.")
+        self.older_rows: dict[str, Adw.SwitchRow] = {}
+        self.older_group.set_visible(False)
+        page.add(self.older_group)
+
+        #  A ready-made distribution arrives with its own idea of what
+        #  belongs on a card, and until now it was all of it or none.
+        self.arrives_group = Adw.PreferencesGroup(
+            title="Software the drive already has",
+            description="What the image you are building on brings with it. "
+                        "Turn one off to leave it out - the drawer, what is "
+                        "in it and its icon.")
+        self.arrives_rows: dict[str, Adw.SwitchRow] = {}
+        self.arrives_group.set_visible(False)
+        page.add(self.arrives_group)
+
+        #  Software the drive brings that cannot work here at all - written
+        #  for another machine, or asking for a device or a volume this card
+        #  has not got. Shown separately from the rest, because "you may not
+        #  want this" and "this cannot work" are different statements.
+        self.broken_group = Adw.PreferencesGroup(
+            title="Software that cannot work on this card",
+            description="Each of these was checked against the card being "
+                        "built and needs something it will not have. They are "
+                        "removed unless you turn one back on.")
+        self.broken_rows: dict[str, Adw.SwitchRow] = {}
+        self.broken_group.set_visible(False)
+        page.add(self.broken_group)
+
         #  One group per category, so a long list reads as a few short ones.
         self.package_rows: dict[str, Adw.SwitchRow] = {}
         self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
@@ -1997,7 +2058,7 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _build_progress(self) -> Gtk.Widget:
         view = Adw.ToolbarView()
-        header = Adw.HeaderBar(show_start_title_buttons=False)
+        header = Adw.HeaderBar()
         header.set_title_widget(Adw.WindowTitle(title="Writing", subtitle=""))
         self.progress_title = header.get_title_widget()
         view.add_top_bar(header)
@@ -2027,7 +2088,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.back_button = Gtk.Button(label="Back")
         self.back_button.set_visible(False)
         self.back_button.connect("clicked",
-                                 lambda _b: self.outer.set_visible_child_name("setup"))
+                                 lambda _b: self.progress_window.close())
         buttons.append(self.back_button)
         self.save_log_button = Gtk.Button(label="Save log…")
         self.save_log_button.set_visible(False)
@@ -2280,6 +2341,163 @@ class ImagerWindow(Adw.ApplicationWindow):
         for row in list(self.partition_rows) + list(self.extra_rows):
             row.reload_categories()
 
+    def _older_copies_on_the_drive(self) -> dict[str, tuple[str, str]]:
+        """Copies of chosen software already on the drive, somewhere else.
+
+        Discovered, never declared. The names come from the archives the
+        chosen packages install, and the drive is searched for them - so this
+        works on any prepared drive rather than only on the one distribution
+        somebody checked by hand. Each answer is (drawer, what to say).
+        """
+        found: dict[str, tuple[str, str]] = {}
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        chosen = self._chosen_packages()
+        if not path or not chosen:
+            return found
+        try:
+            from ..core import amigaos, content, packages as _p  # noqa: PLC0415
+            wanted, filling = _p.principal_programs(chosen)
+            if not wanted:
+                return found
+            reader, _label = amigaos.open_amiga_volume(path, "")
+        except Exception:                                    # noqa: BLE001
+            return found
+        try:
+            #  The walk is the slow part, so it is kept and reused: without
+            #  that, every tick of a package would search the drive again.
+            if getattr(self, "_scanned_drive", None) != path:
+                self._scanned_drive = path
+                self._drive_listing = content.list_files(reader)
+            for copy in content.find_duplicates(reader, wanted, filling,
+                                                self._drive_listing):
+                shown = (f"{copy.label} {_version(copy.theirs)} is in "
+                         f"{copy.drawer}; you chose {_version(copy.ours)}")
+                #  Say which way round it is. "The same version, or one that
+                #  cannot be read" covered three different situations and was
+                #  wrong about at least one of them: ClassicWB's Scalos is
+                #  39.222 against the package's 39.218, so the drive has the
+                #  newer copy and removing it would be a downgrade.
+                if copy.ours and copy.theirs and copy.theirs > copy.ours:
+                    shown += " - the drive's copy is the newer one"
+                elif copy.ours and copy.theirs and copy.theirs == copy.ours:
+                    shown += " - the same version either way"
+                elif not copy.certain:
+                    shown += " - the versions cannot be compared"
+                found[copy.drawer] = (shown, "sure" if copy.certain else "ask")
+        except Exception:                                    # noqa: BLE001
+            return found
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                # noqa: BLE001
+                pass
+        return found
+
+    def _refresh_what_arrives(self) -> None:
+        """List the programs the chosen drive already carries."""
+        if not hasattr(self, "arrives_group"):
+            return
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        found: list[tuple[str, str]] = []
+        if path:
+            try:
+                from ..core import amigaos, content          # noqa: PLC0415
+                reader, _label = amigaos.open_amiga_volume(path, "")
+            except Exception:                                # noqa: BLE001
+                reader = None
+            if reader is not None:
+                try:
+                    found = content.installed_programs(reader)
+                finally:
+                    try:
+                        reader.f.close()
+                    except Exception:                        # noqa: BLE001
+                        pass
+        wanted = {f"{drawer}/{name}" for drawer, name in found}
+        for key, row in list(self.arrives_rows.items()):
+            if key not in wanted:
+                self.arrives_group.remove(row)
+                del self.arrives_rows[key]
+        for drawer, name in found:
+            key = f"{drawer}/{name}"
+            if key in self.arrives_rows:
+                continue
+            row = Adw.SwitchRow(title=name, subtitle=f"in {drawer}")
+            row.set_active(True)                 # keep it, unless told not to
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.arrives_rows[key] = row
+            self.arrives_group.add(row)
+        self.arrives_group.set_visible(bool(self.arrives_rows))
+
+    def _refresh_what_cannot_work(self) -> None:
+        """List software the drive carries that this card cannot run."""
+        if not hasattr(self, "broken_group"):
+            return
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        found = []
+        if path:
+            try:
+                from ..core import amigaos, content            # noqa: PLC0415
+                reader, _label = amigaos.open_amiga_volume(path, "")
+            except Exception:                                  # noqa: BLE001
+                reader = None
+            if reader is not None:
+                try:
+                    named = [spec.volume_name or spec.name
+                             for spec in (row.spec() for row
+                                          in getattr(self, "partition_rows", []))]
+                    volumes = content.volumes_on_the_card(reader, named)
+                    drivers = []
+                    entry = reader.find("Devs/DOSDrivers")
+                    if entry is not None and entry.is_dir:
+                        drivers = [e.name for e in
+                                   reader.listdir(content._locator(entry))]
+                    found = content.cannot_work(reader, volumes, drivers)
+                except Exception:                              # noqa: BLE001
+                    found = []
+                finally:
+                    try:
+                        reader.f.close()
+                    except Exception:                          # noqa: BLE001
+                        pass
+        wanted = {b.drawer: b for b in found}
+        for key, row in list(self.broken_rows.items()):
+            if key not in wanted:
+                self.broken_group.remove(row)
+                del self.broken_rows[key]
+        for drawer, broken in wanted.items():
+            if drawer in self.broken_rows:
+                continue
+            row = Adw.SwitchRow(title=f"Remove {drawer}",
+                                subtitle="; ".join(broken.reasons))
+            row.set_active(True)
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.broken_rows[drawer] = row
+            self.broken_group.add(row)
+        self.broken_group.set_visible(bool(self.broken_rows))
+
+    def _refresh_older_copies(self) -> None:
+        """Show one row per older copy actually found, keeping any answers."""
+        if not hasattr(self, "older_group"):
+            return
+        found = self._older_copies_on_the_drive()
+        for drawer, row in list(self.older_rows.items()):
+            if drawer not in found:
+                self.older_group.remove(row)
+                del self.older_rows[drawer]
+        for drawer, (shown, how) in found.items():
+            if drawer in self.older_rows:
+                continue
+            row = Adw.SwitchRow(title=f"Remove {drawer}", subtitle=shown)
+            #  On only where the version it carries is provably older than
+            #  the one being installed. Anything else is a question, and the
+            #  answer that keeps somebody's software is the safe one.
+            row.set_active(how == "sure")
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.older_rows[drawer] = row
+            self.older_group.add(row)
+        self.older_group.set_visible(bool(self.older_rows))
+
     def _refresh_packages(self) -> None:
         """Offer the software that suits this machine and this screen.
 
@@ -2325,7 +2543,14 @@ class ImagerWindow(Adw.ApplicationWindow):
                 finally:
                     self._settling_packages = was
                 row.set_sensitive(False)
-                note += "  -  required by the display you chose."
+                #  First, not last. A switch that is on and cannot be moved
+                #  is a question - "why can I not change this?" - and the
+                #  answer was arriving at the end of three hundred characters
+                #  of description and installation notes, where it was asked
+                #  about rather than read.
+                note = ("Required by the display you chose, so it is on and "
+                        "cannot be turned off - change the display on the "
+                        "Amiga page to release it.  -  " + note)
             else:
                 row.set_sensitive(fits)
                 if not fits:
@@ -2396,6 +2621,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         finally:
             self._settling_packages = False
         self._on_layout_changed()
+        #  After the settling, never during it: what the drive already
+        #  carries follows from the final set of packages, not from each
+        #  intermediate state as dependencies are switched on and off.
+        self._refresh_older_copies()
         if row is not None and row.get_active():
             self._ask_about_rivals(key)
 
@@ -2780,6 +3009,24 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  from the pages themselves quietly built a card without it.
             package_keys=self._chosen_packages(),
             replace_older_software=self.replace_older_row.get_active(),
+            #  Everything the user asked to be left out, from both lists.
+            #  They read in opposite directions and mean the same thing: a
+            #  drawer of the drive's own software switched *off* is one they
+            #  do not want, and an older copy switched *on* is one they want
+            #  replaced. Both go drawer, contents and icon.
+            #
+            #  These used to be two config fields, and the second was written
+            #  and then read by nobody - so the whole "older copies" list did
+            #  nothing at all, quietly, while looking as though it worked.
+            leave_out=sorted(
+                [key for key, row in getattr(self, "arrives_rows", {}).items()
+                 if not row.get_active()]
+                + [drawer for drawer, row
+                   in getattr(self, "older_rows", {}).items()
+                   if row.get_active()]
+                + [drawer for drawer, row
+                   in getattr(self, "broken_rows", {}).items()
+                   if row.get_active()]),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
@@ -2840,6 +3087,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         if response == "write":
             self._start(config)
 
+    def _on_progress_close(self, _window) -> bool:
+        """Keep the log up while the build is still running.
+
+        Closing it would leave an hour-long build with nowhere to report,
+        and no way back to it. Cancel is the way to stop; the window closes
+        by itself once there is nothing left to say.
+        """
+        if self.cancel_button.get_visible():
+            self._toast("The build is still running - use Cancel to stop it")
+            return True                       # refuse the close
+        return False
+
     def _start(self, config: builder.BuildConfig) -> None:
         self.cancel_flag.clear()
         self.log_buffer.set_text("")
@@ -2849,7 +3108,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.cancel_button.set_visible(True)
         self.back_button.set_visible(False)
         self.save_log_button.set_visible(False)
-        self.outer.set_visible_child_name("progress")
+        self.progress_window.present()
 
         if config.target_is_device:
             threading.Thread(target=self._run_privileged, args=(config,),
