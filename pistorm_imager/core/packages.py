@@ -140,6 +140,11 @@ class Package:
     #  come out of a donor system instead, which meant a card was built from
     #  whatever some other installation happened to hold.
     download: Download | None = None
+    #  Recommended: ticked wherever it suits the machine and the screen.  This
+    #  is the *only* statement of what a sensible card carries.  There used to
+    #  be a second one - a hand-written list of keys inside ``suggested()`` -
+    #  and the two disagreed about nine packages, so the tick boxes and the
+    #  "suggest a set" button recommended different cards.
     default: bool = False
     #  Only worth having where the Pi's HDMI is driving an RTG screen.
     rtg_only: bool = False
@@ -178,6 +183,34 @@ class Package:
     #  that needed it; one that is useful on its own stays, because turning
     #  off a browser should not take MUI away from everything else.
     support_only: bool = False
+    #  A library that cannot wait for S:User-Startup.  It has to be soft-kicked
+    #  from S:Startup-Sequence before IPrefs opens the ROM's copy, and a drive
+    #  that brings its own boot script has nowhere to put that line - so the
+    #  package is left out rather than installed where something opens it at
+    #  the wrong moment.  Naming the library here keeps the rule with the
+    #  package it belongs to instead of in a table in the builder.
+    boot_library: str = ""
+    #  Installed once for every drive this build fills with content, so a card
+    #  with a Games drive and a Demos drive arrives with a launcher for each.
+    per_content_drive: bool = False
+    #  The preferences file inside such a launcher that names the drawers it
+    #  scans, one ``Volume:drawer`` per line.  The name and the format belong
+    #  to the launcher, so they are declared with it.
+    content_list: str = ""
+    #  Words in a filled drive's name or folder that mean this package is
+    #  about what is on it.  Nothing names a drive here: the words are what to
+    #  look for in whatever drives the user set up.
+    content_words: tuple[str, ...] = ()
+    #  Warn when a drive matching ``content_words`` is being filled and this is
+    #  not installed - the content then has nothing able to launch it.
+    needed_for_content: bool = False
+    #  Warn when this is installed and no drive matches ``content_words`` - it
+    #  will open on an empty list.
+    wants_content: bool = False
+    #  Paths that prove this software is already on a drive being imported.
+    #  Used to describe what an image brings, so the description follows the
+    #  catalogue rather than a second list that has to be kept level with it.
+    evidence: tuple[str, ...] = ()
 
     @property
     def manual(self) -> bool:
@@ -234,6 +267,9 @@ CATALOGUE: list[Package] = [
         note="Games that need a Kickstart image want them in Devs/Kickstarts "
              "on the card - they are Commodore's and cannot be fetched, so "
              "copy your own there afterwards.",
+        content_words=("game", "demo", "whdload"),
+        needed_for_content=True,
+        evidence=("C/WHDLoad",),
     ),
     Package(
         "lha", "LhA",
@@ -430,6 +466,11 @@ CATALOGUE: list[Package] = [
         #  Its window is built from MUI classes that MUI itself does not
         #  carry, so a card with no donor still has everything it opens.
         requires=("mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext"),
+        default=True,
+        per_content_drive=True,
+        content_words=("game",),
+        wants_content=True,
+        content_list="repos.prefs",
     ),
     Package(
         "identify", "identify.library",
@@ -480,6 +521,8 @@ CATALOGUE: list[Package] = [
         #  was asked and answered 40.1 with 51.4 sitting unused in LIBS:.
         note="Installed by LoadModule at the top of S:Startup-Sequence, which "
              "is the only point early enough to replace the one in ROM.",
+        default=True,
+        boot_library="icon.library",
     ),
     Package(
         "magicmenu", "MagicMenu",
@@ -497,6 +540,7 @@ CATALOGUE: list[Package] = [
                           (("MagicMenu/WBStartup/MagicMenu", "WBStartup"),
                            ("MagicMenu/Icons/MagicWB/MagicMenu.info",
                             "WBStartup"))),
+        default=True,
     ),
     Package(
         "visualprefs", "VisualPrefs",
@@ -506,6 +550,7 @@ CATALOGUE: list[Package] = [
         download=Download("util/wb/VisualPrefs.lha",
                           stage=STAGING + "/VisualPrefs"),
         note="Run its Installer from Storage/Install on the Amiga.",
+        default=True,
     ),
     Package(
         "fullpalette", "FullPalette",
@@ -530,6 +575,8 @@ CATALOGUE: list[Package] = [
                           #  editor's under its own name.
                           rename=(("FullPalette/FullPalette.info",
                                    "WBStartup", "FPPrefs.info"),)),
+        default=True,
+        chipsets=(Chipset.OCS, Chipset.ECS, Chipset.AGA),
     ),
     Package(
         "newicons", "NewIcons",
@@ -698,6 +745,57 @@ CATALOGUE: list[Package] = [
              "Workbench as AD0:. Sixteen units are mountable.",
     ),
     Package(
+        "reqtools", "ReqTools",
+        "The file and font requesters a great deal of Amiga software asks "
+        "for by name. Nothing shows without it.",
+        category=Category.SYSTEM,
+        download=Download("util/libs/ReqToolsUsr.lha",
+                          (("ReqTools/libs/reqtools.library", "Libs"),)),
+        #  Fetched rather than assumed. Most prepared drives carry a copy,
+        #  but a card must not be built out of what the source image happened
+        #  to hold: build on a drive without one and the virus killer opens
+        #  no requester and looks broken.
+        support_only=True,
+        note="Installed into LIBS: for the software that needs it.",
+    ),
+    Package(
+        "xvs", "xvs.library",
+        "The virus recognition and disinfection engine every current Amiga "
+        "virus killer shares. This is the part that has to be recent.",
+        category=Category.SYSTEM,
+        download=Download("util/virus/xvslibrary.lha",
+                          (("xvs/libs/xvs.library", "Libs"),)),
+        support_only=True,
+        note="Version 33.49, published April 2025 - the most recently "
+             "updated piece of Amiga software on this card.",
+    ),
+    Package(
+        "virusz", "VirusZ III",
+        "The virus killer. Checks memory, boot blocks, files and the "
+        "contents of archives, and is the last one still being maintained.",
+        category=Category.EXTRAS,
+        download=Download(
+            "util/virus/VirusZ.lha",
+            #  Placed file by file rather than unpacked whole: the archive
+            #  also carries a MorphOS icon and PGP signatures, which are not
+            #  wanted on the card.
+            (("VirusZ/VirusZ", "Utilities/VirusZ"),
+             ("VirusZ/VirusZ.info", "Utilities/VirusZ"),
+             ("VirusZ/VirusZ.doc", "Utilities/VirusZ"),
+             ("VirusZ/VirusZ.doc.info", "Utilities/VirusZ"),
+             #  The archive's own top level icon, which becomes the drawer's.
+             ("VirusZ.info", "Utilities")),
+        ),
+        #  The scanner is not in the program: it is in xvs.library, which is
+        #  why that is updated on its own and why this is worth having at all.
+        #  ReqTools is what it opens its file requester with.
+        requires=("xvs", "reqtools"),
+        note="Version 1.04, installed into Utilities/VirusZ and ready to "
+             "run. Not started at boot: it is a checker to reach for, and a "
+             "resident memory watcher costs a card that has no memory to "
+             "spare. Its scanner, xvs.library, comes with it.",
+    ),
+    Package(
         "ahi", "AHI",
         "The Amiga's standard audio interface. Programs ask AHI for sound "
         "instead of driving Paula themselves, so they share the hardware "
@@ -783,6 +881,8 @@ CATALOGUE: list[Package] = [
              "already carries Scalos - Aminet's is 1.2b from February 2000, "
              "and ClassicWB FULL ships 1.2d from January 2001, so running "
              "this installer over it is a step backwards.",
+        default=True,
+        evidence=("C/Scalos",),
     ),
 
     # ------------------------------------------------------------- speed
@@ -797,6 +897,8 @@ CATALOGUE: list[Package] = [
                           (("FBlit/FBlit", "C"),
                            ("FBlit/fblit.library", "Libs"))),
         startup=("C:FBlit >NIL:",),
+        default=True,
+        chipsets=(Chipset.OCS, Chipset.ECS, Chipset.AGA),
     ),
     Package(
         "ftext", "FText",
@@ -805,6 +907,8 @@ CATALOGUE: list[Package] = [
         native_only=True,
         download=Download("util/boot/FText.lha", (("FText", "C"),)),
         startup=("C:FText >NIL:",),
+        default=True,
+        chipsets=(Chipset.OCS, Chipset.ECS, Chipset.AGA),
     ),
     Package(
         "picasso96", "Picasso96",
@@ -845,6 +949,8 @@ CATALOGUE: list[Package] = [
              "and settings, with Emu68's VideoCore driver as the board. The "
              "full archive is still in Storage/Install if you want the "
              "datatypes and painting-program drivers as well.",
+        default=True,
+        evidence=("Libs/Picasso96",),
     ),
 
     # -------------------------------------------------------- networking
@@ -867,6 +973,7 @@ CATALOGUE: list[Package] = [
             source="the Emu68-tools release"),
         note="Needs the WiFi network filled in on the Amiga page: the driver "
              "reads the same wpa_supplicant.conf the Pi is given.",
+        default=True,
     ),
 
     Package(
@@ -907,6 +1014,7 @@ CATALOGUE: list[Package] = [
              "APC&TCP. Roadshow does put bsdsocket.library in LIBS:, so on a "
              "card that also runs WHDLoad games, add C:NetShutdown to "
              "S:WHDLoad-Startup to take the stack down while a game runs.",
+        default=True,
     ),
     Package(
         "amissl", "AmiSSL",
@@ -916,6 +1024,7 @@ CATALOGUE: list[Package] = [
         download=Download("util/libs/AmiSSL-v5-OS3.lha",
                           stage=STAGING + "/AmiSSL"),
         note="Run its Installer from Storage/Install on the Amiga.",
+        default=True,
     ),
     Package(
         "netsurf", "NetSurf",
@@ -926,6 +1035,7 @@ CATALOGUE: list[Package] = [
                           stage="Internet/NetSurf"),
         requires=("mui",),
         note="Unpacked into Internet/NetSurf, ready to run.",
+        default=True,
     ),
     Package(
         "amftp", "AmFTP",
@@ -1381,35 +1491,43 @@ def overlays_by_package(keys: list[str],
     return by_package
 
 
-def default_keys(rtg: bool = True) -> list[str]:
-    return [p.key for p in CATALOGUE if p.default and (rtg or not p.rtg_only)]
-
-
 def suggested(machine: Machine, display: Display, *,
               networking: bool = False) -> list[str]:
     """A sensible set for this machine and this screen.
 
-    The reasoning, in one place rather than scattered through the interface:
+    Nothing is listed here.  Every package says for itself whether it is
+    recommended (``default``) and what it needs to be worth having
+    (``rtg_only``, ``native_only``, ``chipsets``, ``or_rtg``), and this walks
+    the catalogue applying those.  Adding a package to the recommended set is
+    then one word on the package, and it cannot fall out of step with the tick
+    boxes on the packages page, which read the same field.
 
-    * The CPU patches are deliberately NOT here.  Newer SetPatch and CPU
-      libraries look like an obvious win on a 68040-class machine, and they
-      stop every WHDLoad game from running - which is what these cards are
-      mostly for.
-    * Everything needs WHDLoad, an archiver and Installer.
-    * A faster icon.library is free speed on any machine.
+    That mattered.  This used to be a hand-written list of keys, and it had
+    drifted from the ``default`` flags in both directions: DefIcons and
+    FreeWheel were ticked on a fresh window but never suggested, while iGame,
+    the icon library, MagicMenu, VisualPrefs, FBlit, FText, FullPalette,
+    Picasso96 and Scalos were suggested but never ticked.  Two answers to
+    "what should this card carry?", disagreeing about nine packages.
+
+    The reasoning behind the flags, which is the part worth writing down:
+
+    * The CPU patches are deliberately NOT recommended.  Newer SetPatch and
+      CPU libraries look like an obvious win on a 68040-class machine, and
+      they stop every WHDLoad game from running - which is what these cards
+      are mostly for.
     * On a native screen the cost is the chipset drawing it, so FBlit, FText
-      and a locked palette earn their place.
+      and a locked palette earn their place - and none of them mean anything
+      on a bare Pi with no Amiga chipset to patch, which is why they name the
+      chipsets they want rather than being special-cased here.
     * On an RTG screen there is no blitter in the way; Picasso96 is the point
       of it, and a heavier desktop becomes affordable.
+    * Networking is off unless it was asked for, so nothing in the network
+      category is recommended until there is a network to use.  The extras in
+      it - an FTP client, an IRC client - stay off even then: they are a
+      preference, not part of getting online.
     """
-    chosen = ["whdload", "lha", "installer", "igame", "iconlib",
-              "magicmenu", "visualprefs"]
-    if display.uses_native and machine.chipset is not Chipset.NONE:
-        chosen += ["fblit", "ftext", "fullpalette"]
-    if display.uses_rtg:
-        chosen += ["picasso96"]
-    if machine.aga or display.uses_rtg:
-        chosen += ["scalos"]
-    if networking:
-        chosen += ["wifipi", "roadshow", "amissl", "netsurf"]
-    return [key for key in chosen if suits(key, machine.chipset, display)]
+    return [p.key for p in CATALOGUE
+            if p.default
+            and not p.support_only              # arrives via ``requires``
+            and (networking or p.category is not Category.NETWORK)
+            and p.suits(machine.chipset, display)]

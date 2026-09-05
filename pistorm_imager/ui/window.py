@@ -1846,6 +1846,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         page.add(self.broken_group)
 
         #  One group per category, so a long list reads as a few short ones.
+        #  What a fresh window starts with is the same recommendation the
+        #  "suggest a set" button makes, for the machine and screen the
+        #  window opens on.  Ticking ``package.default`` directly is what let
+        #  the two drift apart: the flags said one set and the button said
+        #  another.
+        starting = set(packages.suggested(machines.MACHINES[0],
+                                          list(machines.Display)[0]))
         self.package_rows: dict[str, Adw.SwitchRow] = {}
         self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
         for category in packages.Category:
@@ -1856,7 +1863,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             for package in members:
                 row = Adw.SwitchRow(title=package.label,
                                     subtitle=package.description)
-                row.set_active(package.default)
+                row.set_active(package.key in starting)
                 row.connect("notify::active",
                             lambda *_a, key=package.key:
                             self._on_package_toggled(key))
@@ -3440,7 +3447,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._ready = was_ready
         self.apply(builder.BuildConfig(
             target="",
-            package_keys=[p.key for p in packages.CATALOGUE if p.default]))
+            package_keys=packages.suggested(machines.MACHINES[0],
+                                            list(machines.Display)[0])))
         #  Whatever is lying about on this machine is found again, exactly as
         #  it is at startup: a Kickstart, the Workbench disks, a PFS3 handler.
         self._detect_material()
