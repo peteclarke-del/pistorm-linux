@@ -2961,6 +2961,37 @@ class SoftwareThatCannotWorkIsFlagged(unittest.TestCase):
         self.assertIn("games", found)
         self.assertIn("sys", found)
 
+    def test_assigns_made_by_a_script_the_startup_runs_are_seen(self):
+        #  ClassicWB's User-Startup does "Execute S:Assign-Startup", and that
+        #  is where A-Programs:, A-Games: and the rest are made. Reading only
+        #  the two obvious files said those volumes did not exist, and called
+        #  perfectly good software broken.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        pages = {
+            "S/User-Startup": b"Execute S:Assign-Startup\n",
+            "S/Assign-Startup": b"Assign >NIL: A-Programs: SYS:Programs\n",
+        }
+        class Entry:
+            def __init__(self, name): self.name, self.is_dir = name, False
+        class Reader:
+            def find(self, path):
+                return Entry(path) if path in pages else None
+            def read_file(self, e): return pages[e.name]
+            def listdir(self, _where=None): return []
+        found = content.volumes_on_the_card(Reader(), ["DH0"])
+        self.assertIn("a-programs", found)
+
+    def test_a_script_running_itself_does_not_hang(self):
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        class Entry:
+            def __init__(self, name): self.name, self.is_dir = name, False
+        class Reader:
+            def find(self, path):
+                return Entry(path) if path.startswith("S/") else None
+            def read_file(self, _e): return b"Execute S:User-Startup\n"
+            def listdir(self, _where=None): return []
+        self.assertIn("sys", content.volumes_on_the_card(Reader(), []))
+
     def test_it_finds_what_the_user_pointed_at(self):
         from pistorm_imager.core import amigaos, content          # noqa: PLC0415
         image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
@@ -2984,6 +3015,132 @@ class SoftwareThatCannotWorkIsFlagged(unittest.TestCase):
         #  And it stays quiet about the thirty-five that are fine.
         self.assertLess(len(drawers), 6, f"too eager: {sorted(drawers)}")
 
+
+
+class AnIconsToolHasToBeFindable(unittest.TestCase):
+    """Workbench runs the tool an icon names, and does not search for it.
+
+    ClassicWB's def_project.info - the icon every file falls back on - names
+    simply "MultiView", with no path. Double-clicking a file found nothing,
+    while def_view.info beside it says SYS:Utilities/MultiView and works.
+    Reported as "MultiView is installed, but no app can find it".
+    """
+
+    def _icon(self, tool):
+        from pistorm_imager.core import amigainfo                # noqa: PLC0415
+        import struct                                            # noqa: PLC0415
+        data = bytearray(amigainfo.DISKOBJECT_SIZE)
+        struct.pack_into(">H", data, 0, amigainfo.MAGIC)
+        struct.pack_into(">H", data, 2, 1)
+        data[amigainfo.TYPE_OFFSET] = 4                          # a project
+        blank = bytes(data) + struct.pack(">I", 4)
+        return amigainfo.set_default_tool(blank, tool)
+
+    def _fixer(self, programs):
+        from pistorm_imager.core import compat                   # noqa: PLC0415
+        fixer = compat.Compatibility(Progress())
+        fixer.knows_where(programs)
+        return fixer
+
+    def test_a_bare_tool_is_given_its_path(self):
+        from pistorm_imager.core import amigainfo                # noqa: PLC0415
+        fixer = self._fixer({"multiview": "SYS:Utilities/MultiView"})
+        fixed = fixer.offer("Prefs/Env-Archive/Sys/def_project.info",
+                            self._icon("MultiView"))
+        self.assertEqual(amigainfo.read_default_tool(fixed),
+                         "SYS:Utilities/MultiView")
+
+    def test_a_tool_that_already_has_one_is_left_alone(self):
+        fixer = self._fixer({"multiview": "SYS:Utilities/MultiView"})
+        icon = self._icon("SYS:Utilities/MultiView")
+        self.assertEqual(fixer.offer("Prefs/Env-Archive/Sys/def_view.info",
+                                     icon), icon)
+
+    def test_a_name_nothing_answers_to_is_left_alone(self):
+        #  Guessing at a path is worse than leaving it as it was.
+        fixer = self._fixer({"multiview": "SYS:Utilities/MultiView"})
+        icon = self._icon("SomethingElse")
+        self.assertEqual(fixer.offer("Prefs/Env-Archive/Sys/def_x.info",
+                                     icon), icon)
+
+    def test_only_default_icons_are_touched(self):
+        fixer = self._fixer({"multiview": "SYS:Utilities/MultiView"})
+        icon = self._icon("MultiView")
+        self.assertEqual(fixer.offer("Utilities/Something.info", icon), icon)
+
+    def test_an_icon_with_no_program_beside_it_still_says_where(self):
+        #  ClassicWB's Utilities holds MultiView.info and no MultiView: it
+        #  expects the Workbench floppies to supply one, and this build does
+        #  - but only after these icons have been copied.
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        class Entry:
+            def __init__(self, name, is_dir=False):
+                self.name, self.is_dir = name, is_dir
+                self.anode = self.block = abs(hash(name)) & 0xFFFF
+        class Reader:
+            def find(self, path):
+                return Entry(path, True) if path == "Utilities" else None
+            def listdir(self, _where=None):
+                return [Entry("MultiView.info"), Entry("Clock.info"),
+                        Entry("Say")]
+        found = content.programs_by_name(Reader())
+        self.assertEqual(found["multiview"], "SYS:Utilities/MultiView")
+        self.assertEqual(found["say"], "SYS:Utilities/Say")
+
+    def test_the_real_distribution_is_repaired(self):
+        from pistorm_imager.core import amigaos, amigainfo, content  # noqa: PLC0415
+        image = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if not image.exists():
+            self.skipTest("ClassicWB FULL is not on this machine")
+        reader, _label = amigaos.open_amiga_volume(str(image), "")
+        try:
+            fixer = self._fixer(content.programs_by_name(reader))
+            entry = reader.find("Prefs/Env-Archive/Sys/def_project.info")
+            before = reader.read_file(entry)
+            self.assertEqual(amigainfo.read_default_tool(before), "MultiView")
+            after = fixer.offer("Prefs/Env-Archive/Sys/def_project.info",
+                                before)
+            self.assertEqual(amigainfo.read_default_tool(after),
+                             "SYS:Utilities/MultiView")
+        finally:
+            try:
+                reader.f.close()
+            except Exception:                                     # noqa: BLE001
+                pass
+
+
+class TheDaemonGoesInWBStartupNotTheEditor(unittest.TestCase):
+    """FullPalette's two programs are the other way round from how they read.
+
+    The archive's own installer says it: "FPPrefs (the FullPalette daemon
+    that is run in the Startup-sequence)". FullPalette is the *editor* - its
+    strings are Palette Preferences, Load, Save - and it was the one going
+    into WBStartup, so the palette editor opened on every single boot.
+    """
+
+    def _lands(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        download = packages.CATALOGUE_BY_KEY["fullpalette"].download
+        out = {f"{dest}/{Path(inside).name}": inside
+               for inside, dest in download.items}
+        out.update({f"{dest}/{new}": inside
+                    for inside, dest, new in download.rename})
+        return out
+
+    def test_the_daemon_is_what_starts_at_boot(self):
+        landed = self._lands()
+        self.assertIn("WBStartup/FPPrefs", landed)
+        self.assertNotIn("WBStartup/FullPalette", landed,
+                         "the editor was going into WBStartup again")
+
+    def test_the_editor_goes_where_editors_go(self):
+        landed = self._lands()
+        self.assertIn("Prefs/FullPalette", landed)
+        self.assertIn("Prefs/FullPalette.info", landed)
+
+    def test_the_daemon_has_an_icon_or_it_never_runs(self):
+        landed = self._lands()
+        self.assertIn("WBStartup/FPPrefs.info", landed)
 
 
 class TheADFHelperIsClickable(unittest.TestCase):
