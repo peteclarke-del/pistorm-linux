@@ -231,6 +231,9 @@ class Compatibility:
         #  written out with those lines appended.
         self._want_user_startup = False
         self.kept_user_startup: bytes = b""
+        #  Everything the drive's own boot scripts say, kept so that a
+        #  package's startup line is not added on top of one already there.
+        self.boot_scripts: str = ""
         #  Volume name -> (host folder it is filled from, paths left out), so
         #  a games list can be checked against what will actually be there.
         self.content: dict[str, tuple[Path, tuple[str, ...]]] = {}
@@ -480,6 +483,16 @@ class Compatibility:
         if relative.replace("\\", "/").lower().startswith("libs/picasso96/"):
             self._seen_picasso = True
         posix = relative.replace("\\", "/")
+        if any(posix.lower() == f.lower() for f in STARTUP_FILES) \
+                or posix.lower() in (self.CLASSICWB_REAL_STARTUP,
+                                     "s/assign-startup"):
+            #  Remembered whether or not the file is kept. The distribution's
+            #  real boot script is not S:Startup-Sequence at all - that is
+            #  its installer - but T:Science, which its installer renames
+            #  into place. Looking in the obvious file found the installer,
+            #  which starts nothing, so nothing was ever recognised as
+            #  already running.
+            self.boot_scripts += "\n" + data.decode("latin-1", "replace")
         if any(posix.lower() == f.lower() for f in STARTUP_FILES):
             return self._clean_startup(posix, data)
         if parts[-1].startswith("def_") and parts[-1].endswith(".info"):

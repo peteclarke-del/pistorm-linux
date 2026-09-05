@@ -2321,7 +2321,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         """Tick the set that suits the machine and screen that are chosen."""
         wanted = set(packages.suggested(
             self._machine(), self._display(),
-            networking=bool(self.wifi_ssid.get_text().strip())))
+            #  ssid_row, not wifi_ssid: there is no such widget, so pressing
+            #  the button raised AttributeError inside the signal handler and
+            #  did nothing at all, quietly.
+            networking=bool(self.ssid_row.get_text().strip())))
         #  A whole set arriving at once is the suggestion being taken, not a
         #  person weighing one package against another; asking about each
         #  clash inside it would be a queue of dialogs answering nothing.
@@ -2335,6 +2338,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._settling_packages = was
         self._tick_what_is_needed()
         self._refresh_packages()
+        #  The three drive lists are all driven by which packages are on, so
+        #  taking the suggestion has to bring them with it. Without this the
+        #  older-copies list still described the set that was ticked before.
+        self._refresh_older_copies()
+        self._refresh_what_arrives()
+        self._refresh_what_cannot_work()
 
     def _refresh_categories(self) -> None:
         """Re-default every partition's categories for the machine now chosen."""
