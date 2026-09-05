@@ -771,9 +771,13 @@ CATALOGUE: list[Package] = [
         #  its script picks between three builds of every module for the
         #  machine it finds, and replacing the desktop half-way is how a card
         #  stops booting.
-        note="Unpacked into Storage/Install/Scalos. Run its Install.Scalos on "
-             "the Amiga - it chooses between three builds of each module for "
-             "the machine it finds, which cannot be decided from here.",
+        note="Unpacked into Storage/Install/Scalos - staged, not installed. "
+             "Run its Install.Scalos on the Amiga: it chooses between three "
+             "builds of each module for the machine it finds, which cannot "
+             "be decided from here. Check the version first if your drive "
+             "already carries Scalos - Aminet's is 1.2b from February 2000, "
+             "and ClassicWB FULL ships 1.2d from January 2001, so running "
+             "this installer over it is a step backwards.",
     ),
 
     # ------------------------------------------------------------- speed
