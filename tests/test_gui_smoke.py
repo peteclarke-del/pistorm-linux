@@ -1303,6 +1303,16 @@ def on_activate(app: ImagerApplication) -> None:
             check(not any(k.startswith("Tools/") or k.startswith("Utilities/")
                           for k in window.arrives_rows),
                   "and Workbench's own tools are not offered for deletion")
+            #  One program, one row. FMSsys was in both lists at once - on
+            #  here meaning keep it, on in the other meaning remove it.
+            both = set(window.arrives_rows) & set(window.broken_rows)
+            check(not both, f"nothing is in both lists at once ({sorted(both)})")
+            check(any("FMSsys" in k for k in window.broken_rows),
+                  "FMSsys is in the one that removes it")
+            check(not any("FMSsys" in k for k in window.arrives_rows),
+                  "and not in the one that keeps it")
+            check(any("FMSsys" in k for k in window.gather().leave_out),
+                  "so the build is told to leave it out")
             key = next(k for k in window.arrives_rows
                        if k.endswith("/FinalWriter"))
             window.arrives_rows[key].set_active(False)
