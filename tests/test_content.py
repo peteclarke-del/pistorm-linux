@@ -546,7 +546,7 @@ class NiceToHaves(unittest.TestCase):
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
                                      "kingcon", "sysinfo",
-                                     "adfdevice"})):
+                                     "adfdevice", "virusz"})):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
 
@@ -1348,7 +1348,8 @@ class IgameIsToldWhereTheGamesAre(unittest.TestCase):
     def written(self, config):
         """What the first launcher is told to scan."""
         from pistorm_imager.core import builder                # noqa: PLC0415
-        pairs = [p for p in builder._igame_instances(config, Progress(), [])
+        pairs = [p for p in builder._igame_instances(config, Progress(), [],
+                                                packages.CATALOGUE_BY_KEY["igame"])
                  if p[0].endswith("repos.prefs")]
         if not pairs:
             return None
@@ -1389,7 +1390,8 @@ class IgameIsToldWhereTheGamesAre(unittest.TestCase):
         games = self.folder / "g3"
         (games / "WHDLOAD").mkdir(parents=True)
         pairs = builder._igame_instances(self.config([
-            self.part("DH1", "Games", str(games))]), Progress(), [])
+            self.part("DH1", "Games", str(games))]), Progress(), [],
+            packages.CATALOGUE_BY_KEY["igame"])
         self.assertEqual(pairs[0][1], "Programs/iGame")
         self.assertTrue(pairs[0][0].endswith("repos.prefs"))
 
@@ -3557,7 +3559,9 @@ class EachContentDriveGetsItsOwnLauncher(unittest.TestCase):
                                         amiga_partitions=specs)
 
     def _instances(self, config, pairs=()):
-        return self.builder._igame_instances(config, Progress(), list(pairs))
+        return self.builder._igame_instances(
+            config, Progress(), list(pairs),
+            packages.CATALOGUE_BY_KEY["igame"])
 
     def test_a_second_drive_gets_a_launcher_of_its_own(self):
         made = self._instances(self._config([("Games", True), ("Demos", True)]),
@@ -3605,3 +3609,156 @@ class EachContentDriveGetsItsOwnLauncher(unittest.TestCase):
             self._config([("Games", True), ("Cracktros", True)]),
             [("/tmp/tree", "Programs/iGame")])
         self.assertIn("Programs/iCracktros", {dest for _src, dest in made})
+
+
+class NoPackageIsNamedInTheLogic(unittest.TestCase):
+    """The catalogue decides what a package does; no code names one.
+
+    A package key written into a branch is a rule that only ever applies to
+    the one package somebody thought of.  Every such branch here turned out
+    to be a rule about a *kind* of package - one that patches a library
+    before Workbench starts, one that scans a drive of content, the one an
+    RTG screen cannot do without - and each is now a field on the package.
+    This is the guard that keeps it that way.
+    """
+
+    #  Words that are catalogue keys by coincidence, with what they really
+    #  are.  Each one is a name in some other namespace entirely.
+    ALLOWED = {
+        ("pistorm_imager/cli.py", "identify"):
+            "the identify subcommand, which reads Kickstart ROMs",
+        ("pistorm_imager/core/compat.py", "picasso96"):
+            "the Libs/Picasso96 drawer on the drive being read",
+        ("pistorm_imager/core/content.py", "mui"):
+            "the MUI: assign, in a list of AmigaDOS device names",
+        ("pistorm_imager/core/packages.py", "lha"):
+            "the lha command line unpacker, run on this machine",
+        ("pistorm_imager/core/builder.py", "whdload"):
+            "the drawer a game collection keeps its installs in",
+    }
+
+    def test_no_source_file_names_a_package(self):
+        import ast                                            # noqa: PLC0415
+        root = Path(packages.__file__).parent.parent
+        keys = {p.key for p in packages.CATALOGUE}
+
+        #  Where the catalogue is defined is the one place keys belong.
+        source = Path(packages.__file__).read_text().split("\n")
+        first = next(i for i, line in enumerate(source)
+                     if line.startswith("CATALOGUE: list"))
+        last = next(i for i in range(first, len(source)) if source[i] == "]")
+
+        named = []
+        for path in sorted(root.rglob("*.py")):
+            text = path.read_text()
+            for node in ast.walk(ast.parse(text)):
+                if not (isinstance(node, ast.Constant) and node.value in keys):
+                    continue
+                if path.name == "packages.py" and first < node.lineno <= last + 1:
+                    continue
+                where = str(path.relative_to(root.parent))
+                if (where, node.value) in self.ALLOWED:
+                    continue
+                named.append(f"{where}:{node.lineno} names {node.value!r}: "
+                             f"{text.splitlines()[node.lineno - 1].strip()}")
+        self.assertEqual(named, [], "\n".join(
+            ["a package is named in the logic; give it a field instead"]
+            + named))
+
+
+class OneAnswerToWhatACardShouldCarry(unittest.TestCase):
+    """The tick boxes and the suggestion cannot disagree.
+
+    They used to.  ``suggested()`` held a hand-written list of keys while the
+    packages page ticked whatever had ``default=True``, and the two had
+    drifted apart by nine packages in both directions: a fresh window ticked
+    DefIcons and FreeWheel, which the suggestion never offered, and the
+    suggestion offered iGame, the icon library, MagicMenu, VisualPrefs,
+    FBlit, FText, FullPalette, Picasso96 and Scalos, which the window never
+    ticked.  Both claimed to be "a sensible card".
+    """
+
+    def suggestion(self, machine="a1200", display=machines.Display.NATIVE,
+                   **kw):
+        return packages.suggested(machines.MACHINES_BY_KEY[machine],
+                                  display, **kw)
+
+    def test_everything_suggested_is_declared_recommended(self):
+        for key in self.suggestion():
+            with self.subTest(key):
+                self.assertTrue(packages.CATALOGUE_BY_KEY[key].default)
+
+    def test_everything_recommended_that_suits_is_suggested(self):
+        machine = machines.MACHINES_BY_KEY["a1200"]
+        got = set(self.suggestion(networking=True))
+        for package in packages.CATALOGUE:
+            if not package.default or package.support_only:
+                continue
+            if not package.suits(machine.chipset, machines.Display.NATIVE):
+                continue
+            with self.subTest(package.key):
+                self.assertIn(package.key, got)
+
+    def test_the_chipset_patches_stay_off_a_machine_with_no_chipset(self):
+        #  A bare Pi has no blitter to patch and no palette to lock.
+        bare = self.suggestion("raspi")
+        for key in ("fblit", "ftext", "fullpalette"):
+            self.assertNotIn(key, bare, key)
+
+    def test_the_network_is_only_suggested_when_it_was_asked_for(self):
+        without = set(self.suggestion())
+        withit = set(self.suggestion(networking=True))
+        network = {p.key for p in packages.in_category(packages.Category.NETWORK)}
+        self.assertEqual(without & network, set())
+        self.assertTrue(withit & network)
+
+    def test_the_extras_in_the_network_group_stay_off(self):
+        #  Getting online is the suggestion; an FTP client and an IRC client
+        #  are a preference.
+        withit = set(self.suggestion(networking=True))
+        self.assertNotIn("amftp", withit)
+        self.assertNotIn("wookiechat", withit)
+
+    def test_the_cpu_patches_are_never_suggested(self):
+        for display in machines.Display:
+            for machine in machines.MACHINES:
+                self.assertNotIn(
+                    "mmulib",
+                    packages.suggested(machine, display, networking=True))
+
+
+class TheVirusKillerBringsItsScanner(unittest.TestCase):
+    """VirusZ III is a front end; the recognition lives in xvs.library.
+
+    Installing the program alone gives a virus killer that knows about no
+    viruses at all, and it opens its file requester through reqtools.library,
+    which a card must not assume the source drive happened to carry.
+    """
+
+    def test_the_scanner_and_the_requester_come_with_it(self):
+        self.assertEqual(packages.expand(["virusz"]),
+                         ["xvs", "reqtools", "virusz"])
+
+    def test_the_scanner_is_the_part_that_has_to_be_current(self):
+        note = packages.CATALOGUE_BY_KEY["xvs"].note
+        self.assertIn("2025", note, "say how recent the scanner is")
+
+    def test_neither_library_is_offered_on_its_own(self):
+        #  Nobody chooses a library; they go away with the last thing that
+        #  needed them.
+        for key in ("xvs", "reqtools"):
+            self.assertTrue(packages.CATALOGUE_BY_KEY[key].support_only, key)
+
+    def test_it_lands_where_it_can_be_clicked(self):
+        items = dict(packages.CATALOGUE_BY_KEY["virusz"].download.items)
+        self.assertEqual(items["VirusZ/VirusZ"], "Utilities/VirusZ")
+        self.assertIn("VirusZ/VirusZ.info", items,
+                      "the program needs its own icon to be startable")
+        self.assertEqual(items["VirusZ.info"], "Utilities",
+                         "the drawer needs an icon or it cannot be opened")
+
+    def test_it_does_not_run_at_boot(self):
+        #  A resident memory watcher on a machine with 8 MB of fast RAM is a
+        #  cost paid every second for a card that is written once.
+        self.assertEqual(packages.CATALOGUE_BY_KEY["virusz"].startup, ())
+

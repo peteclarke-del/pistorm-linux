@@ -902,6 +902,46 @@ already there, are unpacked into `Storage/Install` and say so in the log. Where 
 `icon.library` has to be soft-kicked over the one in ROM, FBlit has to be
 started — the build writes `S:User-Startup` to do it.
 
+### The virus killer, and where the scanning actually happens
+
+**VirusZ III 1.04** is the virus killer, and its own documentation is blunt
+about why it is the one to have: *"the last one of the classic antivirus
+programs for Amiga computers that still gets updated"*. Copyright runs to 2021.
+
+But the program is a front end. Every current Amiga virus killer — VirusZ,
+VirusChecker, VirusExecutor — shares one recognition engine, **`xvs.library`**,
+and that split exists precisely so the scanner can be updated without
+re-releasing the programs. So the part that has to be recent is the library,
+not the application, and `util/virus/xvslibrary.lha` is **version 33.49,
+published in April 2025** — the most recently updated piece of Amiga software
+on a finished card. Installing VirusZ without it gives a virus killer that
+knows about no viruses at all.
+
+`reqtools.library` comes with it too, for the file requester. Most prepared
+drives carry a copy, but [a card must not be built out of what the source image
+happened to hold](#nothing-is-taken-from-the-drive-being-built-on): build on a
+drive without one and the killer opens no requester and looks broken. Both
+libraries are `support_only`, so nobody has to know they exist — ticking VirusZ
+brings them, and untickng it takes them away again.
+
+It is **not started at boot**. A resident memory watcher costs something every
+second on a machine with 8 MB of fast RAM, and this is a checker to reach for —
+most usefully on an `.adf` before mounting it, which is the classic Amiga
+infection route and the reason it lands beside [the ADF
+mounter](#where-an-archive-ships-no-way-to-start-it). It is in the catalogue
+unticked, under Extras.
+
+The archive is placed file by file rather than unpacked whole: it also carries
+a MorphOS icon and PGP signatures, which are nothing to do with this card. Its
+top-level `VirusZ.info` is a **drawer** icon and becomes `Utilities/VirusZ.info`;
+the one inside is the tool icon that makes the program startable. A test checks
+both, because a drawer with a tool icon on it is a drawer Workbench will not
+open.
+
+Both binaries were checked for floating point instructions before being added,
+since [a PiStorm has no FPU](#a-pistorm-has-no-fpu). They sit at the same noise
+floor as `C:WHDLoad`, which has 55 such words and runs perfectly.
+
 ### What a package needs to actually run
 
 #### Where an archive ships no way to start it
@@ -1233,6 +1273,64 @@ One bug fell out of that work: `fetch()` chose "place the archive whole" on
 whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
+
+### One answer to what a card should carry
+
+There were two, and they disagreed. `packages.suggested()` held a hand-written
+list of keys, while the packages page ticked whatever carried `default=True`,
+and the two had drifted apart by nine packages **in both directions**: a fresh
+window ticked DefIcons and FreeWheel, which the suggestion never offered, and
+the suggestion offered iGame, `icon.library`, MagicMenu, VisualPrefs, FBlit,
+FText, FullPalette, Picasso96 and Scalos, which the window never ticked. Both
+called themselves "a sensible card", and pressing **Suggest a set** changed the
+answer without anything explaining why.
+
+Now `default` is the only statement of it, and `suggested()` walks the
+catalogue applying what each package already declares about where it belongs —
+`rtg_only`, `native_only`, `chipsets`, `or_rtg`. Adding a package to the
+recommended set is one word on the package, and the button and the tick boxes
+read the same field, so they cannot come apart again.
+
+Two things that had been written as conditions in `suggested()` moved onto the
+packages, where they are checks rather than special cases:
+
+- **FBlit, FText and FullPalette** patch the Amiga's own chipset drawing the
+  screen, so they now name the chipsets they want. A bare Pi with no Amiga
+  around it has no blitter to patch, which `suggested()` used to say with an
+  explicit `chipset is not NONE` test that applied to those three and nothing
+  else.
+- **Networking** is not recommended until it is asked for, and even then only
+  what getting online takes. An FTP client and an IRC client stay off: they are
+  a preference, not part of having a network.
+
+### No package is named in the logic
+
+A package key written into a branch is a rule that only ever applies to the one
+package somebody thought of. Every such branch here turned out to be a rule
+about a *kind* of package, so each became a field on `Package`:
+
+| Was | Now |
+| --- | --- |
+| `NEEDS_THE_BOOT_SCRIPT = {"iconlib": "icon.library"}` | `boot_library="icon.library"` on the package |
+| `if "igame" not in ...` around the per-drive launchers | `per_content_drive=True`, and `content_list` naming the preferences file it scans from |
+| `"whdload" not in keys and any(word in names for word in ("game", "demo", "whdload"))` | `content_words` and `needed_for_content` |
+| `if "igame" in keys and not any("game" in ...)` | `content_words` and `wants_content` |
+| `if "picasso96" in config.package_keys` before `expect_picasso()` | whichever package is `rtg_only` **and** `essential` |
+| `SYSTEM_MARKERS` naming `C/WHDLoad`, `C/Scalos`, `Libs/Picasso96` a second time | `evidence` on each package |
+
+Where the launcher lives, what a second copy of it is called and the name of
+the file listing what it scans are all derived from the catalogue entry too:
+the destination is the shortest of the package's own destinations, and a copy
+for a second drive keeps whatever the program's name starts with — `iGame`
+gives `iDemos`.
+
+`tests/test_content.py` walks every source file's AST and fails if a catalogue
+key appears as a string constant outside the catalogue definition. Five words
+are allowed through with a note saying what they really are: the `identify`
+subcommand that reads Kickstart ROMs, the `Libs/Picasso96` drawer on a drive
+being read, the `MUI:` assign in a list of AmigaDOS device names, the `lha`
+unpacker run on this machine, and the `WHDLoad` drawer a game collection keeps
+its installs in.
 
 ### Software that needs a line in the boot script
 
