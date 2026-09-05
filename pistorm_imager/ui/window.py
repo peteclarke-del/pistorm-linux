@@ -1103,6 +1103,45 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._sync_visibility()
         self._relayout_partitions()
 
+    def _mirror_back(self) -> None:
+        """Copy the Target page's choice back onto Quick setup.
+
+        The mirror ran one way only, and the Target page paid for it. Choosing
+        a card there set the card's size into Quick setup's size box; that box
+        has a ``changed`` handler which runs the mirror; and the mirror sets
+        the card row back from Quick setup's - still on the placeholder - and
+        the "Write to" row with it. So a card selected on the Target page
+        deselected itself a signal later and the page returned to "SD card
+        image file", which is what then got written. A control that looks
+        honoured and is not, on the one path that destroys a disk.
+
+        Having it go both ways is what makes the two pages one state, which
+        the one-way version already claimed to be.
+        """
+        if getattr(self, "_mirroring", False) or not self._ready:
+            return
+        self._mirroring = True
+        try:
+            #  Quick setup offers a card or an image file. The .hdf option is
+            #  the Target page's alone and reads as an image file here.
+            self.quick_target.set_selected(
+                0 if self.target_row.get_selected() == 0 else 1)
+            self.quick_device.set_selected(self.device_row.get_selected())
+            if self.file_row.path:
+                self.quick_file.set_path(self.file_row.path)
+            self.quick_device.set_visible(self.quick_target.get_selected() == 0)
+            self.quick_file.set_visible(self.quick_target.get_selected() == 1)
+            #  When a card is chosen its capacity owns both boxes; otherwise
+            #  the size is the user's and travels back like everything else.
+            if self._selected_device() is None:
+                self.quick_card_size.set_text(self.file_size_row.get_text())
+            self._follow_the_card()
+            self._show_size()
+        finally:
+            self._mirroring = False
+        self._sync_visibility()
+        self._relayout_partitions()
+
     def _follow_the_card(self) -> None:
         """Show the card's own size when writing to one, and lock the box.
 
@@ -1165,8 +1204,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         locked at whatever a card had last put in it and a size that did not
         fit could not be corrected.
         """
-        self._sync_visibility()
-        self._follow_the_card()
+        self._mirror_back()
 
     def _card_it_will_not_fit(self, size: int):
         """A card this image is nearly the size of, but slightly too big for.
@@ -2031,7 +2069,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.device_group.set_header_suffix(refresh)
         self.device_row = Adw.ComboRow(title="Card", model=combo(["No cards found"]))
         self.device_row.connect("notify::selected",
-                                lambda *_a: (self._follow_the_card(),
+                                lambda *_a: (self._mirror_back(),
                                              self._update_summary()))
         self.device_group.add(self.device_row)
         page.add(self.device_group)

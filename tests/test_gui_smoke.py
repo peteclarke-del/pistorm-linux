@@ -1414,7 +1414,9 @@ def on_activate(app: ImagerApplication) -> None:
         from pistorm_imager.ui.window import parse_size          # noqa: PLC0415
         real_size = 63864569856
         from pistorm_imager.ui.window import SELECT_CARD, combo  # noqa: PLC0415
-        card = SimpleNamespace(name="/dev/sdz", size=real_size,
+        #  ``path`` is what gather() writes to; without it the stand-in
+        #  proved the box was locked but never that the write goes anywhere.
+        card = SimpleNamespace(path="/dev/sdz", name="/dev/sdz", size=real_size,
                                label="Test card", model="Test",
                                description="Test card (59.48 GiB)",
                                removable=True)
@@ -1454,6 +1456,55 @@ def on_activate(app: ImagerApplication) -> None:
         window.device_list = []
         window.quick_target.set_selected(1)
         window.quick_card_size.set_text("32GB")
+        pump()
+
+        #  Choosing a card on the Target page has to survive being chosen.
+        #  The mirror between Quick setup and the Target page ran one way,
+        #  and selecting a card wrote the card's size into Quick setup's size
+        #  box, whose changed handler ran the mirror, which put the card row
+        #  back to the placeholder and the "Write to" row back to "SD card
+        #  image file". The card was deselected by its own side effect one
+        #  signal later, and the build went to a file - on the one path that
+        #  destroys a disk, which is the worst place for a control that looks
+        #  honoured and is not.
+        print("\nchoosing a card actually writes to the card")
+        window.device_list = [card]
+        labels = [SELECT_CARD] + [c.description for c in window.device_list]
+        for row in (window.device_row, window.quick_device):
+            row.set_model(combo(labels))
+            row.set_selected(0)
+        pump()
+        #  Start where a person starts when no card was in at launch.
+        window.quick_target.set_selected(1)
+        pump()
+        window.target_row.set_selected(0)
+        pump()
+        window.device_row.set_selected(1)
+        pump()
+        check(window.device_row.get_selected() == 1,
+              "the card stays selected on the Target page")
+        check(window.target_row.get_selected() == 0,
+              "and 'Write to' stays on SD card")
+        chosen = window.gather()
+        check(chosen.target_is_device and chosen.target == "/dev/sdz",
+              f"and the build goes to the card: {chosen.target!r} "
+              f"(is_device={chosen.target_is_device})")
+        #  The choice has to survive the next thing touched on Quick setup.
+        window._mirror_target()
+        pump()
+        check(window.gather().target_is_device,
+              "and it survives a later Quick setup change")
+        #  Picking on Quick setup still works, and so does going back.
+        window.target_row.set_selected(1)
+        pump()
+        check(not window.gather().target_is_device,
+              "switching back to an image file still writes a file")
+        window.target_row.set_selected(2)
+        pump()
+        check(window._making_hdf(),
+              "and the .hdf option is not overwritten by the mirror")
+        window.target_row.set_selected(1)
+        window.device_list = []
         pump()
     except Exception as error:  # noqa: BLE001
         import traceback
