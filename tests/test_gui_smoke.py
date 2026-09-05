@@ -1209,6 +1209,201 @@ def on_activate(app: ImagerApplication) -> None:
         window._set_customising(False)
         pump()
 
+        #  The build log is a window of its own now, not a page of this one:
+        #  as a page it inherited whatever size the setup wanted and had to be
+        #  resized by hand for every build.
+        print("\nthe build log is its own window")
+        check(hasattr(window, "progress_window"), "there is a progress window")
+        pw = window.progress_window
+        check(pw.get_modal(), "it is modal")
+        check(pw.get_transient_for() is window, "and belongs to the main window")
+        check(pw.get_default_size()[1] >= 600,
+              f"sized for reading a log ({pw.get_default_size()})")
+        check("progress" not in [window.outer.get_page(c).get_name()
+                                 for c in window.outer.observe_children()],
+              "and the main window has no progress page left")
+        #  It must refuse to close while a build is running.
+        window.cancel_button.set_visible(True)
+        check(window._on_progress_close(pw) is True,
+              "closing is refused while the build runs")
+        window.cancel_button.set_visible(False)
+        check(window._on_progress_close(pw) is False,
+              "and allowed once it has finished")
+
+        #  The suggested load must both tick and untick, for whatever the
+        #  machine and screen happen to be now.
+        print("\nthe suggested load follows the conditions")
+        from pistorm_imager.core import machines as _mm, packages as _pk  # noqa: PLC0415
+        for want_rtg in (True, False):
+            index = next(i for i, d in enumerate(_mm.Display)
+                         if d.uses_rtg == want_rtg)
+            window.quick_display.set_selected(index)
+            pump()
+            #  Tick something the suggestion will not want, to prove it is
+            #  turned back off rather than merely left alone.
+            noise = [k for k, r in window.package_rows.items()
+                     if r.get_sensitive() and not r.get_active()]
+            if noise:
+                window.package_rows[noise[0]].set_active(True)
+                pump()
+            window._apply_suggested_packages()
+            pump()
+            wanted = set(_pk.suggested(
+                window._machine(), window._display(),
+                networking=bool(window.ssid_row.get_text().strip())))
+            chosen = set(window._chosen_packages())
+            #  Everything suggested is on...
+            short = sorted(k for k in wanted if k not in chosen)
+            check(not short, f"rtg={want_rtg}: nothing suggested is left off "
+                             f"({short})")
+            #  ...and anything extra is there because something needs it, or
+            #  because the display holds it on.
+            extra = sorted(k for k in chosen - wanted
+                           if not any(k in _pk.expand([w]) for w in wanted)
+                           and not _pk.CATALOGUE_BY_KEY[k].essential)
+            check(not extra, f"rtg={want_rtg}: nothing unwanted is left on "
+                             f"({extra})")
+
+        #  A switch that is on and cannot be moved has to say why, at the
+        #  front: Picasso96 is held on by choosing an RTG display, and the
+        #  reason used to arrive after three hundred characters of notes.
+        print("\na locked package says why")
+        from pistorm_imager.core import machines as _m           # noqa: PLC0415
+        rtg = next(i for i, d in enumerate(_m.Display) if d.uses_rtg)
+        was_display = window.quick_display.get_selected()
+        window.quick_display.set_selected(rtg)
+        pump()
+        locked = [(k, r) for k, r in window.package_rows.items()
+                  if not r.get_sensitive() and r.get_active()]
+        check(bool(locked),
+              f"something is held on by this display ({[k for k, _ in locked]})")
+        for key, row in locked:
+            check(row.get_subtitle().startswith("Required by the display"),
+                  f"{key} says why first: {row.get_subtitle()[:60]!r}")
+        window.quick_display.set_selected(was_display)
+        pump()
+
+        #  What the drive already carries, offered one at a time.
+        print("\nsoftware the drive arrives with")
+        window.quick_hdf.set_path(str(HDF_IMAGE))
+        pump()
+        check(not window.arrives_rows,
+              f"an empty drive offers nothing ({sorted(window.arrives_rows)})")
+        check(not window.arrives_group.get_visible(),
+              "and the group stays hidden")
+        real = Path.home()/"Downloads/ClassicWB_FULL_v28/System.hdf"
+        if real.exists():
+            window.quick_hdf.set_path(str(real))
+            pump()
+            check(len(window.arrives_rows) > 20,
+                  f"ClassicWB's own software is listed "
+                  f"({len(window.arrives_rows)} programs)")
+            check(any(k.endswith("/FinalWriter") for k in window.arrives_rows),
+                  "FinalWriter among them")
+            check(not any(k.startswith("Tools/") or k.startswith("Utilities/")
+                          for k in window.arrives_rows),
+                  "and Workbench's own tools are not offered for deletion")
+            #  One program, one row. FMSsys was in both lists at once - on
+            #  here meaning keep it, on in the other meaning remove it.
+            both = set(window.arrives_rows) & set(window.broken_rows)
+            check(not both, f"nothing is in both lists at once ({sorted(both)})")
+            check(any("FMSsys" in k for k in window.broken_rows),
+                  "FMSsys is in the one that removes it")
+            check(not any("FMSsys" in k for k in window.arrives_rows),
+                  "and not in the one that keeps it")
+            check(any("FMSsys" in k for k in window.gather().leave_out),
+                  "so the build is told to leave it out")
+            key = next(k for k in window.arrives_rows
+                       if k.endswith("/FinalWriter"))
+            window.arrives_rows[key].set_active(False)
+            pump()
+            #  Not the only entry: software that cannot work here is in the
+            #  same list, switched on by itself.
+            check(key in window.gather().leave_out,
+                  f"unticking one leaves it out ({window.gather().leave_out})")
+            window.arrives_rows[key].set_active(True)
+            window.quick_hdf.set_path("")
+            pump()
+            check(not window.arrives_rows, "and clearing the drive clears it")
+
+        #  Older copies the drive already carries, offered one at a time.
+        print("\nolder copies on the drive")
+        window.quick_hdf.set_path(str(HDF_IMAGE))
+        pump()
+        for key in ("sysinfo",):
+            row = window.package_rows.get(key)
+            if row is not None:
+                row.set_active(True)
+        pump()
+        #  The test drive is an empty one, so nothing should be offered: a
+        #  drawer that is not there must never be listed for removal.
+        check(not window.older_rows,
+              f"nothing offered for a drive that carries none of it "
+              f"({sorted(window.older_rows)})")
+        check(not window.older_group.get_visible(),
+              "and the group stays out of the way")
+        gathered = window.gather()
+        check(list(gathered.leave_out) == [],
+              f"nothing is removed when nothing was offered "
+              f"({gathered.leave_out})")
+        #  Software the drive carries that cannot work here at all.
+        print("\nsoftware that cannot work")
+        real0 = Path.home()/"Downloads/ClassicWB_FULL_v28/System.hdf"
+        if real0.exists():
+            window.quick_hdf.set_path(str(real0))
+            pump()
+            check(bool(window.broken_rows),
+                  f"the check found something ({sorted(window.broken_rows)})")
+            check(any("FMSsys" in k for k in window.broken_rows),
+                  "FMSsys among it, which cannot mount anything as it ships")
+            for key, row in window.broken_rows.items():
+                check(row.get_active(), f"{key} defaults to being removed")
+                check(len(row.get_subtitle()) > 20,
+                      f"and says why: {row.get_subtitle()[:70]!r}")
+                break
+            out = window.gather().leave_out
+            check(all(k in out for k in window.broken_rows),
+                  "and they all reach the build")
+            first = sorted(window.broken_rows)[0]
+            window.broken_rows[first].set_active(False)
+            pump()
+            check(first not in window.gather().leave_out,
+                  "turning one back on keeps it")
+            window.broken_rows[first].set_active(True)
+            window.quick_hdf.set_path("")
+            pump()
+            check(not window.broken_rows, "and clearing the drive clears it")
+
+        #  Both lists mean the same thing and must reach the same place: a
+        #  drawer of the drive's software switched OFF, and an older copy
+        #  switched ON. The second was written to a config field nobody read,
+        #  so the whole list did nothing while looking as though it worked.
+        real = Path.home()/"Downloads/ClassicWB_FULL_v28/System.hdf"
+        if real.exists():
+            window.quick_hdf.set_path(str(real))
+            for key in ("sysinfo",):
+                row = window.package_rows.get(key)
+                if row is not None:
+                    row.set_active(True)
+            pump()
+            if window.older_rows:
+                drawer, row = sorted(window.older_rows.items())[0]
+                row.set_active(True)
+                pump()
+                check(drawer in window.gather().leave_out,
+                      f"a ticked older copy reaches the build ({drawer})")
+                row.set_active(False)
+                pump()
+                check(drawer not in window.gather().leave_out,
+                      "and unticking it takes it back out again")
+            else:
+                check(False, "nothing was offered to compare against")
+            window.quick_hdf.set_path("")
+            pump()
+
+        window.quick_hdf.set_path("")
+        pump()
+
         #  The size box, which cost a written card. A 64 GB card was shown as
         #  "59.48 GiB", building an image file read that back as 1.6 MB more
         #  than the card holds, and the box was locked so it could not be
