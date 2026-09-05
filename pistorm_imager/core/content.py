@@ -15,6 +15,7 @@ nothing assumed about it.
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -163,6 +164,356 @@ def _locator(entry) -> int:
     number back in ``listdir``, so this is the whole of the difference.
     """
     return getattr(entry, "anode", None) or getattr(entry, "block", 0)
+
+
+#  Where a distribution keeps the software somebody might not want. Only
+#  these, and only one level down: a drawer directly inside one of them is a
+#  program, while anything deeper is that program's own business, and the
+#  system drawers - C, Libs, Devs, S - are not software at all.
+#  Not Utilities or Tools: those hold Workbench's own commands, and a list
+#  offering to delete Tools/Commodities is a trap rather than a choice. Not
+#  Games or Demos either - on a system drive those are the letter drawers a
+#  distribution creates for a games partition to be assigned to, and the
+#  games themselves are chosen on their own drive.
+#  Drawers AmigaOS, Workbench or the card itself own. A duplicate found
+#  inside one of these is never offered, because what would be removed is
+#  the drawer, and "Delete SYS:C ALL" is the end of AmigaDOS.
+SYSTEM_DRAWERS_LOWER = {
+    "c", "s", "l", "libs", "devs", "prefs", "fonts", "locale", "utilities",
+    "tools", "system", "wbstartup", "storage", "classes", "expansion",
+    "rexxc", "rexx", "trashcan", "t", "temp", "programs", "internet",
+    "audio", "games", "demos", "wbgames", "icons", "myfiles",
+    "storage/install", "locale/catalogs", "prefs/env-archive",
+    "devs/monitors", "devs/dosdrivers", "devs/networks", "libs/mui",
+}
+
+SOFTWARE_DRAWERS = ("Programs", "WBGames", "Internet", "Audio", "Extras")
+
+
+#  An Amiga binary carries its version in a "$VER:" string. It is the only
+#  evidence about age that is actually in the file, so it is what decides
+#  whether a copy on a drive is older than the one a package installs.
+VER_STRING = re.compile(rb"\$VER:? ?([ -~]{3,60})")
+VERSION_NUMBER = re.compile(r"(\d+)\.(\d+)")
+
+
+def version_of(data: bytes) -> tuple[int, int] | None:
+    """The (version, revision) a binary claims, or None if it claims none."""
+    for raw in VER_STRING.findall(data[:200000]):
+        text = raw.decode("latin-1")
+        found = VERSION_NUMBER.search(text)
+        if found:
+            return int(found.group(1)), int(found.group(2))
+    return None
+
+
+@dataclasses.dataclass(frozen=True)
+class Duplicate:
+    """A copy of chosen software already on the drive, somewhere else."""
+    package: str            # the package key that installs it
+    label: str              # what to call it on screen
+    program: str            # the file name that matched
+    where: str              # full path of the copy found on the drive
+    drawer: str             # what would be removed - the drawer holding it
+    theirs: tuple[int, int] | None
+    ours: tuple[int, int] | None
+
+    @property
+    def certain(self) -> bool:
+        """Whether ours is provably newer, and so safe to offer by default.
+
+        Both versions have to be readable and ours strictly greater. Anything
+        else is a question rather than an answer: ClassicWB's System/FBlit
+        holds the *same* FBlit build as the package, plus an FBlitGUI the
+        package does not ship, so removing it on a name match alone would
+        take a program away.
+        """
+        return bool(self.ours and self.theirs and self.ours > self.theirs)
+
+
+def list_files(reader, limit: int = 40000) -> list[tuple[str, object]]:
+    """Every file on a volume, once, so a repeated search need not walk again.
+
+    Walking a system drive is a few seconds. Doing it again each time a
+    package is ticked would make the list unusable, so the caller keeps this
+    and passes it back.
+    """
+    out = []
+    for path, entry in reader.walk():
+        if len(out) >= limit:
+            break
+        if not entry.is_dir:
+            out.append((path, entry))
+    return out
+
+
+def find_duplicates(reader, wanted: dict[str, tuple[str, str, tuple | None]],
+                    filling: Iterable[str] = (),
+                    listing: list[tuple[str, object]] | None = None,
+                    limit: int = 40000) -> list[Duplicate]:
+    """Copies of ``wanted`` already on this drive, in some other place.
+
+    ``wanted`` maps a program's file name to (package key, label, our
+    version). Nothing is named in the source: the caller works the names out
+    from what the chosen packages install, and this looks for them.
+
+    Only files, only outside the place the package installs to - a copy in
+    the same place is an older *file*, which displacement already replaces -
+    and only where the drawer holding it is not one the system owns.
+    """
+    ours_too = [d.strip("/").lower() for d in filling if d.strip("/")]
+    found: dict[str, Duplicate] = {}
+    for path, entry in (listing if listing is not None
+                        else list_files(reader, limit)):
+        key = wanted.get(entry.name.lower())
+        if key is None:
+            continue
+        package, label, ours = key
+        drawer = path.rpartition("/")[0]
+        lowered = drawer.lower()
+        #  The drawer has to be *about* this program, which means named for
+        #  it. What goes is the whole drawer, and a program sitting inside
+        #  somebody else's is not a duplicate of anything: matching on the
+        #  file alone offered to delete Programs/DiskSalv because Picasso96
+        #  ships an "Installer" and DiskSalv's drawer has one too, and
+        #  Tools/Commodities - Exchange, Blanker, CrossDOS and the rest -
+        #  because Commodore's ClickToFront commodity lives in it.
+        if lowered.rpartition("/")[2] != entry.name.lower():
+            continue
+        #  Never offer a drawer the system owns: that is how a duplicate in
+        #  C or Libs would take AmigaDOS with it.
+        if not drawer or lowered in SYSTEM_DRAWERS_LOWER:
+            continue
+        #  Nor one this build is itself filling, or anything inside it. Our
+        #  MUI overlay merges into the drive's own System/MUI, so every class
+        #  in it matches by name and none of them is a duplicate.
+        if any(lowered == d or lowered.startswith(d + "/") for d in ours_too):
+            continue
+        try:
+            theirs = version_of(reader.read_file(entry))
+        except Exception:                                   # noqa: BLE001
+            theirs = None
+        #  Some evidence is required. Removing a drawer whole on a name
+        #  match alone is how ClassicWB's System/FBlit - the same FBlit
+        #  build as the package, plus an FBlitGUI it does not ship - would
+        #  be taken away.
+        if theirs is None:
+            continue
+        candidate = Duplicate(package=package, label=label,
+                              program=entry.name, where=path, drawer=drawer,
+                              theirs=theirs, ours=ours)
+        #  One row per drawer: five matches inside Programs/DirOpus4 are one
+        #  older copy, and the drawer is what would go.
+        best = found.get(lowered)
+        if best is None or (candidate.certain and not best.certain):
+            found[lowered] = candidate
+    return sorted(found.values(), key=lambda d: (not d.certain, d.where))
+
+
+#  Assigns and devices AmigaOS provides, or that this tool always makes. A
+#  script naming one of these is not asking for anything unusual.
+STOCK_VOLUMES = {
+    "sys", "c", "s", "l", "libs", "devs", "fonts", "locale", "env", "envarc",
+    "t", "ram", "progdir", "rexx", "classes", "help", "keymaps", "printers",
+    "storage", "prefs", "clipboard", "nil", "con", "raw", "ser", "par", "prt",
+    "df0", "df1", "df2", "df3", "mui", "in", "out", "aux", "speak",
+}
+
+#  Documentation, not instructions. A guide explaining how to mount PC: is
+#  not a script that tries to, and quoting one as evidence is how a check
+#  like this stops being believed.
+NOT_A_SCRIPT = (".guide", ".doc", ".txt", ".readme", ".info", ".history",
+                ".ct", ".cd", ".nfo", ".me", ".man", ".hlp")
+
+MOUNTS = re.compile(r"(?i)\bmount\s+([A-Za-z0-9_.-]+):")
+ASSIGNS_TO = re.compile(
+    r"(?i)\bassign\s+(?:>nil:\s+)?(?:add\s+)?[A-Za-z0-9_.-]+:\s+"
+    r"([A-Za-z0-9_.-]+):")
+#  A startup script that runs another one. Following these is the only way
+#  to see the assigns a distribution really makes.
+RUNS_SCRIPT = re.compile(r"(?i)^\s*(?:c:)?execute\s+(S:[A-Za-z0-9_.-]+)")
+
+MAKES_ASSIGN = re.compile(
+    r"(?i)^\s*(?:c:)?assign\s+(?:>nil:\s+)?(?:add\s+)?([A-Za-z0-9_.-]+):")
+
+
+@dataclasses.dataclass(frozen=True)
+class Broken:
+    """Software on the drive that cannot work on the card being built."""
+    drawer: str
+    reasons: tuple[str, ...]
+
+
+#  Where a program that opens files is likely to live. A default tool with
+#  no path in front of it has to be given one, and this is where to look.
+TOOL_DRAWERS = ("C", "Utilities", "System", "Tools", "Prefs")
+
+
+def programs_by_name(reader) -> dict[str, str]:
+    """Every runnable program on the drive, by name, as a full path.
+
+    Used to give a default tool its path. Workbench runs the tool named in an
+    icon, and a bare name with no path in front of it is not found the way a
+    shell would find it - which is why ClassicWB's def_project.info, whose
+    tool is simply "MultiView", opens nothing at all.
+    """
+    out: dict[str, str] = {}
+    for drawer in TOOL_DRAWERS:
+        entry = reader.find(drawer)
+        if entry is None or not entry.is_dir:
+            continue
+        try:
+            inside = reader.listdir(_locator(entry))
+        except Exception:                                   # noqa: BLE001
+            continue
+        for child in inside:
+            if child.is_dir:
+                continue
+            #  An icon with no program beside it still says where the program
+            #  is meant to be. ClassicWB's Utilities holds MultiView.info and
+            #  no MultiView: it expects the Workbench floppies to supply one,
+            #  and this build does - but not until after these icons have
+            #  been copied, so the name has to be learned from the icon.
+            name = child.name[:-5] if child.name.endswith(".info") else child.name
+            if not name:
+                continue
+            here = f"SYS:{drawer}/{name}"
+            if child.name.endswith(".info"):
+                out.setdefault(name.lower(), here)
+            else:
+                out[name.lower()] = here          # a real file wins
+    return out
+
+
+def volumes_on_the_card(reader, named: Iterable[str] = ()) -> set[str]:
+    """Every volume and assign a script could reasonably expect to find.
+
+    The drives this build makes, whatever the drive assigns for itself in
+    its own startup files, and what AmigaOS provides. Read rather than
+    assumed: a distribution makes its own assigns, and calling those missing
+    would condemn most of what it ships.
+    """
+    out = {str(n).strip(":").lower() for n in named if str(n).strip(":")}
+    out |= STOCK_VOLUMES
+    #  ...and whatever those scripts run in turn. ClassicWB's User-Startup
+    #  does "Execute S:Assign-Startup", and that is where A-Programs:,
+    #  A-Games: and the rest are made - so reading only the two obvious
+    #  files said those volumes did not exist and called perfectly good
+    #  software broken.
+    seen: set[str] = set()
+    queue = ["S/Startup-Sequence", "S/User-Startup"]
+    while queue:
+        path = queue.pop(0)
+        if path.lower() in seen:
+            continue
+        seen.add(path.lower())
+        entry = reader.find(path)
+        if entry is None or getattr(entry, "is_dir", False):
+            continue
+        try:
+            text = reader.read_file(entry).decode("latin-1", "replace")
+        except Exception:                                   # noqa: BLE001
+            continue
+        for line in text.splitlines():
+            found = MAKES_ASSIGN.match(line)
+            if found:
+                out.add(found.group(1).lower())
+            runs = RUNS_SCRIPT.match(line)
+            if runs and len(seen) < 20:
+                queue.append(runs.group(1).replace("S:", "S/"))
+    return out
+
+
+def cannot_work(reader, volumes: Iterable[str],
+                dosdrivers: Iterable[str] = ()) -> list[Broken]:
+    """Programs on the drive that cannot run on the card being built.
+
+    A ready-made distribution carries software written for the machine it
+    was assembled on. ClassicWB's FMSsys is the example: its MountFMS does
+    "assign FMS: A-Programs:FMSsys" and "mount FF0:", and this card has
+    neither an A-Programs: volume nor a DEVS:DOSDrivers/FF0 - so it asks a
+    question and then fails, every time, and nothing says why.
+
+    Only what can be shown from the files: a binary for another processor,
+    a script mounting a device this card has not got, or one needing a
+    volume that will not exist. Everything else is left alone.
+    """
+    known = {str(v).strip(":").lower() for v in volumes}
+    drivers = {str(d).lower() for d in dosdrivers}
+    out: list[Broken] = []
+    for drawer, name in installed_programs(reader):
+        where = f"{drawer}/{name}"
+        entry = reader.find(where)
+        if entry is None or not entry.is_dir:
+            continue
+        why: list[str] = []
+        try:
+            inside = reader.listdir(_locator(entry))
+        except Exception:                                   # noqa: BLE001
+            continue
+        for kid in inside:
+            if kid.is_dir or kid.name.lower().endswith(NOT_A_SCRIPT):
+                continue
+            try:
+                data = reader.read_file(kid)
+            except Exception:                               # noqa: BLE001
+                continue
+            if data[:4] == b"\x7fELF":
+                why.append(f"{kid.name} is built for another processor")
+                continue
+            #  Only small text files: a script, not a program or a payload.
+            if data[:4] == b"\x00\x00\x03\xf3" or len(data) > 20000:
+                continue
+            text = data.decode("latin-1", "replace")
+            for found in MOUNTS.finditer(text):
+                device = found.group(1)
+                if device.lower() not in drivers:
+                    why.append(f"{kid.name} mounts {device}:, and this card "
+                               f"has no DEVS:DOSDrivers/{device}")
+            for found in ASSIGNS_TO.finditer(text):
+                volume = found.group(1)
+                if volume.lower() not in known:
+                    why.append(f"{kid.name} needs the volume {volume}:, "
+                               f"which this card has not got")
+        if why:
+            out.append(Broken(where, tuple(dict.fromkeys(why))))
+    return out
+
+
+def installed_programs(reader) -> list[tuple[str, str]]:
+    """What a prepared drive already has installed, as (drawer, program).
+
+    A ready-made distribution arrives with its own idea of what you want -
+    ClassicWB FULL carries thirty-one things in Programs alone, some of them
+    unfinished, obsolete or simply not to taste - and until now the only
+    choice was all of it or none. This lists them so they can be left out one
+    at a time.
+
+    Read one drawer at a time rather than by walking the drive: on a volume
+    holding twenty gigabytes of games, walking it would take longer than the
+    build.
+    """
+    out: list[tuple[str, str]] = []
+    try:
+        top = {entry.name.lower(): entry for entry in reader.listdir()
+               if entry.is_dir}
+    except Exception:                                       # noqa: BLE001
+        return out
+    for drawer in SOFTWARE_DRAWERS:
+        entry = top.get(drawer.lower())
+        if entry is None:
+            continue
+        try:
+            inside = reader.listdir(_locator(entry))
+        except Exception:                                   # noqa: BLE001
+            continue
+        for child in sorted(inside, key=lambda e: e.name.lower()):
+            #  A drawer, because that is what a program is here. A loose file
+            #  in Utilities is one command, and removing it one at a time is
+            #  not worth a list sixty rows long.
+            if child.is_dir and not child.name.startswith("."):
+                out.append((entry.name, child.name))
+    return out
 
 
 def discover_volume(reader) -> list[Category]:
