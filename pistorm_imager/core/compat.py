@@ -216,6 +216,8 @@ class Compatibility:
         #  it is actually written, so the log names the drawer as the drive
         #  does rather than as this code happens to compare it.
         self._supersede: dict[str, str] = {}
+        #  Where the drive's programs are, for default tools.
+        self._programs: dict[str, str] = {}
         self._superseded: set[str] = set()
         self._seen_picasso = False
         self._picasso_expected = False
@@ -480,6 +482,8 @@ class Compatibility:
         posix = relative.replace("\\", "/")
         if any(posix.lower() == f.lower() for f in STARTUP_FILES):
             return self._clean_startup(posix, data)
+        if parts[-1].startswith("def_") and parts[-1].endswith(".info"):
+            return self._point_at_a_real_tool(posix, data)
         if len(parts) >= 2 and parts[-2] == "wbstartup" \
                 and parts[-1].endswith(".info"):
             return self._starts_without_waiting(posix, data)
@@ -563,6 +567,42 @@ class Compatibility:
                       f"will not be on the card ("
                       + ", ".join(sorted(dropped)) + ")")
         return "".join(out).encode("latin-1")
+
+    def knows_where(self, programs: dict[str, str]) -> None:
+        """Tell the pass where the drive's programs are, by name."""
+        self._programs = dict(programs)
+
+    def _point_at_a_real_tool(self, relative: str, data: bytes) -> bytes:
+        """Give a default icon's tool the path it needs to be found.
+
+        Workbench runs the tool an icon names, and a bare name with no path
+        in front of it is not looked up the way a shell looks one up.
+        ClassicWB's def_project.info - the icon every file falls back on -
+        names simply "MultiView", so double-clicking a file found nothing,
+        while def_view.info beside it says SYS:Utilities/MultiView and works.
+
+        Only a bare name, and only one this drive really has: a tool already
+        carrying a path is left exactly alone, and a name nothing answers to
+        is left alone too rather than guessed at.
+        """
+        if not getattr(self, "_programs", None):
+            return data
+        try:
+            tool = amigainfo.read_default_tool(data)
+        except amigainfo.InfoError:
+            return data
+        if not tool or ":" in tool or "/" in tool:
+            return data
+        found = self._programs.get(tool.lower())
+        if not found:
+            return data
+        try:
+            fixed = amigainfo.set_default_tool(data, found)
+        except amigainfo.InfoError:
+            return data
+        self.note("edited", f"{relative}: opens with {found} rather than "
+                            f"{tool!r}, which Workbench cannot find")
+        return fixed
 
     def _starts_without_waiting(self, relative: str, data: bytes) -> bytes:
         """Give a WBStartup icon DONOTWAIT, so the boot does not stop on it.

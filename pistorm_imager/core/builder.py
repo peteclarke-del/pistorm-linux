@@ -1643,6 +1643,13 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                 fixer.finish_classicwb_install()
             reader, label = amigaos.open_amiga_volume(spec.content_hdf,
                                                       spec.content_hdf_partition)
+            #  Where this drive keeps its programs, so a default icon naming
+            #  a bare tool can be given the path Workbench needs.
+            try:
+                fixer.knows_where(content.programs_by_name(reader))
+            except Exception as error:                      # noqa: BLE001
+                progress.log(f"  could not index the drive's programs "
+                             f"({error}); default tools are left as they are")
             progress.step(f"Filling {partition.drive_name} from {label}")
             volume = amigaos.make_volume(handle, offset,
                                          partition.blocks(table.geometry),

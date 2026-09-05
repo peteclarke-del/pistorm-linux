@@ -329,6 +329,10 @@ MOUNTS = re.compile(r"(?i)\bmount\s+([A-Za-z0-9_.-]+):")
 ASSIGNS_TO = re.compile(
     r"(?i)\bassign\s+(?:>nil:\s+)?(?:add\s+)?[A-Za-z0-9_.-]+:\s+"
     r"([A-Za-z0-9_.-]+):")
+#  A startup script that runs another one. Following these is the only way
+#  to see the assigns a distribution really makes.
+RUNS_SCRIPT = re.compile(r"(?i)^\s*(?:c:)?execute\s+(S:[A-Za-z0-9_.-]+)")
+
 MAKES_ASSIGN = re.compile(
     r"(?i)^\s*(?:c:)?assign\s+(?:>nil:\s+)?(?:add\s+)?([A-Za-z0-9_.-]+):")
 
@@ -338,6 +342,47 @@ class Broken:
     """Software on the drive that cannot work on the card being built."""
     drawer: str
     reasons: tuple[str, ...]
+
+
+#  Where a program that opens files is likely to live. A default tool with
+#  no path in front of it has to be given one, and this is where to look.
+TOOL_DRAWERS = ("C", "Utilities", "System", "Tools", "Prefs")
+
+
+def programs_by_name(reader) -> dict[str, str]:
+    """Every runnable program on the drive, by name, as a full path.
+
+    Used to give a default tool its path. Workbench runs the tool named in an
+    icon, and a bare name with no path in front of it is not found the way a
+    shell would find it - which is why ClassicWB's def_project.info, whose
+    tool is simply "MultiView", opens nothing at all.
+    """
+    out: dict[str, str] = {}
+    for drawer in TOOL_DRAWERS:
+        entry = reader.find(drawer)
+        if entry is None or not entry.is_dir:
+            continue
+        try:
+            inside = reader.listdir(_locator(entry))
+        except Exception:                                   # noqa: BLE001
+            continue
+        for child in inside:
+            if child.is_dir:
+                continue
+            #  An icon with no program beside it still says where the program
+            #  is meant to be. ClassicWB's Utilities holds MultiView.info and
+            #  no MultiView: it expects the Workbench floppies to supply one,
+            #  and this build does - but not until after these icons have
+            #  been copied, so the name has to be learned from the icon.
+            name = child.name[:-5] if child.name.endswith(".info") else child.name
+            if not name:
+                continue
+            here = f"SYS:{drawer}/{name}"
+            if child.name.endswith(".info"):
+                out.setdefault(name.lower(), here)
+            else:
+                out[name.lower()] = here          # a real file wins
+    return out
 
 
 def volumes_on_the_card(reader, named: Iterable[str] = ()) -> set[str]:
@@ -350,9 +395,20 @@ def volumes_on_the_card(reader, named: Iterable[str] = ()) -> set[str]:
     """
     out = {str(n).strip(":").lower() for n in named if str(n).strip(":")}
     out |= STOCK_VOLUMES
-    for path in ("S/Startup-Sequence", "S/User-Startup"):
+    #  ...and whatever those scripts run in turn. ClassicWB's User-Startup
+    #  does "Execute S:Assign-Startup", and that is where A-Programs:,
+    #  A-Games: and the rest are made - so reading only the two obvious
+    #  files said those volumes did not exist and called perfectly good
+    #  software broken.
+    seen: set[str] = set()
+    queue = ["S/Startup-Sequence", "S/User-Startup"]
+    while queue:
+        path = queue.pop(0)
+        if path.lower() in seen:
+            continue
+        seen.add(path.lower())
         entry = reader.find(path)
-        if entry is None:
+        if entry is None or getattr(entry, "is_dir", False):
             continue
         try:
             text = reader.read_file(entry).decode("latin-1", "replace")
@@ -362,6 +418,9 @@ def volumes_on_the_card(reader, named: Iterable[str] = ()) -> set[str]:
             found = MAKES_ASSIGN.match(line)
             if found:
                 out.add(found.group(1).lower())
+            runs = RUNS_SCRIPT.match(line)
+            if runs and len(seen) < 20:
+                queue.append(runs.group(1).replace("S:", "S/"))
     return out
 
 
