@@ -1,6 +1,7 @@
 """What a collection is divided into, and what a given Amiga can run."""
 import dataclasses
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -3184,17 +3185,89 @@ class StartupLinesAreNeitherWrongNorRepeated(unittest.TestCase):
         self.assertTrue(line.startswith("Run "), line)
         self.assertIn("C:Birdie", line)
 
+    def _birdie_credit(self):
+        """A build in which Birdie's patterns really were installed.
+
+        Its line names them, and a line whose files are missing is dropped, so
+        the pairs the build resolved have to be supplied to see the line at
+        all.
+        """
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        drawer = Path(self.tmp.name) / "Patterns"
+        drawer.mkdir(exist_ok=True)
+        (drawer / "001.jpg").write_bytes(b"\xff\xd8pattern")
+        (drawer / "002.jpg").write_bytes(b"\xff\xd8pattern")
+        _placeholder, destination, _limit = \
+            packages.CATALOGUE_BY_KEY["birdie"].startup_files
+        return {(str(drawer), destination): "birdie"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
     def test_a_line_the_drive_already_runs_is_left_out(self):
         from pistorm_imager.core import builder                  # noqa: PLC0415
         config = builder.BuildConfig(target="/tmp/x",
                                      package_keys=["fblit", "ftext",
                                                    "blazewcp", "birdie"])
-        with_drive = builder._package_startup_lines(config, self.BOOT)
+        with_drive = builder._package_startup_lines(
+            config, self.BOOT, credit=self._birdie_credit())
         self.assertNotIn("C:FBlit >NIL:", with_drive)
         self.assertNotIn("C:FText >NIL:", with_drive)
         self.assertFalse(any("BlazeWCP" in line for line in with_drive))
         #  Birdie is not started by that drive, so its line stays.
         self.assertTrue(any("C:Birdie" in line for line in with_drive))
+
+    def test_birdie_is_given_the_patterns_it_installed(self):
+        """Started with no patterns, Birdie opens its about window.
+
+        That is not a guess: the window's title string inside the binary is
+        "About Birdie 2000", and the branch that opens it is the one taken when
+        the PATTERNS argument is empty. The card built before this fix ran
+        "Run >NIL: C:Birdie" with nothing after it, so the about box was on the
+        desktop after every single boot and no border was ever patterned.
+        """
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/x",
+                                     package_keys=["birdie"])
+        lines = builder._package_startup_lines(
+            config, credit=self._birdie_credit())
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("SYS:Prefs/Presets/Birdie/001.jpg", lines[0])
+        #  The whole drawer is not handed over: each pattern is held in three
+        #  versions, and every window would get one at random.
+        self.assertNotIn("002.jpg", lines[0])
+
+    def test_a_line_that_needs_files_is_dropped_rather_than_run_bare(self):
+        #  The failure this guards against is the line being written with its
+        #  placeholder unfilled, or with nothing where the files should be -
+        #  which is exactly the command that opened the about window.
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/x",
+                                     package_keys=["birdie"])
+        self.assertEqual(builder._package_startup_lines(config, credit={}), [])
+
+    def test_no_line_ever_reaches_the_card_with_a_placeholder_in_it(self):
+        """Every ``{...}`` in a startup line is one the build can fill.
+
+        A placeholder nobody declared would be passed to the program as a
+        literal argument, which is the same silent kind of wrong as no argument
+        at all.
+        """
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        for package in packages.CATALOGUE:
+            declared = ({package.startup_files[0]}
+                        if package.startup_files else set())
+            for line in package.startup:
+                with self.subTest(package=package.key):
+                    self.assertEqual(set(re.findall(r"{([^}]*)}", line)) - declared,
+                                     set())
+            if package.startup_files:
+                with self.subTest(package=package.key):
+                    self.assertTrue(
+                        any("{" + package.startup_files[0] + "}" in line
+                            for line in package.startup),
+                        "declares files for a startup line that never uses them")
 
     def test_without_a_drive_every_line_is_written(self):
         from pistorm_imager.core import builder                  # noqa: PLC0415
@@ -4200,3 +4273,80 @@ class TheLauncherIsInstalledWithTheProgram(unittest.TestCase):
         self.assertTrue(
             (root / "applications" / "pistorm-imager.desktop").is_file())
 
+
+
+class ADisplayDriverBringsEveryLibraryItOpens(unittest.TestCase):
+    """A monitor driver names the libraries it loads, and they have to be there.
+
+    ``DEVS:Monitors/Picasso96`` is not a data file: it is an executable, and
+    ``S:Startup-Sequence`` runs everything in that drawer at boot. Inside it is
+    the string ``picasso96/rtg.library``, opened relative to ``LIBS:``.
+
+    The catalogue installed the board driver, the settings, the API library and
+    fastlayers - and not rtg.library, which is the RTG subsystem itself. So
+    every card built with the Pi's HDMI as its screen asked at boot for a
+    library that was not on it, said so on the console, and came up with no RTG
+    screen modes at all. Only one of the three libraries the archive's own
+    installer copies into ``SYS:Libs/Picasso96`` was being copied.
+
+    The names are read out of the driver rather than written down here, so this
+    holds for any display driver the catalogue gains later, and for the version
+    of Picasso96 its publisher ships next.
+    """
+
+    #  "picasso96/rtg.library" and the like: a library opened through a drawer
+    #  on the LIBS: path, which is how a graphics board's own pieces are found.
+    OPENS = re.compile(rb"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+\.library)")
+
+    MONITORS = "devs/monitors"
+
+    def _unpacked(self, package):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        name = Path(getattr(package.download, "url", "") or "").name
+        for suffix in (".lha", ".zip", ".run"):
+            name = name.removesuffix(suffix)
+        root = packages.cache_dir() / f"{name}.unpacked"
+        return root if root.is_dir() else None
+
+    def _drivers(self):
+        """Every monitor driver the catalogue installs, with its archive."""
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        for package in packages.CATALOGUE:
+            if package.download is None:
+                continue
+            root = self._unpacked(package)
+            if root is None:
+                continue
+            for inside, destination in package.download.items:
+                if destination.replace("\\", "/").lower() != self.MONITORS:
+                    continue
+                if inside.lower().endswith(".info"):
+                    continue
+                path = root / inside
+                if path.is_file():
+                    yield package, inside, path
+
+    @staticmethod
+    def _lands(package):
+        """The paths on the card this package's files end up at, lowercased."""
+        out = {f"{dest}/{Path(inside).name}".lower().lstrip("/")
+               for inside, dest in package.download.items}
+        out |= {f"{dest}/{new}".lower().lstrip("/")
+                for _inside, dest, new in package.download.rename}
+        return out
+
+    def test_every_library_a_monitor_driver_opens_is_installed(self):
+        checked = 0
+        for package, inside, path in self._drivers():
+            landed = self._lands(package)
+            for drawer, library in self.OPENS.findall(path.read_bytes()):
+                wanted = (f"libs/{drawer.decode('latin-1')}/"
+                          f"{library.decode('latin-1')}").lower()
+                checked += 1
+                with self.subTest(package=package.key, opens=wanted):
+                    self.assertIn(
+                        wanted, landed,
+                        f"{package.label} installs {inside}, which opens "
+                        f"{wanted} at boot, and does not install it")
+        if not checked:
+            self.skipTest("no package archives are unpacked on this machine")
