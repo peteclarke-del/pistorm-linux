@@ -810,3 +810,77 @@ class TestABootableDriveFilledFromAnImage(_Scratch):
         volume, _label = amigaos.open_amiga_volume(str(out))
         self.assertIsNotNone(volume.find("C/LoadWB"),
                              "the imported drive's files are not on the card")
+
+
+class EveryDriveWearsTheCardsIcon(_Scratch):
+    """A drive with no Disk.info never appears on the Workbench desktop.
+
+    Two faults, one rule. A drive this build formats and names but fills with
+    nothing got no volume icon at all - so the Work drive was created, given a
+    name and then invisible, which reads as the partition having failed. And a
+    drive filled from somebody else's tree wore *their* volume icon: PiMiga's
+    Games and Demos arrive with an 8 KB icon drawn for a different desktop,
+    beside a system drive wearing its own.
+
+    So every drive on the card wears the boot drive's icon, and the boot drive
+    keeps the one it came with.
+    """
+
+    def build(self, source, extra_specs=()):
+        out = self.scratch() / "card.hdf"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            image_size=120 * MIB, install_emu68=False, fix_compatibility=True,
+            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            amiga_partitions=[
+                builder.AmigaPartitionSpec(
+                    "DH0", 60 * MIB, "PFS3", True, 0, volume_name="Sys",
+                    content_folder=str(source)),
+                *extra_specs]), QUIET)
+        return out
+
+    def volume(self, image, name):
+        """One named drive out of the card, so each can be checked apart."""
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        volume, _label = amigaos.open_amiga_volume(str(image), name)
+        self.addCleanup(lambda: volume.f.close())
+        return volume
+
+    def source(self):
+        folder = self.scratch() / "sys"
+        (folder / "S").mkdir(parents=True)
+        (folder / "S" / "Startup-Sequence").write_bytes(b"C:LoadWB\n")
+        (folder / "Disk.info").write_bytes(b"the card's own volume icon")
+        return folder
+
+    def test_a_drive_filled_with_nothing_still_gets_an_icon(self):
+        image = self.build(self.source(), [builder.AmigaPartitionSpec(
+            "DH1", None, "PFS3", False, -128, volume_name="Work")])
+        volume = self.volume(image, "DH1")
+        entry = volume.find("Disk.info")
+        self.assertIsNotNone(
+            entry, "Work has no Disk.info, so it never appears on Workbench")
+        self.assertEqual(volume.read_file(entry)[:9], b"the card'")
+
+    def test_a_filled_drive_does_not_keep_the_donors_icon(self):
+        other = self.scratch() / "games"
+        other.mkdir()
+        (other / "Disk.info").write_bytes(b"somebody else's icon entirely")
+        (other / "AGame").write_bytes(b"x")
+        image = self.build(self.source(), [builder.AmigaPartitionSpec(
+            "DH1", None, "PFS3", False, -128, volume_name="Games",
+            content_folder=str(other))])
+        volume = self.volume(image, "DH1")
+        entry = volume.find("Disk.info")
+        self.assertIsNotNone(entry)
+        self.assertEqual(volume.read_file(entry)[:9], b"the card'",
+                         "the drive kept the icon its source came with")
+        #  The content itself is untouched.
+        self.assertIsNotNone(volume.find("AGame"))
+
+    def test_the_boot_drive_keeps_its_own(self):
+        image = self.build(self.source())
+        volume = self.volume(image, "DH0")
+        entry = volume.find("Disk.info")
+        self.assertIsNotNone(entry)
+        self.assertEqual(volume.read_file(entry), b"the card's own volume icon")
