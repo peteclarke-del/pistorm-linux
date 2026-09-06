@@ -2408,6 +2408,22 @@ def _expand(handle, config: BuildConfig, target_size: int, progress: Progress) -
 
 
 def run_build(config: BuildConfig, progress: Progress) -> None:
+    """Build the card, saying plainly when the card itself is what failed."""
+    try:
+        _run_build(config, progress)
+    except OSError as error:
+        #  A card that leaves the bus mid-build fails every request from then
+        #  on, and the bare "Input/output error" that reached the log said
+        #  nothing about whose fault it was. It is worth naming, because the
+        #  answer is never "build the image again".
+        if config.target_is_device and error.errno in devices.GONE_AWAY:
+            raise RuntimeError(devices.CARD_STOPPED_ANSWERING.format(
+                path=config.target,
+                reason=os.strerror(error.errno))) from error
+        raise
+
+
+def _run_build(config: BuildConfig, progress: Progress) -> None:
     for concern in config.concerns():
         #  Said before anything is written, and the build goes ahead: these
         #  are choices that work and probably were not meant.
@@ -2423,6 +2439,8 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
             raise RuntimeError(f"{config.target} is not a block device we can see")
         devices.check_writable(device)
         devices.unmount_all(device, progress.log)
+        #  Asked before the hour is spent, not discovered at the end of it.
+        devices.check_responds(device, progress.log)
 
     target_size = _target_size(config)
     progress.log(f"Target {config.target} - {human_size(target_size)}")
