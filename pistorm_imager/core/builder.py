@@ -781,7 +781,11 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     #  Any record an imported drive brings describes a card that no longer
     #  exists; this build writes its own in its place.
     fixer.displace([MANIFEST_PATH])
-    if _package_startup_lines(config):
+    #  ``credit`` is filled in above, and a line that has to name files from
+    #  its own archive can only be judged with it: without it such a line reads
+    #  as absent, the drive's own User-Startup is copied whole, and the lines
+    #  this build meant to add have nowhere to go.
+    if _package_startup_lines(config, credit=credit):
         fixer.keep_user_startup()
     volume = amigaos.install(handle, offset, partition.blocks(table.geometry),
                              chosen, progress,
@@ -805,7 +809,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             _apply_overlays(volume, spec, fixer, progress, landings)
         _give_drawers_icons(volume, spec, config, progress)
     _write_user_startup(volume, config, progress,
-                        fixer.kept_user_startup, fixer.boot_scripts)
+                        fixer.kept_user_startup, fixer.boot_scripts, credit)
     _write_manifest(volume, config,
                     list(spec.overlays) if spec is not None else [],
                     credit, progress, landings)
@@ -887,8 +891,16 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
 
 
 def _package_startup_lines(config: "BuildConfig", boot: str = "",
-                           progress: Progress | None = None) -> list[str]:
-    """The lines the chosen software needs in S:User-Startup."""
+                           progress: Progress | None = None,
+                           credit: dict[tuple[str, str], str] | None = None
+                           ) -> list[str]:
+    """The lines the chosen software needs in S:User-Startup.
+
+    ``credit`` maps each (source, destination) pair the build resolved to the
+    package that asked for it, which is how a line that has to name the files
+    its own archive shipped gets them: they are read back off what was put on
+    the card rather than written into the catalogue.
+    """
     lines: list[str] = []
     #  expand() so that a package pulled in as a dependency gets its lines
     #  too: MUI is never ticked by name, and without its assigns muimaster
@@ -903,7 +915,19 @@ def _package_startup_lines(config: "BuildConfig", boot: str = "",
                 progress.log(f"  {package.label} is already started by the "
                              f"drive's own boot, so no line is added for it")
             continue
-        lines += list(package.startup)
+        theirs = [pair for pair, whose in (credit or {}).items() if whose == key]
+        filled = packages.complete_startup(package, theirs)
+        if filled is None:
+            #  Only where the files really are missing. A line left with its
+            #  placeholder unfilled is what put an about window on the desktop
+            #  at every boot, so nothing is written rather than something that
+            #  runs the program wrongly.
+            if progress is not None:
+                progress.log(f"  {package.label} needs files from its own "
+                             f"archive on its startup line and none were "
+                             f"installed, so it is not started")
+            continue
+        lines += filled
     return lines
 
 
@@ -944,7 +968,9 @@ def _already_started(commands: list[str], boot: str) -> bool:
 
 def _write_user_startup(volume, config: "BuildConfig",
                         progress: Progress, kept: bytes = b"",
-                        boot: str = "") -> None:
+                        boot: str = "",
+                        credit: dict[tuple[str, str], str] | None = None
+                        ) -> None:
     """Add the lines the chosen packages need to S:User-Startup.
 
     Workbench 3.1 runs this from its own Startup-Sequence if it is there, so
@@ -952,7 +978,7 @@ def _write_user_startup(volume, config: "BuildConfig",
     module, gets its chance.  Copying the file into LIBS: alone would leave
     the ROM version in use and the whole package inert.
     """
-    lines = _package_startup_lines(config, boot, progress)
+    lines = _package_startup_lines(config, boot, progress, credit)
     if not lines:
         return
     folder = volume.makedirs("S")
@@ -1098,7 +1124,7 @@ def _manifest_text(config: "BuildConfig", pairs: list[tuple[str, str]],
     on with ``Delete``.
     """
     entries = _manifest_entries(pairs, credit, landings)
-    startup = _package_startup_lines(config)
+    startup = _package_startup_lines(config, credit=credit)
     if not entries and not startup:
         return ""
     when = datetime.datetime.now().strftime("%d-%b-%Y %H:%M")
@@ -1832,7 +1858,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         #  overwrites, so it is held back and written out again below with
         #  the packages' lines after it - otherwise FBlit, FText and Birdie
         #  go onto the card and are never run.
-        if spec.bootable and _package_startup_lines(config):
+        if spec.bootable and _package_startup_lines(config, credit=credit):
             fixer.keep_user_startup()
 
         if spec.content_hdf:
@@ -1913,7 +1939,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             #  nothing that needed a startup line ever ran.
             _give_drawers_icons(volume, spec, config, progress)
             _write_user_startup(volume, config, progress,
-                                fixer.kept_user_startup, fixer.boot_scripts)
+                                fixer.kept_user_startup, fixer.boot_scripts,
+                                credit)
             _write_manifest(volume, config, list(spec.overlays), credit,
                             progress, landings)
             #  Only the drive the machine boots from: Games and Demos were
