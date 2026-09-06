@@ -447,6 +447,50 @@ Then verify against the card rather than against the arithmetic: MBR signature,
 both partitions ending within the capacity, every drive mounting, and the files
 the build was checked on still present.
 
+### When the card is what failed, say so
+
+Writing direct to a card failed with `Input/output error`, an hour into a
+build, repeatedly. Nothing in the log said whether the fault was the card, the
+reader or this program, and the obvious reading - "the imager cannot write to a
+card" - was wrong.
+
+The kernel had the answer all along. Over three days it logged:
+
+| | |
+| --- | --- |
+| `mmcblk0: recovery failed!` | 554 |
+| `mmc0: card aaaa removed` | 15 |
+| `I/O error, dev mmcblk0` | 165 (94 reads, 63 writes, 8 discards) |
+
+Reads, not just writes - including **sector 0** and the partition table, which
+no application can be responsible for. `recovery failed` is the MMC block
+driver saying a command failed and the reset that should have recovered it
+failed too; `card removed` is the card leaving the bus. An application cannot
+cause either. The card, or the built-in reader, was dropping out.
+
+Two things follow, and both are the program's job:
+
+**Ask before the hour, not after it.** `devices.check_writable` asked whether
+writing *should* be allowed - the lock switch, a mounted system directory, a
+disk that is not removable - and never whether the card was actually there.
+`check_responds` now reads one page at the start, middle and end before any
+work begins. Reads only, three of them: this must never be the thing that
+disturbs a card that was about to work. A card that cannot be read reliably
+cannot be written reliably either, and finding out first costs seconds.
+
+**Name the cause when it happens anyway.** A card that leaves the bus mid-build
+fails every request from then on, and `run_build` now turns those errnos -
+`EIO`, `ENXIO`, `ENODEV`, `EREMOTEIO`, `ETIMEDOUT` - into an explanation with
+the `journalctl` line to confirm it and the thing actually worth trying: a USB
+card reader rather than a built-in slot, which negotiates the fastest UHS mode
+it can and fails on a marginal card where USB succeeds.
+
+Both are careful about what they do *not* claim. A permission error from the
+probe is not a verdict on the card - the unprivileged pass cannot prove
+anything, so it says so and moves on. An errno that means something else is
+re-raised untouched, because a bug of ours has to keep looking like a bug of
+ours. And an image file is never blamed on a card.
+
 ### Choosing a card has to survive being chosen
 
 Selecting an SD card on the Target page and pressing Write **wrote an image
