@@ -95,6 +95,11 @@ class BuildConfig:
     mode: BuildMode = BuildMode.FRESH
     target: str = ""                   # /dev/sdX or a path to an .img file
     target_is_device: bool = False
+    #  The root of the cache to use - the folder holding ``packages/``, not
+    #  ``packages/`` itself. Only set when the build is handed to a privileged
+    #  helper, which runs as root and would otherwise look in /root/.cache and
+    #  find none of the archives the user has.
+    cache_root: str = ""
     image_size: int = 8 * 1024 * MIB   # only used when creating a new .img file
 
     #  Emu68
@@ -2529,6 +2534,8 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
 
 
 def _run_build(config: BuildConfig, progress: Progress) -> None:
+    if config.cache_root:
+        emu68.use_cache(config.cache_root)
     for concern in config.concerns():
         #  Said before anything is written, and the build goes ahead: these
         #  are choices that work and probably were not meant.

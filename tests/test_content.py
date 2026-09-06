@@ -4050,3 +4050,65 @@ class AWarningThatIsWrongTeachesPeopleToIgnoreWarnings(unittest.TestCase):
         said = self.concerns(cached=False)[0]
         self.assertIn(str(self.home), said)
 
+
+class ThePrivilegedBuildUsesYourCacheNotRootsq(unittest.TestCase):
+    """Writing to a card must produce the same card as writing to a file.
+
+    A direct card write runs the build under ``pkexec``, so it runs as root
+    and ``Path.home()`` becomes ``/root``. Every archive the user had was
+    invisible: packages were downloaded again into root's cache, and Roadshow
+    - which its publisher serves only to a browser, so it can never be
+    downloaded - was left off the card entirely. The same choices produced a
+    different card depending on where it was being written.
+    """
+
+    def setUp(self):
+        from pistorm_imager.core import emu68                # noqa: PLC0415
+        self.emu68 = emu68
+        self.addCleanup(setattr, emu68, "_CACHE", None)
+
+    def test_the_cache_travels_in_the_job_file(self):
+        from pistorm_imager.core import builder, jobs         # noqa: PLC0415
+        home = Path(tempfile.mkdtemp(prefix="pistorm-job-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        config = builder.BuildConfig(target="/dev/sdz", target_is_device=True,
+                                     cache_root=str(home))
+        jobs.save(config, home / "job.json")
+        self.assertEqual(jobs.load(home / "job.json").cache_root, str(home))
+
+    def test_it_is_used_even_when_home_says_otherwise(self):
+        from pistorm_imager.core import packages              # noqa: PLC0415
+        mine = Path(tempfile.mkdtemp(prefix="pistorm-mine-"))
+        self.addCleanup(shutil.rmtree, mine, True)
+        roots = Path(tempfile.mkdtemp(prefix="pistorm-root-"))
+        self.addCleanup(shutil.rmtree, roots, True)
+        with unittest.mock.patch.object(Path, "home", lambda: roots), \
+                unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("XDG_CACHE_HOME", None)
+            self.assertNotEqual(packages.cache_dir(), mine / "packages")
+            self.emu68.use_cache(mine)
+            self.assertEqual(packages.cache_dir(), mine / "packages")
+
+    def test_a_path_that_is_not_there_is_ignored(self):
+        #  A saved setup carried to another machine must fall back to that
+        #  machine's cache rather than obey a directory that does not exist.
+        from pistorm_imager.core import packages              # noqa: PLC0415
+        self.emu68.use_cache("/nowhere/at/all")
+        self.assertTrue(packages.cache_dir().is_dir())
+
+    def test_the_build_applies_what_the_job_carried(self):
+        from pistorm_imager.core import builder, packages     # noqa: PLC0415
+        mine = Path(tempfile.mkdtemp(prefix="pistorm-applied-"))
+        self.addCleanup(shutil.rmtree, mine, True)
+        config = builder.BuildConfig(target="/tmp/card.img",
+                                     cache_root=str(mine))
+
+        def stop(*_a, **_kw):
+            raise RuntimeError("far enough")
+
+        with unittest.mock.patch.object(builder.BuildConfig, "validate", stop):
+            with self.assertRaises(RuntimeError):
+                builder._run_build(config, Progress())
+        self.assertEqual(packages.cache_dir(), mine / "packages",
+                         "the cache has to be set before anything is fetched")
+
