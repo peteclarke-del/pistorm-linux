@@ -4112,3 +4112,91 @@ class ThePrivilegedBuildUsesYourCacheNotRootsq(unittest.TestCase):
         self.assertEqual(packages.cache_dir(), mine / "packages",
                          "the cache has to be set before anything is fetched")
 
+
+class TheLauncherIsInstalledWithTheProgram(unittest.TestCase):
+    """An installed copy has to have an icon and a menu entry.
+
+    ``pipx install`` - installing from a published tag, which is how this is
+    meant to be installed - puts the Python package in a virtual environment
+    and nothing anywhere else. The desktop entry and the icon were in the
+    repository, and the documented way to install them was a pair of
+    ``install -Dm644`` lines run from a checkout, which is exactly what
+    somebody installing from a tag does not have. So the application showed up
+    as a generic drive in the desktop's grid, if at all.
+    """
+
+    def setUp(self):
+        from pistorm_imager import desktopentry                # noqa: PLC0415
+        self.desktopentry = desktopentry
+
+    def test_both_files_travel_inside_the_package(self):
+        #  Beside the package is not good enough: site-packages holds the
+        #  package and nothing else.
+        import pistorm_imager                                  # noqa: PLC0415
+        data = Path(pistorm_imager.__file__).parent / "data"
+        self.assertTrue(
+            (data / "applications" / "pistorm-imager.desktop").is_file())
+        self.assertTrue(
+            (data / "icons" / "hicolor" / "scalable" / "apps"
+             / "pistorm-imager.svg").is_file())
+
+    def test_the_wheel_declares_them_as_package_data(self):
+        #  Being in the source tree is not being in the wheel.
+        text = Path(__file__).resolve().parent.parent.joinpath(
+            "pyproject.toml").read_text()
+        self.assertIn("[tool.setuptools.package-data]", text)
+        self.assertIn(".desktop", text)
+        self.assertIn(".svg", text)
+
+    def test_it_installs_where_the_specification_says(self):
+        root = Path(tempfile.mkdtemp(prefix="pistorm-xdg-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        self.desktopentry.install(root, log=lambda _t: None)
+        entry = root / "applications" / "pistorm-imager.desktop"
+        icon = root / "icons/hicolor/scalable/apps/pistorm-imager.svg"
+        self.assertTrue(entry.is_file())
+        self.assertTrue(icon.is_file())
+
+    def test_the_entry_names_the_icon_that_is_installed(self):
+        #  The name in Icon= has to be the icon's basename, or the desktop
+        #  looks up something that is not there and falls back silently.
+        root = Path(tempfile.mkdtemp(prefix="pistorm-xdg-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        self.desktopentry.install(root, log=lambda _t: None)
+        entry = (root / "applications" / "pistorm-imager.desktop").read_text()
+        named = [line.split("=", 1)[1].strip() for line in entry.splitlines()
+                 if line.startswith("Icon=")]
+        self.assertEqual(named, ["pistorm-imager"])
+        self.assertTrue(
+            (root / f"icons/hicolor/scalable/apps/{named[0]}.svg").is_file())
+
+    def test_the_entry_runs_the_command_that_is_installed(self):
+        #  Exec has to name the console script the packaging declares, or the
+        #  menu entry is there and does nothing.
+        entry = (self.desktopentry.SOURCE / "applications"
+                 / "pistorm-imager.desktop").read_text()
+        execs = [line.split("=", 1)[1].strip() for line in entry.splitlines()
+                 if line.startswith("Exec=")]
+        scripts = Path(__file__).resolve().parent.parent.joinpath(
+            "pyproject.toml").read_text()
+        self.assertEqual(len(execs), 1)
+        self.assertIn(f'{execs[0]} = "pistorm_imager', scripts)
+
+    def test_a_desktop_file_is_never_left_executable(self):
+        #  Some file managers treat an executable .desktop as a script to run
+        #  rather than an entry to read.
+        root = Path(tempfile.mkdtemp(prefix="pistorm-xdg-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        self.desktopentry.install(root, log=lambda _t: None)
+        mode = (root / "applications" / "pistorm-imager.desktop").stat().st_mode
+        self.assertFalse(mode & 0o111)
+
+    def test_installing_twice_is_not_an_error(self):
+        #  It is the obvious thing to do after an upgrade.
+        root = Path(tempfile.mkdtemp(prefix="pistorm-xdg-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        self.desktopentry.install(root, log=lambda _t: None)
+        self.desktopentry.install(root, log=lambda _t: None)
+        self.assertTrue(
+            (root / "applications" / "pistorm-imager.desktop").is_file())
+

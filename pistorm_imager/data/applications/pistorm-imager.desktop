@@ -6,5 +6,5 @@ Comment=Build a PiStorm SD card, or write and customise a PiMiga image
 Exec=pistorm-imager
 Icon=pistorm-imager
 Terminal=false
-Categories=System;Utility;
+Categories=System;Filesystem;
 Keywords=Amiga;PiStorm;Emu68;PiMiga;SD;card;image;

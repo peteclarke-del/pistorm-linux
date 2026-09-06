@@ -156,6 +156,28 @@ def cmd_build(args) -> int:
     return 0
 
 
+def cmd_install_desktop(args) -> int:
+    """Put the launcher where the desktop looks for it.
+
+    Installing from a published tag - `pipx install git+...@v0.5.0` - puts the
+    Python package in a virtual environment and nothing anywhere else, so the
+    application had no menu entry and no icon. This is the step that was
+    missing, and it is one command rather than the pair of `install -Dm644`
+    lines the README used to give, which only worked from a checkout.
+    """
+    from . import desktopentry                                # noqa: PLC0415
+    root = Path(args.prefix) if args.prefix else desktopentry.data_home()
+    print(f"Installing into {root}")
+    try:
+        desktopentry.install(root)
+    except OSError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    print("Done. The entry may take a moment to appear, and a desktop that "
+          "caches its grid may need you to log out and back in.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pistorm-imager",
@@ -193,6 +215,14 @@ def main(argv: list[str] | None = None) -> int:
                               help="bytes the drive will occupy (default: its "
                                    "own size)")
     check_parser.set_defaults(func=cmd_check)
+
+    desktop_parser = sub.add_parser(
+        "install-desktop",
+        help="put the menu entry and icon where the desktop can find them")
+    desktop_parser.add_argument(
+        "--prefix", help="install under this data directory instead of "
+                         "$XDG_DATA_HOME (~/.local/share)")
+    desktop_parser.set_defaults(func=cmd_install_desktop)
 
     build_parser = sub.add_parser("build", help="run a saved build job")
     build_parser.add_argument("--job", required=True, help="job JSON written by the GUI")
