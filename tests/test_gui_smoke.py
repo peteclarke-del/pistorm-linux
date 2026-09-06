@@ -88,6 +88,12 @@ def _make_clutter_hdf() -> None:
         volume.write_file(script, "Assign-Startup",
                           b"Assign >NIL: A-Games: SYS:Games\n"
                           b"Assign >NIL: A-Spare: SYS:Spare\n")
+        #  Two icons the drive keeps on the desktop: one reachable in a drawer
+        #  anybody opens, one that is not.
+        tools = volume.makedirs("Tools/Commodities")
+        volume.write_file(tools, "CXHandler", b"a commodity")
+        volume.write_file(volume.root, ".backdrop",
+                          b":Tools/Commodities/CXHandler\n:Games/AGame\n")
         volume.close()
 
 
@@ -758,6 +764,31 @@ def on_activate(app: ImagerApplication) -> None:
         window._refresh_clutter()
         check(not window.clutter_group.get_visible(),
               "and the group hides again with no drive chosen")
+
+        # ------------------------------------- icons on the Workbench desktop
+        print("\nicons on the Workbench desktop")
+        window.quick_hdf.set_path(str(CLUTTER_IMAGE))
+        window._refresh_desktop()
+        rows = window.desktop_rows
+        check("Tools/Commodities/CXHandler" in rows,
+              f"the desktop list is read: {sorted(rows)}")
+        check(all(r.get_active() for r in rows.values()),
+              "everything the drive put there stays until somebody says otherwise")
+        check("also in Tools/Commodities" in
+              rows["Tools/Commodities/CXHandler"].get_subtitle(),
+              "and it says where the icon can be found anyway")
+        rows["Tools/Commodities/CXHandler"].set_active(False)
+        cfg = window.gather()
+        check(cfg.off_desktop == ["Tools/Commodities/CXHandler"],
+              f"turning one off reaches the build: {cfg.off_desktop}")
+        #  The distinction that matters: off the desktop, not off the card.
+        check("Tools/Commodities/CXHandler" not in cfg.leave_out,
+              "and it is not confused with leaving the program out")
+        rows["Tools/Commodities/CXHandler"].set_active(True)
+        window.quick_hdf.set_path("")
+        window._refresh_desktop()
+        check(not window.desktop_group.get_visible(),
+              "and the group hides with no drive chosen")
 
         check(window.quick_pimiga.path == "" and window.quick_hdf.get_visible(),
               "choosing an image drops the PiMiga folder")

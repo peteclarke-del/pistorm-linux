@@ -594,3 +594,61 @@ class OneBoardGetsOneMonitor(unittest.TestCase):
         written = self._finished(expect_picasso=False).written
         self.assertIn(("Devs/Monitors", compat.EMU68_BOARD), written)
         self.assertIn(("Devs/Monitors", compat.EMU68_BOARD + ".info"), written)
+
+
+class TakingAnIconOffTheDesktopRemovesNothing(unittest.TestCase):
+    """`.backdrop` names the icons Workbench shows on the desktop.
+
+    An icon listed there is shown on the desktop *instead of* inside the drawer
+    its file lives in, so dropping the line puts it back in that drawer. That is
+    the whole distinction between this and leaving something out: one is where
+    an icon appears, the other is whether the file is on the card at all, and
+    answering the first with the second would delete somebody's program.
+    """
+
+    BACKDROP = (b":System/ClearRAM\n"
+                b":System/BMenu/Drawers\n"
+                b":Tools/Commodities/CXHandler\n")
+
+    def fixer(self, off_desktop=(), leaving=()):
+        made = compat.Compatibility(QUIET, enabled=True,
+                                    off_desktop=off_desktop)
+        made.supersede(leaving)
+        return made
+
+    def kept(self, fixer):
+        out = fixer.offer(".backdrop", self.BACKDROP)
+        return [line.strip().lstrip(":")
+                for line in out.decode("latin-1").splitlines() if line.strip()]
+
+    def test_nothing_is_touched_when_nothing_was_asked_for(self):
+        self.assertEqual(self.kept(self.fixer()),
+                         ["System/ClearRAM", "System/BMenu/Drawers",
+                          "Tools/Commodities/CXHandler"])
+
+    def test_an_icon_can_be_taken_off_the_desktop(self):
+        kept = self.kept(self.fixer(
+            off_desktop=["Tools/Commodities/CXHandler"]))
+        self.assertNotIn("Tools/Commodities/CXHandler", kept)
+        self.assertIn("System/ClearRAM", kept)
+
+    def test_the_file_itself_is_not_removed(self):
+        """The point of the whole exercise: the program stays where it is."""
+        made = self.fixer(off_desktop=["Tools/Commodities/CXHandler"])
+        made.offer(".backdrop", self.BACKDROP)
+        path = "Tools/Commodities/CXHandler"
+        made.offer(path, b"the commodity itself")
+        self.assertFalse(made.skip(path),
+                         "taking an icon off the desktop deleted the program")
+        self.assertFalse(made.skip_drawer("Tools/Commodities"))
+
+    def test_a_line_naming_something_left_out_goes_too(self):
+        #  Not a preference: the icon would not be there to show.
+        kept = self.kept(self.fixer(leaving=["System/BMenu"]))
+        self.assertNotIn("System/BMenu/Drawers", kept)
+        self.assertIn("Tools/Commodities/CXHandler", kept)
+
+    def test_a_drive_with_no_backdrop_is_left_alone(self):
+        made = self.fixer(off_desktop=["Anything"])
+        self.assertEqual(made.offer("S/Startup-Sequence", b"C:LoadWB\n"),
+                         b"C:LoadWB\n")

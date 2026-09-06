@@ -701,6 +701,9 @@ class Clutter:
 ICON_SUFFIX = ".info"
 HUNK_HEADER = b"\x00\x00\x03\xf3"
 
+#  Where Workbench keeps the list of icons it shows on the desktop.
+BACKDROP = ".backdrop"
+
 EMPTY = "empty"
 EMULATOR = "emulator"
 BROKEN = "broken"
@@ -952,4 +955,54 @@ def clutter(reader, volumes: Iterable[str] = (),
             continue
         claimed.add(low)
         out.append(item)
+    return out
+
+
+#  Drawers a person opens without being shown the way. An icon whose file sits
+#  in one of these is reachable already, so the copy on the desktop is a
+#  shortcut rather than the only route to it.
+BROWSABLE = ("utilities", "tools", "system", "prefs", "programs", "storage",
+             "internet", "audio", "wbstartup", "devs", "expansion")
+
+
+@dataclasses.dataclass(frozen=True)
+class OnTheDesktop:
+    """One icon Workbench lifts out onto the desktop."""
+
+    path: str                   # as the file lives, from the volume root
+    reachable: str = ""         # the drawer it can be found in anyway
+    missing: bool = False       # names something not on the drive at all
+
+
+def desktop_icons(reader) -> list[OnTheDesktop]:
+    """What Workbench puts on the desktop instead of inside its drawer.
+
+    ``.backdrop`` is a plain list of paths, one per line, each written from the
+    volume root. An icon named there is shown on the desktop *instead of* in the
+    drawer the file lives in - so taking a line out removes nothing, it puts the
+    icon back where the file already is.
+
+    That distinction is the whole point of reading this separately from the
+    clutter pass: "take this off the desktop" and "take this off the card" are
+    different requests, and answering the first with the second would delete
+    somebody's program.
+    """
+    entry = reader.find(BACKDROP)
+    if entry is None or getattr(entry, "is_dir", False):
+        return []
+    try:
+        text = reader.read_file(entry).decode("latin-1", "replace")
+    except Exception:                                        # noqa: BLE001
+        return []
+    out: list[OnTheDesktop] = []
+    for line in text.splitlines():
+        named = line.strip().lstrip(":").replace("\\", "/").strip("/")
+        if not named:
+            continue
+        drawer = named.rpartition("/")[0]
+        top = named.split("/", 1)[0].lower()
+        out.append(OnTheDesktop(
+            path=named,
+            reachable=drawer if drawer and top in BROWSABLE else "",
+            missing=reader.find(named) is None))
     return out

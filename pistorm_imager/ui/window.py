@@ -1026,6 +1026,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._refresh_older_copies()
             self._refresh_what_cannot_work()
             self._refresh_clutter()
+            self._refresh_desktop()
             self._refresh_what_arrives()
             self._quick_preview()
             return
@@ -1049,6 +1050,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._refresh_older_copies()
         self._refresh_what_cannot_work()
         self._refresh_clutter()
+        self._refresh_desktop()
         self._refresh_what_arrives()
         self._quick_preview()
 
@@ -1901,6 +1903,21 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.clutter_group.set_visible(False)
         page.add(self.clutter_group)
 
+        #  Separate from the clutter list on purpose. "Take this off the
+        #  desktop" and "take this off the card" are different requests, and
+        #  answering the first with the second would delete somebody's
+        #  program: an icon named in .backdrop is shown on the desktop
+        #  *instead of* inside its drawer, so dropping the line puts it back
+        #  where the file already is and removes nothing.
+        self.desktop_group = Adw.PreferencesGroup(
+            title="Icons on the Workbench desktop",
+            description="What the drive puts on the desktop rather than in a "
+                        "drawer. Turn one off to have it sit in its own drawer "
+                        "instead - nothing is deleted either way.")
+        self.desktop_rows: dict[str, Adw.SwitchRow] = {}
+        self.desktop_group.set_visible(False)
+        page.add(self.desktop_group)
+
         #  One group per category, so a long list reads as a few short ones.
         #  What a fresh window starts with is the same recommendation the
         #  "suggest a set" button makes, for the machine and screen the
@@ -2407,6 +2424,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._refresh_older_copies()
         self._refresh_what_cannot_work()
         self._refresh_clutter()
+        self._refresh_desktop()
         self._refresh_what_arrives()
 
     def _refresh_categories(self) -> None:
@@ -2607,6 +2625,52 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.clutter_rows[where] = row
             self.clutter_group.add(row)
         self.clutter_group.set_visible(bool(self.clutter_rows))
+
+    def _refresh_desktop(self) -> None:
+        """Offer each icon the drive keeps on the Workbench desktop."""
+        if not hasattr(self, "desktop_group"):
+            return
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        found = []
+        if path:
+            try:
+                from ..core import amigaos, content            # noqa: PLC0415
+                reader, _label = amigaos.open_amiga_volume(path, "")
+            except Exception:                                  # noqa: BLE001
+                reader = None
+            if reader is not None:
+                try:
+                    found = content.desktop_icons(reader)
+                except Exception:                              # noqa: BLE001
+                    found = []
+                finally:
+                    try:
+                        reader.f.close()
+                    except Exception:                          # noqa: BLE001
+                        pass
+        wanted = {i.path: i for i in found}
+        for key, row in list(self.desktop_rows.items()):
+            if key not in wanted:
+                self.desktop_group.remove(row)
+                del self.desktop_rows[key]
+        for where, icon in wanted.items():
+            if where in self.desktop_rows:
+                continue
+            if icon.missing:
+                why = "names something that is not on the drive"
+            elif icon.reachable:
+                why = f"also in {icon.reachable}, so the desktop copy is a shortcut"
+            else:
+                why = "only reachable from the desktop"
+            row = Adw.SwitchRow(title=where, subtitle=why)
+            #  On means "leave it on the desktop". Everything the drive chose
+            #  to put there stays until somebody says otherwise; this is a
+            #  preference, and the card works either way.
+            row.set_active(True)
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.desktop_rows[where] = row
+            self.desktop_group.add(row)
+        self.desktop_group.set_visible(bool(self.desktop_rows))
 
     def _already_leaving(self) -> list[str]:
         """Paths the other lists are already dropping from the card.
@@ -3180,6 +3244,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                 + [where for where, row
                    in getattr(self, "clutter_rows", {}).items()
                    if row.get_active()])),
+            off_desktop=sorted(
+                where for where, row in getattr(self, "desktop_rows", {}).items()
+                if not row.get_active()),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
