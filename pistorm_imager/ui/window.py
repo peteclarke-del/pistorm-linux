@@ -2599,9 +2599,18 @@ class ImagerWindow(Adw.ApplicationWindow):
                     #  drawer empty now is not empty on the finished card.
                     _wanted, filling = packages.principal_programs(
                         self._chosen_packages())
+                    #  ...and whatever the Workbench disks will add. A drawer
+                    #  empty on the drive being built from is not empty on the
+                    #  finished card: ClassicWB ships Rexxc and Expansion with
+                    #  nothing in them and the floppy install fills both, so
+                    #  offering to remove one took Commodore's own files with
+                    #  it and the card came out with no ARexx commands at all.
+                    keep = set(filling)
+                    if self.adf_row.path:
+                        keep |= amigaos.drawers_on_the_disks(self.adf_row.path)
                     found = content.clutter(
                         reader, content.volumes_on_the_card(reader, named),
-                        keep=filling, going=self._already_leaving())
+                        keep=keep, going=self._already_leaving())
                 except Exception:                              # noqa: BLE001
                     found = []
                 finally:

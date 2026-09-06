@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 639 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 641 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -1574,7 +1574,21 @@ what is definitely data is refused now: executables, oversized files, and the
 image formats by their magic. A test pins that, because it looked like a
 tidy-up and silently disabled a whole rule.
 
-On a real 500 MB ClassicWB drive this finds four things and no false positives,
+A third thing it cost, and the most expensive: **empty on the drive is not
+empty on the finished card.** ClassicWB ships `Rexxc` and `Expansion` holding
+nothing at all, and the Workbench floppy install fills both. Offered as empty
+and ticked, the drawer was refused - and refusing a drawer refuses everything
+destined for it, so Commodore's ARexx commands had nowhere to land. That card
+booted with `System/Rexxmast` still started and no `rx` to run anything.
+
+The guard for it already existed - what the build is about to fill is never
+offered - and had only been given the packages' destinations. It is now given
+the drawers read off the Workbench disks as well, which on a real drive is the
+difference between offering `Demos, Expansion, MyFiles/UAE, Rexxc, WBStartupM`
+and offering `Demos, MyFiles/UAE, WBStartupM`. It reached an image before the
+test existed.
+
+On a real 500 MB ClassicWB drive this finds three things and no false positives,
 in under two seconds.
 
 #### A browser an OCS or ECS machine can actually run
