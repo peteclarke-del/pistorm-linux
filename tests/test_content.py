@@ -1831,9 +1831,17 @@ class ChoicesThatBuildAndMislead(unittest.TestCase):
 
     def test_software_nobody_can_fetch_on_your_behalf(self):
         #  Roadshow's publisher serves the archive only to a browser, so the
-        #  card is built without it unless a copy is already cached.
-        said = self._config(package_keys=["roadshow"]).concerns()
-        self.assertTrue([s for s in said if "roadshow" in s], said)
+        #  card is built without it unless a copy is already cached.  The
+        #  cache is pointed somewhere empty here: asking the real one made
+        #  this test say different things on different machines, and it
+        #  passed only because the warning did not look in the cache either.
+        from pistorm_imager.core import packages as pk       # noqa: PLC0415
+        empty = Path(tempfile.mkdtemp(prefix="pistorm-nocache-"))
+        self.addCleanup(shutil.rmtree, empty, True)
+        with unittest.mock.patch.object(pk, "cache_dir", lambda: empty):
+            said = self._config(package_keys=["roadshow"]).concerns()
+        label = pk.CATALOGUE_BY_KEY["roadshow"].label
+        self.assertTrue([s for s in said if label in s], said)
 
     def test_a_card_with_nothing_on_its_drives(self):
         said = self._config().concerns()
@@ -3997,4 +4005,48 @@ class TheNewerCopyWinsWhoeverCarriesIt(unittest.TestCase):
         download = packages.CATALOGUE_BY_KEY["identify"].download
         self.assertIn("IdentifyUsr", download.path,
                       "Identify.lha is version 8.2 from 1997")
+
+
+class AWarningThatIsWrongTeachesPeopleToIgnoreWarnings(unittest.TestCase):
+    """Only warn that an archive is missing when it is actually missing.
+
+    The check asked whether a package *can* be fetched and never whether it
+    already had been, so a build whose cache held Roadshow opened its log
+    with "roadshow cannot be downloaded here ... or it will be left out" and
+    then installed it fifteen lines later.
+    """
+
+    def concerns(self, cached):
+        from pistorm_imager.core import builder, packages   # noqa: PLC0415
+        home = Path(tempfile.mkdtemp(prefix="pistorm-cache-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        if cached:
+            name = packages.CATALOGUE_BY_KEY["roadshow"].download.filename
+            (home / name).write_bytes(b"not really an archive, but present")
+        self.home = home
+        with unittest.mock.patch.object(packages, "cache_dir",
+                                        lambda: home):
+            config = builder.BuildConfig(target="/tmp/card.img",
+                                         package_keys=["roadshow"])
+            return [c for c in config.concerns() if "browser" in c]
+
+    def test_nothing_is_said_when_the_archive_is_already_there(self):
+        self.assertEqual(self.concerns(cached=True), [])
+
+    def test_it_is_still_said_when_the_archive_is_missing(self):
+        said = self.concerns(cached=False)
+        self.assertEqual(len(said), 1)
+
+    def test_it_says_the_name_a_person_would_recognise(self):
+        #  It printed the catalogue key - "roadshow" - which is not what the
+        #  package is called anywhere the user can see.
+        said = self.concerns(cached=False)[0]
+        label = packages.CATALOGUE_BY_KEY["roadshow"].label
+        self.assertIn(label, said)
+
+    def test_and_where_to_put_it(self):
+        #  The folder itself, not just the fact that a cache exists: it said
+        #  "put the archive in the cache first" and never where that was.
+        said = self.concerns(cached=False)[0]
+        self.assertIn(str(self.home), said)
 
