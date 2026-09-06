@@ -4758,3 +4758,74 @@ class WhatACardIsBetterOffWithout(unittest.TestCase):
         files = {"S/User-Startup": b"Assign >NIL: HELP: LOCALE:Help\n"}
         self.assertEqual([c for c in content.clutter(self._reader(files))
                           if c.kind == content.BROKEN], [])
+
+
+class AnEmptyDrawerTheInstallIsAboutToFill(unittest.TestCase):
+    """Empty on the drive is not empty on the finished card.
+
+    ClassicWB ships `Rexxc` and `Expansion` holding nothing at all, and the
+    Workbench floppy install fills both. Offered as "empty" and ticked, the
+    drawer was refused - and refusing a drawer refuses everything destined for
+    it, so Commodore's ARexx commands had nowhere to land and a card came out
+    with `System/Rexxmast` still started at boot and no `rx` to run anything.
+
+    That reached a real card before this test existed.
+    """
+
+    def _reader(self, files):
+        dirs = set()
+        for path in files:
+            parts = path.split("/")
+            for depth in range(1, len(parts)):
+                dirs.add("/".join(parts[:depth]))
+
+        class Entry:
+            def __init__(self, path, is_dir):
+                self.path, self.name = path, path.rpartition("/")[2]
+                self.is_dir = is_dir
+                self.anode = self.block = abs(hash(path)) & 0xFFFFFF
+
+        by_locator = {}
+
+        def entry(path, is_dir):
+            made = Entry(path, is_dir)
+            by_locator[made.anode] = path
+            return made
+
+        class Reader:
+            def listdir(self, where=None):
+                parent = "" if where is None else by_locator.get(where, "\0")
+                return [entry(p, p in dirs) for p in sorted(dirs | set(files))
+                        if p.rpartition("/")[0] == parent and p.rpartition("/")[2]]
+
+            def find(self, path):
+                if path in dirs:
+                    return entry(path, True)
+                if path in files:
+                    return entry(path, False)
+                return None
+
+            def read_file(self, e):
+                return files.get(getattr(e, "path", ""), b"")
+        return Reader()
+
+    DRIVE = {"Rexxc/.keepme.info": b"icon", "Spare/.keepme.info": b"icon"}
+
+    def test_a_drawer_the_floppies_fill_is_never_offered(self):
+        found = {c.path for c in content.clutter(self._reader(self.DRIVE),
+                                                 keep=["Rexxc"])}
+        self.assertNotIn("Rexxc", found,
+                         "offering this takes Commodore's ARexx commands with it")
+        #  ...and the guard is not so broad that it saves everything.
+        self.assertIn("Spare", found)
+
+    def test_the_disks_say_which_drawers_those_are(self):
+        """Read off the disks the user has, not from a list written here."""
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        folder = Path(__file__).resolve().parent.parent / "samples" / "workbench"
+        if not folder.is_dir() or not any(folder.glob("*.adf")):
+            self.skipTest("the Workbench disk images are not here")
+        drawers = amigaos.drawers_on_the_disks(folder)
+        self.assertIn("Rexxc", drawers)
+        self.assertIn("Expansion", drawers)
+        self.assertIn("Utilities", drawers)
