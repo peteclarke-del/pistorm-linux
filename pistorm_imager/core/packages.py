@@ -164,6 +164,23 @@ class Package:
     #  something soft-kicks the one on disk over it, and a patch like FBlit
     #  does nothing until it is run.
     startup: tuple[str, ...] = ()
+    #  Data files a startup line has to name, which only the archive can
+    #  decide: ``(placeholder, destination drawer, how many)``.  The line
+    #  carries ``{placeholder}`` and the build replaces it with the files the
+    #  package actually put in that drawer, in name order, as ``SYS:`` paths.
+    #
+    #  Birdie is the case this exists for and it is worth writing down, because
+    #  the failure was silent and looked like the software working.  Birdie
+    #  takes the window-border patterns to use on its command line, and it was
+    #  started with none: run with an empty PATTERNS list it opens a window
+    #  titled "About Birdie 2000" instead - so every boot ended with an about
+    #  box on the desktop and no patterns anywhere.  The names cannot be
+    #  written into the catalogue, because the archive decides what patterns it
+    #  ships, so they are read back off what was installed.
+    #
+    #  A line whose placeholder cannot be filled is dropped rather than written
+    #  bare: an unfilled line is the very thing that opened the about box.
+    startup_files: tuple[str, str, int] = ()
     #  Other packages this one cannot run without.  iGame, AmFTP, NetSurf and
     #  WookieChat are all MUI applications: copied on their own they land on
     #  the card, appear on Workbench and then do nothing at all when clicked,
@@ -607,9 +624,22 @@ CATALOGUE: list[Package] = [
         #  the pathed form failed on every boot and Birdie never started.
         #  ClassicWB's own User-Startup says "Run >NIL: C:XpkMasterPrefs",
         #  which is the form that works.
-        startup=("Run >NIL: C:Birdie",),
+        #
+        #  The patterns have to be named on the line. Started without them
+        #  Birdie draws nothing and opens its "About Birdie 2000" window
+        #  instead, which is what greeted the user on every boot; the names
+        #  come from what was installed rather than from here, because the
+        #  archive decides what patterns it ships.
+        startup=("Run >NIL: C:Birdie {patterns}",),
+        #  One, not all seven. Birdie keeps each pattern in three versions -
+        #  plain, shine and shadow - so handing it the whole drawer costs
+        #  memory on a machine that has little, and gives every window a
+        #  pattern picked at random, which is a patchwork rather than a look.
+        startup_files=("patterns", "Prefs/Presets/Birdie", 1),
         note="Installed into C: with its patterns in Prefs/Presets/Birdie, "
-             "and started from S:User-Startup.",
+             "and started from S:User-Startup with the first of them. The "
+             "patterns are JPEGs and are loaded through datatypes, so a "
+             "system with no JPEG datatype simply gets plain borders.",
     ),
     Package(
         "powerwindows", "PowerWindows",
@@ -931,7 +961,20 @@ CATALOGUE: list[Package] = [
             #  where the drive came from.
             (("Picasso96Install", STAGING + "/Picasso96"),
              ("Picasso96Install/Libs/Picasso96API.library", "Libs"),
+             #  rtg.library is the RTG subsystem itself, and it was missing.
+             #  DEVS:Monitors/Picasso96 is run by S:Startup-Sequence and the
+             #  string inside that binary is "picasso96/rtg.library", opened
+             #  relative to LIBS: - so a card with the monitor, the settings
+             #  and the board driver but no rtg.library asked for a library
+             #  that was not there on every boot, and had no RTG screen.
+             #  Only fastlayers was being copied out of this drawer; the
+             #  archive's own installer copylibs all three of these to
+             #  SYS:Libs/Picasso96, unconditionally.
+             ("Picasso96Install/Libs/Picasso96/rtg.library",
+              "Libs/Picasso96"),
              ("Picasso96Install/Libs/Picasso96/fastlayers.library",
+              "Libs/Picasso96"),
+             ("Picasso96Install/Libs/Picasso96/emulation.library",
               "Libs/Picasso96"),
              ("Picasso96Install/Devs/Monitors/Picasso96", "Devs/Monitors"),
              ("Picasso96Install/Devs/Monitors/Picasso96.info",
@@ -1376,6 +1419,62 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
         else:
             progress.log(f"  {package.label}: {inside} is not in the archive")
     return out
+
+
+#  Files an archive carries alongside its data but which are not data: an icon
+#  is Workbench's business, not the program's, and naming one on a command line
+#  would hand a program a file it cannot read.
+NOT_DATA = (".info",)
+
+
+def installed_names(package: Package,
+                    pairs: Iterable[tuple[str, str]]) -> list[str]:
+    """The data files ``package`` put in the drawer its startup line names.
+
+    Read off the pairs the build resolved, not written down here: the archive
+    decides what it ships, and a name typed into the catalogue would be a guess
+    that goes wrong the first time its publisher adds or renames one.
+
+    A pair's source is a whole drawer as often as a single file - the archive's
+    ``Patterns`` drawer goes to ``Prefs/Presets/Birdie`` entire - so a directory
+    is listed rather than named.
+    """
+    if not package.startup_files:
+        return []
+    _placeholder, drawer, limit = package.startup_files
+    names: list[str] = []
+    for source, destination in pairs:
+        if destination.replace("\\", "/").lower() != drawer.lower():
+            continue
+        path = Path(source)
+        try:
+            found = ([path] if path.is_file()
+                     else sorted(c for c in path.iterdir() if c.is_file()))
+        except OSError:
+            continue
+        names += [c.name for c in found
+                  if not c.name.lower().endswith(NOT_DATA)]
+    names.sort(key=str.lower)
+    return names[:limit] if limit else names
+
+
+def complete_startup(package: Package,
+                     pairs: Iterable[tuple[str, str]]) -> list[str] | None:
+    """``package``'s startup lines with their placeholder filled in.
+
+    ``None`` when the files it needs are not on the card, because the line
+    must then not be written at all: Birdie started with no patterns opens its
+    about window, which is worse than Birdie not being started.
+    """
+    if not package.startup_files:
+        return list(package.startup)
+    placeholder, drawer, _limit = package.startup_files
+    names = installed_names(package, pairs)
+    if not names:
+        return None
+    arguments = " ".join(f'"SYS:{drawer}/{name}"' for name in names)
+    return [line.replace("{" + placeholder + "}", arguments)
+            for line in package.startup]
 
 
 # -------------------------------------------------------------- choosing

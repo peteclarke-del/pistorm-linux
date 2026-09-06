@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 596 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 607 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -1150,6 +1150,34 @@ shell's ROM-internal commands and AmigaOS 3.1 ships no file for it, so the
 pathed form failed on every boot and Birdie never started. ClassicWB's own
 User-Startup says `Run >NIL: C:XpkMasterPrefs`, which is the form that works.
 
+A third fault, found the same way: with the line fixed Birdie *did* start, and
+what it did was open a window titled **About Birdie 2000** on every boot. The
+line was `Run >NIL: C:Birdie` with nothing after it, and Birdie takes the
+patterns to draw with as command line arguments. Given none, the branch it
+takes is the one that opens its about window — that is not a reading of the
+documentation, which says only that it "simply returns"; it is the window title
+string inside the binary and the branch that reaches it, taken when the
+`PATTERNS` argument is empty. So the patterns were copied to
+`Prefs/Presets/Birdie`, nothing ever named them, and the desktop got an about
+box instead of patterned borders.
+
+The names cannot be written into the catalogue — the archive decides what
+patterns it ships — so a startup line may now carry a placeholder that the
+build fills in from the files the package **actually put on the card**:
+
+    startup=("Run >NIL: C:Birdie {patterns}",),
+    startup_files=("patterns", "Prefs/Presets/Birdie", 1),
+
+One pattern, not all seven: Birdie keeps each in three versions — plain, shine
+and shadow — so handing it the whole drawer costs memory on a machine that has
+little, and gives every window one picked at random, which is a patchwork
+rather than a look.
+
+**A line whose files are missing is dropped rather than written bare**, because
+a bare line is exactly what opened the about window. The patterns are JPEGs
+loaded through datatypes, so a system with no JPEG datatype gets plain borders
+and no window.
+
 And ClassicWB already starts FBlit, FText and BlazeWCP from its own boot
 script, so the lines added for those started each of them a **second** time. A
 package's lines are now left out when the drive's own boot already runs
@@ -1469,7 +1497,9 @@ showed it:
   installed as `C:LhA`.
 - **Birdie** and **PowerWindows** were staged with a note asking the user to
   copy them into place. Birdie now goes into `C:` with its patterns, and is
-  started from `S:User-Startup` the way its own documentation says; PowerWindows
+  started from `S:User-Startup` the way its own documentation says — with the
+  first of those patterns named on the line, without which it opens its about
+  window instead of drawing anything; PowerWindows
   goes into `Utilities/PowerWindows` whole, because it looks for its external
   routines beside itself.
 
@@ -2362,10 +2392,38 @@ has none, and the card came out with the graphics driver present, no screenmode
 to select it, and a line in an hour-old build log as the only explanation.
 
 Picasso96 is installed from its own archive now: `Picasso96API.library`, its own
-`Devs/Monitors/Picasso96` and icon, `Devs/Picasso96Settings`, `fastlayers.library`
-and `Prefs/Picasso96Mode`, with Emu68's `VideoCore.card` as the board. The full
-archive is still staged in `Storage/Install` for the datatypes and the drivers
-for painting programs.
+`Devs/Monitors/Picasso96` and icon, `Devs/Picasso96Settings`, `rtg.library`,
+`fastlayers.library`, `emulation.library` and `Prefs/Picasso96Mode`, with Emu68's
+`VideoCore.card` as the board. The full archive is still staged in
+`Storage/Install` for the datatypes and the drivers for painting programs.
+
+#### `rtg.library` was missing, and it is the whole subsystem
+
+Three libraries live in the archive's `Libs/Picasso96`, and its installer
+`copylib`s all three into `SYS:Libs/Picasso96` unconditionally. Only
+`fastlayers.library` was being copied. `rtg.library` — the RTG subsystem itself,
+216 KB of it — was not, so **every card built with an RTG display came out
+without it**.
+
+`DEVS:Monitors/Picasso96` is not a data file: it is an executable, and
+`S:Startup-Sequence` runs everything in that drawer at boot. The string inside
+it is `picasso96/rtg.library`, opened relative to `LIBS:`. So the boot said the
+library was missing, and the card had no RTG screen modes at all — the board
+driver, the monitor, the settings and the API library all present, and nothing
+able to bring them up.
+
+The version pairing is the one Emu68 expects: `rtg.library 40.3945` and
+`Picasso96 40.42` out of the same 1999 archive, which is the Picasso96 2.0 that
+`VideoCore.card` is documented to be installed against. This is not the trap
+described above — that was a monitor from *somewhere else* meeting a donor
+drive's library. Monitor and library here are the matched pair from one archive.
+
+The guard is an invariant read out of the driver rather than a list typed into a
+test: for every monitor driver the catalogue installs, every
+`<drawer>/<name>.library` string inside that binary must be installed at
+`Libs/<drawer>/<name>.library`. It holds for whatever display driver the
+catalogue gains next, and for whatever the publisher ships next. Putting the bug
+back makes it fail by name.
 
 **The library and the monitor have to travel together**, and a test enforces it.
 The earlier failure was not caused by supplying a monitor; it was caused by that
