@@ -66,18 +66,37 @@ implemented in this project.
 ./run.sh
 ```
 
-or install it and use the desktop entry:
+or install it from the published release and use the desktop entry:
 
 ```
-pip install --user .
-install -Dm644 data/icons/hicolor/scalable/apps/pistorm-imager.svg \
-        ~/.local/share/icons/hicolor/scalable/apps/pistorm-imager.svg
-install -Dm644 pistorm-imager.desktop ~/.local/share/applications/
-gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
+pipx install --system-site-packages \
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.5.0"
+pistorm-imager-cli install-desktop
 ```
 
-The icon is a scalable SVG in `data/icons`, laid out the way GTK expects a
-theme to be, so running from a checkout finds it without installing anything.
+`--system-site-packages` is not optional: PyGObject is a distribution package,
+and an isolated environment cannot see it, so the application dies on
+`ModuleNotFoundError: No module named 'gi'`.
+
+The second line is the one that used to be missing. `pipx` and `pip` install a
+Python package and **nothing else** - they know nothing about
+`~/.local/share/applications` or the hicolor icon theme - so an installed copy
+had no menu entry and no icon, and appeared in the desktop's grid as a generic
+drive. The two files were in the repository all along, and the documented way
+to install them was a pair of `install -Dm644` lines run from a checkout, which
+is exactly what somebody installing from a tag does not have.
+
+They now travel **inside** the package, at `pistorm_imager/data`, rather than
+beside it: `site-packages` holds the package and nothing else, so a path
+relative to the repository root pointed at a directory that was not there. That
+is also what lets a checkout and an installed copy share one code path -
+`app.py` adds `pistorm_imager/data/icons` to GTK's search path either way, so
+running `./run.sh` from a checkout finds the icon without installing anything.
+
+`install-desktop` takes `--prefix` if the files should go somewhere other than
+`$XDG_DATA_HOME`, and refreshes the desktop and icon caches afterwards. A
+desktop that caches its application grid - GNOME does - may still need a log
+out and back in before the icon appears.
 
 ## The window
 
@@ -181,7 +200,8 @@ pistorm_imager/
   ui/            the GTK4 interface
   cli.py         command line front end and privileged writer
   app.py         the GTK application itself
-data/icons/      the application icon, in the hicolor theme layout
+pistorm_imager/data/   the icon and desktop entry, in the layout they
+                 install into, and shipped inside the wheel
 tests/           unit tests plus a real end-to-end image build
 ```
 
