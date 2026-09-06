@@ -42,11 +42,15 @@ def _register_icon() -> None:
 
     Running from a checkout - which is how ./run.sh works - the icon has not
     been installed into ~/.local/share/icons, so the window would fall back to
-    a stock one.  The project keeps its icons in the theme layout GTK expects
+    a stock one.  The icons live *inside the package* rather than beside it so
+    that this works from an installed copy too: ``pipx install`` puts the
+    package in site-packages and nothing else anywhere, so a path relative to
+    the repository root resolved to a directory that was not there.
+    The project keeps its icons in the theme layout GTK expects
     (hicolor/scalable/apps), so the directory can simply be added to the
     search path; that costs nothing once the icon *is* installed properly.
     """
-    here = Path(__file__).resolve().parent.parent / "data" / "icons"
+    here = Path(__file__).resolve().parent / "data" / "icons"
     if not here.is_dir():
         return
     display = Gdk.Display.get_default()
