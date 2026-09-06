@@ -38,6 +38,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from . import amigainfo
+from .compat import EMU68_BOARD
 from .machines import Chipset, Display, Machine
 from .util import Progress, human_size
 
@@ -112,6 +113,20 @@ class Download:
     #  an icon the archive already has and retargeting it beats inventing
     #  one: a hand-built DiskObject with no image draws as nothing at all.
     retool: tuple[tuple[str, str, str, str], ...] = ()
+    #  (icon inside the archive, destination, name on the card, tool types to
+    #  set, each written "KEY=value"). An icon can carry settings the program
+    #  reads, and which of them is right is decided by the machine being built
+    #  rather than by the archive.
+    #
+    #  Picasso96 is the case: it finds its graphics board through the BOARDTYPE
+    #  tool type of its monitor icon and then opens LIBS:Picasso96/<that>.card.
+    #  The archive ships that icon with no tool types at all - because its own
+    #  installer asks which board you have and writes one - so an untouched copy
+    #  left Picasso96 with no idea which card to load. It guesses, by scanning
+    #  for an autoconfig board, and Emu68's VideoCore is not one: it is found
+    #  through the Pi's device tree. So the guess failed and the boot said
+    #  "Could not create graphics board context for 'Picasso96'".
+    tooltypes: tuple[tuple[str, str, str, tuple[str, ...]], ...] = ()
 
     @property
     def url(self) -> str:
@@ -977,8 +992,6 @@ CATALOGUE: list[Package] = [
              ("Picasso96Install/Libs/Picasso96/emulation.library",
               "Libs/Picasso96"),
              ("Picasso96Install/Devs/Monitors/Picasso96", "Devs/Monitors"),
-             ("Picasso96Install/Devs/Monitors/Picasso96.info",
-              "Devs/Monitors"),
              ("Picasso96Install/Prefs/Picasso96Mode", "Prefs"),
              ("Picasso96Install/Prefs/Picasso96Mode.info", "Prefs")),
             #  The archive ships one settings file per monitor frequency and
@@ -986,7 +999,14 @@ CATALOGUE: list[Package] = [
             #  permissive of them is the one that does not needlessly cut the
             #  mode list short.
             rename=(("Picasso96Install/Devs/Picasso96Settings.64", "Devs",
-                     "Picasso96Settings"),)),
+                     "Picasso96Settings"),),
+            #  The monitor's icon is how Picasso96 is told which board to
+            #  drive, and the archive ships it blank. Emu68's VideoCore is not
+            #  an autoconfig board, so nothing can find it by looking; it has
+            #  to be named.
+            tooltypes=(("Picasso96Install/Devs/Monitors/Picasso96.info",
+                        "Devs/Monitors", "Picasso96.info",
+                        (f"BOARDTYPE={EMU68_BOARD}",)),)),
         rtg_only=True,
         #  Choosing an RTG display *is* choosing Picasso96: it is the RTG
         #  subsystem, and Emu68's driver is a card for it. Leaving it to be
@@ -1379,11 +1399,34 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
     #  archive went to `stage` - which for such a package is "", the volume
     #  root.
     if not (download.items or download.rename or download.write
-            or download.retool):
+            or download.retool or download.tooltypes):
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
         return [(str(source), download.stage)]
     out: list[tuple[str, str]] = _written(package, progress)
+    for inside, destination, newname, entries in download.tooltypes:
+        source = root / inside
+        if not source.exists():
+            progress.log(f"  {package.label}: {inside} is not in the archive")
+            continue
+        try:
+            icon = source.read_bytes()
+            for entry in entries:
+                key, _, value = entry.partition("=")
+                icon = amigainfo.set_tooltype(icon, key, value)
+        except amigainfo.InfoError as error:
+            #  Copied across untouched rather than left out: an icon with no
+            #  tool types is what the archive shipped, and the program can
+            #  still be pointed at its board by hand.
+            progress.log(f"  {package.label}: could not set the tool types on "
+                         f"{inside} ({error}); copied as it is")
+            icon = source.read_bytes()
+        staged = cache_dir() / f"{package.key}-tooltypes" / destination
+        staged.mkdir(parents=True, exist_ok=True)
+        (staged / newname).write_bytes(icon)
+        out.append((str(staged / newname), destination))
+        progress.log(f"  {package.label}: {newname} set to "
+                     f"{', '.join(entries)}")
     for inside, destination, newname, tool in download.retool:
         source = root / inside
         if not source.exists():

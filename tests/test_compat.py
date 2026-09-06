@@ -4,6 +4,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -541,3 +542,55 @@ class TestTheGamesListIsNotCarriedOver(unittest.TestCase):
             b"Games:WHDLOAD/OCS/\nGames:WHDLOAD/AGA/\n").decode("latin-1")
         self.assertIn("OCS", out)
         self.assertNotIn("AGA", out)
+
+
+class OneBoardGetsOneMonitor(unittest.TestCase):
+    """A card must not end up with two monitors driving the same board.
+
+    Both routes to RTG name Emu68's board. The compatibility pass can make a
+    monitor out of an emulator's, renaming it to ``VideoCore``; and the
+    Picasso96 package installs its own ``Devs/Monitors/Picasso96``, whose icon
+    is stamped ``BOARDTYPE=VideoCore``. ``S:Startup-Sequence`` runs everything
+    in ``DEVS:Monitors``, so with both present the board would be brought up
+    twice - the second attempt against hardware that is already running.
+
+    The package's own monitor wins, because it arrives with the settings and
+    the API library that belong to it rather than being adapted from somebody
+    else's drive.
+    """
+
+    def _finished(self, expect_picasso: bool) -> FakeVolume:
+        fixer = compat.Compatibility(QUIET, enabled=True, rtg=True)
+        #  offer() then skip() is how the copy asks: the data is remembered by
+        #  the first and the decision taken by the second.
+        for path, data in (("Devs/Monitors/uaegfx", b"monitor loader"),
+                           ("Devs/Monitors/uaegfx.info",
+                            make_icon(["BOARDTYPE=uaegfx"])),
+                           ("Libs/Picasso96/rtg.library", b"p96")):
+            fixer.offer(path, data)
+            fixer.skip(path)
+        if expect_picasso:
+            fixer.expect_picasso()
+        volume = FakeVolume()
+        with unittest.mock.patch.object(compat, "fetch_videocore_card",
+                                        lambda _progress: b"card"):
+            fixer.finish(volume, QUIET)
+        return volume
+
+    def test_the_donors_monitor_is_not_written_beside_the_packages(self):
+        written = self._finished(expect_picasso=True).written
+        self.assertNotIn(("Devs/Monitors", compat.EMU68_BOARD), written,
+                         "two monitors would bring the same board up twice")
+        self.assertNotIn(("Devs/Monitors", compat.EMU68_BOARD + ".info"),
+                         written)
+        #  The board driver itself is still installed - it is what the
+        #  package's own monitor loads.
+        self.assertIn(("Libs/Picasso96", compat.EMU68_CARD), written)
+
+    def test_without_the_package_the_donors_monitor_is_still_adapted(self):
+        #  The other direction, in the same place: taking the second monitor
+        #  away must not take the only one away from a card that has no
+        #  package to supply one.
+        written = self._finished(expect_picasso=False).written
+        self.assertIn(("Devs/Monitors", compat.EMU68_BOARD), written)
+        self.assertIn(("Devs/Monitors", compat.EMU68_BOARD + ".info"), written)
