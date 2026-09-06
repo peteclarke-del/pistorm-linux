@@ -4612,3 +4612,149 @@ class TheIconRulesAreActuallyWiredIn(unittest.TestCase):
                                             stage="Storage/Install/Thing"))
         self.assertIn("Storage/Install/Thing/Install_Thing.info", landed,
                       "_merged dropped the icon off its own installer")
+
+
+class WhatACardIsBetterOffWithout(unittest.TestCase):
+    """Finding the clutter on a drive rather than being told what it is.
+
+    A list of paths typed into the source - or into a saved job - is right for
+    one distribution and finds nothing on the next. So each of these is a kind
+    recognised from evidence in the files.
+    """
+
+    def _reader(self, files):
+        """A volume made of the paths given, with drawers implied by them."""
+        dirs = set()
+        for path in files:
+            parts = path.split("/")
+            for depth in range(1, len(parts)):
+                dirs.add("/".join(parts[:depth]))
+
+        class Entry:
+            def __init__(self, path, is_dir):
+                self.path, self.name = path, path.rpartition("/")[2]
+                self.is_dir = is_dir
+                self.anode = self.block = abs(hash(path)) & 0xFFFFFF
+
+        by_locator = {}
+
+        def entry(path, is_dir):
+            made = Entry(path, is_dir)
+            by_locator[made.anode] = path
+            return made
+
+        class Reader:
+            def listdir(self, where=None):
+                parent = "" if where is None else by_locator.get(where, "\0")
+                out = []
+                for path in sorted(dirs | set(files)):
+                    head, _, tail = path.rpartition("/")
+                    if head == parent and tail:
+                        out.append(entry(path, path in dirs))
+                return out
+
+            def find(self, path):
+                if path in dirs:
+                    return entry(path, True)
+                if path in files:
+                    return entry(path, False)
+                return None
+
+            def read_file(self, e):
+                return files.get(getattr(e, "path", ""), b"")
+        return Reader()
+
+    def kinds(self, found):
+        return {c.path: c.kind for c in found}
+
+    # ------------------------------------------------------------ empty
+
+    def test_a_drawer_of_nothing_but_icons_is_empty(self):
+        #  Icons are not files as far as anybody using the card is concerned.
+        found = content.clutter(self._reader({"Spare/thing.info": b"icon"}))
+        self.assertEqual(self.kinds(found), {"Spare": content.EMPTY})
+
+    def test_a_scaffold_is_offered_but_not_assumed(self):
+        """A-Z letter drawers around one title: offered, defaulting to keep."""
+        #  A letter drawer holds an icon and nothing else, which is what makes
+        #  it empty as far as anybody using the card is concerned.
+        files = {f"Demos/{letter}/def_drawer.info": b"icon"
+                 for letter in "ABCDEFGHIJ"}
+        files["Demos/A/RealDemo/RealDemo.slave"] = b"x"
+        found = [c for c in content.clutter(self._reader(files))
+                 if c.path == "Demos"]
+        self.assertEqual(len(found), 1, found)
+        self.assertFalse(found[0].certain, "a judgement must be offered, not made")
+
+    def test_a_full_drawer_is_left_alone(self):
+        files = {f"Programs/Thing/file{n}": b"data" for n in range(6)}
+        self.assertNotIn("Programs/Thing", self.kinds(content.clutter(
+            self._reader(files))))
+
+    def test_what_the_build_is_about_to_fill_is_never_offered(self):
+        #  A drawer that is empty now is not empty on the finished card.
+        found = content.clutter(self._reader({"Internet/x.info": b"i"}),
+                                keep=["Internet"])
+        self.assertEqual(found, [])
+
+    # --------------------------------------------------------- emulator
+
+    def test_a_drawer_of_emulator_scripts_is_found(self):
+        """Recognised by what the files invoke, not by what they are called."""
+        files = {"MyFiles/UAE/JIT": b"uae-configuration cpu_speed max\n",
+                 "MyFiles/UAE/Blitter": b"uae-configuration blitter\n"}
+        self.assertEqual(self.kinds(content.clutter(self._reader(files))),
+                         {"MyFiles/UAE": content.EMULATOR})
+
+    def test_a_drawer_holding_anything_real_is_not_emulator_only(self):
+        files = {"Tools/Mixed/JIT": b"uae-configuration cpu_speed max\n",
+                 "Tools/Mixed/Useful": b"Echo \"this one works anywhere\"\n"}
+        self.assertNotIn(content.EMULATOR,
+                         self.kinds(content.clutter(self._reader(files))).values())
+
+    def test_a_button_bar_is_read_though_it_is_not_plain_text(self):
+        """A ButtonMenu bar is a binary record with its commands inside it.
+
+        Rejecting anything holding a NUL byte, or anything under nine-tenths
+        printable, threw away every one of these - which are exactly the files
+        the emulator rule has to read.
+        """
+        files = {"MyFiles/Bars/UAEbar":
+                 b"BM123\x00UAE\x00topaz.font\x00\x08\x00uae-configuration\x00"}
+        self.assertEqual(self.kinds(content.clutter(self._reader(files))),
+                         {"MyFiles/Bars": content.EMULATOR})
+
+    def test_a_picture_is_not_read_as_a_script(self):
+        #  A PNG read as latin-1 yields enough accidental text to be condemned.
+        files = {"Art/Pics/Me.png": b"\x89PNG\r\n\x1a\n" + b"uae-configuration"}
+        self.assertNotIn(content.EMULATOR,
+                         self.kinds(content.clutter(self._reader(files))).values())
+
+    # ----------------------------------------------------------- assigns
+
+    def test_an_assign_broken_by_a_removal_is_reported(self):
+        files = {"S/Assign-Startup": b"Assign >NIL: A-Games: SYS:Games\n",
+                 "Games/AGame": b"x"}
+        found = [c for c in content.clutter(self._reader(files),
+                                            going=["Games"])
+                 if c.kind == content.BROKEN]
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("A-Games:", found[0].path)
+        self.assertTrue(found[0].certain)
+
+    def test_an_assign_that_still_resolves_is_left_alone(self):
+        files = {"S/Assign-Startup": b"Assign >NIL: A-Games: SYS:Games\n",
+                 "Games/AGame": b"x"}
+        self.assertEqual([c for c in content.clutter(self._reader(files))
+                          if c.kind == content.BROKEN], [])
+
+    def test_a_bare_device_is_not_judged(self):
+        """"Assign ENV: RAM:" names a device, not a drawer on this drive."""
+        files = {"S/Startup-Sequence": b"C:Assign >NIL: ENV: RAM:\n"}
+        self.assertEqual([c for c in content.clutter(self._reader(files))
+                          if c.kind == content.BROKEN], [])
+
+    def test_an_assign_behind_another_assign_is_not_guessed_at(self):
+        files = {"S/User-Startup": b"Assign >NIL: HELP: LOCALE:Help\n"}
+        self.assertEqual([c for c in content.clutter(self._reader(files))
+                          if c.kind == content.BROKEN], [])
