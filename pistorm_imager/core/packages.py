@@ -1097,12 +1097,44 @@ CATALOGUE: list[Package] = [
     Package(
         "netsurf", "NetSurf",
         "A browser that renders modern HTML and CSS, and the most usable one "
-        "on 68k hardware.",
+        "on 68k hardware. It wants a big screen and plenty of memory, so on "
+        "an OCS or ECS machine watching its own video, AWeb is the lighter "
+        "choice.",
         category=Category.NETWORK,
         download=Download("comm/www/netsurf-m68k.lha",
                           stage="Internet/NetSurf"),
         requires=("mui",),
         note="Unpacked into Internet/NetSurf, ready to run.",
+        default=True,
+    ),
+    Package(
+        "aweb", "AWeb APL",
+        "The browser an OCS or ECS machine can actually run. It draws on a "
+        "plain Workbench screen in as little as 2 MB, where a modern renderer "
+        "needs an RTG screen and much more of both.",
+        category=Category.NETWORK,
+        #  Installed, not staged. Its own Installer script does two things -
+        #  copy this drawer, and add an "Assign AWEB_APL:" line to
+        #  S:User-Startup - and both are done here, so the browser is ready to
+        #  run rather than ready to install.
+        #
+        #  Programs/AWeb_APL is where its installer puts it by default, and
+        #  ClassicWB's own User-Startup already assigns AWEB_APL: to exactly
+        #  that path - so a card built on that distribution finds the browser
+        #  the distribution was expecting, rather than a second copy elsewhere.
+        download=Download("comm/www/aweb3.5.09_68k_20070721.lha",
+                          #  The drawer's contents go into the drawer; its icon
+                          #  goes beside it, or Workbench shows nothing there.
+                          (("AWeb_APL", "Programs/AWeb_APL"),
+                           ("AWeb_APL.info", "Programs"))),
+        #  Guarded, and written whether or not the drive brought its own line:
+        #  a card built from floppies has no such assign, and assigning twice
+        #  to the same path costs nothing.
+        startup=("IF EXISTS SYS:Programs/AWeb_APL",
+                 "   Assign >NIL: AWEB_APL: SYS:Programs/AWeb_APL",
+                 "EndIF"),
+        note="Installed into Programs/AWeb_APL with its AWEB_APL: assign "
+             "added to S:User-Startup, ready to run.",
         default=True,
     ),
     Package(
@@ -1350,6 +1382,8 @@ def _merged(package: Package, root: Path,
         if target and entry.is_dir():
             pairs += _drawer(entry, target, skip)
         elif entry.name.lower().endswith(".info"):
+            #  Handled with the file it belongs to, below. A stray icon whose
+            #  file is not being placed is left behind deliberately.
             continue
         elif shaped is None:
             staged.append(entry.name)
@@ -1360,6 +1394,12 @@ def _merged(package: Package, root: Path,
                 continue
             staged.append(entry.name)
             pairs.append((str(entry), package.download.stage or STAGING))
+    #  An icon travels with the file it belongs to.  Every top-level .info was
+    #  being dropped here, which cost Roadshow the icon on Install_Roadshow -
+    #  and an Installer script with no icon cannot be started from Workbench at
+    #  all, so the package arrived staged and unreachable.
+    pairs += _icons_for(pairs)
+    pairs += _named_icons(package, pairs, progress)
     if staged:
         progress.log(f"  {package.label}: staged {', '.join(staged)}")
     return pairs
@@ -1402,7 +1442,8 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
             or download.retool or download.tooltypes):
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
-        return [(str(source), download.stage)]
+        whole = [(str(source), download.stage)]
+        return whole + _named_icons(package, whole, progress)
     out: list[tuple[str, str]] = _written(package, progress)
     for inside, destination, newname, entries in download.tooltypes:
         source = root / inside
@@ -1461,6 +1502,126 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
             out.append((str(path), destination))
         else:
             progress.log(f"  {package.label}: {inside} is not in the archive")
+    #  Same rule as for a merged archive: whatever is placed, its icon goes
+    #  with it. KingCON listed its Installation script and not
+    #  Installation.info, so the script landed with no way to start it.
+    out += _icons_for(out)
+    out += _named_icons(package, out, progress)
+    return out
+
+
+#  How an Installer icon names the script it runs.  The convention is
+#  Commodore's: the icon's DefaultTool is Installer and this tool type says
+#  which script to feed it, so the icon need not be named after the script.
+SCRIPT_TOOLTYPE = "SCRIPT="
+
+#  An installer lives near the top of an archive; walking a whole Scalos tree
+#  to look for one would cost more than it is worth.
+ICON_SEARCH_DEPTH = 3
+
+
+def _named_icons(package: Package, pairs: list[tuple[str, str]],
+                 progress: Progress) -> list[tuple[str, str]]:
+    """Give a script the icon that names it but is not named after it.
+
+    Several archives ship their installer as a script with no icon of its own,
+    beside an icon with no file of its own - ``MCP-Install.english.info`` says
+    ``SCRIPT=Install_MCP``, ``Scalos-Install.english.info`` says
+    ``SCRIPT=Install.Scalos``, ``Setup.info`` says ``SCRIPT=InstallPicasso96``.
+
+    Workbench shows an icon only when the file beside it exists, so both halves
+    are invisible: the script cannot be started and the icon is not drawn.  The
+    card then carries a package that says "run its Installer on the Amiga" and
+    no way to do it short of a Shell.
+
+    So the icon is placed a second time under the script's name.  The original
+    is left where it is - it is what the archive shipped - and nothing is
+    invented: these are the archive's own icons, saying themselves which script
+    they belong to.
+    """
+    out: list[tuple[str, str]] = []
+    done: set[Path] = set()
+    for source, destination in pairs:
+        root = Path(source)
+        if not root.is_dir():
+            continue
+        try:
+            #  An archive can ship one installer icon per language - MCP has a
+            #  deutsch and an english - and they differ only in the LANGUAGE
+            #  tool type that Installer reads. Sorted order alone would have
+            #  handed a German installer to an English tool, so the language
+            #  is chosen rather than fallen into.
+            icons = sorted(root.rglob("*.info"),
+                           key=lambda i: (0 if "english" in i.name.lower()
+                                          else 1, str(i).lower()))
+        except OSError:
+            continue
+        for icon in icons:
+            here = icon.relative_to(root).parent
+            if len(here.parts) >= ICON_SEARCH_DEPTH:
+                continue
+            #  An orphan: an icon whose own file is not there.
+            if icon.with_name(icon.name[:-len(".info")]).exists():
+                continue
+            try:
+                types = amigainfo.read_tooltypes(icon.read_bytes())
+            except Exception:                    # noqa: BLE001 - an odd icon
+                continue                         #  is simply not one of these
+            named = next((entry[len(SCRIPT_TOOLTYPE):].strip() for entry in types
+                          if entry.upper().startswith(SCRIPT_TOOLTYPE)), "")
+            if not named:
+                continue
+            script = icon.parent / named
+            if not script.is_file() or script.with_name(
+                    script.name + ".info").exists():
+                continue
+            if script in done:
+                continue
+            done.add(script)
+            where = f"{destination}/{here}".rstrip("/.") if here.parts \
+                else destination
+            staged = cache_dir() / f"{package.key}-iconnames" / where
+            staged.mkdir(parents=True, exist_ok=True)
+            target = staged / (named + ".info")
+            target.write_bytes(icon.read_bytes())
+            out.append((str(target), where))
+            progress.log(f"  {package.label}: {named} given the icon from "
+                         f"{icon.name}, so it can be started from Workbench")
+    return out
+
+
+def _icons_for(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The icons belonging to what is already being placed.
+
+    On the Amiga a file is only visible in Workbench if its ``.info`` is beside
+    it, and a drawer's icon lives in the *parent* of the drawer rather than
+    inside it - so the two cases land in different places and both are needed.
+
+    Only icons the archive already carries, and only for things being placed
+    anyway: nothing is invented, and an icon whose file was left out stays left
+    out.
+    """
+    already = {(source, destination) for source, destination in pairs}
+    placed = {f"{destination}/{Path(source).name}".lower()
+              for source, destination in pairs}
+    out: list[tuple[str, str]] = []
+    for source, destination in pairs:
+        path = Path(source)
+        if path.name.lower().endswith(".info"):
+            continue
+        icon = path.with_name(path.name + ".info")
+        if not icon.is_file():
+            continue
+        #  A drawer placed *as* a destination - "AWeb_APL" copied to
+        #  "Programs/AWeb_APL" - has its icon one level up, beside the drawer.
+        where = (destination.rsplit("/", 1)[0] if path.is_dir()
+                 and destination.lower().endswith("/" + path.name.lower())
+                 else destination)
+        pair = (str(icon), where)
+        if pair in already or f"{where}/{icon.name}".lower() in placed:
+            continue
+        already.add(pair)
+        out.append(pair)
     return out
 
 
