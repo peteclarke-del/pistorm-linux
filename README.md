@@ -1268,6 +1268,28 @@ Two updates are offered:
 | **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
 | **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
 
+### A warning that is wrong teaches people to skip warnings
+
+Every build opened its log with
+
+    NOTE: roadshow cannot be downloaded here - its publisher serves it only
+    to a browser - so put the archive in the cache first, or it will be
+    left out.
+
+and then, fifteen lines later, installed Roadshow from the cache. The check
+asked whether a package *can* be fetched and never whether it already had
+been, so it fired on every card whose cache held the archive - which, after
+the first one, is every card.
+
+It now looks in the cache and stays quiet when the file is there. When it does
+fire it says the name the package goes by rather than its catalogue key -
+"Roadshow (TCP/IP stack)", not `roadshow` - and the actual folder to put the
+archive in rather than "the cache".
+
+The test for it used to ask the real cache, which meant it said different
+things on different machines and passed only because the warning had the same
+blind spot. It points at an empty folder of its own now.
+
 ### Which copy wins when two packages carry the same file
 
 Two packages can carry the same library, and which one landed was settled by

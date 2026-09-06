@@ -237,17 +237,31 @@ class BuildConfig:
                 "Nothing is being put on the Amiga drives: no Workbench, no "
                 "imported drive and no folder, so the card will boot to a "
                 "screen asking for a disk.")
-        by_hand = sorted(key for key in keys
-                         if (packages.CATALOGUE_BY_KEY.get(key) is not None
-                             and packages.CATALOGUE_BY_KEY[key].download
-                             is not None
-                             and packages.CATALOGUE_BY_KEY[key]
-                             .download.manual))
+        #  Only the ones that are actually missing.  This asked whether a
+        #  package *can* be fetched and never whether it already had been, so
+        #  a card built from a cache that held Roadshow opened its log with a
+        #  warning that Roadshow would be left out and then installed it
+        #  fifteen lines later.  A warning that is wrong as often as it is
+        #  right teaches people to skip the warnings.
+        by_hand = []
+        for key in sorted(keys):
+            package = packages.CATALOGUE_BY_KEY.get(key)
+            if package is None or package.download is None:
+                continue
+            if not package.download.manual:
+                continue
+            try:
+                here = packages.cache_dir() / package.download.filename
+                if here.is_file() and here.stat().st_size:
+                    continue
+            except OSError:
+                pass                    # cannot look: warn, as before
+            by_hand.append(package.label)
         if by_hand:
             said.append(
                 f"{', '.join(by_hand)} cannot be downloaded here - its "
                 f"publisher serves it only to a browser - so put the archive "
-                f"in the cache first, or it will be left out.")
+                f"in {packages.cache_dir()} first, or it will be left out.")
         return said
 
     def brings_a_system_from_elsewhere(self) -> bool:
