@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 641 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 649 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -1507,6 +1507,57 @@ One bug fell out of that work: `fetch()` chose "place the archive whole" on
 whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
+
+#### An icon that is there and cannot be drawn
+
+Several files on a finished card looked as though they had no icon at all -
+AWeb's installer, VirusZ and its documentation among them. They all had one.
+They are **OS3.5 ColorIcons**: the picture lives in an appended `FORM ICON`
+chunk and the classic planar image is left as a three- or five-pixel stub.
+Kickstart 3.1's `icon.library` reads only the classic part, so it paints a
+three-pixel dot, which reads as nothing at all. `AWeb` itself is a plain 55x24
+classic icon, which is why that one looked right.
+
+PeterK's `icon.library` reads them, and the catalogue has always recommended
+it - but it was never installed on a card built from a distribution. It needs a
+`LoadModule` line in `S:Startup-Sequence` before IPrefs opens the ROM copy, and
+a distribution's own boot script is written out by the compatibility pass
+rather than copied, so the editor that inserts that line never saw it and the
+package was dropped every time. The pass now runs the distribution's script
+through the same editor, and the line goes in where it belongs.
+
+#### An installer that rewrites the boot script can cost the card
+
+ClassicWB ships its own PeterK icon support at `MyFiles/Install/Icons`. It
+installs by replacing `S:Startup-Sequence` with a stub, rebooting so it can
+swap libraries that are in use, doing the work and restoring the real script
+from a drawer beside itself. When it finishes, that is fine.
+
+When it does not, the card is dead. One stopped after backing up the boot
+script and before restoring it, and the stub is what booted: no IPrefs, no
+LoadWB, a grey screen for ever with nothing on it to say why, and the only way
+back a Shell from the boot menu. It happened on a real card and reproduced
+exactly in the emulator.
+
+So a drawer holding a script that *writes over* `S:Startup-Sequence` is offered
+for removal - and offered **on** where the build already installs what that
+installer provides, which is now the case for `icon.library`. A second and far
+riskier route to a job already done is worth nothing and can cost the card.
+
+The rule matches the destructive line only. The installer's own first line is
+`Copy SYS:S/Startup-Sequence Disable/S/`, the harmless backup, and its second
+is `Copy Install_Icons SYS:S/Startup-Sequence`. Matching the name anywhere on
+the line condemns the backup too.
+
+**And nothing that would break the system is ever offered.** The first version
+of this rule found a script inside `S` and offered to delete the drawer holding
+every script on the card, `Startup-Sequence` included - the one way this
+feature could destroy a card rather than tidy it. Every detector now checks a
+list of drawers whose loss breaks the system, deliberately narrower than the
+builder's `SYSTEM_DRAWERS`: that one also covers Games, Demos and Programs so
+the *manifest* never says "Delete SYS:Demos ALL", which is a different
+question. Borrowing the wider list stopped the very drawers this was built to
+find from being offered at all.
 
 #### Taking an icon off the desktop is not removing it
 

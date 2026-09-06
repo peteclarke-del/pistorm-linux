@@ -187,7 +187,8 @@ class Compatibility:
     def __init__(self, progress: Progress, enabled: bool = True,
                  rtg: bool = True, native: bool = False,
                  workbench_on_rtg: bool = True,
-                 off_desktop: Iterable[str] = ()):
+                 off_desktop: Iterable[str] = (),
+                 startup_editor=None):
         self._pending_data: bytes = b""
         self.progress = progress
         self.enabled = enabled
@@ -232,6 +233,12 @@ class Compatibility:
         #  this survives ``stop_displacing``, because the clash it settles is
         #  between two packages, both of which write during the overlay pass.
         self._outranked: dict[str, str] = {}
+        #  What has to go into S:Startup-Sequence before Workbench draws its
+        #  first icon. A distribution's own boot script is written out by this
+        #  pass rather than copied, so the editor never saw it and anything
+        #  needing a line there had to be left out - which is why a ClassicWB
+        #  card came out with no icon.library able to draw a modern icon.
+        self._startup_editor = startup_editor
         #  Icons the user asked to take off the Workbench desktop. The files
         #  stay exactly where they are; only the line naming them here goes.
         self._off_desktop = {str(p).replace("\\", "/").strip("/:").lower()
@@ -300,14 +307,20 @@ class Compatibility:
 
     @property
     def writes_its_own_startup(self) -> bool:
-        """Whether the boot script will come from the distribution itself.
+        """Whether a package needing a boot line has nowhere to put it.
 
-        When it does, it is written out verbatim and the editor that inserts
-        lines into a Workbench install never sees it - so anything that needs
-        a line in S:Startup-Sequence to work cannot be installed on such a
-        card.
+        The distribution's own boot script is written by this pass rather than
+        copied, so the editor that inserts lines into a Workbench install never
+        saw it, and anything needing a line in S:Startup-Sequence had to be
+        left out. On a ClassicWB card that meant no icon.library able to read a
+        modern icon - and a modern icon keeps its picture in an appended OS3.5
+        colour chunk with the classic image left as a three-pixel stub, so
+        every one of them drew as a dot.
+
+        Given the editor, this pass runs the distribution's script through it
+        and there is somewhere to put the line after all.
         """
-        return self._finish_classicwb
+        return self._finish_classicwb and self._startup_editor is None
 
     def supersede(self, paths: Iterable[str]) -> None:
         """Leave out a drawer holding an older copy of chosen software.
@@ -824,8 +837,25 @@ class Compatibility:
         self._finished = True
         if self._classicwb_startup:
             folder = target.makedirs("S")
-            target.write_file(folder, "Startup-Sequence",
-                              self._classicwb_startup, check_existing=False)
+            body = self._classicwb_startup
+            #  The same edit a Workbench install gets, on the script the
+            #  distribution brought. Its own boot script has the anchor the
+            #  editor looks for - C:IPrefs - and the line it inserts is
+            #  guarded on both C:LoadModule and LIBS:icon.library and uses
+            #  AUTO, so a card whose modules do not survive the soft reset
+            #  carries on rather than looping.
+            if self._startup_editor is not None:
+                try:
+                    body = self._startup_editor.offer("S/Startup-Sequence",
+                                                      body)
+                except Exception as error:            # noqa: BLE001 - a boot
+                    #  script that cannot be edited is written as it came,
+                    #  which is what happened before this existed.
+                    progress.log(f"  compatibility - could not add the "
+                                 f"soft-kick line: {error}")
+                    body = self._classicwb_startup
+            target.write_file(folder, "Startup-Sequence", body,
+                              check_existing=False)
             self.note("added", "S/Startup-Sequence from the one the "
                                "distribution carries, so the card boots into "
                                "the system rather than into its installer")
