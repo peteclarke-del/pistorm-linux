@@ -1831,9 +1831,17 @@ class ChoicesThatBuildAndMislead(unittest.TestCase):
 
     def test_software_nobody_can_fetch_on_your_behalf(self):
         #  Roadshow's publisher serves the archive only to a browser, so the
-        #  card is built without it unless a copy is already cached.
-        said = self._config(package_keys=["roadshow"]).concerns()
-        self.assertTrue([s for s in said if "roadshow" in s], said)
+        #  card is built without it unless a copy is already cached.  The
+        #  cache is pointed somewhere empty here: asking the real one made
+        #  this test say different things on different machines, and it
+        #  passed only because the warning did not look in the cache either.
+        from pistorm_imager.core import packages as pk       # noqa: PLC0415
+        empty = Path(tempfile.mkdtemp(prefix="pistorm-nocache-"))
+        self.addCleanup(shutil.rmtree, empty, True)
+        with unittest.mock.patch.object(pk, "cache_dir", lambda: empty):
+            said = self._config(package_keys=["roadshow"]).concerns()
+        label = pk.CATALOGUE_BY_KEY["roadshow"].label
+        self.assertTrue([s for s in said if label in s], said)
 
     def test_a_card_with_nothing_on_its_drives(self):
         said = self._config().concerns()
@@ -3761,4 +3769,346 @@ class TheVirusKillerBringsItsScanner(unittest.TestCase):
         #  A resident memory watcher on a machine with 8 MB of fast RAM is a
         #  cost paid every second for a card that is written once.
         self.assertEqual(packages.CATALOGUE_BY_KEY["virusz"].startup, ())
+
+
+class ACardThatStoppedAnsweringSaysSo(unittest.TestCase):
+    """"Input/output error" is not an answer anybody can act on.
+
+    Writing to a card failed with a bare errno, an hour into a build, and
+    nothing said whether the fault was the card, the reader or this program.
+    It was the card: the kernel had logged ``mmcblk0: recovery failed!`` 554
+    times in three days and ``card ... removed`` fifteen, and sector 0 could
+    not be read at all.  None of that reached the person watching the log.
+    """
+
+    def card(self, path="/dev/mmcblk0", size=63864569856):
+        from pistorm_imager.core import devices                # noqa: PLC0415
+        return devices.Device(path=path, name=Path(path).name, size=size,
+                              model="SD64G", vendor="", transport="",
+                              removable=True, hotplug=True, read_only=False,
+                              partitions=[])
+
+    def test_a_card_that_reads_is_allowed_through(self):
+        from pistorm_imager.core import devices                # noqa: PLC0415
+        with tempfile.NamedTemporaryFile(suffix=".img") as handle:
+            handle.write(b"\0" * (256 * 1024))
+            handle.flush()
+            said = []
+            devices.check_responds(self.card(handle.name, 256 * 1024), said.append)
+        self.assertTrue(any("answers" in line for line in said), said)
+
+    def test_a_card_that_has_gone_away_is_named_as_the_cause(self):
+        from pistorm_imager.core import devices                # noqa: PLC0415
+        import errno as errno_mod                              # noqa: PLC0415
+
+        def refuse(*_a, **_kw):
+            raise OSError(errno_mod.EIO, "Input/output error")
+
+        with unittest.mock.patch("builtins.open", refuse):
+            with self.assertRaises(RuntimeError) as caught:
+                devices.check_responds(self.card())
+        said = str(caught.exception)
+        self.assertIn("stopped answering", said)
+        self.assertIn("card or the reader, not the card image", said)
+        self.assertIn("USB card reader", said,
+                      "say what to actually try next")
+
+    def test_not_being_allowed_to_look_is_not_a_verdict(self):
+        #  The probe runs unprivileged too, where it can prove nothing.  A
+        #  permission error must not be reported as a broken card.
+        from pistorm_imager.core import devices                # noqa: PLC0415
+
+        def refuse(*_a, **_kw):
+            raise PermissionError(13, "Permission denied")
+
+        said = []
+        with unittest.mock.patch("builtins.open", refuse):
+            devices.check_responds(self.card(), said.append)   # must not raise
+        self.assertTrue(any("without privileges" in line for line in said), said)
+
+    def test_a_dropout_mid_build_is_explained_not_just_raised(self):
+        from pistorm_imager.core import builder, devices       # noqa: PLC0415
+        import errno as errno_mod                              # noqa: PLC0415
+        config = builder.BuildConfig(target="/dev/mmcblk0", target_is_device=True)
+
+        def drop(*_a, **_kw):
+            raise OSError(errno_mod.EIO, "Input/output error")
+
+        with unittest.mock.patch.object(builder, "_run_build", drop):
+            with self.assertRaises(RuntimeError) as caught:
+                builder.run_build(config, Progress())
+        self.assertIn("stopped answering", str(caught.exception))
+
+    def test_a_real_fault_is_not_disguised_as_a_dead_card(self):
+        #  Only the errnos that mean the card left the bus.  A bug of ours
+        #  must still look like a bug of ours.
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        config = builder.BuildConfig(target="/dev/mmcblk0", target_is_device=True)
+
+        def bug(*_a, **_kw):
+            raise OSError(2, "No such file or directory")
+
+        with unittest.mock.patch.object(builder, "_run_build", bug):
+            with self.assertRaises(OSError) as caught:
+                builder.run_build(config, Progress())
+        self.assertNotIsInstance(caught.exception, RuntimeError)
+
+    def test_an_image_file_is_never_blamed_on_a_card(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        import errno as errno_mod                              # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/card.img", target_is_device=False)
+
+        def drop(*_a, **_kw):
+            raise OSError(errno_mod.EIO, "Input/output error")
+
+        with unittest.mock.patch.object(builder, "_run_build", drop):
+            with self.assertRaises(OSError) as caught:
+                builder.run_build(config, Progress())
+        self.assertNotIn("card or the reader", str(caught.exception))
+
+
+class TheNewerCopyWinsWhoeverCarriesIt(unittest.TestCase):
+    """Two packages carrying one file must not be settled by catalogue order.
+
+    NewInstaller bundles ``identify.library`` and is listed before the
+    identify package, so the first to write it won and the second was skipped
+    with a single line - "already present, left as it is" - in an hour-long
+    log. Every card came out with NewInstaller's copy while the library the
+    user had ticked was silently left out.
+    """
+
+    def library(self, name, version, revision):
+        """A stand-in carrying the ID string a real library carries."""
+        return (b"\x00\x00\x03\xf3" + b"\0" * 32
+                + f"{name} {version}.{revision} (1.1.2020)".encode() + b"\0")
+
+    def test_a_library_states_its_version_without_a_ver_cookie(self):
+        #  Libraries carry it in the resident tag, not in $VER:, and asking
+        #  only for the cookie read every one of them as "no version".
+        self.assertEqual(
+            content.version_of(self.library("identify.library", 45, 1)),
+            (45, 1))
+        self.assertIsNone(content.version_of(b"identify 45.1 nothing here"),
+                          "prose must not read as a version")
+
+    def settle(self, files, as_trees=()):
+        """Lay out (package, destination, name, bytes) and settle the clash.
+
+        A package named in ``as_trees`` carries its file inside a drawer that
+        is merged, which is how NewInstaller carries the libraries it bundles.
+        Everything else names the file for itself, as its own ``items`` entry.
+        """
+        from pistorm_imager.core import builder, compat        # noqa: PLC0415
+        root = Path(tempfile.mkdtemp(prefix="pistorm-clash-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        overlays, credit, where = [], {}, {}
+        for index, (who, destination, name, data) in enumerate(files):
+            home = root / f"{index}-{who}"
+            if who in as_trees:
+                (home / "Libs").mkdir(parents=True)
+                (home / "Libs" / name).write_bytes(data)
+                pair = (str(home / "Libs"), destination)
+            else:
+                home.mkdir()
+                (home / name).write_bytes(data)
+                pair = (str(home / name), destination)
+            overlays.append(pair)
+            credit[pair] = who
+            where[who] = pair
+        fixer = compat.Compatibility(Progress())
+        beaten = builder._settle_clashes(overlays, credit, fixer, Progress())
+        return fixer, beaten, where
+
+    THE_CLASH = [
+        ("newinstaller", "Libs", "identify.library", None),
+        ("identify", "Libs", "identify.library", None),
+    ]
+
+    def the_clash(self, order=("newinstaller", "identify")):
+        """NewInstaller's bundled 12.3 against the identify package's 45.1."""
+        versions = {"newinstaller": (12, 3), "identify": (45, 1)}
+        return self.settle(
+            [(who, "Libs", "identify.library",
+              self.library("identify.library", *versions[who]))
+             for who in order],
+            as_trees=("newinstaller",))
+
+    def test_the_newer_library_wins_whichever_package_is_listed_first(self):
+        for order in (("newinstaller", "identify"),
+                      ("identify", "newinstaller")):
+            with self.subTest(order=order):
+                fixer, beaten, where = self.the_clash(order)
+                self.assertTrue(fixer.skip("Libs/identify.library"),
+                                "the bundled copy is refused")
+                self.assertNotIn(where["identify"], beaten)
+
+    def test_the_winner_is_not_refused_along_with_the_loser(self):
+        #  Refusing by path alone refused the chosen copy too, and the file
+        #  landed nowhere at all - which a trial build caught and the unit
+        #  tests had not.
+        fixer, _beaten, _where = self.the_clash()
+        self.assertFalse(
+            fixer.skip("Libs/identify.library", named=True),
+            "a file the package names for itself must still be written")
+
+    def test_two_packages_that_both_name_it_drop_the_older(self):
+        #  Neither is buried in a tree, so the loser goes from the list
+        #  rather than being refused by path.
+        fixer, beaten, where = self.settle([
+            ("old", "Libs", "shared.library", self.library("shared.library", 1, 0)),
+            ("new", "Libs", "shared.library", self.library("shared.library", 9, 9)),
+        ])
+        self.assertEqual(beaten, {where["old"]})
+        self.assertFalse(fixer.skip("Libs/shared.library", named=True))
+
+    def test_one_package_on_its_own_is_left_alone(self):
+        #  A package that writes a file twice - a renamed binary beside the
+        #  archive's own - is not a clash, and refusing either would take the
+        #  file off the card entirely.
+        fixer, beaten, _where = self.settle([
+            ("igame", "Programs/iGame", "iGame",
+             self.library("iGame.library", 2, 6)),
+        ])
+        self.assertFalse(fixer.skip("Programs/iGame/iGame"))
+        self.assertEqual(beaten, set())
+
+    def test_files_that_do_not_collide_are_untouched(self):
+        fixer, beaten, _where = self.settle([
+            ("a", "Libs", "one.library", self.library("one.library", 1, 0)),
+            ("b", "Libs", "two.library", self.library("two.library", 1, 0)),
+        ])
+        self.assertFalse(fixer.skip("Libs/one.library"))
+        self.assertFalse(fixer.skip("Libs/two.library"))
+        self.assertEqual(beaten, set())
+
+    def test_the_refusal_survives_the_switch_that_ends_displacing(self):
+        #  Both packages write during the overlay pass, after displacing has
+        #  been turned off. A rule stored in the displaced set would be gone
+        #  by then, which is why this is a set of its own.
+        fixer, _beaten, _where = self.the_clash()
+        fixer.stop_displacing()
+        self.assertTrue(fixer.skip("Libs/identify.library"))
+
+    def test_nothing_is_refused_when_no_one_claims_it_by_name(self):
+        #  Two bundles carrying the same file and neither installing it under
+        #  its own name: refusing by path would refuse both, so this leaves
+        #  the old behaviour rather than losing the file.
+        fixer, beaten, _where = self.settle([
+            ("one", "Libs", "shared.library", self.library("shared.library", 1, 0)),
+            ("two", "Libs", "shared.library", self.library("shared.library", 9, 9)),
+        ], as_trees=("one", "two"))
+        self.assertFalse(fixer.skip("Libs/shared.library"))
+        self.assertEqual(beaten, set())
+
+    def test_the_catalogue_asks_for_the_release_that_is_maintained(self):
+        #  Aminet still carries the 1997 upload under the shorter name.
+        download = packages.CATALOGUE_BY_KEY["identify"].download
+        self.assertIn("IdentifyUsr", download.path,
+                      "Identify.lha is version 8.2 from 1997")
+
+
+class AWarningThatIsWrongTeachesPeopleToIgnoreWarnings(unittest.TestCase):
+    """Only warn that an archive is missing when it is actually missing.
+
+    The check asked whether a package *can* be fetched and never whether it
+    already had been, so a build whose cache held Roadshow opened its log
+    with "roadshow cannot be downloaded here ... or it will be left out" and
+    then installed it fifteen lines later.
+    """
+
+    def concerns(self, cached):
+        from pistorm_imager.core import builder, packages   # noqa: PLC0415
+        home = Path(tempfile.mkdtemp(prefix="pistorm-cache-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        if cached:
+            name = packages.CATALOGUE_BY_KEY["roadshow"].download.filename
+            (home / name).write_bytes(b"not really an archive, but present")
+        self.home = home
+        with unittest.mock.patch.object(packages, "cache_dir",
+                                        lambda: home):
+            config = builder.BuildConfig(target="/tmp/card.img",
+                                         package_keys=["roadshow"])
+            return [c for c in config.concerns() if "browser" in c]
+
+    def test_nothing_is_said_when_the_archive_is_already_there(self):
+        self.assertEqual(self.concerns(cached=True), [])
+
+    def test_it_is_still_said_when_the_archive_is_missing(self):
+        said = self.concerns(cached=False)
+        self.assertEqual(len(said), 1)
+
+    def test_it_says_the_name_a_person_would_recognise(self):
+        #  It printed the catalogue key - "roadshow" - which is not what the
+        #  package is called anywhere the user can see.
+        said = self.concerns(cached=False)[0]
+        label = packages.CATALOGUE_BY_KEY["roadshow"].label
+        self.assertIn(label, said)
+
+    def test_and_where_to_put_it(self):
+        #  The folder itself, not just the fact that a cache exists: it said
+        #  "put the archive in the cache first" and never where that was.
+        said = self.concerns(cached=False)[0]
+        self.assertIn(str(self.home), said)
+
+
+class ThePrivilegedBuildUsesYourCacheNotRootsq(unittest.TestCase):
+    """Writing to a card must produce the same card as writing to a file.
+
+    A direct card write runs the build under ``pkexec``, so it runs as root
+    and ``Path.home()`` becomes ``/root``. Every archive the user had was
+    invisible: packages were downloaded again into root's cache, and Roadshow
+    - which its publisher serves only to a browser, so it can never be
+    downloaded - was left off the card entirely. The same choices produced a
+    different card depending on where it was being written.
+    """
+
+    def setUp(self):
+        from pistorm_imager.core import emu68                # noqa: PLC0415
+        self.emu68 = emu68
+        self.addCleanup(setattr, emu68, "_CACHE", None)
+
+    def test_the_cache_travels_in_the_job_file(self):
+        from pistorm_imager.core import builder, jobs         # noqa: PLC0415
+        home = Path(tempfile.mkdtemp(prefix="pistorm-job-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        config = builder.BuildConfig(target="/dev/sdz", target_is_device=True,
+                                     cache_root=str(home))
+        jobs.save(config, home / "job.json")
+        self.assertEqual(jobs.load(home / "job.json").cache_root, str(home))
+
+    def test_it_is_used_even_when_home_says_otherwise(self):
+        from pistorm_imager.core import packages              # noqa: PLC0415
+        mine = Path(tempfile.mkdtemp(prefix="pistorm-mine-"))
+        self.addCleanup(shutil.rmtree, mine, True)
+        roots = Path(tempfile.mkdtemp(prefix="pistorm-root-"))
+        self.addCleanup(shutil.rmtree, roots, True)
+        with unittest.mock.patch.object(Path, "home", lambda: roots), \
+                unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("XDG_CACHE_HOME", None)
+            self.assertNotEqual(packages.cache_dir(), mine / "packages")
+            self.emu68.use_cache(mine)
+            self.assertEqual(packages.cache_dir(), mine / "packages")
+
+    def test_a_path_that_is_not_there_is_ignored(self):
+        #  A saved setup carried to another machine must fall back to that
+        #  machine's cache rather than obey a directory that does not exist.
+        from pistorm_imager.core import packages              # noqa: PLC0415
+        self.emu68.use_cache("/nowhere/at/all")
+        self.assertTrue(packages.cache_dir().is_dir())
+
+    def test_the_build_applies_what_the_job_carried(self):
+        from pistorm_imager.core import builder, packages     # noqa: PLC0415
+        mine = Path(tempfile.mkdtemp(prefix="pistorm-applied-"))
+        self.addCleanup(shutil.rmtree, mine, True)
+        config = builder.BuildConfig(target="/tmp/card.img",
+                                     cache_root=str(mine))
+
+        def stop(*_a, **_kw):
+            raise RuntimeError("far enough")
+
+        with unittest.mock.patch.object(builder.BuildConfig, "validate", stop):
+            with self.assertRaises(RuntimeError):
+                builder._run_build(config, Progress())
+        self.assertEqual(packages.cache_dir(), mine / "packages",
+                         "the cache has to be set before anything is fetched")
 

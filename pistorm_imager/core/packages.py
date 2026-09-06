@@ -476,7 +476,12 @@ CATALOGUE: list[Package] = [
         "identify", "identify.library",
         "Lets tools name the hardware they are running on. A dependency of "
         "several of the others.",
-        download=Download("util/libs/Identify.lha",
+        #  IdentifyUsr, not Identify. Aminet still carries the 1997 upload
+        #  under the shorter name and it is version 8.2; the author's current
+        #  release is 45.1, dated August 2025, and lives here. The archive
+        #  ships a 68000 build beside it - identify.library_000 - which is not
+        #  what a PiStorm is.
+        download=Download("util/libs/IdentifyUsr.lha",
                           (("Identify/libs/identify.library", "Libs"),)),
     ),
     Package(
