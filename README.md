@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 607 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 610 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -2417,6 +2417,44 @@ The version pairing is the one Emu68 expects: `rtg.library 40.3945` and
 `VideoCore.card` is documented to be installed against. This is not the trap
 described above — that was a monitor from *somewhere else* meeting a donor
 drive's library. Monitor and library here are the matched pair from one archive.
+
+#### Nothing told Picasso96 which board to drive
+
+`VideoCore.card` was on every RTG card, and nothing ever loaded it.
+
+Picasso96 finds its board through the **`BOARDTYPE`** tool type on the monitor's
+icon in `DEVS:Monitors`, and then opens `LIBS:Picasso96/<BOARDTYPE>.card`. The
+archive ships that icon with **no tool types at all** — its own installer asks
+which board you have and writes one — and the copy going onto the card was
+untouched. Read back off a finished card, `Devs/Monitors/Picasso96.info` held an
+empty list.
+
+It does not fail quietly. Picasso96 *guesses*, by scanning for an autoconfig
+board, and Emu68's VideoCore is not one: the card finds the Pi through its
+device tree (`[VC] FindCard`, `devicetree.resource`). So the guess failed, the
+boot console said
+
+    Picasso96: Could not create graphics board context for 'Picasso96',
+
+and — because that left a console window open — IPrefs could not then reset the
+Workbench screen, so **"Intuition is attempting to reset the Workbench screen.
+Please close all windows"** came up on every boot as well.
+
+The compatibility pass had the right code all along and ran it down the wrong
+branch: it stamped `BOARDTYPE` only when adapting *a donor's* monitor, and on
+the package path merely logged a note saying VideoCore was the board — which was
+not true of the card. A `tooltypes` field on a download now stamps the icon on
+the way past, from the single definition of the board name in `compat`.
+
+**One board gets one monitor.** With a donor that carries an emulator's monitor,
+the compatibility pass would make a second `Devs/Monitors/VideoCore` beside the
+package's own `Devs/Monitors/Picasso96` — both naming this board, and
+`S:Startup-Sequence` runs everything in that drawer, so the second would bring
+up hardware that is already up. The package's monitor now wins, because it
+arrives with the settings and the API library that belong to it rather than
+being adapted from somebody else's drive. Tested in both directions: taking the
+second monitor away must not take the only one away from a card that has no
+package to supply one.
 
 The guard is an invariant read out of the driver rather than a list typed into a
 test: for every monitor driver the catalogue installs, every

@@ -895,7 +895,22 @@ class Compatibility:
         target.write_file(libs, EMU68_CARD, card, check_existing=False)
         self.note("added", f"Libs/Picasso96/{EMU68_CARD} ({len(card)} bytes)")
 
-        if self.monitor_file:
+        if self._picasso_expected:
+            #  Picasso96 was chosen as a package, so it brings its own
+            #  monitor, settings and API library, and its icon is stamped with
+            #  BOARDTYPE so it drives Emu68's board rather than guessing at
+            #  one. Nothing to adapt, and nothing missing - which is the point
+            #  of installing it from its own archive rather than from whatever
+            #  the source drive had.
+            #
+            #  A monitor made out of the donor's is deliberately NOT written
+            #  beside it, even when there is one to make. Both would name this
+            #  same board, S:Startup-Sequence runs everything in DEVS:Monitors,
+            #  and the second would be bringing up a board that is already up.
+            #  One board, one monitor.
+            self.note("note", "Picasso96 supplies its own monitor and "
+                              f"settings, with {EMU68_CARD} as the board")
+        elif self.monitor_file:
             monitors = target.makedirs("Devs/Monitors")
             target.write_file(monitors, EMU68_BOARD, self.monitor_file,
                               check_existing=False)
@@ -914,13 +929,6 @@ class Compatibility:
                 self.note("retargeted",
                           f"Devs/Monitors/{EMU68_BOARD}.info BOARDTYPE="
                           f"{EMU68_BOARD}")
-        elif self._picasso_expected:
-            #  Picasso96 was chosen as a package, so it brings its own
-            #  monitor, settings and API library. Nothing to adapt, and
-            #  nothing missing - which is the point of installing it from its
-            #  own archive rather than from whatever the source drive had.
-            self.note("note", "Picasso96 supplies its own monitor and "
-                              f"settings, with {EMU68_CARD} as the board")
         else:
             self.note("note", "no emulator monitor file was present and "
                               "Picasso96 was not chosen, so no "
