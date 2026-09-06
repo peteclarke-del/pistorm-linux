@@ -188,7 +188,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 414 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 596 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -239,11 +239,19 @@ FS-UAE, which runs the real PFS3 19.2 handler out of the RDB rather than this
 project's own reader. That is what found and then settled five PFS3 writer bugs
 that were silent at build time and fatal at mount.
 
-**Not yet tried on hardware:** everything past the basic card. The RTG and
-dual-output display handling, including the switcher scripts; optional software
-fetched and installed; multi-partition layouts; adapting a written prepared
-system. Those are checked against the format specifications, against independent
-tools and in an emulator, which is not the same as an Amiga booting from them.
+**Also verified on hardware, since:** cards built from a ClassicWB drive with
+the optional software installed, on a four-partition layout (a system drive,
+two content drives and a work drive), booting to Workbench on the Amiga's own
+video output. That is what found several of the faults described below - a
+palette editor opening on every boot, installers re-running at every startup,
+`MultiView` named in default icons in a way Workbench could not resolve - each
+reported from a running machine rather than from a test.
+
+**Still not tried on hardware:** the RTG and dual-output display handling,
+including the switcher scripts, which needs a monitor on the Pi's HDMI rather
+than the 15 kHz output these cards have been built for. It is checked against
+the format specifications, against independent tools and in an emulator, which
+is not the same as an Amiga drawing a screen from it.
 
 ## One primary source, not several
 
@@ -938,12 +946,16 @@ agree with perfectly:
 
 A Workbench installed from the original floppies is exactly what shipped in
 1994: no archiver, no installer, and no idea what WHDLoad is. The pieces most
-people add next are offered as a catalogue, grouped as System, Look and feel,
-Speed and Networking.
+people add next are offered as a catalogue of 48 packages, grouped as System,
+Updates and patches, Look and feel, Speed, Networking, Music and pictures, and
+Handy extras.
 
 Every one of them comes **from whoever publishes it** — Aminet, or the project
 that makes it — and is cached under `~/.cache/pistorm-imager/packages`, so a
-second card costs no download.
+second card costs no download. That cache is passed to the privileged helper
+when a card is written directly, because [it runs as
+root](#the-privileged-build-has-to-use-your-cache-not-roots) and would
+otherwise find none of it.
 
 Software used to be able to come out of a *donor system* instead: a Workbench
 drive or a PiMiga folder the user pointed at, which the build mined for
