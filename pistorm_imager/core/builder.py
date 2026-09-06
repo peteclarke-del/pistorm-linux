@@ -132,6 +132,11 @@ class BuildConfig:
     #  now it was all of it or none. Each entry is a drawer, left out whole
     #  by the same rule that removes a superseded older copy.
     leave_out: list[str] = dataclasses.field(default_factory=list)
+    #  Icons to take off the Workbench desktop. Deliberately not ``leave_out``:
+    #  these files are staying exactly where they are, and taking the line out
+    #  of ``.backdrop`` puts the icon back in its own drawer rather than
+    #  removing anything.
+    off_desktop: list[str] = dataclasses.field(default_factory=list)
     package_chipset: str = ""          # a machines.Chipset value
     package_display: str = ""          # a machines.Display value
 
@@ -1648,7 +1653,8 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
     fixer = compat.Compatibility(progress, enabled=config.fix_compatibility,
                                  rtg=config.rtg_display,
                                  native=config.native_display,
-                                 workbench_on_rtg=config.workbench_on_rtg)
+                                 workbench_on_rtg=config.workbench_on_rtg,
+                                 off_desktop=config.off_desktop or ())
     #  The RTG subsystem, whichever package provides it: the one package that
     #  an RTG screen cannot do without.  Named by what it is rather than by
     #  its key, so the check follows the catalogue.
