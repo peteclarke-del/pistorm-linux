@@ -4333,6 +4333,8 @@ class ADisplayDriverBringsEveryLibraryItOpens(unittest.TestCase):
                for inside, dest in package.download.items}
         out |= {f"{dest}/{new}".lower().lstrip("/")
                 for _inside, dest, new in package.download.rename}
+        out |= {f"{dest}/{new}".lower().lstrip("/")
+                for _inside, dest, new, _tools in package.download.tooltypes}
         return out
 
     def test_every_library_a_monitor_driver_opens_is_installed(self):
@@ -4348,5 +4350,68 @@ class ADisplayDriverBringsEveryLibraryItOpens(unittest.TestCase):
                         wanted, landed,
                         f"{package.label} installs {inside}, which opens "
                         f"{wanted} at boot, and does not install it")
+        if not checked:
+            self.skipTest("no package archives are unpacked on this machine")
+
+    #  What a Picasso96 monitor opens to bring its subsystem up. A monitor
+    #  driver that does this is an RTG board's, whatever it is called.
+    RTG_MONITOR = b"picasso96/rtg.library"
+
+    def _icon_for(self, package, monitor: str, root: Path):
+        """The bytes of the icon this package installs for ``monitor``.
+
+        Either an untouched copy out of the archive, or one this tool restamps
+        on the way past - both are asked the same question, so the answer does
+        not depend on which route the catalogue happens to use.
+        """
+        from pistorm_imager.core import amigainfo                # noqa: PLC0415
+        wanted = f"{monitor}.info".lower()
+        for inside, dest, new, entries in package.download.tooltypes:
+            if f"{dest}/{new}".lower().endswith(wanted):
+                data = (root / inside).read_bytes()
+                for entry in entries:
+                    key, _, value = entry.partition("=")
+                    data = amigainfo.set_tooltype(data, key, value)
+                return data
+        for inside, dest in package.download.items:
+            if f"{dest}/{Path(inside).name}".lower().endswith(wanted):
+                return (root / inside).read_bytes()
+        return None
+
+    def test_an_rtg_monitor_is_told_which_board_to_drive(self):
+        """The monitor icon has to name the card, or Picasso96 guesses.
+
+        Picasso96 opens ``LIBS:Picasso96/<BOARDTYPE>.card``, and BOARDTYPE is a
+        tool type on the monitor's icon in ``DEVS:Monitors``. The archive ships
+        that icon with no tool types at all, because its own installer asks
+        which board you have and writes one - so an untouched copy left
+        Picasso96 with nothing to load.
+
+        It does not fail quietly. It guesses, by scanning for an autoconfig
+        board, and Emu68's VideoCore is not one - the card finds the Pi through
+        its device tree. So every RTG card said
+        "Could not create graphics board context for 'Picasso96'," at boot,
+        left the console window open saying so, and Workbench then could not
+        reset its screen because a window was open.
+        """
+        from pistorm_imager.core import amigainfo, compat        # noqa: PLC0415
+        checked = 0
+        for package, inside, path in self._drivers():
+            if self.RTG_MONITOR not in path.read_bytes().lower():
+                continue
+            monitor = Path(inside).name
+            icon = self._icon_for(package, monitor, self._unpacked(package))
+            with self.subTest(package=package.key, monitor=monitor):
+                self.assertIsNotNone(
+                    icon, f"{package.label} installs an RTG monitor with no "
+                          f"icon, so nothing can name its board")
+                types = dict(
+                    entry.split("=", 1) for entry in
+                    amigainfo.read_tooltypes(icon) if "=" in entry)
+                self.assertEqual(
+                    types.get("BOARDTYPE"), compat.EMU68_BOARD,
+                    f"{package.label}'s {monitor} icon must name the board "
+                    f"this tool installs a card for")
+            checked += 1
         if not checked:
             self.skipTest("no package archives are unpacked on this machine")
