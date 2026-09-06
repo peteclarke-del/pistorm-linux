@@ -2608,9 +2608,16 @@ class ImagerWindow(Adw.ApplicationWindow):
                     keep = set(filling)
                     if self.adf_row.path:
                         keep |= amigaos.drawers_on_the_disks(self.adf_row.path)
+                    #  Libraries this build soft-kicks for itself. A
+                    #  distribution's own installer for one of them is a
+                    #  second, riskier route to something already done.
+                    chosen = set(self._chosen_packages())
+                    provided = [p.boot_library for p in packages.CATALOGUE
+                                if p.boot_library and p.key in chosen]
                     found = content.clutter(
                         reader, content.volumes_on_the_card(reader, named),
-                        keep=keep, going=self._already_leaving())
+                        keep=keep, going=self._already_leaving(),
+                        provided=provided)
                 except Exception:                              # noqa: BLE001
                     found = []
                 finally:

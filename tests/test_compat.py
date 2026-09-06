@@ -652,3 +652,81 @@ class TakingAnIconOffTheDesktopRemovesNothing(unittest.TestCase):
         made = self.fixer(off_desktop=["Anything"])
         self.assertEqual(made.offer("S/Startup-Sequence", b"C:LoadWB\n"),
                          b"C:LoadWB\n")
+
+
+class ADistributionsBootScriptGetsTheSoftKickToo(unittest.TestCase):
+    """PeterK's icon.library has to be soft-kicked from S:Startup-Sequence.
+
+    A modern Amiga icon keeps its picture in an appended OS3.5 colour chunk and
+    leaves the classic planar image as a three-pixel stub. Kickstart 3.1's
+    icon.library cannot read that, so every one of them draws as a dot - which
+    reads as the file having no icon at all. The replacement on disk handles
+    them, but only if it is loaded before IPrefs opens the ROM one.
+
+    A distribution's own boot script is written out by this pass rather than
+    copied, so the editor never saw it and the package was dropped instead: a
+    ClassicWB card came out with AWeb's installer, VirusZ and its documentation
+    all apparently icon-less. Running that script through the same editor gives
+    the line somewhere to go.
+    """
+
+    CLASSICWB = (b";ClassicWB Startup-Sequence\n"
+                 b"C:SetPatch QUIET\n"
+                 b"C:AddDataTypes REFRESH QUIET\n"
+                 b"C:IPrefs\n"
+                 b"C:ConClip\n"
+                 b"C:LoadWB\n")
+
+    def editor(self):
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        return amigaos.StartupSequenceEditor(
+            ["IF EXISTS C:LoadModule",
+             "   IF EXISTS LIBS:icon.library",
+             "      C:LoadModule AUTO LIBS:workbench.library LIBS:icon.library",
+             "   EndIF",
+             "EndIF"], QUIET)
+
+    def written(self, editor):
+        made = compat.Compatibility(QUIET, enabled=True,
+                                    startup_editor=editor)
+        made.finish_classicwb_install()
+        made.offer("T/Science", self.CLASSICWB)
+        made.skip("T/Science")
+        volume = FakeVolume()
+        made.finish(volume, QUIET)
+        return made, volume
+
+    def test_the_line_goes_into_the_distributions_own_script(self):
+        made, volume = self.written(self.editor())
+        self.assertIn(("S", "Startup-Sequence"), volume.written)
+        body = made._classicwb_startup.decode("latin-1")
+        self.assertNotIn("LoadModule", body, "the source is left alone")
+
+    def test_a_package_needing_a_boot_line_is_no_longer_dropped(self):
+        made, _volume = self.written(self.editor())
+        self.assertFalse(
+            made.writes_its_own_startup,
+            "with an editor there is somewhere to put the line, so the icon "
+            "library must not be left out")
+
+    def test_without_an_editor_it_is_still_dropped(self):
+        #  The other direction, in the same place: nothing to insert with
+        #  means the package still cannot work and must still be left out.
+        made, _volume = self.written(None)
+        self.assertTrue(made.writes_its_own_startup)
+
+    def test_the_line_is_guarded_and_uses_auto(self):
+        """The shape of the line is what stopped a card boot-looping.
+
+        LoadModule soft resets so the modules are in place from the next boot.
+        Without AUTO it resets every time, and on a card where they do not
+        survive that is a loop - a machine two resets deep with a black screen.
+        """
+        editor = self.editor()
+        out = editor.offer("S/Startup-Sequence",
+                           self.CLASSICWB).decode("latin-1")
+        self.assertIn("IF EXISTS C:LoadModule", out)
+        self.assertIn("IF EXISTS LIBS:icon.library", out)
+        self.assertIn("AUTO", out)
+        #  ...and before IPrefs, or the ROM copy is already open.
+        self.assertLess(out.index("LoadModule AUTO"), out.index("C:IPrefs"))

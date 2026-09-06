@@ -1033,7 +1033,11 @@ MANIFEST_FILE_LIMIT = 200
 SYSTEM_DRAWERS = {
     "", "c", "s", "l", "libs", "devs", "prefs", "fonts", "locale",
     "utilities", "tools", "system", "wbstartup", "storage", "classes",
-    "expansion", "rexx", "trashcan", "monitors", "disk",
+    #  Rexxc holds the ARexx commands. It is empty on some distributions and
+    #  filled by the floppy install, and offering to remove it cost a card its
+    #  whole ARexx - rx, rxlib, waitforport and the rest - while
+    #  System/Rexxmast was still started at boot.
+    "expansion", "rexx", "rexxc", "trashcan", "monitors", "disk",
     #  Ones this build creates to hold other things, which several packages
     #  land in side by side.
     "programs", "internet", "audio", "games", "demos", "storage/install",
@@ -1654,7 +1658,12 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
                                  rtg=config.rtg_display,
                                  native=config.native_display,
                                  workbench_on_rtg=config.workbench_on_rtg,
-                                 off_desktop=config.off_desktop or ())
+                                 off_desktop=config.off_desktop or (),
+                                 #  So a distribution's own boot script gets
+                                 #  the same soft-kick line a Workbench
+                                 #  install does.
+                                 startup_editor=_startup_sequence_editor(
+                                     config, progress))
     #  The RTG subsystem, whichever package provides it: the one package that
     #  an RTG screen cannot do without.  Named by what it is rather than by
     #  its key, so the check follows the catalogue.
