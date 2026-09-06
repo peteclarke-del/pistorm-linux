@@ -197,13 +197,30 @@ VER_STRING = re.compile(rb"\$VER:? ?([ -~]{3,60})")
 VERSION_NUMBER = re.compile(r"(\d+)\.(\d+)")
 
 
+#  A library, device or class carries its version in the resident tag's ID
+#  string rather than in a ``$VER:`` cookie - "identify.library 45.1
+#  (28.8.2025)" - and a great many carry no ``$VER:`` at all. Asking only for
+#  the cookie meant every library read as "no version", so two copies of one
+#  could not be told apart and the older was as likely to be kept as the
+#  newer. The suffix is required to keep this from matching ordinary prose.
+LIBRARY_ID = re.compile(
+    rb"[A-Za-z0-9_.-]+\.(?:library|device|class|handler|datatype|gadget)"
+    rb"[ \t]+(\d+)\.(\d+)")
+
+
 def version_of(data: bytes) -> tuple[int, int] | None:
     """The (version, revision) a binary claims, or None if it claims none."""
-    for raw in VER_STRING.findall(data[:200000]):
+    head = data[:200000]
+    for raw in VER_STRING.findall(head):
         text = raw.decode("latin-1")
         found = VERSION_NUMBER.search(text)
         if found:
             return int(found.group(1)), int(found.group(2))
+    #  No cookie: a library's own ID string will do, and is what libraries
+    #  actually carry.
+    found = LIBRARY_ID.search(head)
+    if found:
+        return int(found.group(1)), int(found.group(2))
     return None
 
 

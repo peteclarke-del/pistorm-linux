@@ -1268,6 +1268,48 @@ Two updates are offered:
 | **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
 | **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
 
+### Which copy wins when two packages carry the same file
+
+Two packages can carry the same library, and which one landed was settled by
+nothing better than **the order of the catalogue**. The first to write a path
+won; the second was skipped with one line - `already present, left as it is` -
+in an hour-long log, on the stated reasoning that whatever got there first was
+"no worse than this copy".
+
+It is not always. NewInstaller bundles `identify.library` and is listed before
+the identify package, so every card came out with NewInstaller's copy and the
+library the user had actually ticked was left out, with nothing saying the
+choice had not been honoured. The same was true of `reqtools.library`.
+
+Now the versions decide, read out of the files themselves so that no package
+has to be told about any other. Where neither states a version, the file a
+package **names for itself** - an entry in its own `items` - beats one that
+merely happens to sit inside somebody else's archive.
+
+**Libraries had to be taught to state their version at all.** `version_of`
+asked only for a `$VER:` cookie, and a library carries its version in the
+resident tag's ID string instead - `identify.library 45.1 (28.8.2025)`. Every
+library therefore read as "no version", so two copies of one could not be told
+apart and the older was as likely to be kept as the newer. The pattern now
+accepts a library, device, class, handler or datatype ID string as well, with
+the suffix required so it cannot match ordinary prose.
+
+**The loser is removed in whichever way keeps the winner.** A file a package
+names for itself cannot be refused by path, because a first attempt at this did
+exactly that and refused the *winner* too - both libraries landed nowhere at
+all. That is the same fault `stop_displacing` exists to prevent, arrived at
+from another direction, and it was a trial build that caught it rather than the
+unit tests. So a losing entry a package names for itself is dropped from the
+list outright, while a loser buried in a merged drawer is refused by path, and
+`skip` is told which kind it is looking at. Where *nobody* names it, nothing is
+refused and the old behaviour stands - better than losing the file.
+
+**And the catalogue was asking for a 1997 upload.** Aminet still serves
+`util/libs/Identify.lha`, which is version 8.2 from December 1997. The author's
+maintained release is `util/libs/IdentifyUsr.lha` - **45.1, August 2025**. That
+is now what a card gets. It ships a 68000 build alongside, which is not what a
+PiStorm is, so the 020+ one is named explicitly.
+
 ### Which copy wins when a drive already has one
 
 The file system here creates files and never overwrites them, so when two
