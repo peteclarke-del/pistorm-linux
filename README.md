@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 634 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 639 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -1507,6 +1507,29 @@ One bug fell out of that work: `fetch()` chose "place the archive whole" on
 whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
+
+#### Taking an icon off the desktop is not removing it
+
+`.backdrop` is a plain list of paths at the root of a drive, and Workbench shows
+each icon named there **on the desktop instead of inside the drawer its file
+lives in**. So `Tools/Commodities/CXHandler` appearing on the desktop does not
+mean the file is loose: it is exactly where a commodity belongs, and taking the
+line out puts the icon back in that drawer.
+
+That distinction is why this is a separate list from the clutter one. "Take this
+off the desktop" and "take this off the card" are different requests, and
+answering the first with the second would delete somebody's program. The switches
+feed `off_desktop` rather than `leave_out`, and a test asserts that an icon taken
+off the desktop leaves both the file and its drawer untouched.
+
+The desktop list is offered whole, defaulting to keeping what the drive chose,
+because where an icon sits is a preference and the card works either way. Each
+row says what is known about it - the drawer the file can be found in anyway, or
+that it names something not on the drive at all.
+
+One line goes without being asked about: a `.backdrop` entry naming something
+this build leaves out. That is not a preference but a broken desktop, because
+Workbench is being told to show an icon that will not be there.
 
 #### Finding the clutter rather than being told what it is
 

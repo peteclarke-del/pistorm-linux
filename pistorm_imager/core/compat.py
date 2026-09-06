@@ -44,6 +44,13 @@ EMULATOR_COMMANDS = [
 
 STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
 
+#  Workbench keeps the icons it lifts out onto the desktop in this file, one
+#  path per line, each written from the volume root with a leading colon. An
+#  icon named here is shown on the desktop *instead of* inside its drawer, so
+#  taking a line out does not remove anything - it puts the icon back where the
+#  file actually lives.
+BACKDROP = ".backdrop"
+
 #  WHDLoad runs ExecuteStartup before every game and ExecuteCleanup after it.
 #  An emulator installation puts its own tuning there - PiMiga sets the JIT
 #  cache and CPU speed through uae-configuration - and on a PiStorm that
@@ -179,7 +186,8 @@ class Compatibility:
 
     def __init__(self, progress: Progress, enabled: bool = True,
                  rtg: bool = True, native: bool = False,
-                 workbench_on_rtg: bool = True):
+                 workbench_on_rtg: bool = True,
+                 off_desktop: Iterable[str] = ()):
         self._pending_data: bytes = b""
         self.progress = progress
         self.enabled = enabled
@@ -224,6 +232,10 @@ class Compatibility:
         #  this survives ``stop_displacing``, because the clash it settles is
         #  between two packages, both of which write during the overlay pass.
         self._outranked: dict[str, str] = {}
+        #  Icons the user asked to take off the Workbench desktop. The files
+        #  stay exactly where they are; only the line naming them here goes.
+        self._off_desktop = {str(p).replace("\\", "/").strip("/:").lower()
+                             for p in off_desktop}
         self._seen_picasso = False
         self._picasso_expected = False
         self._finished = False
@@ -529,6 +541,8 @@ class Compatibility:
             self.boot_scripts += "\n" + data.decode("latin-1", "replace")
         if any(posix.lower() == f.lower() for f in STARTUP_FILES):
             return self._clean_startup(posix, data)
+        if posix.lower() == BACKDROP:
+            return self._clean_backdrop(posix, data)
         if parts[-1].startswith("def_") and parts[-1].endswith(".info"):
             return self._point_at_a_real_tool(posix, data)
         if len(parts) >= 2 and parts[-2] == "wbstartup" \
@@ -736,6 +750,37 @@ class Compatibility:
                       f"{relative}: stopped WHDLoad forcing a display mode, "
                       f"which kills every game on a PiStorm before it starts")
         return "".join(out).encode("latin-1")
+
+    def _clean_backdrop(self, relative: str, data: bytes) -> bytes:
+        """Take icons off the Workbench desktop, without removing anything.
+
+        Two reasons a line goes. One the user chose - an icon they would rather
+        find in its own drawer, which is where taking the line out puts it. The
+        other is not a choice at all: a line naming something this build leaves
+        out points at an icon that will not be there, and Workbench is being
+        told to put a missing file on the desktop.
+        """
+        out: list[str] = []
+        dropped: list[str] = []
+        for line in data.decode("latin-1").splitlines():
+            named = line.strip().lstrip(":").replace("\\", "/").strip("/")
+            low = named.lower()
+            if not named:
+                continue
+            if low in self._off_desktop:
+                dropped.append(f"{named} (kept where it is)")
+                continue
+            if any(low == drawer or low.startswith(drawer + "/")
+                   for drawer in self._supersede):
+                dropped.append(f"{named} (being left off this card)")
+                continue
+            out.append(line)
+        if dropped:
+            self.note("edited", f"{relative}: took {len(dropped)} icon"
+                                f"{'s' if len(dropped) != 1 else ''} off the "
+                                f"Workbench desktop - "
+                                + "; ".join(dropped))
+        return ("\n".join(out) + "\n").encode("latin-1") if out else b""
 
     def _clean_startup(self, relative: str, data: bytes) -> bytes:
         text = data.decode("latin-1")
