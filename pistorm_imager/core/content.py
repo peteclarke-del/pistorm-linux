@@ -707,6 +707,7 @@ BACKDROP = ".backdrop"
 EMPTY = "empty"
 EMULATOR = "emulator"
 BROKEN = "broken"
+RISK = "risk"
 
 #  A scaffold: a drawer holding many sub-drawers and almost nothing else. A
 #  WHDLoad collection's A-Z letter drawers are the case - twenty-six of them
@@ -932,9 +933,122 @@ def _assigns_to_nothing(reader, going: Iterable[str] = ()) -> list[Clutter]:
     return out
 
 
+#  A script that writes over the boot script, matched as a *destination*.
+#
+#  The lookahead is the whole of the care needed here. The installer's own
+#  first line is
+#
+#      Copy SYS:S/Startup-Sequence Disable/S/ CLONE
+#
+#  which is the harmless backup, and the second is
+#
+#      Copy Install_Icons SYS:S/Startup-Sequence CLONE
+#
+#  which is the one that costs the card. Matching the name anywhere on the
+#  line catches both and calls a backup dangerous. Note the path is written
+#  "SYS:S/Startup-Sequence" - volume, drawer, file - so it is the separator
+#  before the name that has to be matched, not a literal "S:".
+REPLACES_THE_BOOT = re.compile(
+    r"(?i)\b(?:copy|rename|move)\s+(?!\S*[:/]startup-sequence)"
+    r"\S+\s+[^\n]*?[:/]startup-sequence\b")
+
+
+def _replaces_the_boot_script(reader, provided: Iterable[str],
+                              skip: set[str]) -> list[Clutter]:
+    """Installers that overwrite S:Startup-Sequence to do their work.
+
+    ClassicWB ships one for PeterK's icon support. It replaces the boot script
+    with a stub, reboots so it can swap libraries that are in use, does the
+    work and restores the real script from a drawer it keeps beside itself.
+    When it finishes, that is fine.
+
+    When it does not, the card is dead. Ours stopped after backing up the boot
+    script and before restoring it, so every boot ran the stub - which has no
+    IPrefs and no LoadWB - waited two seconds and ended the shell. A grey
+    screen, for ever, with nothing on it to say why, and the only way back a
+    Shell from the boot menu.
+
+    So this is offered whenever it is found, and offered *on* when the build
+    already installs what the installer provides: a second, riskier route to
+    something already done is worth nothing and can cost the card.
+    """
+    provided = {str(name).lower() for name in provided}
+    out: list[Clutter] = []
+    #  Three levels, not two: a distribution keeps these in a drawer of its
+    #  own inside its own installers - MyFiles/Install/Icons - and two levels
+    #  stopped one short of it.
+    for path, entry in _drawers_worth_looking_at(reader, depth=3):
+        if path.lower() in skip:
+            continue
+        try:
+            inside = reader.listdir(_locator(entry))
+        except Exception:                                # noqa: BLE001
+            continue
+        hits = []
+        for item in inside:
+            if item.is_dir or item.name.lower().endswith(NOT_A_SCRIPT):
+                continue
+            try:
+                text = _reads_as_text(reader.read_file(item))
+            except Exception:                            # noqa: BLE001
+                continue
+            if text and REPLACES_THE_BOOT.search(text):
+                hits.append(item.name)
+        if not hits:
+            continue
+        #  What it would install, so "you already have this" can be said.
+        already = set()
+        for name in ("Libs", "libs"):
+            libs = reader.find(f"{path}/Enable/{name}")
+            if libs is None:
+                continue
+            try:
+                already = {c.name.lower() for c in reader.listdir(_locator(libs))
+                           } & provided
+            except Exception:                            # noqa: BLE001
+                pass
+            break
+        why = (f"replaces S:Startup-Sequence to install "
+               f"{', '.join(sorted(already))}, which this build already "
+               f"installs" if already else
+               "replaces S:Startup-Sequence to do its work, and leaves the "
+               "card unbootable if it does not finish")
+        out.append(Clutter(path, why, RISK, certain=bool(already)))
+    return out
+
+
+#  Drawers whose loss breaks the system rather than merely losing content.
+#  None is ever offered, whatever a rule finds inside it: the boot-script rule
+#  found a script in "S" and offered to delete the drawer holding every script
+#  on the card, Startup-Sequence included, which is the one way this feature
+#  could destroy a card rather than tidy it.
+#
+#  Deliberately narrower than the builder's SYSTEM_DRAWERS. That list also
+#  covers Games, Demos, Programs and the rest, because the *manifest* must
+#  never tell somebody to "Delete SYS:Demos ALL" - a different question from
+#  what may be offered here. Losing Demos costs content the user chose to
+#  lose; losing S costs the card. Borrowing the wider list stopped the very
+#  drawers this was built to find from being offered at all.
+NEVER_OFFER = {
+    "", "c", "s", "l", "libs", "devs", "classes", "fonts", "locale",
+    "prefs", "system", "wbstartup", "storage", "storage/install",
+    "utilities", "tools", "rexx", "rexxc", "expansion", "trashcan",
+    "monitors", "t", "env-archive",
+    #  Nested ones AmigaOS owns.
+    "locale/catalogs", "locale/help", "prefs/env-archive", "prefs/presets",
+    "devs/networks", "devs/dosdrivers", "devs/monitors", "devs/keymaps",
+    "devs/printers", "libs/mui", "system/mui/libs/mui",
+}
+
+
+def _never_offer() -> set[str]:
+    return set(NEVER_OFFER)
+
+
 def clutter(reader, volumes: Iterable[str] = (),
             keep: Iterable[str] = (),
-            going: Iterable[str] = ()) -> list[Clutter]:
+            going: Iterable[str] = (),
+            provided: Iterable[str] = ()) -> list[Clutter]:
     """Everything on this drive the card would be better off without.
 
     Offered to the user and never acted on here. ``keep`` names paths that must
@@ -942,8 +1056,10 @@ def clutter(reader, volumes: Iterable[str] = (),
     drawer that is empty now is not empty on the finished card.
     """
     skip = {str(k).replace("\\", "/").strip("/").lower() for k in keep}
+    skip |= _never_offer()
     found = (_empty_or_scaffold(reader, skip)
              + _emulator_only(reader, skip)
+             + _replaces_the_boot_script(reader, provided, skip)
              + _assigns_to_nothing(reader, going))
     #  One entry per path, and a drawer already offered whole is not offered
     #  again file by file.

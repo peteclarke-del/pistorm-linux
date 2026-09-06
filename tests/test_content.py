@@ -4829,3 +4829,69 @@ class AnEmptyDrawerTheInstallIsAboutToFill(unittest.TestCase):
         self.assertIn("Rexxc", drawers)
         self.assertIn("Expansion", drawers)
         self.assertIn("Utilities", drawers)
+
+
+class AnInstallerThatRewritesTheBootScript(unittest.TestCase):
+    """ClassicWB's PeterK icon installer left a card unbootable.
+
+    It replaces S:Startup-Sequence with a stub so it can swap libraries that
+    are in use, reboots, does the work and restores the real script. When it
+    does not finish, the stub is what boots: no IPrefs, no LoadWB, a grey
+    screen for ever, and the only way back a Shell from the boot menu. That
+    happened on a real card and on the emulator both.
+
+    The build installs PeterK's icon.library itself now, with the soft-kick
+    line before IPrefs, so that installer is a second and far riskier route to
+    something already done.
+    """
+
+    def _reader(self, files):
+        return WhatACardIsBetterOffWithout._reader(self, files)
+
+    SUPPORT = (b"Copy SYS:S/Startup-Sequence Disable/S/ CLONE\n"
+               b"Copy Install_Icons SYS:S/Startup-Sequence CLONE\n"
+               b"Reset\n")
+
+    def test_only_the_line_that_overwrites_is_matched(self):
+        """The backup line names the same file and is harmless."""
+        keep = "Copy SYS:S/Startup-Sequence Disable/S/ CLONE"
+        kill = "Copy Install_Icons SYS:S/Startup-Sequence CLONE"
+        self.assertFalse(content.REPLACES_THE_BOOT.search(keep),
+                         "calling a backup dangerous condemns good scripts")
+        self.assertTrue(content.REPLACES_THE_BOOT.search(kill))
+        for harmless in ("Execute S:Startup-Sequence",
+                         "IF EXISTS S:Startup-Sequence",
+                         "; restores S:Startup-Sequence afterwards"):
+            self.assertFalse(content.REPLACES_THE_BOOT.search(harmless),
+                             harmless)
+
+    def test_it_is_offered_on_when_we_already_install_what_it_provides(self):
+        files = {"MyFiles/Install/Icons/Install_Icons_Support": self.SUPPORT,
+                 "MyFiles/Install/Icons/Enable/Libs/icon.library": b"lib"}
+        found = [c for c in content.clutter(self._reader(files),
+                                            provided=["icon.library"])
+                 if c.kind == content.RISK]
+        self.assertEqual(len(found), 1, found)
+        self.assertTrue(found[0].certain)
+        self.assertIn("icon.library", found[0].reason)
+
+    def test_it_is_only_offered_as_a_question_otherwise(self):
+        files = {"MyFiles/Install/Icons/Install_Icons_Support": self.SUPPORT}
+        found = [c for c in content.clutter(self._reader(files))
+                 if c.kind == content.RISK]
+        self.assertEqual(len(found), 1)
+        self.assertFalse(found[0].certain,
+                         "with nothing to replace it, removing it is a choice")
+
+    def test_a_system_drawer_is_never_offered_however_it_is_found(self):
+        """The one way this feature could destroy a card rather than tidy it.
+
+        A script inside S: matched the rule and the whole S drawer was
+        offered - every script on the card, Startup-Sequence included.
+        """
+        files = {"S/RADboot/RADboot": self.SUPPORT,
+                 "C/something": self.SUPPORT,
+                 "Libs/thing": self.SUPPORT}
+        offered = {c.path for c in content.clutter(self._reader(files))}
+        for drawer in ("S", "C", "Libs"):
+            self.assertNotIn(drawer, offered, f"{drawer} must never be offered")
