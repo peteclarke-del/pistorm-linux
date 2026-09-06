@@ -95,6 +95,11 @@ class BuildConfig:
     mode: BuildMode = BuildMode.FRESH
     target: str = ""                   # /dev/sdX or a path to an .img file
     target_is_device: bool = False
+    #  The root of the cache to use - the folder holding ``packages/``, not
+    #  ``packages/`` itself. Only set when the build is handed to a privileged
+    #  helper, which runs as root and would otherwise look in /root/.cache and
+    #  find none of the archives the user has.
+    cache_root: str = ""
     image_size: int = 8 * 1024 * MIB   # only used when creating a new .img file
 
     #  Emu68
@@ -237,17 +242,31 @@ class BuildConfig:
                 "Nothing is being put on the Amiga drives: no Workbench, no "
                 "imported drive and no folder, so the card will boot to a "
                 "screen asking for a disk.")
-        by_hand = sorted(key for key in keys
-                         if (packages.CATALOGUE_BY_KEY.get(key) is not None
-                             and packages.CATALOGUE_BY_KEY[key].download
-                             is not None
-                             and packages.CATALOGUE_BY_KEY[key]
-                             .download.manual))
+        #  Only the ones that are actually missing.  This asked whether a
+        #  package *can* be fetched and never whether it already had been, so
+        #  a card built from a cache that held Roadshow opened its log with a
+        #  warning that Roadshow would be left out and then installed it
+        #  fifteen lines later.  A warning that is wrong as often as it is
+        #  right teaches people to skip the warnings.
+        by_hand = []
+        for key in sorted(keys):
+            package = packages.CATALOGUE_BY_KEY.get(key)
+            if package is None or package.download is None:
+                continue
+            if not package.download.manual:
+                continue
+            try:
+                here = packages.cache_dir() / package.download.filename
+                if here.is_file() and here.stat().st_size:
+                    continue
+            except OSError:
+                pass                    # cannot look: warn, as before
+            by_hand.append(package.label)
         if by_hand:
             said.append(
                 f"{', '.join(by_hand)} cannot be downloaded here - its "
                 f"publisher serves it only to a browser - so put the archive "
-                f"in the cache first, or it will be left out.")
+                f"in {packages.cache_dir()} first, or it will be left out.")
         return said
 
     def brings_a_system_from_elsewhere(self) -> bool:
@@ -777,9 +796,12 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     #  reopening a finished volume would mean rebuilding its allocation state.
     fixer.stop_displacing()
     if spec is not None:
+        beaten = _settle_clashes(list(spec.overlays) + list(extra), credit,
+                                 fixer, progress)
         if spec.overlays or extra:
-            spec = dataclasses.replace(spec,
-                                       overlays=list(spec.overlays) + extra)
+            spec = dataclasses.replace(
+                spec, overlays=[pair for pair in list(spec.overlays) + extra
+                                if pair not in beaten])
             _apply_overlays(volume, spec, fixer, progress, landings)
         _give_drawers_icons(volume, spec, config, progress)
     _write_user_startup(volume, config, progress,
@@ -1377,6 +1399,88 @@ def _drawer_exists(volume, destination: str) -> bool:
     return True
 
 
+def _settle_clashes(overlays: list[tuple[str, str]], credit: dict | None,
+                    fixer, progress: Progress) -> set[tuple[str, str]]:
+    """When two packages carry the same file, keep the newer one.
+
+    Which copy landed used to be settled by nothing better than the order of
+    the catalogue. The first package to write a path won and the second was
+    skipped with one line - "already present, left as it is" - in an hour-long
+    log, on the reasoning that whatever got there first was "no worse than
+    this copy". It is not always. NewInstaller bundles ``identify.library``
+    and is listed before the identify package, so every card came out with
+    NewInstaller's copy and the library the user had actually ticked was left
+    out without anything saying the choice had not been honoured.
+
+    Versions are read out of the files themselves, from the ``$VER:`` string
+    the Amiga uses for exactly this, so no package has to be told about any
+    other. Where neither carries one, the file a package names for itself
+    beats one that merely happens to be inside another package's archive.
+    """
+    #  landed path -> list of (package, is a file it names for itself, source)
+    seen: dict[str, list[tuple[str, bool, Path, tuple[str, str]]]] = {}
+    for pair in overlays:
+        source_text, destination = pair
+        source = Path(source_text)
+        who = (credit or {}).get(pair, "")
+        if source.is_dir():
+            for child in source.rglob("*"):
+                if child.is_file():
+                    landed = amigaos.landed_path(
+                        destination, str(child.relative_to(source)))
+                    seen.setdefault(landed.lower(), []).append(
+                        (who, False, child, pair))
+        elif source.is_file():
+            landed = amigaos.landed_path(destination, source.name)
+            seen.setdefault(landed.lower(), []).append(
+                (who, True, source, pair))
+
+    refused: dict[str, str] = {}
+    dropped: set[tuple[str, str]] = set()
+    for landed, claims in seen.items():
+        if len({who for who, _named, _src, _pair in claims}) < 2:
+            continue                    # one package, or nothing to weigh
+        ranked = []
+        for who, named, src, pair in claims:
+            try:
+                version = content.version_of(src.read_bytes())
+            except OSError:
+                version = None
+            #  Ranked by version, then by whether the package names the file
+            #  for itself: a copy that merely happens to sit inside somebody
+            #  else's archive is the weaker claim when neither says a version.
+            ranked.append((version or (-1, -1), named, who, src, pair))
+        ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        best = ranked[0]
+        if not best[1]:
+            #  The winner is itself buried in a tree, so there is no way to
+            #  refuse the loser by path without refusing the winner too.
+            #  Leave it alone and say so rather than lose the file.
+            progress.log(f"  NOTE: {landed} is carried by more than one "
+                         f"package and none installs it under its own name; "
+                         f"whichever is written first is kept.")
+            continue
+        better = (f"{best[0][0]}.{best[0][1]}" if best[0][0] >= 0
+                  else "the copy it names for itself")
+        for version, named, who, _src, pair in ranked[1:]:
+            shown = (f"{version[0]}.{version[1]}" if version[0] >= 0
+                     else "no version")
+            if named:
+                #  A file the losing package names for itself is protected
+                #  from refusal by path, so it has to go from the list.
+                dropped.add(pair)
+            else:
+                refused[landed] = (
+                    f"{who or 'another package'} carries {shown}; "
+                    f"{best[2] or 'the package you chose'} installs {better}")
+            progress.log(
+                f"  {landed}: {best[2] or 'the chosen package'} wins - "
+                f"{better} beats {who or 'another package'}'s {shown}")
+    if refused:
+        fixer.outrank(refused)
+    return dropped
+
+
 def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
                     progress: Progress,
                     landings: dict | None = None) -> None:
@@ -1433,7 +1537,9 @@ def _apply_overlays(volume, spec: AmigaPartitionSpec, fixer,
                 #  emulator's monitor is kept back and written out again under
                 #  the name this machine's board uses. A single file could not
                 #  be, so it went on the card unchanged and under the old name.
-                if fixer.skip(relative):
+                #  A file this package names for itself: it cannot be
+                #  outranked, because it is what won.
+                if fixer.skip(relative, named=True):
                     continue
             volume.write_file(parent, source.name, data, check_existing=True)
             if landings is not None:
@@ -1795,6 +1901,10 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         #  The drive and the disks have had their turn; what follows is the
         #  packages writing the very files those were refused for.
         fixer.stop_displacing()
+        beaten = _settle_clashes(list(spec.overlays), credit, fixer, progress)
+        if beaten:
+            spec = dataclasses.replace(
+                spec, overlays=[p for p in spec.overlays if p not in beaten])
         landings: dict = {}
         _apply_overlays(volume, spec, fixer, progress, landings)
         if spec.bootable:
@@ -2408,6 +2518,24 @@ def _expand(handle, config: BuildConfig, target_size: int, progress: Progress) -
 
 
 def run_build(config: BuildConfig, progress: Progress) -> None:
+    """Build the card, saying plainly when the card itself is what failed."""
+    try:
+        _run_build(config, progress)
+    except OSError as error:
+        #  A card that leaves the bus mid-build fails every request from then
+        #  on, and the bare "Input/output error" that reached the log said
+        #  nothing about whose fault it was. It is worth naming, because the
+        #  answer is never "build the image again".
+        if config.target_is_device and error.errno in devices.GONE_AWAY:
+            raise RuntimeError(devices.CARD_STOPPED_ANSWERING.format(
+                path=config.target,
+                reason=os.strerror(error.errno))) from error
+        raise
+
+
+def _run_build(config: BuildConfig, progress: Progress) -> None:
+    if config.cache_root:
+        emu68.use_cache(config.cache_root)
     for concern in config.concerns():
         #  Said before anything is written, and the build goes ahead: these
         #  are choices that work and probably were not meant.
@@ -2423,6 +2551,8 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
             raise RuntimeError(f"{config.target} is not a block device we can see")
         devices.check_writable(device)
         devices.unmount_all(device, progress.log)
+        #  Asked before the hour is spent, not discovered at the end of it.
+        devices.check_responds(device, progress.log)
 
     target_size = _target_size(config)
     progress.log(f"Target {config.target} - {human_size(target_size)}")

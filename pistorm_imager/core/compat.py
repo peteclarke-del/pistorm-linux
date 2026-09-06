@@ -219,6 +219,11 @@ class Compatibility:
         #  Where the drive's programs are, for default tools.
         self._programs: dict[str, str] = {}
         self._superseded: set[str] = set()
+        #  Paths a *better* copy of the same file is going to land on, so the
+        #  poorer one is refused wherever it comes from. Unlike ``_displace``
+        #  this survives ``stop_displacing``, because the clash it settles is
+        #  between two packages, both of which write during the overlay pass.
+        self._outranked: dict[str, str] = {}
         self._seen_picasso = False
         self._picasso_expected = False
         self._finished = False
@@ -314,6 +319,22 @@ class Compatibility:
             tidy = path.replace("\\", "/").strip("/")
             self._supersede.setdefault(tidy.lower(), tidy)
 
+    def outrank(self, paths: dict[str, str]) -> None:
+        """Refuse these paths; a newer copy of each is coming from elsewhere.
+
+        Two packages can carry the same library, and which one landed used to
+        be decided by nothing better than the order of the catalogue: the
+        first to write it won, and the second was skipped with one line in an
+        hour-long log. NewInstaller bundles ``identify.library`` and is listed
+        before the identify package, so a card came out with NewInstaller's
+        copy and the one the user actually chose was left out.
+
+        ``paths`` maps the path being refused to a short reason, so the log
+        can say which copy won and why rather than that something was skipped.
+        """
+        for path, why in paths.items():
+            self._outranked[path.replace("\\", "/").strip("/").lower()] = why
+
     def displace(self, paths: Iterable[str]) -> None:
         """Refuse these paths while copying, so a package can supply them.
 
@@ -369,12 +390,25 @@ class Compatibility:
         self._displace.clear()
         self._supersede.clear()
 
-    def skip(self, relative: str) -> bool:
-        """True when a file should not be copied to the target at all."""
+    def skip(self, relative: str, *, named: bool = False) -> bool:
+        """True when a file should not be copied to the target at all.
+
+        ``named`` marks a file a package installs under its own name, from
+        its own ``items`` - as opposed to one that merely happens to sit
+        inside an archive being merged. Only the second kind can be outranked
+        by a better copy, because the first kind *is* the better copy: an
+        earlier attempt refused by path alone refused the winner too, and the
+        file landed nowhere at all. That is the same fault ``stop_displacing``
+        exists to avoid, arrived at from a different direction.
+        """
         #  Checked before `enabled`, because this is not a compatibility fix
         #  at all: it is the user's own choice of software, and it has to
         #  hold whether or not the compatibility pass is switched on.
         posix = relative.replace("\\", "/").strip("/").lower()
+        why = None if named else self._outranked.get(posix)
+        if why is not None:
+            self.note("removed", f"{relative} ({why})")
+            return True
         for drawer in self._supersede:
             #  ...and the drawer's own icon with it. Left behind, it stays on
             #  Workbench and opens an empty window, which is worse than
