@@ -1268,6 +1268,34 @@ Two updates are offered:
 | **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
 | **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
 
+### The privileged build has to use your cache, not root's
+
+Writing to a card runs the build under `pkexec`, so it runs **as root** and
+`Path.home()` becomes `/root`. Every archive in `~/.cache/pistorm-imager` was
+therefore invisible to it. Two consequences, one merely wasteful and one not:
+
+- Every package was downloaded again, into root's cache.
+- **Roadshow was left off the card entirely.** Its publisher serves the archive
+  only to a browser, so it can never be downloaded; the copy that would have
+  satisfied it was in the user's cache where the privileged build could not
+  look. No Roadshow means no TCP/IP - so no networking at all, with NetSurf,
+  AmFTP and WookieChat sitting on the card with nothing to connect through.
+
+So **the same choices produced a different card depending on where it was being
+written**, with nothing on screen to say so. Writing to an image file runs as
+the user and was always right; writing to a card was not.
+
+`pkexec` sanitises the environment, so the cache cannot travel as a variable.
+It goes in the job file with the rest of the build - `BuildConfig.cache_root`,
+the folder holding `packages/` rather than `packages/` itself - and
+`emu68.use_cache` applies it before anything is fetched. A path that is not
+there is ignored rather than obeyed, so a setup carried to another machine
+falls back to that machine's own cache instead of failing.
+
+This was found only because the "archive is missing" warning had just been
+changed to print *where* it was looking, and printed `/root/.cache/...`. The
+warning was wrong for one reason and correct about something else entirely.
+
 ### A warning that is wrong teaches people to skip warnings
 
 Every build opened its log with
