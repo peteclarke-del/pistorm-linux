@@ -3762,3 +3762,99 @@ class TheVirusKillerBringsItsScanner(unittest.TestCase):
         #  cost paid every second for a card that is written once.
         self.assertEqual(packages.CATALOGUE_BY_KEY["virusz"].startup, ())
 
+
+class ACardThatStoppedAnsweringSaysSo(unittest.TestCase):
+    """"Input/output error" is not an answer anybody can act on.
+
+    Writing to a card failed with a bare errno, an hour into a build, and
+    nothing said whether the fault was the card, the reader or this program.
+    It was the card: the kernel had logged ``mmcblk0: recovery failed!`` 554
+    times in three days and ``card ... removed`` fifteen, and sector 0 could
+    not be read at all.  None of that reached the person watching the log.
+    """
+
+    def card(self, path="/dev/mmcblk0", size=63864569856):
+        from pistorm_imager.core import devices                # noqa: PLC0415
+        return devices.Device(path=path, name=Path(path).name, size=size,
+                              model="SD64G", vendor="", transport="",
+                              removable=True, hotplug=True, read_only=False,
+                              partitions=[])
+
+    def test_a_card_that_reads_is_allowed_through(self):
+        from pistorm_imager.core import devices                # noqa: PLC0415
+        with tempfile.NamedTemporaryFile(suffix=".img") as handle:
+            handle.write(b"\0" * (256 * 1024))
+            handle.flush()
+            said = []
+            devices.check_responds(self.card(handle.name, 256 * 1024), said.append)
+        self.assertTrue(any("answers" in line for line in said), said)
+
+    def test_a_card_that_has_gone_away_is_named_as_the_cause(self):
+        from pistorm_imager.core import devices                # noqa: PLC0415
+        import errno as errno_mod                              # noqa: PLC0415
+
+        def refuse(*_a, **_kw):
+            raise OSError(errno_mod.EIO, "Input/output error")
+
+        with unittest.mock.patch("builtins.open", refuse):
+            with self.assertRaises(RuntimeError) as caught:
+                devices.check_responds(self.card())
+        said = str(caught.exception)
+        self.assertIn("stopped answering", said)
+        self.assertIn("card or the reader, not the card image", said)
+        self.assertIn("USB card reader", said,
+                      "say what to actually try next")
+
+    def test_not_being_allowed_to_look_is_not_a_verdict(self):
+        #  The probe runs unprivileged too, where it can prove nothing.  A
+        #  permission error must not be reported as a broken card.
+        from pistorm_imager.core import devices                # noqa: PLC0415
+
+        def refuse(*_a, **_kw):
+            raise PermissionError(13, "Permission denied")
+
+        said = []
+        with unittest.mock.patch("builtins.open", refuse):
+            devices.check_responds(self.card(), said.append)   # must not raise
+        self.assertTrue(any("without privileges" in line for line in said), said)
+
+    def test_a_dropout_mid_build_is_explained_not_just_raised(self):
+        from pistorm_imager.core import builder, devices       # noqa: PLC0415
+        import errno as errno_mod                              # noqa: PLC0415
+        config = builder.BuildConfig(target="/dev/mmcblk0", target_is_device=True)
+
+        def drop(*_a, **_kw):
+            raise OSError(errno_mod.EIO, "Input/output error")
+
+        with unittest.mock.patch.object(builder, "_run_build", drop):
+            with self.assertRaises(RuntimeError) as caught:
+                builder.run_build(config, Progress())
+        self.assertIn("stopped answering", str(caught.exception))
+
+    def test_a_real_fault_is_not_disguised_as_a_dead_card(self):
+        #  Only the errnos that mean the card left the bus.  A bug of ours
+        #  must still look like a bug of ours.
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        config = builder.BuildConfig(target="/dev/mmcblk0", target_is_device=True)
+
+        def bug(*_a, **_kw):
+            raise OSError(2, "No such file or directory")
+
+        with unittest.mock.patch.object(builder, "_run_build", bug):
+            with self.assertRaises(OSError) as caught:
+                builder.run_build(config, Progress())
+        self.assertNotIsInstance(caught.exception, RuntimeError)
+
+    def test_an_image_file_is_never_blamed_on_a_card(self):
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        import errno as errno_mod                              # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/card.img", target_is_device=False)
+
+        def drop(*_a, **_kw):
+            raise OSError(errno_mod.EIO, "Input/output error")
+
+        with unittest.mock.patch.object(builder, "_run_build", drop):
+            with self.assertRaises(OSError) as caught:
+                builder.run_build(config, Progress())
+        self.assertNotIn("card or the reader", str(caught.exception))
+
