@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 610 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 622 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -1507,6 +1507,78 @@ One bug fell out of that work: `fetch()` chose "place the archive whole" on
 whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
+
+#### A browser an OCS or ECS machine can actually run
+
+NetSurf renders modern HTML and CSS and is the most capable browser on 68k
+hardware, but it wants an RTG screen and a lot of memory. On an A500 or A600
+watching its own video it is not a realistic choice, and it was the only
+browser in the catalogue.
+
+**AWeb APL 3.5.09** is the other one. It is the open-source release of AWeb-II
+under the Amiga Public Licence, built for OS3.x on 68k, and it ships a
+`2MBSettings` drawer because it was written for machines that size.
+
+Neither is given a `role`, so ticking both raises no question. That was worth
+getting wrong once: a role means two packages patch the same part of the system
+and are alternatives, and the catalogue is deliberately sparing with them. Two
+browsers on one card is a preference, exactly like the three module players, and
+a false clash would nag about a choice that is perfectly fine.
+
+It is **installed, not staged**. Its own Installer script does two things —
+copy the drawer, and add an `Assign AWEB_APL:` line to `S:User-Startup` — and
+the build does both, so the browser is ready to run rather than ready to
+install. It lands in `Programs/AWeb_APL`, which is where its installer puts it
+by default and, as it happens, exactly where ClassicWB's own User-Startup
+already assigns `AWEB_APL:` — so a card built on that distribution finds the
+browser the distribution was expecting rather than a second copy elsewhere. The
+assign is written anyway and guarded with `IF EXISTS`, because a card built from
+floppies has no such line and assigning twice to the same path costs nothing.
+
+#### An icon travels with the file it belongs to
+
+A staged package is one this tool copies onto the card rather than installs,
+because it patches the system and only its own Installer script can do that
+honestly. That bargain is only kept if the script can be *started* — and on
+Workbench a file with no `.info` beside it is not drawn at all. Five staged
+packages arrived with no way to run their installer, by three different routes:
+
+* **`_merged()` threw away every top-level `.info`**, which cost Roadshow the
+  icon on `Install_Roadshow`.
+* **A package listing its files by hand could list the script and forget the
+  icon** — KingCON listed `Installation` and not `Installation.info`.
+* **MCP, Scalos and Picasso96 ship the icon under a name of its own.**
+  `MCP-Install.english.info` says `SCRIPT=Install_MCP`, `Setup.info` says
+  `SCRIPT=InstallPicasso96`. The icon has no file and the file has no icon, so
+  Workbench draws neither.
+
+Three rules, none of which names a package: whatever is placed brings its icon,
+a drawer's icon goes in the *parent* rather than inside it, and an orphaned icon
+naming a `SCRIPT=` that exists beside it is placed a second time under that
+script's name. Nothing is invented — these are the archives' own icons, saying
+themselves which script they belong to. Where an archive ships one icon per
+language, the English one is chosen rather than fallen into: sorted order alone
+handed over MCP's German installer.
+
+The guards for this are at the level of `fetch()` rather than the helpers. The
+first version of them called the two helpers directly and went on passing with
+both unhooked — which is exactly the state that shipped the fault.
+
+#### Every drive wears the card's icon
+
+A volume with no `Disk.info` never appears on the Workbench desktop. A drive
+this build formats and names but fills with nothing got no icon at all, so the
+Work drive was created, named, and then invisible — which reads as the
+partition having failed. And a drive filled from somebody else's tree wore
+*their* volume icon: PiMiga's Games and Demos arrive with an 8 KB icon drawn for
+a different desktop, beside a system drive wearing its own.
+
+Every drive on the card now wears the boot drive's icon, and the boot drive
+keeps the one it came with. It is read from the boot drive's *source* rather
+than the finished volume, because drives are filled in whatever order the
+partitions were listed and the boot drive is not reliably first; a card built
+from floppies takes it off Commodore's own Workbench disk instead. The saved
+icon position is cleared, or every drive claims the same square of the desktop.
 
 ### One answer to what a card should carry
 

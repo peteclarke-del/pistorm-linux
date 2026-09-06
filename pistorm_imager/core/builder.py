@@ -35,9 +35,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import (amigafs, amigaos, bootcfg, compat, content, devices, emu68,
-               hdfcheck, imgsrc, kickstart, mbr, packages, pfs3, postwrite,
-               rdb)
+from . import (amigafs, amigainfo, amigaos, bootcfg, compat, content, devices,
+               emu68, hdfcheck, imgsrc, kickstart, mbr, packages, pfs3,
+               postwrite, rdb)
 from .fat32 import Fat32
 from .util import (MIB, Progress, align_up, copy_stream, human_size,
                    require_tool, run)
@@ -1670,6 +1670,87 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
     return fixer
 
 
+#  The icon a volume wears on the Workbench desktop.
+VOLUME_ICON = "Disk.info"
+
+
+def _card_icon(config: BuildConfig, progress: Progress) -> bytes | None:
+    """The volume icon every drive on this card should wear.
+
+    Taken from the drive the machine boots from, so a card looks like one card
+    rather than a collection of drives from wherever each came. It is read from
+    the *source* rather than from the finished volume, because the drives are
+    filled in whatever order the partitions were listed and the boot drive is
+    not reliably first.
+
+    Two faults this answers. A drive filled from somebody else's tree brings
+    that tree's volume icon - PiMiga's Games and Demos arrive wearing an 8 KB
+    icon drawn for a different desktop - and a drive filled with nothing brings
+    no icon at all, which is worse: with no ``Disk.info`` a volume never appears
+    on Workbench, so the Work drive this build creates, formats and names could
+    not be seen.
+    """
+    spec = next((s for s in config.amiga_partitions if s.bootable), None)
+    if spec is None:
+        return None
+    data: bytes | None = None
+    try:
+        if spec.content_hdf:
+            reader, _label = amigaos.open_amiga_volume(
+                spec.content_hdf, spec.content_hdf_partition)
+            try:
+                entry = reader.find(VOLUME_ICON)
+                if entry is not None:
+                    data = reader.read_file(entry)
+            finally:
+                try:
+                    reader.f.close()
+                except Exception:                       # noqa: BLE001
+                    pass
+        elif spec.content_folder:
+            here = Path(spec.content_folder) / VOLUME_ICON
+            if here.is_file():
+                data = here.read_bytes()
+    except Exception as error:                          # noqa: BLE001 - an
+        #  unreadable donor is not worth failing a card for; the drives simply
+        #  keep whatever icons they came with.
+        progress.log(f"  could not read the boot drive's volume icon: {error}")
+        return None
+    if data is None and config.adf_folder:
+        #  A card built from floppies has no donor to take one from, and
+        #  Commodore's own Workbench disk carries exactly this file.
+        try:
+            data = amigaos.volume_icon_from_disks(config.adf_folder)
+        except Exception:                               # noqa: BLE001
+            data = None
+    if data is None:
+        return None
+    #  Every drive would otherwise claim the same square of the desktop and
+    #  land on top of the others.
+    try:
+        return amigainfo.clear_position(data)
+    except Exception:                                   # noqa: BLE001
+        return data
+
+
+def _give_volume_icon(volume, icon: bytes | None, label: str,
+                      progress: Progress) -> None:
+    """Put the card's volume icon on a drive, if it has not got one."""
+    if not icon:
+        return
+    try:
+        if volume._entry_exists(volume.root, VOLUME_ICON) is not None:
+            return
+        volume.write_file(volume.root, VOLUME_ICON, icon,
+                          check_existing=False)
+    except Exception as error:                          # noqa: BLE001 - a
+        #  drive without its icon is a blemish, not a reason to lose the build.
+        progress.log(f"  could not give {label} a volume icon: {error}")
+        return
+    progress.log(f"  {label} given the card's volume icon so it appears on "
+                 f"Workbench")
+
+
 def _format_empty_partitions(config: BuildConfig, handle,
                              amiga: mbr.MbrPartition, table: rdb.Rdb,
                              progress: Progress) -> None:
@@ -1689,6 +1770,7 @@ def _format_empty_partitions(config: BuildConfig, handle,
     filled = {spec.name.upper() for spec in config.amiga_partitions
               if spec.content_folder or spec.content_hdf}
     boot = next((p for p in table.partitions if p.bootable), None)
+    card_icon = _card_icon(config, progress)
     for spec in config.amiga_partitions:
         name = spec.name.upper()
         partition = by_name.get(name)
@@ -1713,6 +1795,7 @@ def _format_empty_partitions(config: BuildConfig, handle,
         volume = amigaos.make_volume(handle, offset,
                                      partition.blocks(table.geometry),
                                      label, dostype)
+        _give_volume_icon(volume, card_icon, label, progress)
         volume.close()
         progress.log(f'{partition.drive_name} formatted as '
                      f'{rdb.dostype_name(dostype)}, named "{label}"')
@@ -1827,6 +1910,9 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      table: rdb.Rdb, progress: Progress) -> None:
     """Fill partitions that were given a host directory or overlays."""
     by_name = {p.drive_name.upper(): p for p in table.partitions}
+    #  Read once: it opens the donor drive, and every partition would otherwise
+    #  open it again.
+    card_icon = _card_icon(config, progress)
     for spec in config.amiga_partitions:
         if not spec.content_folder and not spec.content_hdf:
             continue
@@ -1841,6 +1927,11 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         #  resolved before the drive is filled so it can take the place of an
         #  older copy already in the image - if that is what was asked for.
         credit: dict[tuple[str, str], str] = {}
+        #  A drive filled from somebody else's tree brings that tree's volume
+        #  icon with it. Refused here so the card's own can be written after,
+        #  because this file system creates files and never overwrites them.
+        if not spec.bootable and card_icon:
+            fixer.displace([VOLUME_ICON])
         extra = (_package_overlays(config, list(spec.overlays), progress,
                                    credit)
                  if spec.bootable else [])
@@ -1947,6 +2038,9 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             #  each being given their own copy of the display-switching
             #  scripts, which belong in the system drive's S: and nowhere.
             fixer.finish(volume, progress)
+        else:
+            _give_volume_icon(volume, card_icon,
+                              spec.volume_name or spec.name, progress)
         volume.close()
         progress.log(fixer.summary())
 

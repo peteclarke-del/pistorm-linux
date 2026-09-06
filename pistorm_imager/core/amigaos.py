@@ -1175,6 +1175,28 @@ def drawer_icon_from_disks(folder: str | Path, into: Path) -> Path | None:
     return None
 
 
+def volume_icon_from_disks(folder: str | Path) -> bytes | None:
+    """The volume icon off a Workbench floppy.
+
+    A card built from floppies has no donor drive to take one from, and a
+    volume with no ``Disk.info`` never appears on the Workbench desktop at all.
+    Commodore's own disks carry exactly this file at their root.
+    """
+    folder = Path(folder)
+    if not folder.is_dir():
+        return None
+    for disk in sorted(folder.glob("*.adf")):
+        try:
+            volume, _label = open_amiga_volume(str(disk), "")
+            entry = volume.find("Disk.info")
+            if entry is None or entry.is_dir:
+                continue
+            return volume.read_file(entry)
+        except Exception:                        # noqa: BLE001 - try the next
+            continue
+    return None
+
+
 def _generic_drawer_icon(folders: Iterable[str | Path]) -> bytes | None:
     """A stand-in for a drawer whose own name matched nothing.
 

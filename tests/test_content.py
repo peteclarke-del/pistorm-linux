@@ -4415,3 +4415,200 @@ class ADisplayDriverBringsEveryLibraryItOpens(unittest.TestCase):
             checked += 1
         if not checked:
             self.skipTest("no package archives are unpacked on this machine")
+
+
+class StagedSoftwareCanBeStarted(unittest.TestCase):
+    """A staged package must arrive with a way to start its installer.
+
+    Several packages are copied onto the card rather than installed, because
+    they patch the system and only their own Installer script can do that
+    honestly. That bargain only works if the script can actually be run, and on
+    Workbench a file with no ``.info`` beside it is not shown at all - so a
+    staged installer with no icon is a package the card cannot install.
+
+    Three separate faults produced that, and each is checked here:
+
+    * ``_merged`` threw away every top-level ``.info``, which cost Roadshow the
+      icon on ``Install_Roadshow``;
+    * a package listing its files by hand could list the script and forget the
+      icon, which is what happened to KingCON's ``Installation``;
+    * and MCP, Scalos and Picasso96 ship the icon under a name of its own -
+      ``MCP-Install.english.info`` saying ``SCRIPT=Install_MCP`` - so the icon
+      has no file and the file has no icon, and Workbench draws neither.
+    """
+
+    def _pairs(self, package, root):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        return packages._icons_for(
+            [(str(root / "Install_Thing"), "Storage/Install/Thing")])
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_an_icon_travels_with_the_file_it_belongs_to(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        (self.root / "Install_Thing").write_text("script")
+        (self.root / "Install_Thing.info").write_bytes(b"icon")
+        extra = packages._icons_for(
+            [(str(self.root / "Install_Thing"), "Storage/Install/Thing")])
+        self.assertEqual(
+            [(Path(s).name, d) for s, d in extra],
+            [("Install_Thing.info", "Storage/Install/Thing")])
+
+    def test_a_drawers_icon_goes_beside_it_not_inside_it(self):
+        #  A drawer's icon lives in the drawer's *parent*. Placed inside, it is
+        #  a file called Thing.info in a drawer nothing can see.
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        (self.root / "Thing").mkdir()
+        (self.root / "Thing.info").write_bytes(b"icon")
+        extra = packages._icons_for(
+            [(str(self.root / "Thing"), "Programs/Thing")])
+        self.assertEqual([(Path(s).name, d) for s, d in extra],
+                         [("Thing.info", "Programs")])
+
+    def test_an_icon_whose_file_is_left_out_stays_left_out(self):
+        #  Nothing is invented and nothing is dragged along: an icon is only
+        #  placed for something already being placed.
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        (self.root / "Install_Thing.info").write_bytes(b"icon")
+        self.assertEqual(
+            packages._icons_for([(str(self.root / "Other"), "Storage")]), [])
+
+    @staticmethod
+    def _icon(tooltypes):
+        #  The same builder the compatibility tests use, so the two cannot
+        #  drift into disagreeing about what an icon looks like.
+        import struct                                            # noqa: PLC0415
+        data = bytearray(78)
+        struct.pack_into(">HH", data, 0, amigainfo.MAGIC, 1)
+        struct.pack_into(">I", data, 54, 1)      # do_ToolTypes present
+        block = bytearray(struct.pack(">I", (len(tooltypes) + 1) * 4))
+        for entry in tooltypes:
+            raw = entry.encode("latin-1") + b"\0"
+            block += struct.pack(">I", len(raw)) + raw
+        return bytes(data + block)
+
+    def _orphan(self, script_name, icon_name, tooltypes):
+        icon = self._icon(tooltypes)
+        (self.root / script_name).write_text("; installer script")
+        (self.root / icon_name).write_bytes(icon)
+        return icon
+
+    def test_a_script_is_given_the_icon_that_names_it(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        self._orphan("Install_Thing", "Thing-Install.english.info",
+                     ["APPNAME=Thing", "LANGUAGE=english",
+                      "SCRIPT=Install_Thing"])
+        made = packages._named_icons(
+            packages.CATALOGUE[0],
+            [(str(self.root), "Storage/Install/Thing")], Progress())
+        self.assertEqual([(Path(s).name, d) for s, d in made],
+                         [("Install_Thing.info", "Storage/Install/Thing")])
+
+    def test_the_english_installer_is_the_one_chosen(self):
+        """An archive with one icon per language must not hand over a German one.
+
+        MCP ships MCP-Install.deutsch.info and MCP-Install.english.info, alike
+        but for the LANGUAGE tool type that Installer reads. Sorted order alone
+        put deutsch first.
+        """
+        from pistorm_imager.core import amigainfo, packages      # noqa: PLC0415
+        (self.root / "Install_Thing").write_text("; installer script")
+        for language in ("deutsch", "english"):
+            (self.root / f"Thing-Install.{language}.info").write_bytes(
+                self._icon([f"LANGUAGE={language}", "SCRIPT=Install_Thing"]))
+        made = packages._named_icons(
+            packages.CATALOGUE[0],
+            [(str(self.root), "Storage/Install/Thing")], Progress())
+        self.assertEqual(len(made), 1, made)
+        types = amigainfo.read_tooltypes(Path(made[0][0]).read_bytes())
+        self.assertIn("LANGUAGE=english", types)
+
+    def test_a_script_that_already_has_an_icon_is_left_alone(self):
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        self._orphan("Install_Thing", "Thing-Install.english.info",
+                     ["SCRIPT=Install_Thing"])
+        (self.root / "Install_Thing.info").write_bytes(b"its own icon")
+        self.assertEqual(packages._named_icons(
+            packages.CATALOGUE[0],
+            [(str(self.root), "Storage/Install/Thing")], Progress()), [])
+
+
+class TheIconRulesAreActuallyWiredIn(unittest.TestCase):
+    """The rules above must run inside ``fetch``, not merely exist.
+
+    Asserting that ``_icons_for`` returns an icon proves nothing about a card:
+    the first version of these tests called the two helpers directly and went
+    on passing with both of them unhooked from ``fetch``, which is the state
+    that shipped the fault. So each route a package can take through ``fetch``
+    is driven here with a real archive on disk.
+    """
+
+    def setUp(self):
+        self.cache = Path(tempfile.mkdtemp(prefix="pistorm-icons-"))
+        self.addCleanup(shutil.rmtree, self.cache, ignore_errors=True)
+        patch = unittest.mock.patch.object(packages, "cache_dir",
+                                           lambda: self.cache)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.tree = self.cache / "Thing.unpacked"
+        (self.tree / "Thing").mkdir(parents=True)
+        unpack = unittest.mock.patch.object(
+            packages, "unpack", lambda *_a, **_k: self.tree)
+        unpack.start()
+        self.addCleanup(unpack.stop)
+        download = unittest.mock.patch.object(
+            packages, "download_archive",
+            lambda *_a, **_k: self.cache / "Thing.lha")
+        download.start()
+        self.addCleanup(download.stop)
+
+    def _icon(self, tooltypes):
+        import struct                                            # noqa: PLC0415
+        data = bytearray(78)
+        struct.pack_into(">HH", data, 0, amigainfo.MAGIC, 1)
+        struct.pack_into(">I", data, 54, 1)
+        block = bytearray(struct.pack(">I", (len(tooltypes) + 1) * 4))
+        for entry in tooltypes:
+            raw = entry.encode("latin-1") + b"\0"
+            block += struct.pack(">I", len(raw)) + raw
+        return bytes(data + block)
+
+    def _package(self, **kw):
+        return packages.Package("thing", "Thing", "a package",
+                                download=packages.Download("x/y/Thing.lha", **kw))
+
+    def _landed(self, package):
+        return {f"{dest}/{Path(src).name}"
+                for src, dest in packages.fetch(package, Progress())}
+
+    def test_a_listed_script_arrives_with_its_icon(self):
+        inner = self.tree / "Thing"
+        (inner / "Installation").write_text("; script")
+        (inner / "Installation.info").write_bytes(self._icon([]))
+        landed = self._landed(self._package(
+            items=(("Thing/Installation", "Storage/Install/Thing"),)))
+        self.assertIn("Storage/Install/Thing/Installation.info", landed,
+                      "the script landed with no way to start it")
+
+    def test_a_staged_archive_keeps_the_icon_that_names_its_script(self):
+        inner = self.tree / "Thing"
+        (inner / "Install_Thing").write_text("; script")
+        (inner / "Thing-Install.english.info").write_bytes(
+            self._icon(["LANGUAGE=english", "SCRIPT=Install_Thing"]))
+        landed = self._landed(self._package(stage="Storage/Install/Thing"))
+        self.assertIn("Storage/Install/Thing/Install_Thing.info", landed,
+                      "the installer cannot be started from Workbench")
+
+    def test_a_merged_archive_keeps_its_top_level_icons(self):
+        inner = self.tree / "Thing"
+        (inner / "Install_Thing").write_text("; script")
+        (inner / "Install_Thing.info").write_bytes(self._icon([]))
+        (inner / "Libs").mkdir()
+        (inner / "Libs" / "thing.library").write_bytes(b"lib")
+        landed = self._landed(self._package(merge=True,
+                                            stage="Storage/Install/Thing"))
+        self.assertIn("Storage/Install/Thing/Install_Thing.info", landed,
+                      "_merged dropped the icon off its own installer")
