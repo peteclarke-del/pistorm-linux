@@ -4,12 +4,11 @@ Testing a card in FS-UAE means describing the Amiga it is going into, and that
 description already exists: the model, the chipset, the board and the trapdoor
 choice are what the build itself is driven by.  Writing it a second time by
 hand is how the two came apart.  The harness scripts used through one long
-bisection had ``amiga_model = A1200`` (AGA, not the ECS A500 in question),
-``fpu = 68040`` on a machine whose accelerator has no FPU at all, and
+bisection had ``amiga_model = A1200`` (AGA, not the ECS A500 in question) and
 ``accuracy = 0``, which runs a fast, inexact 68040 on which WHDLoad cannot
 start a single game - so every test ran against a machine unlike the one being
-built for, in three ways at once, and one of those cost hours of hunting a
-defect in the imager that was a flag in the emulator.
+built for, and that cost hours of hunting a defect in the imager that was a
+flag in the emulator.
 
 So the settings come from ``machines.Machine`` and the ``BuildConfig``, and
 nothing is typed twice.
@@ -37,11 +36,27 @@ FSUAE_MODELS = {
     "raspi": "A1200",      # nothing Amiga-side to emulate; a sane default
 }
 
-#  What a PiStorm presents, whatever board it is.  Emu68 gives a 68040 and
-#  **no FPU**: a floating point instruction raises a line-F exception, which
-#  the Amiga reports as guru 8000000B.  Giving the emulated machine an FPU
-#  hides exactly the class of failure this project keeps meeting.
+#  What a PiStorm presents, whatever board it is.
 PISTORM_CPU = "68040"
+
+#  And whether it has a floating point unit.  This was set to "none" on the
+#  belief that Emu68 has no FPU, which is not what Emu68 says: its own overlay
+#  documentation lists ``no_fpu`` as "Disables the FPU entirely. Every FPU
+#  instruction will throw an exception", and a switch that *disables* one is a
+#  switch on a machine that has one.  The word is in the kernel's own option
+#  list, in v1.0.7 as well as v1.1.0, so this is not new behaviour either.
+#
+#  The imager does not write that switch, so every card it builds has an FPU,
+#  and the emulator has to have one too - a machine stricter than the real one
+#  fails software that would have run, which is as misleading as a machine more
+#  forgiving than the real one.
+#
+#  The wrong value hid itself.  FS-UAE 3.0.3 does not accept "none": it logs
+#  "WARNING: Unknown FPU specified" where nobody was reading and falls back to
+#  a full 68040 FPU, so the setting never took effect and the mistake never
+#  showed.  Verified by reading FS-UAE's own log: "fpu = 0" gives "FPU=0",
+#  and this gives "CPU=68040, FPU=68040".
+PISTORM_FPU = "68040"
 
 #  A500-family boards take a 512K trapdoor expansion.  Emu68 can map it into
 #  the chip range, which is what "move_slow_to_chip" does, and the machine
@@ -88,15 +103,11 @@ def fsuae_config(machine: machines.Machine, drive: str | Path,
         f"# {machine.board_label}, which Emu68 presents as a {PISTORM_CPU}",
         f"amiga_model = {fsuae_model(machine)}",
         f"cpu = {PISTORM_CPU}",
-        #  Emu68 provides no FPU, and a library built for a 68881 gurus with
-        #  8000000B on the real machine.  Asked for here - but FS-UAE 3.0.3
-        #  accepts the line silently and says nothing either way, so whether
-        #  it takes effect is UNVERIFIED.  Assume the emulator may still be
-        #  providing the 68040's internal FPU: floating point code can pass
-        #  here and still bring the real machine down.
-        "#  Emu68 provides no FPU. Unverified on FS-UAE 3.0.3 - floating",
-        "#  point code may still run here and guru on the real machine.",
-        "fpu = none",
+        #  See PISTORM_FPU: Emu68 has an FPU unless the card is booted with
+        #  its "nofpu" switch, and this imager never writes that switch.
+        "#  Emu68 has an FPU unless the card is booted with \"nofpu\", which",
+        "#  this imager does not write - so the emulated machine has one too.",
+        f"fpu = {PISTORM_FPU}",
         "#  accuracy = 0 runs a fast, inexact 68040 on which WHDLoad cannot",
         "#  start any game: every title gurus with a privilege violation in",
         "#  WHDLoad's own task, which reads exactly like a broken card and is",
