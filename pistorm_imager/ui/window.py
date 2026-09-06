@@ -3205,6 +3205,10 @@ class ImagerWindow(Adw.ApplicationWindow):
             staged = prepare.stage_emu68(config, progress)
             if staged is not None:
                 config = dataclasses.replace(config, emu68_prepared_dir=str(staged))
+            #  The helper runs as root, whose cache holds none of this
+            #  user's archives, so it is told where to look.
+            config = dataclasses.replace(
+                config, cache_root=str(emu68.cache_dir()))
             job = Path(GLib.get_user_runtime_dir() or "/tmp") / "pistorm-imager-job.json"
             jobs.save(config, job)
             os.chmod(job, 0o600)

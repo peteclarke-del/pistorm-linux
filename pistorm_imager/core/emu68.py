@@ -147,7 +147,35 @@ def asset_for(release: Release, variant_key: str) -> str:
     )
 
 
+#  Set when a build has been told which cache to use, because it is running
+#  as somebody else. See ``use_cache``.
+_CACHE: Path | None = None
+
+
+def use_cache(path: str | Path) -> None:
+    """Use this cache rather than the one belonging to whoever is running.
+
+    Writing to a card runs the build under ``pkexec``, so it runs as root and
+    ``Path.home()`` becomes ``/root``. The user's archives were then invisible:
+    every package was downloaded again into root's cache, and **Roadshow was
+    left off the card entirely**, because its publisher serves it only to a
+    browser and the copy that would have satisfied it was in the user's cache
+    where the privileged build could not see it. So writing to a file and
+    writing to a card produced different cards from the same choices.
+
+    ``pkexec`` sanitises the environment, so this cannot travel as a variable;
+    it goes in the job file with the rest of the build, and is applied here.
+    A path that is not there is ignored rather than obeyed, so a saved setup
+    carried to another machine falls back to that machine's own cache.
+    """
+    global _CACHE                                            # noqa: PLW0603
+    wanted = Path(path)
+    _CACHE = wanted if wanted.is_dir() else None
+
+
 def cache_dir() -> Path:
+    if _CACHE is not None:
+        return _CACHE
     base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     path = base / "pistorm-imager"
     path.mkdir(parents=True, exist_ok=True)
