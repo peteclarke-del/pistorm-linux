@@ -3858,3 +3858,143 @@ class ACardThatStoppedAnsweringSaysSo(unittest.TestCase):
                 builder.run_build(config, Progress())
         self.assertNotIn("card or the reader", str(caught.exception))
 
+
+class TheNewerCopyWinsWhoeverCarriesIt(unittest.TestCase):
+    """Two packages carrying one file must not be settled by catalogue order.
+
+    NewInstaller bundles ``identify.library`` and is listed before the
+    identify package, so the first to write it won and the second was skipped
+    with a single line - "already present, left as it is" - in an hour-long
+    log. Every card came out with NewInstaller's copy while the library the
+    user had ticked was silently left out.
+    """
+
+    def library(self, name, version, revision):
+        """A stand-in carrying the ID string a real library carries."""
+        return (b"\x00\x00\x03\xf3" + b"\0" * 32
+                + f"{name} {version}.{revision} (1.1.2020)".encode() + b"\0")
+
+    def test_a_library_states_its_version_without_a_ver_cookie(self):
+        #  Libraries carry it in the resident tag, not in $VER:, and asking
+        #  only for the cookie read every one of them as "no version".
+        self.assertEqual(
+            content.version_of(self.library("identify.library", 45, 1)),
+            (45, 1))
+        self.assertIsNone(content.version_of(b"identify 45.1 nothing here"),
+                          "prose must not read as a version")
+
+    def settle(self, files, as_trees=()):
+        """Lay out (package, destination, name, bytes) and settle the clash.
+
+        A package named in ``as_trees`` carries its file inside a drawer that
+        is merged, which is how NewInstaller carries the libraries it bundles.
+        Everything else names the file for itself, as its own ``items`` entry.
+        """
+        from pistorm_imager.core import builder, compat        # noqa: PLC0415
+        root = Path(tempfile.mkdtemp(prefix="pistorm-clash-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        overlays, credit, where = [], {}, {}
+        for index, (who, destination, name, data) in enumerate(files):
+            home = root / f"{index}-{who}"
+            if who in as_trees:
+                (home / "Libs").mkdir(parents=True)
+                (home / "Libs" / name).write_bytes(data)
+                pair = (str(home / "Libs"), destination)
+            else:
+                home.mkdir()
+                (home / name).write_bytes(data)
+                pair = (str(home / name), destination)
+            overlays.append(pair)
+            credit[pair] = who
+            where[who] = pair
+        fixer = compat.Compatibility(Progress())
+        beaten = builder._settle_clashes(overlays, credit, fixer, Progress())
+        return fixer, beaten, where
+
+    THE_CLASH = [
+        ("newinstaller", "Libs", "identify.library", None),
+        ("identify", "Libs", "identify.library", None),
+    ]
+
+    def the_clash(self, order=("newinstaller", "identify")):
+        """NewInstaller's bundled 12.3 against the identify package's 45.1."""
+        versions = {"newinstaller": (12, 3), "identify": (45, 1)}
+        return self.settle(
+            [(who, "Libs", "identify.library",
+              self.library("identify.library", *versions[who]))
+             for who in order],
+            as_trees=("newinstaller",))
+
+    def test_the_newer_library_wins_whichever_package_is_listed_first(self):
+        for order in (("newinstaller", "identify"),
+                      ("identify", "newinstaller")):
+            with self.subTest(order=order):
+                fixer, beaten, where = self.the_clash(order)
+                self.assertTrue(fixer.skip("Libs/identify.library"),
+                                "the bundled copy is refused")
+                self.assertNotIn(where["identify"], beaten)
+
+    def test_the_winner_is_not_refused_along_with_the_loser(self):
+        #  Refusing by path alone refused the chosen copy too, and the file
+        #  landed nowhere at all - which a trial build caught and the unit
+        #  tests had not.
+        fixer, _beaten, _where = self.the_clash()
+        self.assertFalse(
+            fixer.skip("Libs/identify.library", named=True),
+            "a file the package names for itself must still be written")
+
+    def test_two_packages_that_both_name_it_drop_the_older(self):
+        #  Neither is buried in a tree, so the loser goes from the list
+        #  rather than being refused by path.
+        fixer, beaten, where = self.settle([
+            ("old", "Libs", "shared.library", self.library("shared.library", 1, 0)),
+            ("new", "Libs", "shared.library", self.library("shared.library", 9, 9)),
+        ])
+        self.assertEqual(beaten, {where["old"]})
+        self.assertFalse(fixer.skip("Libs/shared.library", named=True))
+
+    def test_one_package_on_its_own_is_left_alone(self):
+        #  A package that writes a file twice - a renamed binary beside the
+        #  archive's own - is not a clash, and refusing either would take the
+        #  file off the card entirely.
+        fixer, beaten, _where = self.settle([
+            ("igame", "Programs/iGame", "iGame",
+             self.library("iGame.library", 2, 6)),
+        ])
+        self.assertFalse(fixer.skip("Programs/iGame/iGame"))
+        self.assertEqual(beaten, set())
+
+    def test_files_that_do_not_collide_are_untouched(self):
+        fixer, beaten, _where = self.settle([
+            ("a", "Libs", "one.library", self.library("one.library", 1, 0)),
+            ("b", "Libs", "two.library", self.library("two.library", 1, 0)),
+        ])
+        self.assertFalse(fixer.skip("Libs/one.library"))
+        self.assertFalse(fixer.skip("Libs/two.library"))
+        self.assertEqual(beaten, set())
+
+    def test_the_refusal_survives_the_switch_that_ends_displacing(self):
+        #  Both packages write during the overlay pass, after displacing has
+        #  been turned off. A rule stored in the displaced set would be gone
+        #  by then, which is why this is a set of its own.
+        fixer, _beaten, _where = self.the_clash()
+        fixer.stop_displacing()
+        self.assertTrue(fixer.skip("Libs/identify.library"))
+
+    def test_nothing_is_refused_when_no_one_claims_it_by_name(self):
+        #  Two bundles carrying the same file and neither installing it under
+        #  its own name: refusing by path would refuse both, so this leaves
+        #  the old behaviour rather than losing the file.
+        fixer, beaten, _where = self.settle([
+            ("one", "Libs", "shared.library", self.library("shared.library", 1, 0)),
+            ("two", "Libs", "shared.library", self.library("shared.library", 9, 9)),
+        ], as_trees=("one", "two"))
+        self.assertFalse(fixer.skip("Libs/shared.library"))
+        self.assertEqual(beaten, set())
+
+    def test_the_catalogue_asks_for_the_release_that_is_maintained(self):
+        #  Aminet still carries the 1997 upload under the shorter name.
+        download = packages.CATALOGUE_BY_KEY["identify"].download
+        self.assertIn("IdentifyUsr", download.path,
+                      "Identify.lha is version 8.2 from 1997")
+
