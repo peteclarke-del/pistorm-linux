@@ -1025,6 +1025,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  software out of a build that is no longer using that drive.
             self._refresh_older_copies()
             self._refresh_what_cannot_work()
+            self._refresh_clutter()
             self._refresh_what_arrives()
             self._quick_preview()
             return
@@ -1047,6 +1048,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._relayout_partitions()
         self._refresh_older_copies()
         self._refresh_what_cannot_work()
+        self._refresh_clutter()
         self._refresh_what_arrives()
         self._quick_preview()
 
@@ -1883,6 +1885,22 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.broken_group.set_visible(False)
         page.add(self.broken_group)
 
+        #  Clutter: drawers that are empty, that only mean something inside an
+        #  emulator, or assigns left pointing at something this build removes.
+        #  Discovered from the drive rather than named anywhere, because a list
+        #  of paths is right for one distribution and finds nothing on the next.
+        #  Removing is destructive, so every one of these is offered and the
+        #  uncertain ones default to keeping what is there.
+        self.clutter_group = Adw.PreferencesGroup(
+            title="Clutter this card has no use for",
+            description="Found by looking at the drive, not from a list: "
+                        "drawers holding nothing, scripts that only work "
+                        "inside an emulator, and assigns pointing at what you "
+                        "are leaving out. Turn one on to remove it.")
+        self.clutter_rows: dict[str, Adw.SwitchRow] = {}
+        self.clutter_group.set_visible(False)
+        page.add(self.clutter_group)
+
         #  One group per category, so a long list reads as a few short ones.
         #  What a fresh window starts with is the same recommendation the
         #  "suggest a set" button makes, for the machine and screen the
@@ -2388,6 +2406,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  older-copies list still described the set that was ticked before.
         self._refresh_older_copies()
         self._refresh_what_cannot_work()
+        self._refresh_clutter()
         self._refresh_what_arrives()
 
     def _refresh_categories(self) -> None:
@@ -2535,6 +2554,73 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.broken_rows[drawer] = row
             self.broken_group.add(row)
         self.broken_group.set_visible(bool(self.broken_rows))
+
+    def _refresh_clutter(self) -> None:
+        """Offer what the drive carries that this card would be better without.
+
+        Every candidate is discovered - an empty drawer, a drawer of emulator
+        scripts, an assign whose target is being left out - and every one is
+        offered rather than acted on, because a drawer goes whole.
+        """
+        if not hasattr(self, "clutter_group"):
+            return
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        found = []
+        if path:
+            try:
+                from ..core import amigaos, content            # noqa: PLC0415
+                reader, _label = amigaos.open_amiga_volume(path, "")
+            except Exception:                                  # noqa: BLE001
+                reader = None
+            if reader is not None:
+                try:
+                    named = [spec.volume_name or spec.name
+                             for spec in (row.spec() for row
+                                          in getattr(self, "partition_rows", []))]
+                    #  What the packages are about to fill is never offered: a
+                    #  drawer empty now is not empty on the finished card.
+                    _wanted, filling = packages.principal_programs(
+                        self._chosen_packages())
+                    found = content.clutter(
+                        reader, content.volumes_on_the_card(reader, named),
+                        keep=filling, going=self._already_leaving())
+                except Exception:                              # noqa: BLE001
+                    found = []
+                finally:
+                    try:
+                        reader.f.close()
+                    except Exception:                          # noqa: BLE001
+                        pass
+        wanted = {c.path: c for c in found}
+        for key, row in list(self.clutter_rows.items()):
+            if key not in wanted:
+                self.clutter_group.remove(row)
+                del self.clutter_rows[key]
+        for where, item in wanted.items():
+            if where in self.clutter_rows:
+                continue
+            row = Adw.SwitchRow(title=f"Remove {where}", subtitle=item.reason)
+            #  On only where the evidence is conclusive. "Almost empty" is a
+            #  judgement, and the answer that keeps somebody's files is safe.
+            row.set_active(item.certain)
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.clutter_rows[where] = row
+            self.clutter_group.add(row)
+        self.clutter_group.set_visible(bool(self.clutter_rows))
+
+    def _already_leaving(self) -> list[str]:
+        """Paths the other lists are already dropping from the card.
+
+        An assign is only broken by a removal if the removal is happening, so
+        the clutter pass has to be told what the rest of the page has decided.
+        """
+        out = [key for key, row in getattr(self, "arrives_rows", {}).items()
+               if not row.get_active()]
+        for rows in (getattr(self, "older_rows", {}),
+                     getattr(self, "broken_rows", {}),
+                     getattr(self, "clutter_rows", {})):
+            out += [key for key, row in rows.items() if row.get_active()]
+        return out
 
     def _refresh_older_copies(self) -> None:
         """Show one row per older copy actually found, keeping any answers."""
@@ -3090,6 +3176,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                    if row.get_active()]
                 + [drawer for drawer, row
                    in getattr(self, "broken_rows", {}).items()
+                   if row.get_active()]
+                + [where for where, row
+                   in getattr(self, "clutter_rows", {}).items()
                    if row.get_active()])),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,

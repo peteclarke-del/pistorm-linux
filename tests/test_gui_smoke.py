@@ -46,6 +46,51 @@ HDF_IMAGE = SCRATCH / "disk.hdf"
 ADF_FOLDER = Path(__file__).resolve().parent.parent / "samples" / "workbench"
 
 
+CLUTTER_IMAGE = SCRATCH / "clutter.hdf"
+
+
+def _make_clutter_hdf() -> None:
+    """A small drive carrying one of each thing the clutter pass looks for.
+
+    The empty drive above proves the wiring does not fall over; this one proves
+    it actually finds something and that the answer reaches the build.
+    """
+    from pistorm_imager.core import amigaos, rdb           # noqa: PLC0415
+    geometry = rdb.Geometry()
+    size = 16 * 1024 * 1024
+    cylinders = (size // 512) // geometry.cyl_blocks
+    table = rdb.Rdb(geometry=geometry,
+                    partitions=[rdb.Partition("DH0", 1, cylinders - 1,
+                                              rdb.DOSTYPE_FFS_INTL,
+                                              bootable=True)],
+                    filesystems=[], cylinders=cylinders)
+    #  Read-write: making a volume reads blocks back as it writes them.
+    with open(CLUTTER_IMAGE, "w+b") as handle:
+        handle.truncate(size)
+        table.write(handle, 0)
+        part = table.partitions[0]
+        volume = amigaos.make_volume(handle,
+                                     part.byte_offset(geometry, 0),
+                                     part.blocks(geometry), "Sys",
+                                     rdb.DOSTYPE_FFS_INTL)
+        #  An empty drawer, a drawer of emulator-only scripts, and an assign
+        #  pointing at a drawer that is there for now.
+        volume.makedirs("Spare")
+        uae = volume.makedirs("MyFiles/UAE")
+        volume.write_file(uae, "JIT", b"uae-configuration cpu_speed max\n")
+        volume.write_file(uae, "Blitter", b"uae-configuration blitter on\n")
+        games = volume.makedirs("Games")
+        volume.write_file(games, "AGame", b"a real game")
+        script = volume.makedirs("S")
+        #  One assign into a drawer that survives, and one into the empty
+        #  drawer the list offers to remove - so the rule is seen to fire only
+        #  when the removal it depends on is actually happening.
+        volume.write_file(script, "Assign-Startup",
+                          b"Assign >NIL: A-Games: SYS:Games\n"
+                          b"Assign >NIL: A-Spare: SYS:Spare\n")
+        volume.close()
+
+
 def _make_test_hdf() -> None:
     from pistorm_imager.core import rdb  # noqa: PLC0415
     geometry = rdb.Geometry()
@@ -64,6 +109,7 @@ def _make_test_hdf() -> None:
 
 
 _make_test_hdf()
+_make_clutter_hdf()
 
 failures: list[str] = []
 
@@ -681,6 +727,38 @@ def on_activate(app: ImagerApplication) -> None:
         window.quick_pimiga.set_path(str(SCRATCH / "pimiga"))
         check(window._system_source() == "pimiga", "a PiMiga folder is the system")
         window.quick_primary.set_selected(2)
+        # ---------------------------------------------- the clutter list
+        print("\nclutter the card is better off without")
+        window.quick_hdf.set_path(str(CLUTTER_IMAGE))
+        window._refresh_clutter()
+        offered = {where: row.get_active()
+                   for where, row in window.clutter_rows.items()}
+        check(bool(offered), f"found on a drive that has some: {sorted(offered)}")
+        check("Spare" in offered, "the empty drawer is offered")
+        check("MyFiles/UAE" in offered,
+              "the drawer of emulator-only scripts is offered")
+        check(window.clutter_group.get_visible(),
+              "and the group is shown when there is something in it")
+        #  What is ticked has to reach the card, or the list is decoration.
+        for row in window.clutter_rows.values():
+            row.set_active(True)
+        leaving = window.gather().leave_out
+        check("Spare" in leaving and "MyFiles/UAE" in leaving,
+              f"ticked clutter reaches leave_out: {leaving}")
+        #  ...and with those going, the assign pointing into one is reported.
+        window._refresh_clutter()
+        assigns = [w for w in window.clutter_rows if "Assign" in w]
+        check(any("A-Spare" in w for w in assigns),
+              f"the assign into a removed drawer is reported: {assigns}")
+        check(not any("A-Games" in w for w in assigns),
+              "and the one into a drawer that stays is left alone")
+        for row in window.clutter_rows.values():
+            row.set_active(False)
+        window.quick_hdf.set_path("")
+        window._refresh_clutter()
+        check(not window.clutter_group.get_visible(),
+              "and the group hides again with no drive chosen")
+
         check(window.quick_pimiga.path == "" and window.quick_hdf.get_visible(),
               "choosing an image drops the PiMiga folder")
         #  A drive built for another machine is warned about. The check that

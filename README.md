@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 622 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 634 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -1507,6 +1507,52 @@ One bug fell out of that work: `fetch()` chose "place the archive whole" on
 whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
+
+#### Finding the clutter rather than being told what it is
+
+Working through a finished card it is easy to name what should come off it — a
+`Games` and a `Demos` drawer left almost empty by the dedicated volumes beside
+them, a `MyFiles/UAE` drawer of `uae-configuration` scripts. Adding those paths
+to a job's `leave_out` list is the same defect as writing them into the source:
+right for one distribution, and finding nothing at all on the next.
+
+So the tool recognises the **kinds**, from evidence in the files, and offers
+what it finds on the Programs tab beside the other three lists — refreshed by
+the auto-config button, and never acted on by itself, because a drawer goes
+whole:
+
+* **Empty by construction** — a drawer whose tree holds no files at all. Icons
+  do not count; a drawer of nothing but `.info` files is empty to anybody using
+  the card. A *scaffold* — many drawers around almost no files, which is what a
+  WHDLoad collection's A–Z letter drawers look like — is offered as a question
+  defaulting to keep, because "almost empty" is a judgement.
+* **Emulator-only** — a drawer whose every readable file invokes one of the
+  commands in `compat.EMULATOR_COMMANDS`. Recognised by what the files do, not
+  by what they are called.
+* **An assign whose target is going** — `A-Games:` points at `SYS:Games`, and a
+  card that leaves that drawer out has an assign to a drawer that is not there.
+  Everything reading from it then fails and the boot says nothing anybody would
+  connect to the choice that caused it.
+
+Two things this cost, both worth writing down. The first attempt at the third
+rule read *every* file for anything shaped like a volume name, and produced
+**165 candidates on one card** — essentially all of them English prose ending in
+a colon: `$VER:`, `restrictions:`, `youtube_autoplay:`. A list a person cannot
+trust is worse than no list. An assign is the precise version of the same
+question, because the line names both halves itself and there is nothing to
+infer.
+
+And filtering "binary" files out of the scan threw away exactly the files the
+scan is for. A ButtonMenu bar is a binary record with its commands sitting
+inside it as strings — `BM123\x00Blitter\x00topaz.font` — and it is where both
+the emulator commands and the volume references live. Rejecting anything with a
+NUL byte, or anything under nine-tenths printable, found nothing at all. Only
+what is definitely data is refused now: executables, oversized files, and the
+image formats by their magic. A test pins that, because it looked like a
+tidy-up and silently disabled a whole rule.
+
+On a real 500 MB ClassicWB drive this finds four things and no false positives,
+in under two seconds.
 
 #### A browser an OCS or ECS machine can actually run
 
