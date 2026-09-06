@@ -8,6 +8,7 @@ refused outright regardless of what the user picked.
 from __future__ import annotations
 
 import dataclasses
+import errno
 import json
 import os
 import shutil
@@ -130,6 +131,65 @@ def check_writable(device: Device) -> None:
         raise RuntimeError(
             f"{device.path} is not a removable device. Refusing to write to it."
         )
+
+
+#  What the kernel returns once a card has stopped answering.  The card is
+#  gone from the bus and every request against it fails the same way,
+#  whichever direction it was going.
+GONE_AWAY = {errno.EIO, errno.ENXIO, errno.ENODEV, errno.EREMOTEIO, errno.ETIMEDOUT}
+
+CARD_STOPPED_ANSWERING = (
+    "{path} stopped answering: {reason}.\n\n"
+    "This is the card or the reader, not the card image. The kernel logs it "
+    "as \"recovery failed\" and, when the card leaves the bus altogether, "
+    "\"card removed\"; check with:\n"
+    "    journalctl -k -b | grep -E 'mmcblk|recovery failed|card removed'\n\n"
+    "Reseat the card, and try a USB card reader rather than a built-in slot - "
+    "built-in readers run at the fastest UHS mode they can negotiate, and a "
+    "marginal card or slot fails there and works over USB. A card that cannot "
+    "be read reliably cannot be written reliably either, so it is worth "
+    "proving this before spending an hour on a build."
+)
+
+
+def check_responds(device: Device, log=lambda text: None) -> None:
+    """Read a few blocks, before an hour of work is spent on a card that cannot.
+
+    ``check_writable`` asks whether writing *should* be allowed - the lock
+    switch, a mounted system, a disk that is not removable. It never asked
+    whether the card is actually there. A card that has dropped off the bus
+    fails every request including sector 0, and the application saw only
+    "Input/output error" an hour into a build, with nothing to say whether the
+    fault was the card, the reader or this program.
+
+    Reads only, and only a few of them: this must never be the thing that
+    disturbs a card that was about to work.
+    """
+    size = device.size or 0
+    spots = [0]
+    if size > 2 * PROBE:
+        spots += [(size // 2) & ~(PROBE - 1), size - PROBE]
+    try:
+        with open(device.path, "rb") as handle:
+            for offset in spots:
+                handle.seek(offset)
+                if not handle.read(PROBE):
+                    raise OSError(errno.EIO, "no data", device.path)
+    except PermissionError:
+        #  Not a verdict on the card. The build itself runs with privileges
+        #  and will probe it properly there.
+        log(f"Cannot probe {device.path} without privileges - skipped")
+    except OSError as error:
+        if error.errno in GONE_AWAY:
+            raise RuntimeError(CARD_STOPPED_ANSWERING.format(
+                path=device.path,
+                reason=os.strerror(error.errno))) from error
+        raise
+    else:
+        log(f"{device.path} answers at the start, middle and end")
+
+
+PROBE = 4096                    # one page, aligned, at each of three spots
 
 
 def unmount_all(device: Device, log=lambda text: None) -> None:

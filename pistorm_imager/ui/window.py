@@ -3078,7 +3078,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  These used to be two config fields, and the second was written
             #  and then read by nobody - so the whole "older copies" list did
             #  nothing at all, quietly, while looking as though it worked.
-            leave_out=sorted(
+            #  A set, not a list: the three lists overlap - the drive's own
+            #  VirusZ is both software the drive arrives with and an older
+            #  copy of one that was chosen - and it appeared twice, which read
+            #  as though the same drawer were being removed twice over.
+            leave_out=sorted(set(
                 [key for key, row in getattr(self, "arrives_rows", {}).items()
                  if not row.get_active()]
                 + [drawer for drawer, row
@@ -3086,7 +3090,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                    if row.get_active()]
                 + [drawer for drawer, row
                    in getattr(self, "broken_rows", {}).items()
-                   if row.get_active()]),
+                   if row.get_active()])),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
@@ -3201,6 +3205,10 @@ class ImagerWindow(Adw.ApplicationWindow):
             staged = prepare.stage_emu68(config, progress)
             if staged is not None:
                 config = dataclasses.replace(config, emu68_prepared_dir=str(staged))
+            #  The helper runs as root, whose cache holds none of this
+            #  user's archives, so it is told where to look.
+            config = dataclasses.replace(
+                config, cache_root=str(emu68.cache_dir()))
             job = Path(GLib.get_user_runtime_dir() or "/tmp") / "pistorm-imager-job.json"
             jobs.save(config, job)
             os.chmod(job, 0o600)

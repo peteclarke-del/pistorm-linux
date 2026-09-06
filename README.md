@@ -447,6 +447,50 @@ Then verify against the card rather than against the arithmetic: MBR signature,
 both partitions ending within the capacity, every drive mounting, and the files
 the build was checked on still present.
 
+### When the card is what failed, say so
+
+Writing direct to a card failed with `Input/output error`, an hour into a
+build, repeatedly. Nothing in the log said whether the fault was the card, the
+reader or this program, and the obvious reading - "the imager cannot write to a
+card" - was wrong.
+
+The kernel had the answer all along. Over three days it logged:
+
+| | |
+| --- | --- |
+| `mmcblk0: recovery failed!` | 554 |
+| `mmc0: card aaaa removed` | 15 |
+| `I/O error, dev mmcblk0` | 165 (94 reads, 63 writes, 8 discards) |
+
+Reads, not just writes - including **sector 0** and the partition table, which
+no application can be responsible for. `recovery failed` is the MMC block
+driver saying a command failed and the reset that should have recovered it
+failed too; `card removed` is the card leaving the bus. An application cannot
+cause either. The card, or the built-in reader, was dropping out.
+
+Two things follow, and both are the program's job:
+
+**Ask before the hour, not after it.** `devices.check_writable` asked whether
+writing *should* be allowed - the lock switch, a mounted system directory, a
+disk that is not removable - and never whether the card was actually there.
+`check_responds` now reads one page at the start, middle and end before any
+work begins. Reads only, three of them: this must never be the thing that
+disturbs a card that was about to work. A card that cannot be read reliably
+cannot be written reliably either, and finding out first costs seconds.
+
+**Name the cause when it happens anyway.** A card that leaves the bus mid-build
+fails every request from then on, and `run_build` now turns those errnos -
+`EIO`, `ENXIO`, `ENODEV`, `EREMOTEIO`, `ETIMEDOUT` - into an explanation with
+the `journalctl` line to confirm it and the thing actually worth trying: a USB
+card reader rather than a built-in slot, which negotiates the fastest UHS mode
+it can and fails on a marginal card where USB succeeds.
+
+Both are careful about what they do *not* claim. A permission error from the
+probe is not a verdict on the card - the unprivileged pass cannot prove
+anything, so it says so and moves on. An errno that means something else is
+re-raised untouched, because a bug of ours has to keep looking like a bug of
+ours. And an image file is never blamed on a card.
+
 ### Choosing a card has to survive being chosen
 
 Selecting an SD card on the Target page and pressing Write **wrote an image
@@ -1223,6 +1267,98 @@ Two updates are offered:
 | --- | --- |
 | **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
 | **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
+
+### The privileged build has to use your cache, not root's
+
+Writing to a card runs the build under `pkexec`, so it runs **as root** and
+`Path.home()` becomes `/root`. Every archive in `~/.cache/pistorm-imager` was
+therefore invisible to it. Two consequences, one merely wasteful and one not:
+
+- Every package was downloaded again, into root's cache.
+- **Roadshow was left off the card entirely.** Its publisher serves the archive
+  only to a browser, so it can never be downloaded; the copy that would have
+  satisfied it was in the user's cache where the privileged build could not
+  look. No Roadshow means no TCP/IP - so no networking at all, with NetSurf,
+  AmFTP and WookieChat sitting on the card with nothing to connect through.
+
+So **the same choices produced a different card depending on where it was being
+written**, with nothing on screen to say so. Writing to an image file runs as
+the user and was always right; writing to a card was not.
+
+`pkexec` sanitises the environment, so the cache cannot travel as a variable.
+It goes in the job file with the rest of the build - `BuildConfig.cache_root`,
+the folder holding `packages/` rather than `packages/` itself - and
+`emu68.use_cache` applies it before anything is fetched. A path that is not
+there is ignored rather than obeyed, so a setup carried to another machine
+falls back to that machine's own cache instead of failing.
+
+This was found only because the "archive is missing" warning had just been
+changed to print *where* it was looking, and printed `/root/.cache/...`. The
+warning was wrong for one reason and correct about something else entirely.
+
+### A warning that is wrong teaches people to skip warnings
+
+Every build opened its log with
+
+    NOTE: roadshow cannot be downloaded here - its publisher serves it only
+    to a browser - so put the archive in the cache first, or it will be
+    left out.
+
+and then, fifteen lines later, installed Roadshow from the cache. The check
+asked whether a package *can* be fetched and never whether it already had
+been, so it fired on every card whose cache held the archive - which, after
+the first one, is every card.
+
+It now looks in the cache and stays quiet when the file is there. When it does
+fire it says the name the package goes by rather than its catalogue key -
+"Roadshow (TCP/IP stack)", not `roadshow` - and the actual folder to put the
+archive in rather than "the cache".
+
+The test for it used to ask the real cache, which meant it said different
+things on different machines and passed only because the warning had the same
+blind spot. It points at an empty folder of its own now.
+
+### Which copy wins when two packages carry the same file
+
+Two packages can carry the same library, and which one landed was settled by
+nothing better than **the order of the catalogue**. The first to write a path
+won; the second was skipped with one line - `already present, left as it is` -
+in an hour-long log, on the stated reasoning that whatever got there first was
+"no worse than this copy".
+
+It is not always. NewInstaller bundles `identify.library` and is listed before
+the identify package, so every card came out with NewInstaller's copy and the
+library the user had actually ticked was left out, with nothing saying the
+choice had not been honoured. The same was true of `reqtools.library`.
+
+Now the versions decide, read out of the files themselves so that no package
+has to be told about any other. Where neither states a version, the file a
+package **names for itself** - an entry in its own `items` - beats one that
+merely happens to sit inside somebody else's archive.
+
+**Libraries had to be taught to state their version at all.** `version_of`
+asked only for a `$VER:` cookie, and a library carries its version in the
+resident tag's ID string instead - `identify.library 45.1 (28.8.2025)`. Every
+library therefore read as "no version", so two copies of one could not be told
+apart and the older was as likely to be kept as the newer. The pattern now
+accepts a library, device, class, handler or datatype ID string as well, with
+the suffix required so it cannot match ordinary prose.
+
+**The loser is removed in whichever way keeps the winner.** A file a package
+names for itself cannot be refused by path, because a first attempt at this did
+exactly that and refused the *winner* too - both libraries landed nowhere at
+all. That is the same fault `stop_displacing` exists to prevent, arrived at
+from another direction, and it was a trial build that caught it rather than the
+unit tests. So a losing entry a package names for itself is dropped from the
+list outright, while a loser buried in a merged drawer is refused by path, and
+`skip` is told which kind it is looking at. Where *nobody* names it, nothing is
+refused and the old behaviour stands - better than losing the file.
+
+**And the catalogue was asking for a 1997 upload.** Aminet still serves
+`util/libs/Identify.lha`, which is version 8.2 from December 1997. The author's
+maintained release is `util/libs/IdentifyUsr.lha` - **45.1, August 2025**. That
+is now what a card gets. It ships a 68000 build alongside, which is not what a
+PiStorm is, so the 020+ one is named explicitly.
 
 ### Which copy wins when a drive already has one
 
