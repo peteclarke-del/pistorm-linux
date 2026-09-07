@@ -1681,6 +1681,53 @@ def complete_startup(package: Package,
             for line in package.startup]
 
 
+#  How an archive marks which processor a binary is for: a suffix on the end
+#  of the name, after a dot, an underscore or a hyphen. Matched as a whole
+#  suffix so "iGame.030" is one and "AWeb.developer" is not.
+CPU_SUFFIX = re.compile(
+    r"(?i)^(?P<stem>.+)[._-](?:0[0-9]0|680[0-9]0|88[12]|fpu|nofpu|ppc|mos|os4)$")
+
+
+def cpu_leftovers(package: Package,
+                  pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """Builds for other processors, left beside the one that was installed.
+
+    An archive that ships one binary per processor is installed by ``rename``:
+    the right one goes on under the name its icon launches. The archive's own
+    drawer is usually copied as well, so the others land beside it - and on a
+    card built for a 68040 that is ``iGame.030`` and ``iGame.060``, which
+    nothing can run, next to ``iGame.040``, which is byte for byte the ``iGame``
+    already there.
+
+    Three copies of one program in a drawer, two of them for hardware the
+    machine has not got and none of them clickable. Read off the ``rename``
+    rather than named here, so it holds for whatever an archive calls them.
+    """
+    if not package.download or not package.download.rename:
+        return {}
+    out: dict[str, str] = {}
+    for inside, destination, newname in package.download.rename:
+        found = CPU_SUFFIX.match(Path(inside).name)
+        if not found:
+            continue
+        stem = found.group("stem").lower()
+        #  Everything in the same drawer whose name is that stem with a
+        #  processor on the end - the installed one included, because it is
+        #  now on the card under the name the icon uses.
+        for source, where in pairs:
+            here = Path(source)
+            names = ([here] if here.is_file()
+                     else sorted(here.iterdir()) if here.is_dir() else [])
+            for item in names:
+                other = CPU_SUFFIX.match(item.name)
+                if other is None or other.group("stem").lower() != stem:
+                    continue
+                landing = f"{where}/{item.name}" if where else item.name
+                out[landing] = (f"{newname} is installed as the one this "
+                                f"machine runs")
+    return out
+
+
 # -------------------------------------------------------------- choosing
 
 def suits(key: str, chipset: Chipset, display: Display) -> bool:
