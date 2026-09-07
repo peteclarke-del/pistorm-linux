@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 656 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 659 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -1865,6 +1865,19 @@ Almost nothing else does: three module players on one card is a preference, not
 a conflict, and a false clash would nag about a choice that was fine. A role
 naming only one package is refused by a test, since it could never raise a
 question.
+
+**And the build says so too, because the question is not always asked.** The
+dialog fires when somebody switches a second package on; it is deliberately
+suppressed when rows are *settled* rather than clicked — restoring a saved job,
+loading the suggested set, or the display forcing Picasso96 on — since a
+question in answer to nothing the person did is an interruption. The effect was
+that a saved job carrying both NewIcons and DefIcons44 built a card with two
+default icon systems and warned nowhere, and the second one was found only when
+the NewIcons installer stalled at 50% on an interactive icon picker. So the
+clash is also reported by `concerns()`, which every build passes through and
+which the command line reaches as well. A rule that lives in one code path is
+this project's recurring defect; the roles come off the packages, so a pair
+added later is covered without touching the check.
 
 **SysInfo** joins the extras, and it is worth saying which one. Version 4.0
 gurus on a 68040 with no FPU — precisely what Emu68 provides — and Aminet still
