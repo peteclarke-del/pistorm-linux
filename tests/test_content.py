@@ -1483,12 +1483,16 @@ class TwoPackagesDoingOneJobAreAlternatives(unittest.TestCase):
         self.assertEqual(alone, [], f"roles with nothing to clash with: {alone}")
 
 
-class SysInfoIsTheVersionThatSurvivesNoFpu(unittest.TestCase):
-    """SysInfo 4.0 gurus on a 68040 with no FPU - which is what Emu68 gives.
+class SysInfoIsTheCurrentRelease(unittest.TestCase):
+    """Aminet still carries a patch for a guru in SysInfo 4.0, which makes
+    the package look unsafe at a glance.
 
-    Aminet still carries a patch for that bug, which makes the package look
-    unsafe; its own history records the fix twice over, in 4.3 and again in
-    4.4, and 4.4 is what the address used here serves.
+    Its own history records the fix twice over, in 4.3 and again in 4.4, and
+    4.4 is what the address used here serves, so the patch is not needed.
+    This class was called ...SurvivesNoFpu, on the belief that a PiStorm is
+    the FPU-less 68040 that bug needs. It is not - see
+    TheFpuExplanationWasWrong - and taking the current release rather than
+    the oldest one that runs is the right choice either way.
     """
 
     def test_it_comes_from_the_address_that_serves_the_current_release(self):
@@ -1644,10 +1648,23 @@ class IgameNeedsNoDonor(unittest.TestCase):
             ["mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext", "igame"])
 
 
-class NothingOnTheCardNeedsAnFpu(unittest.TestCase):
-    """Emu68 gives a PiStorm a 68040 with no FPU. An FPU instruction on such
-    a machine is a line-F exception - guru 8000000B, which is exactly what
-    iGame's own site warns about for these libraries."""
+class TheFpuExplanationWasWrong(unittest.TestCase):
+    """iGame does not get the guigfx stack, and the reason is not the FPU.
+
+    What is established: iGame listed games and did nothing when one was
+    clicked; iGame's own site names guigfx.library and render.library; with
+    them off the card and no_guigfx=1 in its preferences it works. Those
+    assertions are what this class guards, and they stand.
+
+    What was wrong was the explanation written around them - that Emu68
+    gives a PiStorm a 68040 with no FPU, so an FPU instruction is a line-F
+    exception. Emu68's own overlays.md lists "no_fpu - Disables the FPU
+    entirely", and a switch that disables one is a switch on a machine that
+    has one; this tool never writes it. The instruction counts do not rescue
+    the claim either: decoding the extension word of every F-line opcode in
+    both libraries, all of them are 68040 on-chip operations, with not one
+    68881 transcendental that would need a trap. Why the libraries fail here
+    is unestablished."""
 
     def test_igame_does_not_ask_for_the_guigfx_stack(self):
         needs = packages.CATALOGUE_BY_KEY["igame"].requires
@@ -2780,8 +2797,9 @@ class AHIIsInstalledNotStaged(unittest.TestCase):
 
     def test_the_prefs_dependency_is_declared(self):
         #  AHI Prefs is a MUI program. The BGUI alternative would avoid that
-        #  and brings a bgui.library carrying floating point instructions,
-        #  which on a PiStorm's FPU-less 68040 is guru 8000000B.
+        #  and was passed over because its bgui.library carries floating
+        #  point instructions - reasoning that no longer holds, though the
+        #  choice does not change: MUI is on the card anyway.
         self.assertIn("mui", self.packages.expand(["ahi"]))
 
     def test_no_floating_point_reaches_this_machine(self):
@@ -2806,7 +2824,10 @@ class AHIIsInstalledNotStaged(unittest.TestCase):
             with self.subTest(file=inside):
                 self.assertEqual(fpu, 0,
                                  f"{inside} has {fpu} floating point "
-                                 f"instruction(s); a PiStorm has no FPU")
+                                 f"instruction(s); this asserts which AHI "
+                                 f"build was chosen, not that the machine "
+                                 f"lacks an FPU - see "
+                                 f"TheFpuExplanationWasWrong")
         self.assertTrue(checked, "no AHI binaries were checked")
 
 

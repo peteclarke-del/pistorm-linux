@@ -478,12 +478,19 @@ CATALOGUE: list[Package] = [
             #  68040, and the icon launches whatever is called "iGame".
             rename=(("iGame-v2.6.1/iGame.040", "Programs/iGame", "iGame"),),
             #  guigfx.library and render.library draw its screenshots, and
-            #  both are compiled for a processor with an FPU: render.library
-            #  alone carries 153 floating point instructions, and no build
-            #  without them exists. Emu68 gives a PiStorm a 68040 with no
-            #  FPU, so calling one is a line-F exception - which is the guru
-            #  8000000B that iGame's own site warns about. They are optional,
-            #  so the card does without them and says so here.
+            #  on a PiStorm they stop iGame launching anything: it lists the
+            #  games and does nothing when one is clicked.  iGame's own site
+            #  names these two, and no_guigfx=1 with the libraries left off
+            #  is the fix.  They are optional, so the card does without them.
+            #
+            #  This used to say the cause was the 153 floating point
+            #  instructions in render.library meeting a 68040 with no FPU.
+            #  That is wrong twice over: Emu68 provides an FPU unless the
+            #  card is booted with "nofpu", which this tool never writes, and
+            #  every one of those instructions is a 68040 on-chip operation -
+            #  not one 68881 transcendental needing a trap the emulator might
+            #  not service.  The fix stands on what was observed; the reason
+            #  is unestablished.  See the README.
             write=(("igame.prefs", "Programs/iGame",
                     "no_guigfx=1\n"
                     "filter_use_enter=0\n"
@@ -741,11 +748,13 @@ CATALOGUE: list[Package] = [
         "What this Amiga actually is and how fast it goes - CPU, chipset, "
         "boards, and the benchmarks everyone quotes at each other.",
         category=Category.EXTRAS,
-        #  4.0 gurus on a 68040 with no FPU, which is exactly what Emu68
-        #  provides, and Aminet still carries a patch for it. Its own history
-        #  records the fix twice over - "68040 non FPU guru fixed" in 4.3 and
-        #  "68040/68060 non FPU guru fixed, again!" in 4.4 - and 4.4 is what
-        #  this address serves, so the patch is not needed.
+        #  Aminet still carries a patch for a guru in 4.0, which makes the
+        #  package look unsafe at a glance. Its own history records the fix
+        #  twice over - "68040 non FPU guru fixed" in 4.3 and "68040/68060
+        #  non FPU guru fixed, again!" in 4.4 - and 4.4 is what this address
+        #  serves, so the patch is not needed. (This note used to add that a
+        #  PiStorm is the FPU-less 68040 that bug needs. It is not; taking
+        #  the current release is the right choice regardless.)
         download=Download("util/moni/SysInfo.lha", stage="Utilities/SysInfo"),
         note="Unpacked into Utilities/SysInfo, ready to run.",
     ),
@@ -853,9 +862,11 @@ CATALOGUE: list[Package] = [
         "output instead of 8.",
         category=Category.MEDIA,
         #  Only the prefs program needs it, but it is the only way to choose
-        #  a mode afterwards. The BGUI build would avoid the dependency and
-        #  ships a bgui.library carrying floating point instructions, which
-        #  on a PiStorm's FPU-less 68040 is guru 8000000B.
+        #  a mode afterwards. The BGUI build would avoid the dependency; it
+        #  was passed over because its bgui.library carries floating point
+        #  instructions, reasoning that no longer holds now that a PiStorm is
+        #  known to have an FPU. The choice is unaffected - MUI is on the
+        #  card anyway - so it is left alone rather than churned.
         requires=("mui",),
         download=Download(
             "driver/audio/ahiusr_4.18.lha",
