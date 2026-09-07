@@ -421,8 +421,8 @@ def on_activate(app: ImagerApplication) -> None:
               "a package with no rival raises no question")
         window.package_rows["newicons"].set_active(False)
 
-        #  SysInfo, whose 4.0 gurus on an FPU-less 68040 - fixed in 4.4,
-        #  which is what its Aminet address serves.
+        #  SysInfo, whose 4.0 carries a guru that Aminet still ships a
+        #  patch for - fixed in 4.4, which its Aminet address serves.
         check("sysinfo" in window.package_rows, "SysInfo is on offer")
 
         #  Dependencies are linked both ways, and a package worth having on
