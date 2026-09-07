@@ -1728,6 +1728,55 @@ def cpu_leftovers(package: Package,
     return out
 
 
+#  What an icon's DefaultTool says when the file beside it is an Installer
+#  script. Both spellings appear in the wild.
+RUNS_THE_INSTALLER = ("installer", "c:installer", "sys:c/installer")
+
+
+def redundant_installers(package: Package,
+                         pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """A package's own Installer script, where the build has already installed it.
+
+    An archive ships one so somebody can install it on the Amiga. When this
+    tool stages the archive - into ``Storage/Install`` - that script is the
+    point of the exercise and must stay. When the tool installs the software
+    itself, the script sits in the finished drawer offering to do again what is
+    already done: ``Programs/iGame/Install-iGame`` beside the iGame it just
+    installed.
+
+    Where it lands is the whole discriminator. Every one of these icons says
+    ``DefaultTool=Installer``, staged or not, so the name and the icon cannot
+    tell the two cases apart - but a script landing outside the staging drawer
+    belongs to software that is already in place.
+    """
+    out: dict[str, str] = {}
+    for source, destination in pairs:
+        if destination.replace("\\", "/").lower().startswith(STAGING.lower()):
+            continue                     # staged on purpose; the script is why
+        here = Path(source)
+        try:
+            inside = ([here] if here.is_file()
+                      else sorted(here.iterdir()) if here.is_dir() else [])
+        except OSError:
+            continue
+        for icon in inside:
+            if not icon.name.lower().endswith(".info"):
+                continue
+            script = icon.with_name(icon.name[:-len(".info")])
+            if not script.is_file():
+                continue
+            try:
+                tool = amigainfo.read_default_tool(icon.read_bytes())
+            except Exception:            # noqa: BLE001 - not an icon we read
+                continue
+            if tool.strip().lower() not in RUNS_THE_INSTALLER:
+                continue
+            why = f"{package.label} is installed already, not staged"
+            for name in (script.name, icon.name):
+                out[f"{destination}/{name}" if destination else name] = why
+    return out
+
+
 # -------------------------------------------------------------- choosing
 
 def suits(key: str, chipset: Chipset, display: Display) -> bool:

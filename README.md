@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 652 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 656 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -1507,6 +1507,20 @@ One bug fell out of that work: `fetch()` chose "place the archive whole" on
 whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
+
+#### An installer for something already installed
+
+An archive ships an Installer script so somebody can install it on the Amiga.
+Staged into `Storage/Install`, that script is the entire point — the package
+patches the system and only its own Installer can do that honestly. Installed
+by this tool instead, the same script sits in the finished drawer offering to
+do again what is already done: `Programs/iGame/Install-iGame` beside the iGame
+just installed, `Programs/AWeb_APL/Install` beside AWeb.
+
+Where it lands is the whole discriminator. iGame's, AWeb's and Picasso96's
+installer icons all say `DefaultTool=Installer`, so nothing about the file or
+the icon separates them — only whether it is going to the staging drawer. One
+that lands anywhere else belongs to software that is already in place.
 
 #### One binary per processor: keep the one this machine runs
 
