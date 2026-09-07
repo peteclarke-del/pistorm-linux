@@ -224,6 +224,32 @@ class BuildConfig:
                 said.append(
                     f"{package.label} is installed and no drive is being "
                     f"filled with games, so it will open on an empty list.")
+        #  Two packages that patch the same part of Workbench.  The window
+        #  does ask, the moment a second one is switched on by hand - but
+        #  only then.  Rows settled by restoring a saved setup, by the
+        #  suggested load or by the display forcing a package on are set
+        #  without a question, deliberately, because a dialog in answer to
+        #  nothing the person did is an interruption.  The effect was that a
+        #  saved job carrying both NewIcons and DefIcons44 built a card with
+        #  two default icon systems and said nothing anywhere, and the second
+        #  one was only found by its installer stalling half way through.
+        #
+        #  A rule that lives in one code path is this project's recurring
+        #  defect, so it is said here as well, where every build passes.  The
+        #  roles come off the packages, so a pair added later is covered
+        #  without touching this.
+        by_role: dict[str, list[str]] = {}
+        for key in sorted(keys):
+            package = packages.CATALOGUE_BY_KEY.get(key)
+            if package is not None and package.role:
+                by_role.setdefault(package.role, []).append(package.label)
+        for role, rivals in sorted(by_role.items()):
+            if len(rivals) < 2:
+                continue
+            named = ", ".join(rivals[:-1]) + " and " + rivals[-1]
+            said.append(
+                f"{named} are both a {role} system and patch the same part "
+                f"of Workbench, so the card will carry two of them.")
         #  Whatever the catalogue says an RTG screen cannot do without.  The
         #  package used to be named here, which meant this warning and the
         #  ``essential`` flag it is really about could disagree.
