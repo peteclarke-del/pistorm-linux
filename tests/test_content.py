@@ -3585,6 +3585,89 @@ class OlderCopiesAreDiscoveredNotDeclared(unittest.TestCase):
         self.assertFalse(found[0].certain)
         self.assertGreater(found[0].theirs, found[0].ours)
 
+    #  ------------------------------------------------------------------
+    #  A whole-drawer package landing on a drawer the drive already has.
+    #
+    #  Found on a finished card: AWeb was ticked and the card carried
+    #  ClassicWB's AWeb-II 3.4APL, with a scatter of the chosen 3.5.09 files
+    #  over the top. Three separate faults had to line up for that, and each
+    #  is guarded below.
+
+    def test_a_drawer_may_carry_a_suffix_the_program_does_not(self):
+        """ClassicWB keeps AWeb in Programs/AWeb_APL."""
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        old = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        found = content.find_duplicates(
+            self._reader({"Programs/Thing_APL/Thing": old}),
+            {"thing": ("p", "Thing", (4, 4))})
+        self.assertEqual([d.drawer for d in found], ["Programs/Thing_APL"])
+
+    def test_but_a_longer_name_is_still_a_different_program(self):
+        """The separator is what keeps the looser match honest."""
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        old = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        for drawer in ("Programs/Things", "Programs/Thingamajig"):
+            with self.subTest(drawer=drawer):
+                self.assertEqual(
+                    content.find_duplicates(
+                        self._reader({drawer + "/Thing": old}),
+                        {"thing": ("p", "Thing", (4, 4))}),
+                    [], f"{drawer} is not a drawer about Thing")
+
+    def test_the_drawer_this_build_fills_is_where_the_clash_is(self):
+        """The case both sides declined to handle.
+
+        find_duplicates skipped it, on the reasoning that a copy in the same
+        place is an older file that displacement replaces. It is not:
+        _landing_paths deliberately declines to displace anything inside a
+        drawer, because a drawer is merged into what is already there. So
+        the drive's copy landed first, was never overwritten, and won.
+        """
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        old = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        found = content.find_duplicates(
+            self._reader({"Programs/Thing/Thing": old}),
+            {"thing": ("p", "Thing", (4, 4))},
+            filling=["Programs/Thing"])
+        self.assertEqual([d.drawer for d in found], ["Programs/Thing"],
+                         "a clash at the top of a filled drawer is real")
+
+    def test_deeper_inside_a_filled_drawer_still_merges_harmlessly(self):
+        """Which is why the exclusion exists at all: the MUI overlay merges
+        into the drive's own System/MUI and every class in it matches."""
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        old = b"\x00\x00\x03\xf3$VER: Thing 1.0 (1993)"
+        self.assertEqual(
+            content.find_duplicates(
+                self._reader({"System/MUI/Thing/Thing": old}),
+                {"thing": ("p", "Thing", (4, 4))},
+                filling=["System/MUI"]),
+            [], "a copy deeper in a merged drawer is not a duplicate")
+
+    def test_a_file_landing_in_a_drawer_does_not_fill_it(self):
+        """What made the detector inert nearly everywhere.
+
+        ``filling`` took the destination of every overlay pair, so a package
+        dropping its icon beside its drawer put the bare parent - Programs,
+        Utilities, Audio, System, Prefs, Storage - into the set, and
+        everything beneath it was then skipped.
+        """
+        from pistorm_imager.core import packages                 # noqa: PLC0415
+        _wanted, filling = packages.principal_programs(["aweb"])
+        if not filling:
+            self.skipTest("the archives are not cached on this machine")
+        bare = sorted(d for d in filling if d and "/" not in d)
+        self.assertNotIn("Programs", bare,
+                         "a lone .info landing in Programs does not fill it")
+
+    def test_a_version_cookie_past_the_first_pages_is_still_found(self):
+        """AWeb APL 3.5.09 is 695,848 bytes and carries its $VER: at 493,908,
+        so a 200,000-byte window read it as claiming no version at all."""
+        from pistorm_imager.core import content                  # noqa: PLC0415
+        body = (b"\x00\x00\x03\xf3" + b"\x00" * 600000
+                + b"$VER: Thing 3.5 (2007)")
+        self.assertEqual(content.version_of(body), (3, 5))
+
     def test_it_finds_what_the_hand_written_list_used_to(self):
         #  The real check: discovery on the real distribution must reach the
         #  same answer the curated entry did, and no more.
