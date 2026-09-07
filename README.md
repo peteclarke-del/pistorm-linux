@@ -208,7 +208,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 659 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 665 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -2169,9 +2169,12 @@ is searched for them. What makes that safe rather than a guess:
   only real AmigaDOS executables. Matching every file inside a package's tree
   turned a PFS3 tool in `MyFiles` into a duplicate of something buried in
   Visage — and the version comparison made it look certain.
-- **The drawer has to be named for the program.** What goes is the whole
-  drawer, so a program sitting inside somebody else's is not a duplicate of
-  anything. Without this the search offered — *switched on* — to delete
+- **The drawer has to be named for the program**, or named for it with a
+  suffix — ClassicWB keeps AWeb in `Programs/AWeb_APL`, and requiring the two
+  to be *equal* meant the drive's AWeb was never recognised at all. The
+  separator is what keeps the looser match honest: `DiskSalv` still does not
+  match a program called `Disk`. What goes is the whole drawer, so a program
+  sitting inside somebody else's is not a duplicate of anything. Without this the search offered — *switched on* — to delete
   `Programs/DiskSalv`, because Picasso96 ships an `Installer` and DiskSalv's
   drawer has one too; part of `Programs/SysSpeed`, because a `cruncher` drawer
   contains an `LhA`; and `Tools/Commodities`, holding Exchange, Blanker,
@@ -2183,9 +2186,11 @@ is searched for them. What makes that safe rather than a guess:
   spelled out. That is what separates the two real duplicates from the two
   false ones: SysInfo is 3.24 against 4.4, while ClassicWB's `System/FBlit`
   carries the *same* build as the package plus an FBlitGUI it does not ship.
-- **Never a drawer this build is filling**, nor anything inside one. Our MUI
-  overlay merges into the drive's own `System/MUI`, so every class in it matches
-  by name and none of them is a duplicate.
+- **Never *inside* a drawer this build is filling.** Our MUI overlay merges
+  into the drive's own `System/MUI`, so every class in it matches by name and
+  none of them is a duplicate. **The drawer itself is a different matter**, and
+  getting that wrong is what let a card go out with the wrong browser on it —
+  see below.
 - **One row per drawer**, because the drawer is what would go.
 
 On ClassicWB FULL, with a full package selection, that search returns exactly
@@ -2194,6 +2199,51 @@ hand-written entry said, arrived at without being told — and one question:
 `System/Scalos`, where **the drive's copy is the newer one** (39.222 against
 39.218), so removing it would be a downgrade. Each row says which way round it
 is rather than lumping "same version" together with "cannot be compared".
+
+#### The gap where a whole-drawer package lands on a drawer that exists
+
+A card built with AWeb ticked came out carrying ClassicWB's **AWeb-II 3.4APL**,
+with a scatter of the chosen **AWeb APL Lite 3.5.09** files over the top. Three
+faults had to line up, and the middle one is the interesting one: **two
+components each deferred to the other.**
+
+- `find_duplicates` skipped `Programs/AWeb_APL` because it is a drawer this
+  build fills, reasoning that a copy in the same place is an older *file*,
+  which displacement replaces.
+- `_landing_paths` did not displace it, because the package's payload is a
+  whole drawer rather than single files — and refusing a drawer during the copy
+  would take the drive's own contents with it.
+
+Neither is wrong on its own terms. Together they leave nothing handling the
+case, and since the copy creates files and never overwrites them, the drive's
+files land first and win. `Tools/SysInfo` was caught only because ClassicWB
+keeps SysInfo somewhere this build does *not* write.
+
+So a match at the **top** of a filled drawer is now reported: that is the
+package's own principal program, colliding at the exact path the package
+installs to, and the merge will not overwrite it. Deeper inside, the exclusion
+stands unchanged — that is the MUI case it was written for.
+
+The two faults on either side of it:
+
+- **A single file landing in a drawer does not fill it.** `filling` took the
+  destination of *every* overlay pair, so a package dropping its icon beside
+  its drawer put the bare parent into the set. `Programs`, `Utilities`, `Audio`,
+  `System`, `Prefs`, `Storage`, `Libs`, `C`, `S`, `L`, `Devs`, `Locale` and
+  `WBStartup` were all in there, and everything beneath them was skipped. That
+  is why this search had only ever reported one answer: `Tools` is the one
+  place no package happens to put a file.
+- **A version cookie can be anywhere in a binary.** `version_of` read the first
+  200,000 bytes. AWeb APL 3.5.09 is 695,848 bytes and carries its `$VER:` at
+  offset **493,908**, so the chosen copy claimed no version at all and could not
+  have been compared with the drive's even if it had been found.
+
+With all three fixed, the same drive and the same package selection now report
+six rows rather than one — `Programs/AWeb_APL` (3.4 against 3.5),
+`Programs/VirusZ` (1.2 against 1.4), `Programs/iGame` (1.6 against 2.6) and
+`Tools/SysInfo` (3.24 against 4.4) as confident answers, with `System/MUI`
+(19.14 either way) and `System/Scalos` (39.222 against 39.218, the drive's
+newer) as questions, switched off.
 
 Each answer is left out whole, which is a strong thing to do, so it is fenced
 further:
