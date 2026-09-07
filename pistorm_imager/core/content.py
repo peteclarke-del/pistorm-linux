@@ -209,8 +209,15 @@ LIBRARY_ID = re.compile(
 
 
 def version_of(data: bytes) -> tuple[int, int] | None:
-    """The (version, revision) a binary claims, or None if it claims none."""
-    head = data[:200000]
+    """The (version, revision) a binary claims, or None if it claims none.
+
+    The whole file is searched, not a window at the front of it. This read
+    only the first 200,000 bytes, which is not where a cookie necessarily
+    is: AWeb APL 3.5.09 is 695,848 bytes and carries its ``$VER:`` at offset
+    493,908, so its version came back as None and the duplicate it made of
+    the drive's older AWeb could not be compared with anything.
+    """
+    head = data
     for raw in VER_STRING.findall(head):
         text = raw.decode("latin-1")
         found = VERSION_NUMBER.search(text)
@@ -295,7 +302,15 @@ def find_duplicates(reader, wanted: dict[str, tuple[str, str, tuple | None]],
         #  ships an "Installer" and DiskSalv's drawer has one too, and
         #  Tools/Commodities - Exchange, Blanker, CrossDOS and the rest -
         #  because Commodore's ClickToFront commodity lives in it.
-        if lowered.rpartition("/")[2] != entry.name.lower():
+        #  A drawer may carry a suffix the program does not: ClassicWB keeps
+        #  AWeb in Programs/AWeb_APL, and requiring the two to be equal meant
+        #  the drive's AWeb was never recognised as a copy of the chosen one.
+        #  The separator is what keeps this honest - "DiskSalv" still does not
+        #  match a program called "Disk".
+        tail, program = lowered.rpartition("/")[2], entry.name.lower()
+        if not (tail == program
+                or (tail.startswith(program) and len(tail) > len(program)
+                    and not tail[len(program)].isalnum())):
             continue
         #  Never offer a drawer the system owns: that is how a duplicate in
         #  C or Libs would take AmigaDOS with it.
@@ -304,7 +319,17 @@ def find_duplicates(reader, wanted: dict[str, tuple[str, str, tuple | None]],
         #  Nor one this build is itself filling, or anything inside it. Our
         #  MUI overlay merges into the drive's own System/MUI, so every class
         #  in it matches by name and none of them is a duplicate.
-        if any(lowered == d or lowered.startswith(d + "/") for d in ours_too):
+        #  Deeper inside such a drawer, yes: those merge harmlessly. But the
+        #  drawer *itself* is the case this was getting wrong. A package that
+        #  supplies a whole drawer is merged into whatever is already there
+        #  and never overwrites, so when the drive has the same program at the
+        #  same place the drive's copy is what stays - and the docstring's
+        #  reasoning, that a copy in the same place is "an older file which
+        #  displacement already replaces", does not hold: _landing_paths
+        #  deliberately declines to displace anything inside a drawer. Neither
+        #  side handled it, so a card built with AWeb ticked kept ClassicWB's
+        #  AWeb-II 3.4APL and got a scatter of 3.5.09 files over the top.
+        if any(lowered.startswith(d + "/") for d in ours_too):
             continue
         try:
             theirs = version_of(reader.read_file(entry))

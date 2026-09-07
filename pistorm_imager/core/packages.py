@@ -1820,8 +1820,19 @@ def principal_programs(keys: list[str], progress: Progress | None = None,
         if package is None or package.download is None:
             continue
         for source, destination in overlays_for([key], progress=progress, **kw):
-            filling.add(destination)
             path = Path(source)
+            #  Only a *drawer* going onto the card fills its destination. A
+            #  single file landing in one does not, and treating it that way
+            #  put bare top-level drawers into this set - Programs, Utilities,
+            #  Audio, System, Prefs, Storage, Libs, C, S, L, Devs, Locale and
+            #  WBStartup, every one of them from some package dropping an icon
+            #  beside its drawer. find_duplicates skips anything inside a
+            #  drawer this build fills, so that suppressed duplicate detection
+            #  almost everywhere a program lives: of a full package selection
+            #  on ClassicWB only Tools/SysInfo was ever reported, and only
+            #  because no package happens to put a file in Tools.
+            if path.is_dir():
+                filling.add(destination)
             try:
                 candidates = ([path] if path.is_file()
                               else [c for c in path.iterdir() if c.is_file()])
