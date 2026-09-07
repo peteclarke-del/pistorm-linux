@@ -3714,6 +3714,8 @@ class NoPackageIsNamedInTheLogic(unittest.TestCase):
             "the MUI: assign, in a list of AmigaDOS device names",
         ("pistorm_imager/core/packages.py", "lha"):
             "the lha command line unpacker, run on this machine",
+        ("pistorm_imager/core/packages.py", "installer"):
+            "Commodore's Installer command, as an icon's DefaultTool names it",
         ("pistorm_imager/core/builder.py", "whdload"):
             "the drawer a game collection keeps its installs in",
     }
@@ -4954,3 +4956,64 @@ class BuildsForOtherProcessorsAreLeftBehind(unittest.TestCase):
         no_rename = packages.Package("thing", "Thing", "a package",
                                      download=packages.Download("x/y/T.lha"))
         self.assertEqual(packages.cpu_leftovers(no_rename, []), {})
+
+
+class AnInstallerForSomethingAlreadyInstalled(unittest.TestCase):
+    """An archive's own Installer script, where the build did the installing.
+
+    Staged into Storage/Install, that script is the entire point - the package
+    patches the system and only its own Installer can do it honestly. Installed
+    by this tool instead, the same script sits in the finished drawer offering
+    to do again what is already done: Programs/iGame/Install-iGame beside the
+    iGame just installed, Programs/AWeb_APL/Install beside AWeb.
+
+    Where it lands is the whole discriminator. iGame's, AWeb's and Picasso96's
+    icons all say DefaultTool=Installer, so nothing about the file or the icon
+    separates them - only whether it is going to the staging drawer.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.package = packages.Package("thing", "Thing", "a package",
+                                        download=packages.Download("x/y/T.lha"))
+
+    def drawer(self, tool="Installer"):
+        import struct                                            # noqa: PLC0415
+        made = self.root / "Thing"
+        made.mkdir(exist_ok=True)
+        (made / "Install-Thing").write_text("; installer script")
+        (made / "Thing").write_bytes(b"\x00\x00\x03\xf3the program")
+        data = bytearray(78)
+        struct.pack_into(">HH", data, 0, amigainfo.MAGIC, 1)
+        (made / "Install-Thing.info").write_bytes(
+            amigainfo.set_default_tool(bytes(data), tool))
+        return made
+
+    def test_it_goes_when_the_build_installed_the_software(self):
+        got = packages.redundant_installers(
+            self.package, [(str(self.drawer()), "Programs/Thing")])
+        self.assertEqual(sorted(got),
+                         ["Programs/Thing/Install-Thing",
+                          "Programs/Thing/Install-Thing.info"])
+        #  The program itself is never refused.
+        self.assertNotIn("Programs/Thing/Thing", got)
+
+    def test_it_stays_when_the_package_is_staged(self):
+        """Storage/Install is where an installer is the point of the drawer."""
+        got = packages.redundant_installers(
+            self.package,
+            [(str(self.drawer()), f"{packages.STAGING}/Thing")])
+        self.assertEqual(got, {})
+
+    def test_a_script_that_is_not_an_installer_is_left_alone(self):
+        got = packages.redundant_installers(
+            self.package, [(str(self.drawer(tool="IconX")), "Programs/Thing")])
+        self.assertEqual(got, {})
+
+    def test_an_icon_with_no_file_beside_it_is_not_one(self):
+        made = self.drawer()
+        (made / "Install-Thing").unlink()
+        self.assertEqual(packages.redundant_installers(
+            self.package, [(str(made), "Programs/Thing")]), {})
