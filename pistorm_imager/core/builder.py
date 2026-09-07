@@ -780,6 +780,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     landings: dict = {}
     extra = _package_overlays(config, list(spec.overlays), progress, credit) \
         if spec is not None else []
+    _refuse_other_processors(credit, fixer, progress)
     if extra and config.replace_older_software:
         fixer.displace(_landing_paths(extra))
     fixer.supersede(config.leave_out or [])
@@ -1256,6 +1257,35 @@ def _boot_drive_is_filled(config: "BuildConfig") -> bool:
     """Whether the drive the machine boots from is filled from elsewhere."""
     return any(spec.bootable and (spec.content_hdf or spec.content_folder)
                for spec in config.amiga_partitions)
+
+
+def _refuse_other_processors(credit: dict[tuple[str, str], str],
+                             fixer, progress: Progress) -> None:
+    """Leave out the builds for processors this machine has not got.
+
+    A package that ships one binary per processor is installed by ``rename``,
+    and its archive drawer is usually copied whole as well - so the others land
+    beside it. iGame arrived as ``iGame`` plus ``iGame.030``, ``iGame.040`` and
+    ``iGame.060``: three copies in one drawer, two for hardware that is not
+    there, one byte for byte identical to the ``iGame`` next to it, and not one
+    of them with an icon to click.
+
+    ``outrank`` rather than ``displace`` because this has to still be in force
+    when the packages' own files go on, which is exactly when these arrive.
+    """
+    by_key: dict[str, list[tuple[str, str]]] = {}
+    for pair, key in credit.items():
+        by_key.setdefault(key, []).append(pair)
+    refused: dict[str, str] = {}
+    for key, pairs in by_key.items():
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is not None:
+            refused.update(packages.cpu_leftovers(package, pairs))
+    if refused:
+        fixer.outrank(refused)
+        progress.log(f"  {len(refused)} build(s) for other processors will be "
+                     f"left out, the one this machine runs having been "
+                     f"installed under its own name")
 
 
 def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
@@ -1952,6 +1982,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                  if spec.bootable else [])
         extra = _drop_what_needs_the_boot_script(extra, config, fixer,
                                                  progress)
+        _refuse_other_processors(credit, fixer, progress)
         if extra and config.replace_older_software:
             fixer.displace(_landing_paths(extra))
         if spec.bootable:

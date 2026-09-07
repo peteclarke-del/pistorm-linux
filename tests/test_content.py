@@ -4895,3 +4895,62 @@ class AnInstallerThatRewritesTheBootScript(unittest.TestCase):
         offered = {c.path for c in content.clutter(self._reader(files))}
         for drawer in ("S", "C", "Libs"):
             self.assertNotIn(drawer, offered, f"{drawer} must never be offered")
+
+
+class BuildsForOtherProcessorsAreLeftBehind(unittest.TestCase):
+    """One binary per processor: install the right one, drop the rest.
+
+    An archive shipping iGame.030, iGame.040 and iGame.060 is installed by
+    `rename` - the right one goes on under the name its icon launches - and its
+    drawer is copied whole as well, so the others land beside it. A card for a
+    68040 carried three copies in one drawer: two for hardware it has not got,
+    one byte for byte identical to the iGame next to it, and not one of them
+    with an icon to click.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def package(self, inside, newname):
+        return packages.Package(
+            "thing", "Thing", "a package",
+            download=packages.Download("x/y/Thing.lha",
+                                       rename=((inside, "Programs/Thing",
+                                                newname),)))
+
+    def test_the_others_are_refused_and_the_chosen_one_is_not(self):
+        drawer = self.root / "Thing"
+        drawer.mkdir()
+        for name in ("Prog.030", "Prog.040", "Prog.060", "Prog.guide",
+                     "ReadMe"):
+            (drawer / name).write_text("x")
+        got = packages.cpu_leftovers(
+            self.package("Thing/Prog.040", "Prog"),
+            [(str(drawer), "Programs/Thing")])
+        self.assertEqual(
+            sorted(got), ["Programs/Thing/Prog.030", "Programs/Thing/Prog.040",
+                          "Programs/Thing/Prog.060"])
+        #  The installed copy lands under its own name and is untouched; only
+        #  the drawer's own leftovers are refused.
+        self.assertNotIn("Programs/Thing/Prog", got)
+        self.assertNotIn("Programs/Thing/ReadMe", got)
+        self.assertNotIn("Programs/Thing/Prog.guide", got)
+
+    def test_a_suffix_that_is_not_a_processor_is_left_alone(self):
+        """AWeb.developer is a different build, not a different processor."""
+        drawer = self.root / "Thing"
+        drawer.mkdir()
+        for name in ("AWeb", "AWeb.developer", "AWeb.040"):
+            (drawer / name).write_text("x")
+        got = packages.cpu_leftovers(
+            self.package("Thing/AWeb.040", "AWeb"),
+            [(str(drawer), "Programs/Thing")])
+        self.assertIn("Programs/Thing/AWeb.040", got)
+        self.assertNotIn("Programs/Thing/AWeb.developer", got)
+
+    def test_a_package_that_renames_nothing_refuses_nothing(self):
+        no_rename = packages.Package("thing", "Thing", "a package",
+                                     download=packages.Download("x/y/T.lha"))
+        self.assertEqual(packages.cpu_leftovers(no_rename, []), {})
