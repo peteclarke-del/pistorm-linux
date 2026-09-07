@@ -46,6 +46,67 @@ HDF_IMAGE = SCRATCH / "disk.hdf"
 ADF_FOLDER = Path(__file__).resolve().parent.parent / "samples" / "workbench"
 
 
+CLUTTER_IMAGE = SCRATCH / "clutter.hdf"
+
+
+def _make_clutter_hdf() -> None:
+    """A small drive carrying one of each thing the clutter pass looks for.
+
+    The empty drive above proves the wiring does not fall over; this one proves
+    it actually finds something and that the answer reaches the build.
+    """
+    from pistorm_imager.core import amigaos, rdb           # noqa: PLC0415
+    geometry = rdb.Geometry()
+    size = 16 * 1024 * 1024
+    cylinders = (size // 512) // geometry.cyl_blocks
+    table = rdb.Rdb(geometry=geometry,
+                    partitions=[rdb.Partition("DH0", 1, cylinders - 1,
+                                              rdb.DOSTYPE_FFS_INTL,
+                                              bootable=True)],
+                    filesystems=[], cylinders=cylinders)
+    #  Read-write: making a volume reads blocks back as it writes them.
+    with open(CLUTTER_IMAGE, "w+b") as handle:
+        handle.truncate(size)
+        table.write(handle, 0)
+        part = table.partitions[0]
+        volume = amigaos.make_volume(handle,
+                                     part.byte_offset(geometry, 0),
+                                     part.blocks(geometry), "Sys",
+                                     rdb.DOSTYPE_FFS_INTL)
+        #  An empty drawer, a drawer of emulator-only scripts, and an assign
+        #  pointing at a drawer that is there for now.
+        volume.makedirs("Spare")
+        uae = volume.makedirs("MyFiles/UAE")
+        volume.write_file(uae, "JIT", b"uae-configuration cpu_speed max\n")
+        volume.write_file(uae, "Blitter", b"uae-configuration blitter on\n")
+        games = volume.makedirs("Games")
+        volume.write_file(games, "AGame", b"a real game")
+        script = volume.makedirs("S")
+        #  One assign into a drawer that survives, and one into the empty
+        #  drawer the list offers to remove - so the rule is seen to fire only
+        #  when the removal it depends on is actually happening.
+        volume.write_file(script, "Assign-Startup",
+                          b"Assign >NIL: A-Games: SYS:Games\n"
+                          b"Assign >NIL: A-Spare: SYS:Spare\n")
+        #  A distribution's own installer that rewrites the boot script. What
+        #  it says, and whether it is switched on, depends on whether the build
+        #  installs the library it provides - so it is the case that proves a
+        #  row is recomputed rather than frozen as first drawn.
+        icons = volume.makedirs("Extras/Install/Icons")
+        volume.write_file(icons, "Install_Support",
+                          b"Copy SYS:S/Startup-Sequence Disable/S/ CLONE\n"
+                          b"Copy Stub SYS:S/Startup-Sequence CLONE\n")
+        libs = volume.makedirs("Extras/Install/Icons/Enable/Libs")
+        volume.write_file(libs, "icon.library", b"the newer one")
+        #  Two icons the drive keeps on the desktop: one reachable in a drawer
+        #  anybody opens, one that is not.
+        tools = volume.makedirs("Tools/Commodities")
+        volume.write_file(tools, "CXHandler", b"a commodity")
+        volume.write_file(volume.root, ".backdrop",
+                          b":Tools/Commodities/CXHandler\n:Games/AGame\n")
+        volume.close()
+
+
 def _make_test_hdf() -> None:
     from pistorm_imager.core import rdb  # noqa: PLC0415
     geometry = rdb.Geometry()
@@ -64,6 +125,7 @@ def _make_test_hdf() -> None:
 
 
 _make_test_hdf()
+_make_clutter_hdf()
 
 failures: list[str] = []
 
@@ -359,8 +421,8 @@ def on_activate(app: ImagerApplication) -> None:
               "a package with no rival raises no question")
         window.package_rows["newicons"].set_active(False)
 
-        #  SysInfo, whose 4.0 gurus on an FPU-less 68040 - fixed in 4.4,
-        #  which is what its Aminet address serves.
+        #  SysInfo, whose 4.0 carries a guru that Aminet still ships a
+        #  patch for - fixed in 4.4, which its Aminet address serves.
         check("sysinfo" in window.package_rows, "SysInfo is on offer")
 
         #  Dependencies are linked both ways, and a package worth having on
@@ -681,6 +743,183 @@ def on_activate(app: ImagerApplication) -> None:
         window.quick_pimiga.set_path(str(SCRATCH / "pimiga"))
         check(window._system_source() == "pimiga", "a PiMiga folder is the system")
         window.quick_primary.set_selected(2)
+        # ---------------------------------------------- the clutter list
+        print("\nclutter the card is better off without")
+        window.quick_hdf.set_path(str(CLUTTER_IMAGE))
+        window._refresh_clutter()
+        offered = {where: row.get_active()
+                   for where, row in window.clutter_rows.items()}
+        check(bool(offered), f"found on a drive that has some: {sorted(offered)}")
+        check("Spare" in offered, "the empty drawer is offered")
+        check("MyFiles/UAE" in offered,
+              "the drawer of emulator-only scripts is offered")
+        check(window.clutter_group.get_visible(),
+              "and the group is shown when there is something in it")
+        #  What is ticked has to reach the card, or the list is decoration.
+        for row in window.clutter_rows.values():
+            row.set_active(True)
+        leaving = window.gather().leave_out
+        check("Spare" in leaving and "MyFiles/UAE" in leaving,
+              f"ticked clutter reaches leave_out: {leaving}")
+        #  ...and with those going, the assign pointing into one is reported.
+        window._refresh_clutter()
+        assigns = [w for w in window.clutter_rows if "Assign" in w]
+        check(any("A-Spare" in w for w in assigns),
+              f"the assign into a removed drawer is reported: {assigns}")
+        check(not any("A-Games" in w for w in assigns),
+              "and the one into a drawer that stays is left alone")
+        for row in window.clutter_rows.values():
+            row.set_active(False)
+        window.quick_hdf.set_path("")
+        window._refresh_clutter()
+        #  The row's wording and its default both depend on the rest of the
+        #  page. Created once and then skipped, it kept the wording and the
+        #  switch it was born with - so a card went out still carrying an
+        #  installer that had bricked one.
+        window.quick_hdf.set_path(str(CLUTTER_IMAGE))
+        for key, row in window.package_rows.items():
+            if key == "iconlib":
+                row.set_active(False)
+        window._refresh_clutter()
+        risky = window.clutter_rows.get("Extras/Install/Icons")
+        check(risky is not None,
+              f"the boot-script installer is offered: {sorted(window.clutter_rows)}")
+        if risky is not None:
+            check(not risky.get_active(),
+                  "and is only a question while nothing replaces it")
+            for key, row in window.package_rows.items():
+                if key == "iconlib" and row.get_sensitive():
+                    row.set_active(True)
+            window._refresh_clutter()
+            risky = window.clutter_rows.get("Extras/Install/Icons")
+            check(risky.get_active(),
+                  "choosing the icon library switches it on")
+            check("already installs" in risky.get_subtitle(),
+                  f"and says why: {risky.get_subtitle()}")
+            #  An answer the user has given is not overwritten.
+            risky.set_active(False)
+            window._refresh_clutter()
+            check(not window.clutter_rows["Extras/Install/Icons"].get_active(),
+                  "an answer you have given survives a refresh")
+
+        window.quick_hdf.set_path("")
+        window._refresh_clutter()
+        check(not window.clutter_group.get_visible(),
+              "and the group hides again with no drive chosen")
+
+        # ------------------------- one drive, several lists, one set of answers
+        #  The page shows the same drive through several lists, and they
+        #  describe the same facts. Assembled independently they contradicted
+        #  each other: AWeb was switched on under "older copies", meaning
+        #  remove it, and switched on under "already installed on the drive",
+        #  meaning keep it, and moving either switch did nothing to the other.
+        print("\none drive, several lists, one set of answers")
+
+        cover = type(window)._covered_by
+        check(cover("Programs/Thing", ["Programs/Thing"]),
+              "a path being dropped is covered by itself")
+        check(cover("Programs/Thing/Sub", ["Programs/Thing"]),
+              "and so is anything inside it")
+        check(not cover("Programs/Thingamajig", ["Programs/Thing"]),
+              "but a longer name is a different drawer")
+        check(not cover("Programs/Thing", ["Programs/Other"]),
+              "and an unrelated drawer is not covered")
+
+        #  Every removal list feeds the one shared answer, not just the one
+        #  the original exclusion happened to be written for.
+        class _Row:
+            def __init__(self, on): self._on = on
+            def get_active(self): return self._on
+        keep = dict(window.older_rows), dict(window.broken_rows), \
+            dict(window.clutter_rows), dict(window.arrives_rows)
+        window.older_rows = {"Programs/Older": _Row(True)}
+        window.broken_rows = {"Programs/Broken": _Row(True)}
+        window.clutter_rows = {"Programs/Clutter": _Row(True),
+                               "Programs/Kept": _Row(False)}
+        window.arrives_rows = {}
+        removing = set(window._being_removed())
+        for where in ("Programs/Older", "Programs/Broken", "Programs/Clutter"):
+            check(where in removing, f"{where} counts as being removed")
+        check("Programs/Kept" not in removing,
+              "a removal row switched off does not count")
+        window.older_rows, window.broken_rows, window.clutter_rows, \
+            window.arrives_rows = keep
+
+        #  And the tie itself, driven through the real window on the real
+        #  drive when it is here: answering one list re-derives the other.
+        drive = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if drive.exists():
+            window.quick_hdf.set_path(str(drive))
+            #  Every package that suits this machine, so the older-copy search
+            #  has something to supersede whatever the drive happens to carry.
+            #  Nothing is named: the ticks come from the catalogue and the
+            #  answers from the drive, so this holds for any setup.
+            was_settling = getattr(window, "_settling_packages", False)
+            window._settling_packages = True
+            ticked = {}
+            try:
+                for key, row in window.package_rows.items():
+                    ticked[key] = row.get_active()
+                    if row.get_sensitive():
+                        row.set_active(True)
+            finally:
+                window._settling_packages = was_settling
+            window._refresh_older_copies()
+            window._refresh_what_cannot_work()
+            window._refresh_what_arrives()
+            clash = [k for k in window.arrives_rows
+                     if cover(k, window._being_removed())]
+            check(not clash,
+                  f"no program is in two lists at once: {clash}")
+            picked = next((d for d, r in window.older_rows.items()
+                           if r.get_active()), None)
+            if picked is not None:
+                check(picked not in window.arrives_rows,
+                      f"{picked} is not also listed as arriving")
+                window.older_rows[picked].set_active(False)
+                check(picked in window.arrives_rows,
+                      "and it comes back when the removal is switched off")
+                window.older_rows[picked].set_active(True)
+                check(picked not in window.arrives_rows,
+                      "and goes again when it is switched back on")
+            else:
+                print("  --   nothing on this drive is superseded; tie not driven")
+            window._settling_packages = True
+            try:
+                for key, was in ticked.items():
+                    window.package_rows[key].set_active(was)
+            finally:
+                window._settling_packages = was_settling
+            window.quick_hdf.set_path("")
+            window._refresh_what_arrives()
+        else:
+            print("  --   ClassicWB is not on this machine; tie not driven")
+
+        # ------------------------------------- icons on the Workbench desktop
+        print("\nicons on the Workbench desktop")
+        window.quick_hdf.set_path(str(CLUTTER_IMAGE))
+        window._refresh_desktop()
+        rows = window.desktop_rows
+        check("Tools/Commodities/CXHandler" in rows,
+              f"the desktop list is read: {sorted(rows)}")
+        check(all(r.get_active() for r in rows.values()),
+              "everything the drive put there stays until somebody says otherwise")
+        check("also in Tools/Commodities" in
+              rows["Tools/Commodities/CXHandler"].get_subtitle(),
+              "and it says where the icon can be found anyway")
+        rows["Tools/Commodities/CXHandler"].set_active(False)
+        cfg = window.gather()
+        check(cfg.off_desktop == ["Tools/Commodities/CXHandler"],
+              f"turning one off reaches the build: {cfg.off_desktop}")
+        #  The distinction that matters: off the desktop, not off the card.
+        check("Tools/Commodities/CXHandler" not in cfg.leave_out,
+              "and it is not confused with leaving the program out")
+        rows["Tools/Commodities/CXHandler"].set_active(True)
+        window.quick_hdf.set_path("")
+        window._refresh_desktop()
+        check(not window.desktop_group.get_visible(),
+              "and the group hides with no drive chosen")
+
         check(window.quick_pimiga.path == "" and window.quick_hdf.get_visible(),
               "choosing an image drops the PiMiga folder")
         #  A drive built for another machine is warned about. The check that

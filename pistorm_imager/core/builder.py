@@ -35,9 +35,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import (amigafs, amigaos, bootcfg, compat, content, devices, emu68,
-               hdfcheck, imgsrc, kickstart, mbr, packages, pfs3, postwrite,
-               rdb)
+from . import (amigafs, amigainfo, amigaos, bootcfg, compat, content, devices,
+               emu68, hdfcheck, imgsrc, kickstart, mbr, packages, pfs3,
+               postwrite, rdb)
 from .fat32 import Fat32
 from .util import (MIB, Progress, align_up, copy_stream, human_size,
                    require_tool, run)
@@ -132,6 +132,11 @@ class BuildConfig:
     #  now it was all of it or none. Each entry is a drawer, left out whole
     #  by the same rule that removes a superseded older copy.
     leave_out: list[str] = dataclasses.field(default_factory=list)
+    #  Icons to take off the Workbench desktop. Deliberately not ``leave_out``:
+    #  these files are staying exactly where they are, and taking the line out
+    #  of ``.backdrop`` puts the icon back in its own drawer rather than
+    #  removing anything.
+    off_desktop: list[str] = dataclasses.field(default_factory=list)
     package_chipset: str = ""          # a machines.Chipset value
     package_display: str = ""          # a machines.Display value
 
@@ -219,6 +224,32 @@ class BuildConfig:
                 said.append(
                     f"{package.label} is installed and no drive is being "
                     f"filled with games, so it will open on an empty list.")
+        #  Two packages that patch the same part of Workbench.  The window
+        #  does ask, the moment a second one is switched on by hand - but
+        #  only then.  Rows settled by restoring a saved setup, by the
+        #  suggested load or by the display forcing a package on are set
+        #  without a question, deliberately, because a dialog in answer to
+        #  nothing the person did is an interruption.  The effect was that a
+        #  saved job carrying both NewIcons and DefIcons44 built a card with
+        #  two default icon systems and said nothing anywhere, and the second
+        #  one was only found by its installer stalling half way through.
+        #
+        #  A rule that lives in one code path is this project's recurring
+        #  defect, so it is said here as well, where every build passes.  The
+        #  roles come off the packages, so a pair added later is covered
+        #  without touching this.
+        by_role: dict[str, list[str]] = {}
+        for key in sorted(keys):
+            package = packages.CATALOGUE_BY_KEY.get(key)
+            if package is not None and package.role:
+                by_role.setdefault(package.role, []).append(package.label)
+        for role, rivals in sorted(by_role.items()):
+            if len(rivals) < 2:
+                continue
+            named = ", ".join(rivals[:-1]) + " and " + rivals[-1]
+            said.append(
+                f"{named} are both a {role} system and patch the same part "
+                f"of Workbench, so the card will carry two of them.")
         #  Whatever the catalogue says an RTG screen cannot do without.  The
         #  package used to be named here, which meant this warning and the
         #  ``essential`` flag it is really about could disagree.
@@ -775,13 +806,18 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     landings: dict = {}
     extra = _package_overlays(config, list(spec.overlays), progress, credit) \
         if spec is not None else []
+    _refuse_other_processors(credit, fixer, progress)
     if extra and config.replace_older_software:
         fixer.displace(_landing_paths(extra))
     fixer.supersede(config.leave_out or [])
     #  Any record an imported drive brings describes a card that no longer
     #  exists; this build writes its own in its place.
     fixer.displace([MANIFEST_PATH])
-    if _package_startup_lines(config):
+    #  ``credit`` is filled in above, and a line that has to name files from
+    #  its own archive can only be judged with it: without it such a line reads
+    #  as absent, the drive's own User-Startup is copied whole, and the lines
+    #  this build meant to add have nowhere to go.
+    if _package_startup_lines(config, credit=credit):
         fixer.keep_user_startup()
     volume = amigaos.install(handle, offset, partition.blocks(table.geometry),
                              chosen, progress,
@@ -805,7 +841,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             _apply_overlays(volume, spec, fixer, progress, landings)
         _give_drawers_icons(volume, spec, config, progress)
     _write_user_startup(volume, config, progress,
-                        fixer.kept_user_startup, fixer.boot_scripts)
+                        fixer.kept_user_startup, fixer.boot_scripts, credit)
     _write_manifest(volume, config,
                     list(spec.overlays) if spec is not None else [],
                     credit, progress, landings)
@@ -887,8 +923,16 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
 
 
 def _package_startup_lines(config: "BuildConfig", boot: str = "",
-                           progress: Progress | None = None) -> list[str]:
-    """The lines the chosen software needs in S:User-Startup."""
+                           progress: Progress | None = None,
+                           credit: dict[tuple[str, str], str] | None = None
+                           ) -> list[str]:
+    """The lines the chosen software needs in S:User-Startup.
+
+    ``credit`` maps each (source, destination) pair the build resolved to the
+    package that asked for it, which is how a line that has to name the files
+    its own archive shipped gets them: they are read back off what was put on
+    the card rather than written into the catalogue.
+    """
     lines: list[str] = []
     #  expand() so that a package pulled in as a dependency gets its lines
     #  too: MUI is never ticked by name, and without its assigns muimaster
@@ -903,7 +947,19 @@ def _package_startup_lines(config: "BuildConfig", boot: str = "",
                 progress.log(f"  {package.label} is already started by the "
                              f"drive's own boot, so no line is added for it")
             continue
-        lines += list(package.startup)
+        theirs = [pair for pair, whose in (credit or {}).items() if whose == key]
+        filled = packages.complete_startup(package, theirs)
+        if filled is None:
+            #  Only where the files really are missing. A line left with its
+            #  placeholder unfilled is what put an about window on the desktop
+            #  at every boot, so nothing is written rather than something that
+            #  runs the program wrongly.
+            if progress is not None:
+                progress.log(f"  {package.label} needs files from its own "
+                             f"archive on its startup line and none were "
+                             f"installed, so it is not started")
+            continue
+        lines += filled
     return lines
 
 
@@ -944,7 +1000,9 @@ def _already_started(commands: list[str], boot: str) -> bool:
 
 def _write_user_startup(volume, config: "BuildConfig",
                         progress: Progress, kept: bytes = b"",
-                        boot: str = "") -> None:
+                        boot: str = "",
+                        credit: dict[tuple[str, str], str] | None = None
+                        ) -> None:
     """Add the lines the chosen packages need to S:User-Startup.
 
     Workbench 3.1 runs this from its own Startup-Sequence if it is there, so
@@ -952,7 +1010,7 @@ def _write_user_startup(volume, config: "BuildConfig",
     module, gets its chance.  Copying the file into LIBS: alone would leave
     the ROM version in use and the whole package inert.
     """
-    lines = _package_startup_lines(config, boot, progress)
+    lines = _package_startup_lines(config, boot, progress, credit)
     if not lines:
         return
     folder = volume.makedirs("S")
@@ -1002,7 +1060,11 @@ MANIFEST_FILE_LIMIT = 200
 SYSTEM_DRAWERS = {
     "", "c", "s", "l", "libs", "devs", "prefs", "fonts", "locale",
     "utilities", "tools", "system", "wbstartup", "storage", "classes",
-    "expansion", "rexx", "trashcan", "monitors", "disk",
+    #  Rexxc holds the ARexx commands. It is empty on some distributions and
+    #  filled by the floppy install, and offering to remove it cost a card its
+    #  whole ARexx - rx, rxlib, waitforport and the rest - while
+    #  System/Rexxmast was still started at boot.
+    "expansion", "rexx", "rexxc", "trashcan", "monitors", "disk",
     #  Ones this build creates to hold other things, which several packages
     #  land in side by side.
     "programs", "internet", "audio", "games", "demos", "storage/install",
@@ -1098,7 +1160,7 @@ def _manifest_text(config: "BuildConfig", pairs: list[tuple[str, str]],
     on with ``Delete``.
     """
     entries = _manifest_entries(pairs, credit, landings)
-    startup = _package_startup_lines(config)
+    startup = _package_startup_lines(config, credit=credit)
     if not entries and not startup:
         return ""
     when = datetime.datetime.now().strftime("%d-%b-%Y %H:%M")
@@ -1221,6 +1283,36 @@ def _boot_drive_is_filled(config: "BuildConfig") -> bool:
     """Whether the drive the machine boots from is filled from elsewhere."""
     return any(spec.bootable and (spec.content_hdf or spec.content_folder)
                for spec in config.amiga_partitions)
+
+
+def _refuse_other_processors(credit: dict[tuple[str, str], str],
+                             fixer, progress: Progress) -> None:
+    """Leave out the builds for processors this machine has not got.
+
+    A package that ships one binary per processor is installed by ``rename``,
+    and its archive drawer is usually copied whole as well - so the others land
+    beside it. iGame arrived as ``iGame`` plus ``iGame.030``, ``iGame.040`` and
+    ``iGame.060``: three copies in one drawer, two for hardware that is not
+    there, one byte for byte identical to the ``iGame`` next to it, and not one
+    of them with an icon to click.
+
+    ``outrank`` rather than ``displace`` because this has to still be in force
+    when the packages' own files go on, which is exactly when these arrive.
+    """
+    by_key: dict[str, list[tuple[str, str]]] = {}
+    for pair, key in credit.items():
+        by_key.setdefault(key, []).append(pair)
+    refused: dict[str, str] = {}
+    for key, pairs in by_key.items():
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is not None:
+            refused.update(packages.cpu_leftovers(package, pairs))
+            refused.update(packages.redundant_installers(package, pairs))
+    if refused:
+        fixer.outrank(refused)
+        progress.log(f"  {len(refused)} build(s) for other processors will be "
+                     f"left out, the one this machine runs having been "
+                     f"installed under its own name")
 
 
 def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
@@ -1622,7 +1714,13 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
     fixer = compat.Compatibility(progress, enabled=config.fix_compatibility,
                                  rtg=config.rtg_display,
                                  native=config.native_display,
-                                 workbench_on_rtg=config.workbench_on_rtg)
+                                 workbench_on_rtg=config.workbench_on_rtg,
+                                 off_desktop=config.off_desktop or (),
+                                 #  So a distribution's own boot script gets
+                                 #  the same soft-kick line a Workbench
+                                 #  install does.
+                                 startup_editor=_startup_sequence_editor(
+                                     config, progress))
     #  The RTG subsystem, whichever package provides it: the one package that
     #  an RTG screen cannot do without.  Named by what it is rather than by
     #  its key, so the check follows the catalogue.
@@ -1644,6 +1742,87 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
     return fixer
 
 
+#  The icon a volume wears on the Workbench desktop.
+VOLUME_ICON = "Disk.info"
+
+
+def _card_icon(config: BuildConfig, progress: Progress) -> bytes | None:
+    """The volume icon every drive on this card should wear.
+
+    Taken from the drive the machine boots from, so a card looks like one card
+    rather than a collection of drives from wherever each came. It is read from
+    the *source* rather than from the finished volume, because the drives are
+    filled in whatever order the partitions were listed and the boot drive is
+    not reliably first.
+
+    Two faults this answers. A drive filled from somebody else's tree brings
+    that tree's volume icon - PiMiga's Games and Demos arrive wearing an 8 KB
+    icon drawn for a different desktop - and a drive filled with nothing brings
+    no icon at all, which is worse: with no ``Disk.info`` a volume never appears
+    on Workbench, so the Work drive this build creates, formats and names could
+    not be seen.
+    """
+    spec = next((s for s in config.amiga_partitions if s.bootable), None)
+    if spec is None:
+        return None
+    data: bytes | None = None
+    try:
+        if spec.content_hdf:
+            reader, _label = amigaos.open_amiga_volume(
+                spec.content_hdf, spec.content_hdf_partition)
+            try:
+                entry = reader.find(VOLUME_ICON)
+                if entry is not None:
+                    data = reader.read_file(entry)
+            finally:
+                try:
+                    reader.f.close()
+                except Exception:                       # noqa: BLE001
+                    pass
+        elif spec.content_folder:
+            here = Path(spec.content_folder) / VOLUME_ICON
+            if here.is_file():
+                data = here.read_bytes()
+    except Exception as error:                          # noqa: BLE001 - an
+        #  unreadable donor is not worth failing a card for; the drives simply
+        #  keep whatever icons they came with.
+        progress.log(f"  could not read the boot drive's volume icon: {error}")
+        return None
+    if data is None and config.adf_folder:
+        #  A card built from floppies has no donor to take one from, and
+        #  Commodore's own Workbench disk carries exactly this file.
+        try:
+            data = amigaos.volume_icon_from_disks(config.adf_folder)
+        except Exception:                               # noqa: BLE001
+            data = None
+    if data is None:
+        return None
+    #  Every drive would otherwise claim the same square of the desktop and
+    #  land on top of the others.
+    try:
+        return amigainfo.clear_position(data)
+    except Exception:                                   # noqa: BLE001
+        return data
+
+
+def _give_volume_icon(volume, icon: bytes | None, label: str,
+                      progress: Progress) -> None:
+    """Put the card's volume icon on a drive, if it has not got one."""
+    if not icon:
+        return
+    try:
+        if volume._entry_exists(volume.root, VOLUME_ICON) is not None:
+            return
+        volume.write_file(volume.root, VOLUME_ICON, icon,
+                          check_existing=False)
+    except Exception as error:                          # noqa: BLE001 - a
+        #  drive without its icon is a blemish, not a reason to lose the build.
+        progress.log(f"  could not give {label} a volume icon: {error}")
+        return
+    progress.log(f"  {label} given the card's volume icon so it appears on "
+                 f"Workbench")
+
+
 def _format_empty_partitions(config: BuildConfig, handle,
                              amiga: mbr.MbrPartition, table: rdb.Rdb,
                              progress: Progress) -> None:
@@ -1663,6 +1842,7 @@ def _format_empty_partitions(config: BuildConfig, handle,
     filled = {spec.name.upper() for spec in config.amiga_partitions
               if spec.content_folder or spec.content_hdf}
     boot = next((p for p in table.partitions if p.bootable), None)
+    card_icon = _card_icon(config, progress)
     for spec in config.amiga_partitions:
         name = spec.name.upper()
         partition = by_name.get(name)
@@ -1687,6 +1867,7 @@ def _format_empty_partitions(config: BuildConfig, handle,
         volume = amigaos.make_volume(handle, offset,
                                      partition.blocks(table.geometry),
                                      label, dostype)
+        _give_volume_icon(volume, card_icon, label, progress)
         volume.close()
         progress.log(f'{partition.drive_name} formatted as '
                      f'{rdb.dostype_name(dostype)}, named "{label}"')
@@ -1801,6 +1982,9 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                      table: rdb.Rdb, progress: Progress) -> None:
     """Fill partitions that were given a host directory or overlays."""
     by_name = {p.drive_name.upper(): p for p in table.partitions}
+    #  Read once: it opens the donor drive, and every partition would otherwise
+    #  open it again.
+    card_icon = _card_icon(config, progress)
     for spec in config.amiga_partitions:
         if not spec.content_folder and not spec.content_hdf:
             continue
@@ -1815,11 +1999,17 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         #  resolved before the drive is filled so it can take the place of an
         #  older copy already in the image - if that is what was asked for.
         credit: dict[tuple[str, str], str] = {}
+        #  A drive filled from somebody else's tree brings that tree's volume
+        #  icon with it. Refused here so the card's own can be written after,
+        #  because this file system creates files and never overwrites them.
+        if not spec.bootable and card_icon:
+            fixer.displace([VOLUME_ICON])
         extra = (_package_overlays(config, list(spec.overlays), progress,
                                    credit)
                  if spec.bootable else [])
         extra = _drop_what_needs_the_boot_script(extra, config, fixer,
                                                  progress)
+        _refuse_other_processors(credit, fixer, progress)
         if extra and config.replace_older_software:
             fixer.displace(_landing_paths(extra))
         if spec.bootable:
@@ -1832,7 +2022,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         #  overwrites, so it is held back and written out again below with
         #  the packages' lines after it - otherwise FBlit, FText and Birdie
         #  go onto the card and are never run.
-        if spec.bootable and _package_startup_lines(config):
+        if spec.bootable and _package_startup_lines(config, credit=credit):
             fixer.keep_user_startup()
 
         if spec.content_hdf:
@@ -1913,13 +2103,17 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             #  nothing that needed a startup line ever ran.
             _give_drawers_icons(volume, spec, config, progress)
             _write_user_startup(volume, config, progress,
-                                fixer.kept_user_startup, fixer.boot_scripts)
+                                fixer.kept_user_startup, fixer.boot_scripts,
+                                credit)
             _write_manifest(volume, config, list(spec.overlays), credit,
                             progress, landings)
             #  Only the drive the machine boots from: Games and Demos were
             #  each being given their own copy of the display-switching
             #  scripts, which belong in the system drive's S: and nowhere.
             fixer.finish(volume, progress)
+        else:
+            _give_volume_icon(volume, card_icon,
+                              spec.volume_name or spec.name, progress)
         volume.close()
         progress.log(fixer.summary())
 
