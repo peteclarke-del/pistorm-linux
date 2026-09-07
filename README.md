@@ -1819,12 +1819,13 @@ for a second drive keeps whatever the program's name starts with — `iGame`
 gives `iDemos`.
 
 `tests/test_content.py` walks every source file's AST and fails if a catalogue
-key appears as a string constant outside the catalogue definition. Five words
+key appears as a string constant outside the catalogue definition. Six words
 are allowed through with a note saying what they really are: the `identify`
 subcommand that reads Kickstart ROMs, the `Libs/Picasso96` drawer on a drive
 being read, the `MUI:` assign in a list of AmigaDOS device names, the `lha`
-unpacker run on this machine, and the `WHDLoad` drawer a game collection keeps
-its installs in.
+unpacker run on this machine, Commodore's `Installer` command as an icon's
+default tool names it, and the `WHDLoad` drawer a game collection keeps its
+installs in.
 
 ### Software that needs a line in the boot script
 
