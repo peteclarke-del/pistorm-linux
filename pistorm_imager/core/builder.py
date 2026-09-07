@@ -1281,6 +1281,7 @@ def _refuse_other_processors(credit: dict[tuple[str, str], str],
         package = packages.CATALOGUE_BY_KEY.get(key)
         if package is not None:
             refused.update(packages.cpu_leftovers(package, pairs))
+            refused.update(packages.redundant_installers(package, pairs))
     if refused:
         fixer.outrank(refused)
         progress.log(f"  {len(refused)} build(s) for other processors will be "
