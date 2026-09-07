@@ -186,6 +186,7 @@ pistorm_imager/
     compat.py    automatic emulator-to-PiStorm fixes (RTG driver, startup)
     amigainfo.py Workbench .info icons, enough to retarget tool types
     machines.py  target machine profiles: chipset, board, Kickstart, display
+    emulate.py   turns a machine profile into an FS-UAE configuration
     presets.py   turns a machine and a source into a complete build
     packages.py  optional software taken from a system you already have
     content.py   what a games or demos tree is divided into, and what runs here
@@ -414,6 +415,46 @@ every drive mounts and can be checked — and copy it *exactly*. A copy one
 mebibyte short of the partition made the last drive come up as `NDOS`, because
 PFS3 keeps a copy of its root block at the end; that looked exactly like a
 formatting bug in this tool and was not.
+
+### Bisecting an intermittent fault: prove the control first
+
+A card was seen to crash a few seconds after Workbench had drawn, in roughly
+three boots out of seven — sometimes a guru, sometimes a reboot ending in
+`CPU halted PC=00000000`, sometimes just a black screen. Chasing that turned up
+a rule worth writing down.
+
+The first suspect was Roadshow's `wifipi.device`, a driver for the Raspberry
+Pi's own WiFi chip which the emulator has not got. To test it, two images were
+built from one saved job differing only in that package — but **cut down to
+DH0** so they would build in minutes instead of half an hour. The control, with
+Roadshow, then crashed **zero times in six boots**. A clean result from the
+other image would have proved nothing whatever, and the whole comparison had to
+be thrown away.
+
+**Confirm the control reproduces the fault before changing the variable.** An
+intermittent bug makes this easy to get wrong, because a control that passes
+looks like a control that works.
+
+What the bisection did establish, once each image was built from the same job
+with one difference at a time and booted six times unattended:
+
+| image | crashed |
+| --- | --- |
+| the card itself, all four drives filled | 3 of 7 |
+| DH0 only | 0 of 6 |
+| four volumes, the card's real geometry, content drives empty | 0 of 6 |
+| as above, with one content drive filled by 1 MB of stand-in files | 0 of 6 |
+
+So the fault is not the network stack, not the geometry, not the number of
+mounted volumes — it needs the *contents* of the games and demos drives, and
+which part is still unknown. Recorded here so the next attempt starts from the
+rows already ruled out rather than repeating them.
+
+Two details make these runs comparable at all. Boot **untouched**: an earlier
+black screen turned out to be the consequence of clicking a requester, not of
+the card. And read the verdict out of FS-UAE's own log rather than off the
+screen — a healthy run prints its memory map three times, and every extra one
+is a reset the machine was not asked for.
 
 ## How big is the card, and which gigabyte do you mean
 
@@ -1644,6 +1685,23 @@ that it names something not on the drive at all.
 One line goes without being asked about: a `.backdrop` entry naming something
 this build leaves out. That is not a preference but a broken desktop, because
 Workbench is being told to show an icon that will not be there.
+
+**Known gap: only the boot drive's `.backdrop` is looked at.** A content drive's
+copy is written out exactly as the source folder had it, so the same rule that
+prunes DH0 never runs on Games or Demos. On a card built from PiMiga the games
+volume asks Workbench for two icons that exist nowhere on it:
+
+    :ScummVM/1.8.0/ScummVM180
+    :ScummVM/1.8.1/scummvm-1.8.1-68040-fpu
+
+Both entries are already dead in the source collection, so this is not damage
+the content filtering did - but the check that would catch it is written and
+runs one drive too narrowly. It is harmless as far as it has been tested: an
+image carrying exactly that `.backdrop` booted six times out of six without
+trouble. It is recorded rather than quietly fixed because the fix wants the same
+proof-by-restoring-the-bug as everything else here, and because it is worth
+knowing that a `.backdrop` can be broken *in the source* rather than by this
+tool.
 
 #### Finding the clutter rather than being told what it is
 
