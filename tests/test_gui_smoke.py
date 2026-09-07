@@ -88,6 +88,16 @@ def _make_clutter_hdf() -> None:
         volume.write_file(script, "Assign-Startup",
                           b"Assign >NIL: A-Games: SYS:Games\n"
                           b"Assign >NIL: A-Spare: SYS:Spare\n")
+        #  A distribution's own installer that rewrites the boot script. What
+        #  it says, and whether it is switched on, depends on whether the build
+        #  installs the library it provides - so it is the case that proves a
+        #  row is recomputed rather than frozen as first drawn.
+        icons = volume.makedirs("Extras/Install/Icons")
+        volume.write_file(icons, "Install_Support",
+                          b"Copy SYS:S/Startup-Sequence Disable/S/ CLONE\n"
+                          b"Copy Stub SYS:S/Startup-Sequence CLONE\n")
+        libs = volume.makedirs("Extras/Install/Icons/Enable/Libs")
+        volume.write_file(libs, "icon.library", b"the newer one")
         #  Two icons the drive keeps on the desktop: one reachable in a drawer
         #  anybody opens, one that is not.
         tools = volume.makedirs("Tools/Commodities")
@@ -760,6 +770,38 @@ def on_activate(app: ImagerApplication) -> None:
               "and the one into a drawer that stays is left alone")
         for row in window.clutter_rows.values():
             row.set_active(False)
+        window.quick_hdf.set_path("")
+        window._refresh_clutter()
+        #  The row's wording and its default both depend on the rest of the
+        #  page. Created once and then skipped, it kept the wording and the
+        #  switch it was born with - so a card went out still carrying an
+        #  installer that had bricked one.
+        window.quick_hdf.set_path(str(CLUTTER_IMAGE))
+        for key, row in window.package_rows.items():
+            if key == "iconlib":
+                row.set_active(False)
+        window._refresh_clutter()
+        risky = window.clutter_rows.get("Extras/Install/Icons")
+        check(risky is not None,
+              f"the boot-script installer is offered: {sorted(window.clutter_rows)}")
+        if risky is not None:
+            check(not risky.get_active(),
+                  "and is only a question while nothing replaces it")
+            for key, row in window.package_rows.items():
+                if key == "iconlib" and row.get_sensitive():
+                    row.set_active(True)
+            window._refresh_clutter()
+            risky = window.clutter_rows.get("Extras/Install/Icons")
+            check(risky.get_active(),
+                  "choosing the icon library switches it on")
+            check("already installs" in risky.get_subtitle(),
+                  f"and says why: {risky.get_subtitle()}")
+            #  An answer the user has given is not overwritten.
+            risky.set_active(False)
+            window._refresh_clutter()
+            check(not window.clutter_rows["Extras/Install/Icons"].get_active(),
+                  "an answer you have given survives a refresh")
+
         window.quick_hdf.set_path("")
         window._refresh_clutter()
         check(not window.clutter_group.get_visible(),

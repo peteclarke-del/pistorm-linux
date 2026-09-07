@@ -1544,6 +1544,28 @@ rather than copied, so the editor that inserts that line never saw it and the
 package was dropped every time. The pass now runs the distribution's script
 through the same editor, and the line goes in where it belongs.
 
+#### A row has to follow the answers around it
+
+The rule above is only useful if the switch reaches the card, and for one build
+it did not. The clutter list creates a row the first time it is built and then
+skipped any row it already had — which is right for preserving somebody's
+answers, and wrong for everything else about the row.
+
+Both the wording and the default depend on the rest of the page. Before the
+icon library is ticked, the installer reads "replaces S:Startup-Sequence to do
+its work, and leaves the card unbootable if it does not finish" and is offered
+as a question. After it is ticked, it should read "…to install icon.library,
+which this build already installs" and be switched **on**. Created once and
+never revisited, it kept the wording and the switch it was born with, so a card
+went out still carrying the installer that had bricked one — and nothing on
+screen said the choice had been ignored.
+
+Every row's reason and default are now recomputed on each refresh, while an
+answer the user has actually given is left alone: the default moves only while
+the switch still sits where the last refresh put it. The GUI checks drive the
+whole sequence — offered as a question, switched on by ticking the library,
+reworded, and then held against a refresh once the user has moved it.
+
 #### An installer that rewrites the boot script can cost the card
 
 ClassicWB ships its own PeterK icon support at `MyFiles/Install/Icons`. It
