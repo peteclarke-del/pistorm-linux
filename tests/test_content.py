@@ -1848,6 +1848,55 @@ class ChoicesThatBuildAndMislead(unittest.TestCase):
         said = self._config().concerns()
         self.assertTrue([s for s in said if "Nothing is being put" in s])
 
+    #  ------------------------------------------------------------------
+    #  Two packages doing one job.
+    #
+    #  The window asks about this the moment somebody switches a second one
+    #  on, and settles the rows silently when they arrive from a saved job,
+    #  the suggested set or the display forcing a package on.  So a saved
+    #  configuration holding NewIcons beside DefIcons44 built a card with two
+    #  default icon systems and warned nowhere.  The pair is discovered from
+    #  the catalogue's own ``role`` fields rather than named here, so this
+    #  keeps testing the rule and not one example of it.
+
+    def _a_shared_role(self):
+        from pistorm_imager.core import packages as pk       # noqa: PLC0415
+        by_role: dict[str, list] = {}
+        for package in pk.CATALOGUE:
+            if package.role:
+                by_role.setdefault(package.role, []).append(package)
+        for role, rivals in sorted(by_role.items()):
+            if len(rivals) > 1:
+                return role, rivals
+        self.skipTest("no two packages share a role")
+        raise AssertionError                        # unreachable
+
+    def test_two_packages_doing_one_job_are_said(self):
+        role, rivals = self._a_shared_role()
+        said = self._config(
+            package_keys=[p.key for p in rivals]).concerns()
+        clash = [s for s in said if role in s]
+        self.assertTrue(clash, said)
+        #  Both are named, so the person can tell which to drop.
+        for package in rivals:
+            self.assertIn(package.label, clash[0])
+
+    def test_one_of_them_on_its_own_is_not(self):
+        role, rivals = self._a_shared_role()
+        said = self._config(package_keys=[rivals[0].key]).concerns()
+        self.assertFalse([s for s in said if role in s], said)
+
+    def test_it_is_not_left_to_the_window_to_notice(self):
+        """The defect this guards: the check living only in the GUI.
+
+        The dialog is skipped whenever rows are settled rather than clicked,
+        which is every restored job, so a build path with no window at all -
+        the command line - had nothing to say either.
+        """
+        role, rivals = self._a_shared_role()
+        said = self._config(package_keys=[p.key for p in rivals]).concerns()
+        self.assertTrue([s for s in said if "two of them" in s], said)
+
 
 class TheCardSaysWhatWasPutOnIt(unittest.TestCase):
     """AmigaOS has no uninstaller, so the card carries its own record.
