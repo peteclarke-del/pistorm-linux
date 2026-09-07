@@ -776,8 +776,8 @@ class TheEmulatorIsToldWhatTheCardWasBuiltFor(unittest.TestCase):
     That description already exists - the model, the chipset, the board and
     the trapdoor choice drive the build itself - and writing it a second time
     by hand is how the two came apart: the harness used through one long
-    bisection emulated an A1200 (AGA) with an FPU at accuracy = 0, while the
-    card was built for an ECS A500 on a PiStorm that has no FPU.
+    bisection emulated an A1200 (AGA) at accuracy = 0, on which WHDLoad
+    cannot start a game, while the card was built for an ECS A500.
     """
 
     def config(self, key: str, **kwargs) -> str:

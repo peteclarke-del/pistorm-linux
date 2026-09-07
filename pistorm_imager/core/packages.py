@@ -38,6 +38,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from . import amigainfo
+from .compat import EMU68_BOARD
 from .machines import Chipset, Display, Machine
 from .util import Progress, human_size
 
@@ -112,6 +113,20 @@ class Download:
     #  an icon the archive already has and retargeting it beats inventing
     #  one: a hand-built DiskObject with no image draws as nothing at all.
     retool: tuple[tuple[str, str, str, str], ...] = ()
+    #  (icon inside the archive, destination, name on the card, tool types to
+    #  set, each written "KEY=value"). An icon can carry settings the program
+    #  reads, and which of them is right is decided by the machine being built
+    #  rather than by the archive.
+    #
+    #  Picasso96 is the case: it finds its graphics board through the BOARDTYPE
+    #  tool type of its monitor icon and then opens LIBS:Picasso96/<that>.card.
+    #  The archive ships that icon with no tool types at all - because its own
+    #  installer asks which board you have and writes one - so an untouched copy
+    #  left Picasso96 with no idea which card to load. It guesses, by scanning
+    #  for an autoconfig board, and Emu68's VideoCore is not one: it is found
+    #  through the Pi's device tree. So the guess failed and the boot said
+    #  "Could not create graphics board context for 'Picasso96'".
+    tooltypes: tuple[tuple[str, str, str, tuple[str, ...]], ...] = ()
 
     @property
     def url(self) -> str:
@@ -164,6 +179,23 @@ class Package:
     #  something soft-kicks the one on disk over it, and a patch like FBlit
     #  does nothing until it is run.
     startup: tuple[str, ...] = ()
+    #  Data files a startup line has to name, which only the archive can
+    #  decide: ``(placeholder, destination drawer, how many)``.  The line
+    #  carries ``{placeholder}`` and the build replaces it with the files the
+    #  package actually put in that drawer, in name order, as ``SYS:`` paths.
+    #
+    #  Birdie is the case this exists for and it is worth writing down, because
+    #  the failure was silent and looked like the software working.  Birdie
+    #  takes the window-border patterns to use on its command line, and it was
+    #  started with none: run with an empty PATTERNS list it opens a window
+    #  titled "About Birdie 2000" instead - so every boot ended with an about
+    #  box on the desktop and no patterns anywhere.  The names cannot be
+    #  written into the catalogue, because the archive decides what patterns it
+    #  ships, so they are read back off what was installed.
+    #
+    #  A line whose placeholder cannot be filled is dropped rather than written
+    #  bare: an unfilled line is the very thing that opened the about box.
+    startup_files: tuple[str, str, int] = ()
     #  Other packages this one cannot run without.  iGame, AmFTP, NetSurf and
     #  WookieChat are all MUI applications: copied on their own they land on
     #  the card, appear on Workbench and then do nothing at all when clicked,
@@ -446,12 +478,19 @@ CATALOGUE: list[Package] = [
             #  68040, and the icon launches whatever is called "iGame".
             rename=(("iGame-v2.6.1/iGame.040", "Programs/iGame", "iGame"),),
             #  guigfx.library and render.library draw its screenshots, and
-            #  both are compiled for a processor with an FPU: render.library
-            #  alone carries 153 floating point instructions, and no build
-            #  without them exists. Emu68 gives a PiStorm a 68040 with no
-            #  FPU, so calling one is a line-F exception - which is the guru
-            #  8000000B that iGame's own site warns about. They are optional,
-            #  so the card does without them and says so here.
+            #  on a PiStorm they stop iGame launching anything: it lists the
+            #  games and does nothing when one is clicked.  iGame's own site
+            #  names these two, and no_guigfx=1 with the libraries left off
+            #  is the fix.  They are optional, so the card does without them.
+            #
+            #  This used to say the cause was the 153 floating point
+            #  instructions in render.library meeting a 68040 with no FPU.
+            #  That is wrong twice over: Emu68 provides an FPU unless the
+            #  card is booted with "nofpu", which this tool never writes, and
+            #  every one of those instructions is a 68040 on-chip operation -
+            #  not one 68881 transcendental needing a trap the emulator might
+            #  not service.  The fix stands on what was observed; the reason
+            #  is unestablished.  See the README.
             write=(("igame.prefs", "Programs/iGame",
                     "no_guigfx=1\n"
                     "filter_use_enter=0\n"
@@ -607,9 +646,22 @@ CATALOGUE: list[Package] = [
         #  the pathed form failed on every boot and Birdie never started.
         #  ClassicWB's own User-Startup says "Run >NIL: C:XpkMasterPrefs",
         #  which is the form that works.
-        startup=("Run >NIL: C:Birdie",),
+        #
+        #  The patterns have to be named on the line. Started without them
+        #  Birdie draws nothing and opens its "About Birdie 2000" window
+        #  instead, which is what greeted the user on every boot; the names
+        #  come from what was installed rather than from here, because the
+        #  archive decides what patterns it ships.
+        startup=("Run >NIL: C:Birdie {patterns}",),
+        #  One, not all seven. Birdie keeps each pattern in three versions -
+        #  plain, shine and shadow - so handing it the whole drawer costs
+        #  memory on a machine that has little, and gives every window a
+        #  pattern picked at random, which is a patchwork rather than a look.
+        startup_files=("patterns", "Prefs/Presets/Birdie", 1),
         note="Installed into C: with its patterns in Prefs/Presets/Birdie, "
-             "and started from S:User-Startup.",
+             "and started from S:User-Startup with the first of them. The "
+             "patterns are JPEGs and are loaded through datatypes, so a "
+             "system with no JPEG datatype simply gets plain borders.",
     ),
     Package(
         "powerwindows", "PowerWindows",
@@ -696,11 +748,13 @@ CATALOGUE: list[Package] = [
         "What this Amiga actually is and how fast it goes - CPU, chipset, "
         "boards, and the benchmarks everyone quotes at each other.",
         category=Category.EXTRAS,
-        #  4.0 gurus on a 68040 with no FPU, which is exactly what Emu68
-        #  provides, and Aminet still carries a patch for it. Its own history
-        #  records the fix twice over - "68040 non FPU guru fixed" in 4.3 and
-        #  "68040/68060 non FPU guru fixed, again!" in 4.4 - and 4.4 is what
-        #  this address serves, so the patch is not needed.
+        #  Aminet still carries a patch for a guru in 4.0, which makes the
+        #  package look unsafe at a glance. Its own history records the fix
+        #  twice over - "68040 non FPU guru fixed" in 4.3 and "68040/68060
+        #  non FPU guru fixed, again!" in 4.4 - and 4.4 is what this address
+        #  serves, so the patch is not needed. (This note used to add that a
+        #  PiStorm is the FPU-less 68040 that bug needs. It is not; taking
+        #  the current release is the right choice regardless.)
         download=Download("util/moni/SysInfo.lha", stage="Utilities/SysInfo"),
         note="Unpacked into Utilities/SysInfo, ready to run.",
     ),
@@ -808,9 +862,11 @@ CATALOGUE: list[Package] = [
         "output instead of 8.",
         category=Category.MEDIA,
         #  Only the prefs program needs it, but it is the only way to choose
-        #  a mode afterwards. The BGUI build would avoid the dependency and
-        #  ships a bgui.library carrying floating point instructions, which
-        #  on a PiStorm's FPU-less 68040 is guru 8000000B.
+        #  a mode afterwards. The BGUI build would avoid the dependency; it
+        #  was passed over because its bgui.library carries floating point
+        #  instructions, reasoning that no longer holds now that a PiStorm is
+        #  known to have an FPU. The choice is unaffected - MUI is on the
+        #  card anyway - so it is left alone rather than churned.
         requires=("mui",),
         download=Download(
             "driver/audio/ahiusr_4.18.lha",
@@ -931,11 +987,22 @@ CATALOGUE: list[Package] = [
             #  where the drive came from.
             (("Picasso96Install", STAGING + "/Picasso96"),
              ("Picasso96Install/Libs/Picasso96API.library", "Libs"),
+             #  rtg.library is the RTG subsystem itself, and it was missing.
+             #  DEVS:Monitors/Picasso96 is run by S:Startup-Sequence and the
+             #  string inside that binary is "picasso96/rtg.library", opened
+             #  relative to LIBS: - so a card with the monitor, the settings
+             #  and the board driver but no rtg.library asked for a library
+             #  that was not there on every boot, and had no RTG screen.
+             #  Only fastlayers was being copied out of this drawer; the
+             #  archive's own installer copylibs all three of these to
+             #  SYS:Libs/Picasso96, unconditionally.
+             ("Picasso96Install/Libs/Picasso96/rtg.library",
+              "Libs/Picasso96"),
              ("Picasso96Install/Libs/Picasso96/fastlayers.library",
               "Libs/Picasso96"),
+             ("Picasso96Install/Libs/Picasso96/emulation.library",
+              "Libs/Picasso96"),
              ("Picasso96Install/Devs/Monitors/Picasso96", "Devs/Monitors"),
-             ("Picasso96Install/Devs/Monitors/Picasso96.info",
-              "Devs/Monitors"),
              ("Picasso96Install/Prefs/Picasso96Mode", "Prefs"),
              ("Picasso96Install/Prefs/Picasso96Mode.info", "Prefs")),
             #  The archive ships one settings file per monitor frequency and
@@ -943,7 +1010,14 @@ CATALOGUE: list[Package] = [
             #  permissive of them is the one that does not needlessly cut the
             #  mode list short.
             rename=(("Picasso96Install/Devs/Picasso96Settings.64", "Devs",
-                     "Picasso96Settings"),)),
+                     "Picasso96Settings"),),
+            #  The monitor's icon is how Picasso96 is told which board to
+            #  drive, and the archive ships it blank. Emu68's VideoCore is not
+            #  an autoconfig board, so nothing can find it by looking; it has
+            #  to be named.
+            tooltypes=(("Picasso96Install/Devs/Monitors/Picasso96.info",
+                        "Devs/Monitors", "Picasso96.info",
+                        (f"BOARDTYPE={EMU68_BOARD}",)),)),
         rtg_only=True,
         #  Choosing an RTG display *is* choosing Picasso96: it is the RTG
         #  subsystem, and Emu68's driver is a card for it. Leaving it to be
@@ -1034,12 +1108,44 @@ CATALOGUE: list[Package] = [
     Package(
         "netsurf", "NetSurf",
         "A browser that renders modern HTML and CSS, and the most usable one "
-        "on 68k hardware.",
+        "on 68k hardware. It wants a big screen and plenty of memory, so on "
+        "an OCS or ECS machine watching its own video, AWeb is the lighter "
+        "choice.",
         category=Category.NETWORK,
         download=Download("comm/www/netsurf-m68k.lha",
                           stage="Internet/NetSurf"),
         requires=("mui",),
         note="Unpacked into Internet/NetSurf, ready to run.",
+        default=True,
+    ),
+    Package(
+        "aweb", "AWeb APL",
+        "The browser an OCS or ECS machine can actually run. It draws on a "
+        "plain Workbench screen in as little as 2 MB, where a modern renderer "
+        "needs an RTG screen and much more of both.",
+        category=Category.NETWORK,
+        #  Installed, not staged. Its own Installer script does two things -
+        #  copy this drawer, and add an "Assign AWEB_APL:" line to
+        #  S:User-Startup - and both are done here, so the browser is ready to
+        #  run rather than ready to install.
+        #
+        #  Programs/AWeb_APL is where its installer puts it by default, and
+        #  ClassicWB's own User-Startup already assigns AWEB_APL: to exactly
+        #  that path - so a card built on that distribution finds the browser
+        #  the distribution was expecting, rather than a second copy elsewhere.
+        download=Download("comm/www/aweb3.5.09_68k_20070721.lha",
+                          #  The drawer's contents go into the drawer; its icon
+                          #  goes beside it, or Workbench shows nothing there.
+                          (("AWeb_APL", "Programs/AWeb_APL"),
+                           ("AWeb_APL.info", "Programs"))),
+        #  Guarded, and written whether or not the drive brought its own line:
+        #  a card built from floppies has no such assign, and assigning twice
+        #  to the same path costs nothing.
+        startup=("IF EXISTS SYS:Programs/AWeb_APL",
+                 "   Assign >NIL: AWEB_APL: SYS:Programs/AWeb_APL",
+                 "EndIF"),
+        note="Installed into Programs/AWeb_APL with its AWEB_APL: assign "
+             "added to S:User-Startup, ready to run.",
         default=True,
     ),
     Package(
@@ -1287,6 +1393,8 @@ def _merged(package: Package, root: Path,
         if target and entry.is_dir():
             pairs += _drawer(entry, target, skip)
         elif entry.name.lower().endswith(".info"):
+            #  Handled with the file it belongs to, below. A stray icon whose
+            #  file is not being placed is left behind deliberately.
             continue
         elif shaped is None:
             staged.append(entry.name)
@@ -1297,6 +1405,12 @@ def _merged(package: Package, root: Path,
                 continue
             staged.append(entry.name)
             pairs.append((str(entry), package.download.stage or STAGING))
+    #  An icon travels with the file it belongs to.  Every top-level .info was
+    #  being dropped here, which cost Roadshow the icon on Install_Roadshow -
+    #  and an Installer script with no icon cannot be started from Workbench at
+    #  all, so the package arrived staged and unreachable.
+    pairs += _icons_for(pairs)
+    pairs += _named_icons(package, pairs, progress)
     if staged:
         progress.log(f"  {package.label}: staged {', '.join(staged)}")
     return pairs
@@ -1336,11 +1450,35 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
     #  archive went to `stage` - which for such a package is "", the volume
     #  root.
     if not (download.items or download.rename or download.write
-            or download.retool):
+            or download.retool or download.tooltypes):
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
-        return [(str(source), download.stage)]
+        whole = [(str(source), download.stage)]
+        return whole + _named_icons(package, whole, progress)
     out: list[tuple[str, str]] = _written(package, progress)
+    for inside, destination, newname, entries in download.tooltypes:
+        source = root / inside
+        if not source.exists():
+            progress.log(f"  {package.label}: {inside} is not in the archive")
+            continue
+        try:
+            icon = source.read_bytes()
+            for entry in entries:
+                key, _, value = entry.partition("=")
+                icon = amigainfo.set_tooltype(icon, key, value)
+        except amigainfo.InfoError as error:
+            #  Copied across untouched rather than left out: an icon with no
+            #  tool types is what the archive shipped, and the program can
+            #  still be pointed at its board by hand.
+            progress.log(f"  {package.label}: could not set the tool types on "
+                         f"{inside} ({error}); copied as it is")
+            icon = source.read_bytes()
+        staged = cache_dir() / f"{package.key}-tooltypes" / destination
+        staged.mkdir(parents=True, exist_ok=True)
+        (staged / newname).write_bytes(icon)
+        out.append((str(staged / newname), destination))
+        progress.log(f"  {package.label}: {newname} set to "
+                     f"{', '.join(entries)}")
     for inside, destination, newname, tool in download.retool:
         source = root / inside
         if not source.exists():
@@ -1375,6 +1513,278 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
             out.append((str(path), destination))
         else:
             progress.log(f"  {package.label}: {inside} is not in the archive")
+    #  Same rule as for a merged archive: whatever is placed, its icon goes
+    #  with it. KingCON listed its Installation script and not
+    #  Installation.info, so the script landed with no way to start it.
+    out += _icons_for(out)
+    out += _named_icons(package, out, progress)
+    return out
+
+
+#  How an Installer icon names the script it runs.  The convention is
+#  Commodore's: the icon's DefaultTool is Installer and this tool type says
+#  which script to feed it, so the icon need not be named after the script.
+SCRIPT_TOOLTYPE = "SCRIPT="
+
+#  An installer lives near the top of an archive; walking a whole Scalos tree
+#  to look for one would cost more than it is worth.
+ICON_SEARCH_DEPTH = 3
+
+
+def _named_icons(package: Package, pairs: list[tuple[str, str]],
+                 progress: Progress) -> list[tuple[str, str]]:
+    """Give a script the icon that names it but is not named after it.
+
+    Several archives ship their installer as a script with no icon of its own,
+    beside an icon with no file of its own - ``MCP-Install.english.info`` says
+    ``SCRIPT=Install_MCP``, ``Scalos-Install.english.info`` says
+    ``SCRIPT=Install.Scalos``, ``Setup.info`` says ``SCRIPT=InstallPicasso96``.
+
+    Workbench shows an icon only when the file beside it exists, so both halves
+    are invisible: the script cannot be started and the icon is not drawn.  The
+    card then carries a package that says "run its Installer on the Amiga" and
+    no way to do it short of a Shell.
+
+    So the icon is placed a second time under the script's name.  The original
+    is left where it is - it is what the archive shipped - and nothing is
+    invented: these are the archive's own icons, saying themselves which script
+    they belong to.
+    """
+    out: list[tuple[str, str]] = []
+    done: set[Path] = set()
+    for source, destination in pairs:
+        root = Path(source)
+        if not root.is_dir():
+            continue
+        try:
+            #  An archive can ship one installer icon per language - MCP has a
+            #  deutsch and an english - and they differ only in the LANGUAGE
+            #  tool type that Installer reads. Sorted order alone would have
+            #  handed a German installer to an English tool, so the language
+            #  is chosen rather than fallen into.
+            icons = sorted(root.rglob("*.info"),
+                           key=lambda i: (0 if "english" in i.name.lower()
+                                          else 1, str(i).lower()))
+        except OSError:
+            continue
+        for icon in icons:
+            here = icon.relative_to(root).parent
+            if len(here.parts) >= ICON_SEARCH_DEPTH:
+                continue
+            #  An orphan: an icon whose own file is not there.
+            if icon.with_name(icon.name[:-len(".info")]).exists():
+                continue
+            try:
+                types = amigainfo.read_tooltypes(icon.read_bytes())
+            except Exception:                    # noqa: BLE001 - an odd icon
+                continue                         #  is simply not one of these
+            named = next((entry[len(SCRIPT_TOOLTYPE):].strip() for entry in types
+                          if entry.upper().startswith(SCRIPT_TOOLTYPE)), "")
+            if not named:
+                continue
+            script = icon.parent / named
+            if not script.is_file() or script.with_name(
+                    script.name + ".info").exists():
+                continue
+            if script in done:
+                continue
+            done.add(script)
+            where = f"{destination}/{here}".rstrip("/.") if here.parts \
+                else destination
+            staged = cache_dir() / f"{package.key}-iconnames" / where
+            staged.mkdir(parents=True, exist_ok=True)
+            target = staged / (named + ".info")
+            target.write_bytes(icon.read_bytes())
+            out.append((str(target), where))
+            progress.log(f"  {package.label}: {named} given the icon from "
+                         f"{icon.name}, so it can be started from Workbench")
+    return out
+
+
+def _icons_for(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The icons belonging to what is already being placed.
+
+    On the Amiga a file is only visible in Workbench if its ``.info`` is beside
+    it, and a drawer's icon lives in the *parent* of the drawer rather than
+    inside it - so the two cases land in different places and both are needed.
+
+    Only icons the archive already carries, and only for things being placed
+    anyway: nothing is invented, and an icon whose file was left out stays left
+    out.
+    """
+    already = {(source, destination) for source, destination in pairs}
+    placed = {f"{destination}/{Path(source).name}".lower()
+              for source, destination in pairs}
+    out: list[tuple[str, str]] = []
+    for source, destination in pairs:
+        path = Path(source)
+        if path.name.lower().endswith(".info"):
+            continue
+        icon = path.with_name(path.name + ".info")
+        if not icon.is_file():
+            continue
+        #  A drawer placed *as* a destination - "AWeb_APL" copied to
+        #  "Programs/AWeb_APL" - has its icon one level up, beside the drawer.
+        where = (destination.rsplit("/", 1)[0] if path.is_dir()
+                 and destination.lower().endswith("/" + path.name.lower())
+                 else destination)
+        pair = (str(icon), where)
+        if pair in already or f"{where}/{icon.name}".lower() in placed:
+            continue
+        already.add(pair)
+        out.append(pair)
+    return out
+
+
+#  Files an archive carries alongside its data but which are not data: an icon
+#  is Workbench's business, not the program's, and naming one on a command line
+#  would hand a program a file it cannot read.
+NOT_DATA = (".info",)
+
+
+def installed_names(package: Package,
+                    pairs: Iterable[tuple[str, str]]) -> list[str]:
+    """The data files ``package`` put in the drawer its startup line names.
+
+    Read off the pairs the build resolved, not written down here: the archive
+    decides what it ships, and a name typed into the catalogue would be a guess
+    that goes wrong the first time its publisher adds or renames one.
+
+    A pair's source is a whole drawer as often as a single file - the archive's
+    ``Patterns`` drawer goes to ``Prefs/Presets/Birdie`` entire - so a directory
+    is listed rather than named.
+    """
+    if not package.startup_files:
+        return []
+    _placeholder, drawer, limit = package.startup_files
+    names: list[str] = []
+    for source, destination in pairs:
+        if destination.replace("\\", "/").lower() != drawer.lower():
+            continue
+        path = Path(source)
+        try:
+            found = ([path] if path.is_file()
+                     else sorted(c for c in path.iterdir() if c.is_file()))
+        except OSError:
+            continue
+        names += [c.name for c in found
+                  if not c.name.lower().endswith(NOT_DATA)]
+    names.sort(key=str.lower)
+    return names[:limit] if limit else names
+
+
+def complete_startup(package: Package,
+                     pairs: Iterable[tuple[str, str]]) -> list[str] | None:
+    """``package``'s startup lines with their placeholder filled in.
+
+    ``None`` when the files it needs are not on the card, because the line
+    must then not be written at all: Birdie started with no patterns opens its
+    about window, which is worse than Birdie not being started.
+    """
+    if not package.startup_files:
+        return list(package.startup)
+    placeholder, drawer, _limit = package.startup_files
+    names = installed_names(package, pairs)
+    if not names:
+        return None
+    arguments = " ".join(f'"SYS:{drawer}/{name}"' for name in names)
+    return [line.replace("{" + placeholder + "}", arguments)
+            for line in package.startup]
+
+
+#  How an archive marks which processor a binary is for: a suffix on the end
+#  of the name, after a dot, an underscore or a hyphen. Matched as a whole
+#  suffix so "iGame.030" is one and "AWeb.developer" is not.
+CPU_SUFFIX = re.compile(
+    r"(?i)^(?P<stem>.+)[._-](?:0[0-9]0|680[0-9]0|88[12]|fpu|nofpu|ppc|mos|os4)$")
+
+
+def cpu_leftovers(package: Package,
+                  pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """Builds for other processors, left beside the one that was installed.
+
+    An archive that ships one binary per processor is installed by ``rename``:
+    the right one goes on under the name its icon launches. The archive's own
+    drawer is usually copied as well, so the others land beside it - and on a
+    card built for a 68040 that is ``iGame.030`` and ``iGame.060``, which
+    nothing can run, next to ``iGame.040``, which is byte for byte the ``iGame``
+    already there.
+
+    Three copies of one program in a drawer, two of them for hardware the
+    machine has not got and none of them clickable. Read off the ``rename``
+    rather than named here, so it holds for whatever an archive calls them.
+    """
+    if not package.download or not package.download.rename:
+        return {}
+    out: dict[str, str] = {}
+    for inside, destination, newname in package.download.rename:
+        found = CPU_SUFFIX.match(Path(inside).name)
+        if not found:
+            continue
+        stem = found.group("stem").lower()
+        #  Everything in the same drawer whose name is that stem with a
+        #  processor on the end - the installed one included, because it is
+        #  now on the card under the name the icon uses.
+        for source, where in pairs:
+            here = Path(source)
+            names = ([here] if here.is_file()
+                     else sorted(here.iterdir()) if here.is_dir() else [])
+            for item in names:
+                other = CPU_SUFFIX.match(item.name)
+                if other is None or other.group("stem").lower() != stem:
+                    continue
+                landing = f"{where}/{item.name}" if where else item.name
+                out[landing] = (f"{newname} is installed as the one this "
+                                f"machine runs")
+    return out
+
+
+#  What an icon's DefaultTool says when the file beside it is an Installer
+#  script. Both spellings appear in the wild.
+RUNS_THE_INSTALLER = ("installer", "c:installer", "sys:c/installer")
+
+
+def redundant_installers(package: Package,
+                         pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """A package's own Installer script, where the build has already installed it.
+
+    An archive ships one so somebody can install it on the Amiga. When this
+    tool stages the archive - into ``Storage/Install`` - that script is the
+    point of the exercise and must stay. When the tool installs the software
+    itself, the script sits in the finished drawer offering to do again what is
+    already done: ``Programs/iGame/Install-iGame`` beside the iGame it just
+    installed.
+
+    Where it lands is the whole discriminator. Every one of these icons says
+    ``DefaultTool=Installer``, staged or not, so the name and the icon cannot
+    tell the two cases apart - but a script landing outside the staging drawer
+    belongs to software that is already in place.
+    """
+    out: dict[str, str] = {}
+    for source, destination in pairs:
+        if destination.replace("\\", "/").lower().startswith(STAGING.lower()):
+            continue                     # staged on purpose; the script is why
+        here = Path(source)
+        try:
+            inside = ([here] if here.is_file()
+                      else sorted(here.iterdir()) if here.is_dir() else [])
+        except OSError:
+            continue
+        for icon in inside:
+            if not icon.name.lower().endswith(".info"):
+                continue
+            script = icon.with_name(icon.name[:-len(".info")])
+            if not script.is_file():
+                continue
+            try:
+                tool = amigainfo.read_default_tool(icon.read_bytes())
+            except Exception:            # noqa: BLE001 - not an icon we read
+                continue
+            if tool.strip().lower() not in RUNS_THE_INSTALLER:
+                continue
+            why = f"{package.label} is installed already, not staged"
+            for name in (script.name, icon.name):
+                out[f"{destination}/{name}" if destination else name] = why
     return out
 
 
@@ -1410,8 +1820,19 @@ def principal_programs(keys: list[str], progress: Progress | None = None,
         if package is None or package.download is None:
             continue
         for source, destination in overlays_for([key], progress=progress, **kw):
-            filling.add(destination)
             path = Path(source)
+            #  Only a *drawer* going onto the card fills its destination. A
+            #  single file landing in one does not, and treating it that way
+            #  put bare top-level drawers into this set - Programs, Utilities,
+            #  Audio, System, Prefs, Storage, Libs, C, S, L, Devs, Locale and
+            #  WBStartup, every one of them from some package dropping an icon
+            #  beside its drawer. find_duplicates skips anything inside a
+            #  drawer this build fills, so that suppressed duplicate detection
+            #  almost everywhere a program lives: of a full package selection
+            #  on ClassicWB only Tools/SysInfo was ever reported, and only
+            #  because no package happens to put a file in Tools.
+            if path.is_dir():
+                filling.add(destination)
             try:
                 candidates = ([path] if path.is_file()
                               else [c for c in path.iterdir() if c.is_file()])
