@@ -393,17 +393,21 @@ FS-UAE configuration so it is never written twice.
 
 That matters because the hand-written harness used through one long bisection
 had drifted into describing a different machine entirely — `amiga_model =
-A1200` (AGA, not the ECS A500 in question), `fpu = 68040` on an accelerator
-that has no FPU at all, and `accuracy = 0`, which runs a fast, inexact 68040 on
-which WHDLoad cannot start a single game. That last one cost hours of hunting a
-defect in the imager that was a flag in the emulator. The module fixes
-`accuracy = 1`, takes the model from the chipset, the chip RAM from the
-trapdoor choice, and asks for no FPU.
+A1200` (AGA, not the ECS A500 in question) and `accuracy = 0`, which runs a
+fast, inexact 68040 on which WHDLoad cannot start a single game. That one cost
+hours of hunting a defect in the imager that was a flag in the emulator. The
+module fixes `accuracy = 1`, takes the model from the chipset, and takes the
+chip RAM from the trapdoor choice.
 
-One caveat is recorded rather than papered over: FS-UAE 3.0.3 accepts
-`fpu = none` silently and says nothing either way, so whether it takes effect
-is **unverified**. Assume floating point code may still run in the emulator and
-guru on the real machine.
+It also asks for `fpu = 68040`, and that line was wrong for a long time. It
+said `fpu = none`, on the belief that a PiStorm has no FPU — see [the FPU, and
+a wrong answer held for a long time](#the-fpu-and-a-wrong-answer-held-for-a-long-time).
+The mistake hid itself twice over: FS-UAE 3.0.3 does not accept `none`, logs
+`WARNING: Unknown FPU specified` where nobody was reading, and falls back to a
+full 68040 FPU — so the emulator accidentally matched the real machine while
+the code said the opposite. `fpu = 0` is the value FS-UAE honours and the wrong
+one to use here: an emulator stricter than the hardware fails software that
+would have run, which misleads exactly as badly as one more forgiving.
 
 Attach **the whole `0x76` partition**, not the bootable drive alone, so that
 every drive mounts and can be checked — and copy it *exactly*. A copy one
@@ -995,7 +999,7 @@ one or left the list:
 | WookieChat | `comm/irc/WookieChat2.11_OS3.lha` |
 | MiamiDx (`network`) | **Replaced.** The device it needed was the donor's `vlink.device`, which nobody publishes. Emu68's own release carries `wifipi.device` for the wireless chip the Pi actually has, so that is the network card now, with the firmware for every Pi model, and Roadshow's interface file names it. |
 | IBrowse | **Dropped.** Commercial, and not distributable. NetSurf is the browser. |
-| AWeb | **Dropped.** Aminet's `AWeb.lha` is a 3.2 demo; the free APL release is a per-CPU build whose 68020 binary carries floating point instructions, and [a PiStorm has no FPU](#a-pistorm-has-no-fpu). |
+| AWeb | **Installed**, from the free APL release. Aminet's `AWeb.lha` is only a 3.2 demo, so `comm/www/aweb3.5.09_68k_20070721.lha` is used instead: the drawer goes to `Programs/AWeb_APL` and the build adds the `AWEB_APL:` assign its own Installer would have made, so there is nothing left to run on the Amiga. It is the browser for an OCS or ECS machine — NetSurf wants an RTG screen and a lot of memory. This entry once read "Dropped", on the grounds that the 68020 binary carries floating point instructions and a PiStorm has no FPU; [that reasoning was wrong](#the-fpu-and-a-wrong-answer-held-for-a-long-time). |
 | A newer SetPatch | **Dropped.** Commodore's, from a later release, undistributable — and it stopped every WHDLoad game from starting. |
 | Backdrops and boot pictures | **Dropped.** They were another distribution's artwork. |
 
@@ -1050,9 +1054,11 @@ the one inside is the tool icon that makes the program startable. A test checks
 both, because a drawer with a tool icon on it is a drawer Workbench will not
 open.
 
-Both binaries were checked for floating point instructions before being added,
-since [a PiStorm has no FPU](#a-pistorm-has-no-fpu). They sit at the same noise
-floor as `C:WHDLoad`, which has 55 such words and runs perfectly.
+Both binaries were counted for floating point instructions before being added,
+back when [a missing FPU was thought to explain a failure it does
+not](#the-fpu-and-a-wrong-answer-held-for-a-long-time). They sit at the same
+noise floor as `C:WHDLoad`, which has 55 such words and runs perfectly — which
+was the first sign that counting F-line words predicts nothing.
 
 ### What a package needs to actually run
 
@@ -1125,10 +1131,13 @@ than a guess:
   build. Emu68 presents a 68040, so the plain one is right — and none of the
   binaries copied contains a floating point instruction, which was counted
   rather than assumed.
-- **Which prefs program.** AHI ships MUI and BGUI builds side by side. The BGUI
-  one would avoid depending on MUI, and its `bgui.library` carries floating
-  point instructions — guru `8000000B` on an FPU-less 68040. So the MUI build
-  is used and `mui` is declared as a requirement. It also has to be **renamed**
+- **Which prefs program.** AHI ships MUI and BGUI builds side by side. The MUI
+  build is used and `mui` is declared as a requirement. The BGUI one would
+  avoid that dependency, and was passed over because its `bgui.library` carries
+  floating point instructions — reasoning that [no longer
+  holds](#the-fpu-and-a-wrong-answer-held-for-a-long-time), though the choice
+  is unaffected: MUI is on the card anyway for iGame and the browsers, so the
+  dependency costs nothing. It also has to be **renamed**
   to `AHI` as it lands, because the icon in the archive is `AHI.info` and would
   otherwise point at nothing.
 - **The `AUDIO:` handler ships with its mountlist, or not at all.** ClassicWB's
@@ -1879,13 +1888,15 @@ which the command line reaches as well. A rule that lives in one code path is
 this project's recurring defect; the roles come off the packages, so a pair
 added later is covered without touching the check.
 
-**SysInfo** joins the extras, and it is worth saying which one. Version 4.0
-gurus on a 68040 with no FPU — precisely what Emu68 provides — and Aminet still
-carries a patch for that bug, which makes the package look unsafe. Its own
-history records the fix twice: *"68040 non FPU guru fixed"* in 4.3 and
-*"68040/68060 non FPU guru fixed, again!"* in 4.4. `util/moni/SysInfo.lha`
-serves 4.4, so the patch is not needed and the 53 floating point instructions
-still in the binary are behind a CPU check.
+**SysInfo** joins the extras, and it is worth saying which one. Aminet still
+carries a patch for a guru in version 4.0, which makes the package look unsafe
+at a glance. It is not needed: SysInfo's own history records the fix twice —
+*"68040 non FPU guru fixed"* in 4.3 and *"68040/68060 non FPU guru fixed,
+again!"* in 4.4 — and `util/moni/SysInfo.lha` serves 4.4. The 53 floating point
+instructions still in the binary are behind a CPU check. (This entry used to
+add that a PiStorm is the FPU-less 68040 that bug needs; [it is
+not](#the-fpu-and-a-wrong-answer-held-for-a-long-time). Taking the current
+release rather than the oldest one that runs is the right choice regardless.)
 
 ### Leaving out what this machine cannot run
 
@@ -2319,33 +2330,72 @@ what the server said while the answer is still at hand; this was found when a
 real download arrived 170 KB short and the failure only surfaced two steps
 later.
 
-### Nothing on the card may need an FPU
+### The FPU, and a wrong answer held for a long time
 
 *This is what stopped iGame launching games.* It listed them correctly and then
-did nothing when one was clicked - window closed, WHDLoad never started, nothing
-reported. With the FPU libraries off the card and `no_guigfx=1` in its
-preferences, it launches.
+did nothing when one was clicked — window closed, WHDLoad never started,
+nothing reported. With `guigfx.library` and `render.library` off the card and
+`no_guigfx=1` in its preferences, it launches. **That fix is real and stays.**
 
+The *explanation* attached to it was wrong, and it is written up here because
+it was confident, specific, and repeated across this file for months.
 
-Emu68 gives a PiStorm a **68040 with no FPU**. A floating point instruction on
-such a machine raises a line-F exception - **guru 8000000B** - and iGame's own
-site warns about exactly that guru for exactly these libraries.
+**The claim was:** Emu68 gives a PiStorm a 68040 with no FPU, so a floating
+point instruction raises a line-F exception — guru 8000000B — which is the guru
+iGame's own site warns about for exactly these libraries.
 
-Counting F-line opcodes in the binaries settles it, with the published no-FPU
-build of `guigfx` as the control:
+**Emu68's own documentation says otherwise.** The release archive ships
+`overlays/overlays.md`, which lists for `emu68.dtbo`:
 
-| Library | FPU instructions |
-| --- | --- |
-| `guigfx.library` (standard) | 41 |
-| `guigfx.library` (no-FPU build) | 0 |
-| `render.library` | **153** |
+> `no_fpu` — Disables the FPU entirely. Every FPU instruction will throw an
+> exception
 
-There is a no-FPU `guigfx` on Aminet and **no no-FPU `render` anywhere**, and
-`guigfx.library` opens `render.library`, so the whole stack is unusable here.
-iGame lists all three as optional, so the card does without them and iGame is
-installed with `no_guigfx=1` in its own preferences. It loses the screenshots
-and keeps working. PiMiga's copy of that preferences file had the same line in
-it, which suggests somebody else met this years ago.
+A switch that *disables* the FPU is a switch on a machine that has one. The
+equivalent kernel command line word is `nofpu` — a different spelling from the
+dtparam — and it appears in the option list inside both the v1.0.7 and the
+v1.1.0-beta.1 kernels, so this is not new in the beta. **This imager never
+writes that switch, so every card it builds has an FPU.**
+
+**Nor do the instruction counts support it.** The libraries really do carry
+floating point code, counted as F-line opcodes (`0xF200`–`0xF23F`) in the
+copies inside `MCC_Guigfx.lha`, which is the archive this tool installs:
+
+| Library | FPU instructions | Of those, needing a trap |
+| --- | --- | --- |
+| `guigfx.library` | 41 | **0** |
+| `render.library` | **153** | **0** |
+
+The second column is the one that matters and was never checked. A 68040's
+on-chip FPU implements only part of the 68881 instruction set; the
+transcendentals — `FSIN`, `FCOS`, `FTAN`, `FETOX`, `FLOGN` and the rest — trap
+as *unimplemented instructions* and have to be serviced in software. If Emu68
+did not service them, code built for a 68881 would still fail on a machine that
+has an FPU, and that would have rescued the original conclusion.
+
+It does not. Decoding each instruction's extension word and reading its opmode
+field, **every** floating point instruction in both libraries is one the 68040
+executes on-chip: moves, `FADD`, `FMUL`, `FDIV`, `FSUB`, `FABS`, `FNEG`,
+`FCMP`, `FSQRT` and their kin. Not one transcendental in either library. So
+nothing about the FPU — present, absent, or partially implemented — explains
+why these two libraries fail here.
+
+**What is actually established**, and all the card is built on:
+
+* iGame's screenshots did not work, and iGame's own site names `guigfx` and
+  `render` as the cause;
+* with `no_guigfx=1` in `igame.prefs` and those libraries left off, iGame
+  works. PiMiga's copy of that preferences file carries the same line, which
+  suggests somebody else met this years ago;
+* **why** they fail on a PiStorm is unestablished. It is not the FPU.
+
+There was a clue in this file all along: `C:WHDLoad` carries 55 F-line words
+and runs perfectly on every card built here. Counting them predicts nothing.
+
+**The general rule this leaves behind.** Do not carry a capability claim about
+Emu68 from memory. The release archive carries `overlays/overlays.md` and the
+kernel carries its own option list as plain strings; both are one command away.
+Read those, and read the card's own `cmdline.txt` and `config.txt` to see which
+options the card in front of you actually sets.
 
 ### MUI, and the classes that are not in MUI
 
