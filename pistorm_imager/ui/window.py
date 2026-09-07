@@ -61,6 +61,11 @@ MODES = [
      "Build a new card and give a partition that image as its contents."),
     ("Update an existing card", builder.BuildMode.CUSTOMISE,
      "Leave everything on the card alone and only refresh the boot partition."),
+    ("Export drives as .hdf", builder.BuildMode.EXPORT,
+     "Read the Amiga drives back out of a card or an image and write each one "
+     "as its own .hdf, ready to mount in WinUAE or FS-UAE. Each file carries "
+     "its own Rigid Disk Block and the file system handler the card embedded, "
+     "so a PFS3 drive is readable with nothing else supplied."),
 ]
 
 FILESYSTEMS = ["PFS3", "PDS3", "FFS-INTL", "FFS", "SFS"]
@@ -512,6 +517,8 @@ class ImagerWindow(Adw.ApplicationWindow):
                                         "preferences-system-symbolic")
         self.stack.add_titled_with_icon(self._page_target(), "target", "Target",
                                         "media-flash-symbolic")
+        self.stack.add_titled_with_icon(self._page_export(), "export",
+                                        "Export", "document-save-symbolic")
         view.set_content(self.stack)
 
         #  The quick start is a choice of three things to do, not a page among
@@ -696,11 +703,17 @@ class ImagerWindow(Adw.ApplicationWindow):
         thing there is to do.
         """
         self._customising = bool(on)
+        exporting = getattr(self, "_was_exporting", False)
         for name in ("source", "storage", "amiga", "packages", "options",
                      "target"):
             page = self.stack.get_page(self.stack.get_child_by_name(name))
             if page is not None:
-                page.set_visible(self._customising)
+                #  Export writes files out of an image and touches no card,
+                #  so none of the pages about building one apply to it.
+                page.set_visible(self._customising and not exporting)
+        page = self.stack.get_page(self.stack.get_child_by_name("export"))
+        if page is not None:
+            page.set_visible(self._customising and exporting)
         quick = self.stack.get_page(self.stack.get_child_by_name("quick"))
         if quick is not None:
             quick.set_visible(not self._customising)
@@ -2108,10 +2121,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.page_target = page
 
         group = Adw.PreferencesGroup(title="Where should the result go?")
+        #  "Amiga hard disk image (.hdf)" used to be a third choice here. It
+        #  wrote the build's output as one bare drive, and a PiStorm card
+        #  normally carries four - so it could not say which drive it was, and
+        #  was wrong for every card this tool builds. Reading drives back out
+        #  is its own task now: see "Export drives as .hdf".
         self.target_row = Adw.ComboRow(
             title="Write to",
-            model=combo(["SD card", "SD card image file",
-                         "Amiga hard disk image (.hdf)"]))
+            model=combo(["SD card", "SD card image file"]))
         self.target_row.connect("notify::selected",
                                 lambda *_a: self._target_changed())
         group.add(self.target_row)
@@ -2205,6 +2222,78 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------- helpers
 
+    def _page_export(self) -> Adw.PreferencesPage:
+        """Read the Amiga drives back out of a card, one .hdf each.
+
+        The old answer wrote the build's *output* as a single bare drive,
+        which cannot describe the four a PiStorm card carries. Here the drives
+        are read from the image and offered by name, and each chosen one is
+        written self-contained - its own Rigid Disk Block, and the handler the
+        card embedded, so a PFS3 drive mounts with nothing else supplied.
+        """
+        page = Adw.PreferencesPage()
+
+        group = Adw.PreferencesGroup(
+            title="Export drives as .hdf",
+            description="Point at a card image, a backup or an .hdf, and lift "
+                        "whichever drives you want out of it.")
+        self.export_source = FileRow(
+            "Image to read", "A card image, a backup, or an .hdf",
+            filters=IMAGE_FILTERS + HDF_FILTERS,
+            on_change=lambda _p: self._refresh_export_drives())
+        group.add(self.export_source)
+        self.export_dir = FileRow(
+            "Export into", "Folder for the .hdf files", folder=True,
+            on_change=lambda _p: self._update_summary())
+        group.add(self.export_dir)
+        page.add(group)
+
+        #  One row per drive found, ticked to export. Nothing is listed until
+        #  an image is chosen, because a guess about what a card holds is
+        #  exactly what this feature exists to replace.
+        self.export_group = Adw.PreferencesGroup(
+            title="Drives in this image",
+            description="Choose an image to see what it holds.")
+        page.add(self.export_group)
+        self.export_rows: dict[str, Adw.SwitchRow] = {}
+        return page
+
+    def _refresh_export_drives(self) -> None:
+        """List what the chosen image actually holds."""
+        if not hasattr(self, "export_group"):
+            return
+        for row in list(self.export_rows.values()):
+            self.export_group.remove(row)
+        self.export_rows.clear()
+        path = self.export_source.path
+        found = []
+        if path:
+            try:
+                from ..core import export                    # noqa: PLC0415
+                found = export.drives(path)
+            except Exception as error:                       # noqa: BLE001
+                self.export_group.set_description(f"Could not read it: {error}")
+                self._update_summary()
+                return
+        if not path:
+            self.export_group.set_description("Choose an image to see what it holds.")
+        elif not found:
+            self.export_group.set_description(
+                "No Amiga drives found in this image - it has no Rigid Disk "
+                "Block, so there is nothing to take out of it.")
+        else:
+            self.export_group.set_description(
+                f"{len(found)} drive(s). Each ticked one becomes a separate "
+                f"self-contained .hdf.")
+        for drive in found:
+            row = Adw.SwitchRow(title=drive.label, subtitle=
+                                f"{drive.description}  ->  {drive.filename()}")
+            row.set_active(True)
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.export_rows[drive.name] = row
+            self.export_group.add(row)
+        self._update_summary()
+
     def _mode(self) -> builder.BuildMode:
         return MODES[self.mode_row.get_selected()][1]
 
@@ -2221,8 +2310,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         return self.device_list[index]
 
     def _making_hdf(self) -> bool:
-        """True when the output is a bare Amiga drive rather than a card."""
-        return self.target_row.get_selected() == 2
+        """Kept as False: the build no longer writes a bare Amiga drive.
+
+        One file cannot describe the four drives a PiStorm card carries, so
+        that option became "Export drives as .hdf", which writes one
+        self-contained file per drive.
+        """
+        return False
 
     def _sync_visibility(self) -> None:
         if not self._ready:
@@ -2244,6 +2338,34 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  and out as the mode was adjusted underneath.
         if getattr(self, "_customising", True):
             self.image_group.set_visible(mode is builder.BuildMode.IMAGE)
+        #  Export is a task in its own right, not a step in building a card.
+        #  It has no quick start to work through - its page *is* its
+        #  interface - so choosing it shows that page whether or not the full
+        #  workflow was asked for, and hides the rest, including the quick
+        #  start itself. Every other mode goes back to the normal rules.
+        exporting = mode is builder.BuildMode.EXPORT
+        #  Only on the way in and the way out. Setting these on every call
+        #  fought the quick start, which borrows groups between pages and
+        #  hides them itself - three of its checks broke the moment this
+        #  method started deciding page visibility for every mode.
+        if exporting != getattr(self, "_was_exporting", False):
+            self._was_exporting = exporting
+            if exporting:
+                for name in ("quick", "source", "storage", "amiga",
+                             "packages", "options", "target"):
+                    child = self.stack.get_child_by_name(name)
+                    if child is not None:
+                        self.stack.get_page(child).set_visible(False)
+                child = self.stack.get_child_by_name("export")
+                if child is not None:
+                    self.stack.get_page(child).set_visible(True)
+                    self.stack.set_visible_child_name("export")
+            else:
+                child = self.stack.get_child_by_name("export")
+                if child is not None:
+                    self.stack.get_page(child).set_visible(False)
+                #  Hand the pages back to whoever owns them.
+                self._set_customising(getattr(self, "_customising", False))
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
         self.os_group.set_visible(mode is builder.BuildMode.FRESH)
@@ -3350,9 +3472,19 @@ class ImagerWindow(Adw.ApplicationWindow):
             emu68_archive=self.local_zip_row.path,
             install_emu68=(self.install_emu_row.get_active()
                            and not self._making_hdf()),
-            source_image=self.image_row.path,
+            #  Export reads its own image, chosen on its own page: the
+            #  Source page belongs to the builds and must not be borrowed.
+            source_image=(self.export_source.path
+                          if self._mode() is builder.BuildMode.EXPORT
+                          else self.image_row.path),
             hdf_image=self.hdf_row.path,
             output_hdf=self._making_hdf(),
+            #  Export reads an image and writes files; it shares the job, the
+            #  progress and the button with the builds, and nothing else.
+            export_drives=[name for name, row in
+                           getattr(self, "export_rows", {}).items()
+                           if row.get_active()],
+            export_dir=getattr(getattr(self, "export_dir", None), "path", "") or "",
             repair_rdb=self.repair_row.get_active(),
             patch_display=self.patch_display_row.get_active(),
             boot_size=boot_size,
@@ -3993,8 +4125,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._add_extra_partition(spec)
         if not self.extra_rows:
             self._add_extra_partition()
-        self.target_row.set_selected(
-            0 if config.target_is_device else (2 if config.output_hdf else 1))
+        self.target_row.set_selected(0 if config.target_is_device else 1)
         #  Quick setup holds its own copy of the target, and mirrors it onto
         #  this page; without updating it too, the next mirror would undo what
         #  has just been applied.

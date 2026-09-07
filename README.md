@@ -43,8 +43,29 @@ nowhere to put a Workbench install, a package or a folder of games, the build
 **says so before it starts** rather than quietly dropping them - the ticks stay
 where they are.
 
-It can also produce a bare **Amiga hard disk image** instead of a card, which
-works here and in WinUAE or FS-UAE.
+There is a fifth task that writes no card at all: **Export drives as .hdf**
+reads the Amiga drives back *out* of a card, a backup or an `.hdf`, and writes
+each one you tick as its own file.
+
+This replaces an option that was quietly wrong. "Write to: Amiga hard disk
+image (.hdf)" used to write the build's *output* as one bare drive - and a
+PiStorm card normally carries four, a system drive, games, demos and a work
+drive, so a single bare file could not say which of them it was. Reading drives
+back out is a different job, and it now has its own page rather than a third
+entry in a list about where to write a card.
+
+Each file is **self-contained**: its own Rigid Disk Block naming the drive, and
+the file system handler the source card embedded copied in beside it. That is
+what self-contained has to mean for PFS3, which no emulator has built in - a
+bare copy of those blocks cannot be mounted without the handler, and the volume
+name goes with it. Verified against a real card: `DH2` came out as `Demos.hdf`
+carrying PFS3 19.2 in 59,532 bytes, and the volume mounts as `Demos`.
+
+The drives are **read from the image, never guessed**: choose a file and the
+page lists what is actually in it, by the name a person calls it, with the file
+each one would become. A drive whose name cannot be read is still offered -
+being unreadable here is a reason to hand it to something else, not a reason to
+leave it out.
 
 Along the way it will:
 
@@ -227,7 +248,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 668 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 673 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
