@@ -44,6 +44,13 @@ EMULATOR_COMMANDS = [
 
 STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
 
+#  Workbench keeps the icons it lifts out onto the desktop in this file, one
+#  path per line, each written from the volume root with a leading colon. An
+#  icon named here is shown on the desktop *instead of* inside its drawer, so
+#  taking a line out does not remove anything - it puts the icon back where the
+#  file actually lives.
+BACKDROP = ".backdrop"
+
 #  WHDLoad runs ExecuteStartup before every game and ExecuteCleanup after it.
 #  An emulator installation puts its own tuning there - PiMiga sets the JIT
 #  cache and CPU speed through uae-configuration - and on a PiStorm that
@@ -179,7 +186,9 @@ class Compatibility:
 
     def __init__(self, progress: Progress, enabled: bool = True,
                  rtg: bool = True, native: bool = False,
-                 workbench_on_rtg: bool = True):
+                 workbench_on_rtg: bool = True,
+                 off_desktop: Iterable[str] = (),
+                 startup_editor=None):
         self._pending_data: bytes = b""
         self.progress = progress
         self.enabled = enabled
@@ -224,6 +233,16 @@ class Compatibility:
         #  this survives ``stop_displacing``, because the clash it settles is
         #  between two packages, both of which write during the overlay pass.
         self._outranked: dict[str, str] = {}
+        #  What has to go into S:Startup-Sequence before Workbench draws its
+        #  first icon. A distribution's own boot script is written out by this
+        #  pass rather than copied, so the editor never saw it and anything
+        #  needing a line there had to be left out - which is why a ClassicWB
+        #  card came out with no icon.library able to draw a modern icon.
+        self._startup_editor = startup_editor
+        #  Icons the user asked to take off the Workbench desktop. The files
+        #  stay exactly where they are; only the line naming them here goes.
+        self._off_desktop = {str(p).replace("\\", "/").strip("/:").lower()
+                             for p in off_desktop}
         self._seen_picasso = False
         self._picasso_expected = False
         self._finished = False
@@ -288,14 +307,20 @@ class Compatibility:
 
     @property
     def writes_its_own_startup(self) -> bool:
-        """Whether the boot script will come from the distribution itself.
+        """Whether a package needing a boot line has nowhere to put it.
 
-        When it does, it is written out verbatim and the editor that inserts
-        lines into a Workbench install never sees it - so anything that needs
-        a line in S:Startup-Sequence to work cannot be installed on such a
-        card.
+        The distribution's own boot script is written by this pass rather than
+        copied, so the editor that inserts lines into a Workbench install never
+        saw it, and anything needing a line in S:Startup-Sequence had to be
+        left out. On a ClassicWB card that meant no icon.library able to read a
+        modern icon - and a modern icon keeps its picture in an appended OS3.5
+        colour chunk with the classic image left as a three-pixel stub, so
+        every one of them drew as a dot.
+
+        Given the editor, this pass runs the distribution's script through it
+        and there is somewhere to put the line after all.
         """
-        return self._finish_classicwb
+        return self._finish_classicwb and self._startup_editor is None
 
     def supersede(self, paths: Iterable[str]) -> None:
         """Leave out a drawer holding an older copy of chosen software.
@@ -529,6 +554,8 @@ class Compatibility:
             self.boot_scripts += "\n" + data.decode("latin-1", "replace")
         if any(posix.lower() == f.lower() for f in STARTUP_FILES):
             return self._clean_startup(posix, data)
+        if posix.lower() == BACKDROP:
+            return self._clean_backdrop(posix, data)
         if parts[-1].startswith("def_") and parts[-1].endswith(".info"):
             return self._point_at_a_real_tool(posix, data)
         if len(parts) >= 2 and parts[-2] == "wbstartup" \
@@ -737,6 +764,37 @@ class Compatibility:
                       f"which kills every game on a PiStorm before it starts")
         return "".join(out).encode("latin-1")
 
+    def _clean_backdrop(self, relative: str, data: bytes) -> bytes:
+        """Take icons off the Workbench desktop, without removing anything.
+
+        Two reasons a line goes. One the user chose - an icon they would rather
+        find in its own drawer, which is where taking the line out puts it. The
+        other is not a choice at all: a line naming something this build leaves
+        out points at an icon that will not be there, and Workbench is being
+        told to put a missing file on the desktop.
+        """
+        out: list[str] = []
+        dropped: list[str] = []
+        for line in data.decode("latin-1").splitlines():
+            named = line.strip().lstrip(":").replace("\\", "/").strip("/")
+            low = named.lower()
+            if not named:
+                continue
+            if low in self._off_desktop:
+                dropped.append(f"{named} (kept where it is)")
+                continue
+            if any(low == drawer or low.startswith(drawer + "/")
+                   for drawer in self._supersede):
+                dropped.append(f"{named} (being left off this card)")
+                continue
+            out.append(line)
+        if dropped:
+            self.note("edited", f"{relative}: took {len(dropped)} icon"
+                                f"{'s' if len(dropped) != 1 else ''} off the "
+                                f"Workbench desktop - "
+                                + "; ".join(dropped))
+        return ("\n".join(out) + "\n").encode("latin-1") if out else b""
+
     def _clean_startup(self, relative: str, data: bytes) -> bytes:
         text = data.decode("latin-1")
         out: list[str] = []
@@ -779,8 +837,25 @@ class Compatibility:
         self._finished = True
         if self._classicwb_startup:
             folder = target.makedirs("S")
-            target.write_file(folder, "Startup-Sequence",
-                              self._classicwb_startup, check_existing=False)
+            body = self._classicwb_startup
+            #  The same edit a Workbench install gets, on the script the
+            #  distribution brought. Its own boot script has the anchor the
+            #  editor looks for - C:IPrefs - and the line it inserts is
+            #  guarded on both C:LoadModule and LIBS:icon.library and uses
+            #  AUTO, so a card whose modules do not survive the soft reset
+            #  carries on rather than looping.
+            if self._startup_editor is not None:
+                try:
+                    body = self._startup_editor.offer("S/Startup-Sequence",
+                                                      body)
+                except Exception as error:            # noqa: BLE001 - a boot
+                    #  script that cannot be edited is written as it came,
+                    #  which is what happened before this existed.
+                    progress.log(f"  compatibility - could not add the "
+                                 f"soft-kick line: {error}")
+                    body = self._classicwb_startup
+            target.write_file(folder, "Startup-Sequence", body,
+                              check_existing=False)
             self.note("added", "S/Startup-Sequence from the one the "
                                "distribution carries, so the card boots into "
                                "the system rather than into its installer")
@@ -895,7 +970,22 @@ class Compatibility:
         target.write_file(libs, EMU68_CARD, card, check_existing=False)
         self.note("added", f"Libs/Picasso96/{EMU68_CARD} ({len(card)} bytes)")
 
-        if self.monitor_file:
+        if self._picasso_expected:
+            #  Picasso96 was chosen as a package, so it brings its own
+            #  monitor, settings and API library, and its icon is stamped with
+            #  BOARDTYPE so it drives Emu68's board rather than guessing at
+            #  one. Nothing to adapt, and nothing missing - which is the point
+            #  of installing it from its own archive rather than from whatever
+            #  the source drive had.
+            #
+            #  A monitor made out of the donor's is deliberately NOT written
+            #  beside it, even when there is one to make. Both would name this
+            #  same board, S:Startup-Sequence runs everything in DEVS:Monitors,
+            #  and the second would be bringing up a board that is already up.
+            #  One board, one monitor.
+            self.note("note", "Picasso96 supplies its own monitor and "
+                              f"settings, with {EMU68_CARD} as the board")
+        elif self.monitor_file:
             monitors = target.makedirs("Devs/Monitors")
             target.write_file(monitors, EMU68_BOARD, self.monitor_file,
                               check_existing=False)
@@ -914,13 +1004,6 @@ class Compatibility:
                 self.note("retargeted",
                           f"Devs/Monitors/{EMU68_BOARD}.info BOARDTYPE="
                           f"{EMU68_BOARD}")
-        elif self._picasso_expected:
-            #  Picasso96 was chosen as a package, so it brings its own
-            #  monitor, settings and API library. Nothing to adapt, and
-            #  nothing missing - which is the point of installing it from its
-            #  own archive rather than from whatever the source drive had.
-            self.note("note", "Picasso96 supplies its own monitor and "
-                              f"settings, with {EMU68_CARD} as the board")
         else:
             self.note("note", "no emulator monitor file was present and "
                               "Picasso96 was not chosen, so no "

@@ -209,8 +209,15 @@ LIBRARY_ID = re.compile(
 
 
 def version_of(data: bytes) -> tuple[int, int] | None:
-    """The (version, revision) a binary claims, or None if it claims none."""
-    head = data[:200000]
+    """The (version, revision) a binary claims, or None if it claims none.
+
+    The whole file is searched, not a window at the front of it. This read
+    only the first 200,000 bytes, which is not where a cookie necessarily
+    is: AWeb APL 3.5.09 is 695,848 bytes and carries its ``$VER:`` at offset
+    493,908, so its version came back as None and the duplicate it made of
+    the drive's older AWeb could not be compared with anything.
+    """
+    head = data
     for raw in VER_STRING.findall(head):
         text = raw.decode("latin-1")
         found = VERSION_NUMBER.search(text)
@@ -295,7 +302,15 @@ def find_duplicates(reader, wanted: dict[str, tuple[str, str, tuple | None]],
         #  ships an "Installer" and DiskSalv's drawer has one too, and
         #  Tools/Commodities - Exchange, Blanker, CrossDOS and the rest -
         #  because Commodore's ClickToFront commodity lives in it.
-        if lowered.rpartition("/")[2] != entry.name.lower():
+        #  A drawer may carry a suffix the program does not: ClassicWB keeps
+        #  AWeb in Programs/AWeb_APL, and requiring the two to be equal meant
+        #  the drive's AWeb was never recognised as a copy of the chosen one.
+        #  The separator is what keeps this honest - "DiskSalv" still does not
+        #  match a program called "Disk".
+        tail, program = lowered.rpartition("/")[2], entry.name.lower()
+        if not (tail == program
+                or (tail.startswith(program) and len(tail) > len(program)
+                    and not tail[len(program)].isalnum())):
             continue
         #  Never offer a drawer the system owns: that is how a duplicate in
         #  C or Libs would take AmigaDOS with it.
@@ -304,7 +319,17 @@ def find_duplicates(reader, wanted: dict[str, tuple[str, str, tuple | None]],
         #  Nor one this build is itself filling, or anything inside it. Our
         #  MUI overlay merges into the drive's own System/MUI, so every class
         #  in it matches by name and none of them is a duplicate.
-        if any(lowered == d or lowered.startswith(d + "/") for d in ours_too):
+        #  Deeper inside such a drawer, yes: those merge harmlessly. But the
+        #  drawer *itself* is the case this was getting wrong. A package that
+        #  supplies a whole drawer is merged into whatever is already there
+        #  and never overwrites, so when the drive has the same program at the
+        #  same place the drive's copy is what stays - and the docstring's
+        #  reasoning, that a copy in the same place is "an older file which
+        #  displacement already replaces", does not hold: _landing_paths
+        #  deliberately declines to displace anything inside a drawer. Neither
+        #  side handled it, so a card built with AWeb ticked kept ClassicWB's
+        #  AWeb-II 3.4APL and got a scatter of 3.5.09 files over the top.
+        if any(lowered.startswith(d + "/") for d in ours_too):
             continue
         try:
             theirs = version_of(reader.read_file(entry))
@@ -675,3 +700,450 @@ def followed(excluded: Iterable[str], read_file, present: Iterable[str],
 def unsuitable(categories: list[Category], machine: Machine) -> list[str]:
     """The paths this machine cannot run, as a starting point for exclusions."""
     return [c.path for c in categories if not c.suits(machine)]
+
+
+# ------------------------------------------------------- what a card can drop
+
+@dataclasses.dataclass(frozen=True)
+class Clutter:
+    """Something on a drive this card has no use for.
+
+    Discovered, never declared. A list of paths typed into the source - or into
+    a saved job - is correct for one distribution and finds nothing on the next,
+    which is the shape this project keeps having to undo. So each of these is a
+    *kind* recognised from evidence in the files, and every one is offered
+    rather than acted on: removal takes a drawer whole.
+    """
+
+    path: str                   # relative to the volume root
+    reason: str                 # what to say to the user
+    kind: str                   # which rule found it, for grouping
+    certain: bool = True        # False means ask, defaulting to keep
+
+
+#  Shared with the rest of the tool rather than spelled again here: an icon is
+#  ".info" everywhere, and an AmigaDOS executable starts with the hunk header.
+ICON_SUFFIX = ".info"
+HUNK_HEADER = b"\x00\x00\x03\xf3"
+
+#  Where Workbench keeps the list of icons it shows on the desktop.
+BACKDROP = ".backdrop"
+
+EMPTY = "empty"
+EMULATOR = "emulator"
+BROKEN = "broken"
+RISK = "risk"
+
+#  A scaffold: a drawer holding many sub-drawers and almost nothing else. A
+#  WHDLoad collection's A-Z letter drawers are the case - twenty-six of them
+#  around one or two titles - and the numbers are deliberately conservative,
+#  because "almost empty" is a judgement and this one is only ever offered.
+SCAFFOLD_DRAWERS = 8
+SCAFFOLD_FILES = 4
+
+#  Anything at all can be read for a volume name, so the search is bounded to
+#  what a script or a button bar plausibly is.
+BIGGEST_SCRIPT = 20000
+
+#  Formats that are data however printable they look.
+#  Not "BM" for a Windows bitmap: two letters is not a signature, and a
+#  ButtonMenu bar starts "BM123" - so that one rule excluded exactly the files
+#  this is here to read.
+NOT_TEXT = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"FORM", b"RIFF",
+            b"PK\x03\x04", b"\x7fELF", b"II*\x00", b"MM\x00*")
+
+def _tree_counts(reader, entry, depth: int = 0) -> tuple[int, int]:
+    """How many real files and how many drawers are under here.
+
+    Icons do not count as files: a drawer holding nothing but ``.info`` files
+    is empty as far as anybody using the card is concerned.
+    """
+    files = drawers = 0
+    if depth > 6:
+        return files, drawers
+    try:
+        inside = reader.listdir(_locator(entry))
+    except Exception:                                    # noqa: BLE001
+        return files, drawers
+    for item in inside:
+        if item.is_dir:
+            drawers += 1
+            deeper = _tree_counts(reader, item, depth + 1)
+            files += deeper[0]
+            drawers += deeper[1]
+        elif not item.name.lower().endswith(ICON_SUFFIX):
+            files += 1
+    return files, drawers
+
+
+def _reads_as_text(data: bytes) -> str:
+    """The readable content of a small file, or "" if it is not one to read.
+
+    Deliberately loose about binary. The files worth reading here are not all
+    plain text: a ButtonMenu bar is a binary record with its commands sitting
+    inside it as strings - ``BM123\\x00Blitter\\x00topaz.font`` - and that is
+    exactly where ``Scalos:Tools/opendrawer`` and the emulator commands live.
+    Rejecting anything with a NUL byte, or anything under nine-tenths
+    printable, threw away every one of them.
+
+    So only what is definitely data is refused: an executable, something over
+    the size a script could be, and the image and archive formats by their
+    magic. A PNG read as latin-1 yields enough accidental "word:path" pairs to
+    be condemned, and its signature is the cheap way to say so.
+    """
+    if not data or data[:4] == HUNK_HEADER or len(data) > BIGGEST_SCRIPT:
+        return ""
+    if data[:8].lstrip().startswith(NOT_TEXT):
+        return ""
+    return data.decode("latin-1", "replace")
+
+
+def _drawers_worth_looking_at(reader, depth: int = 2):
+    """Drawers a person would recognise as a thing, with their paths.
+
+    Two levels: a drawer on the drive's root is a thing, and so is one inside
+    it. Deeper than that is a program's own business, and offering to delete
+    part of one is not a choice anybody can answer.
+    """
+    def walk(entry, path, level):
+        try:
+            inside = reader.listdir(_locator(entry) if entry is not None else None)
+        except Exception:                                # noqa: BLE001
+            return
+        for item in inside:
+            if not item.is_dir:
+                continue
+            here = f"{path}/{item.name}" if path else item.name
+            yield here, item
+            if level < depth:
+                yield from walk(item, here, level + 1)
+
+    try:
+        top = reader.listdir()
+    except Exception:                                    # noqa: BLE001
+        return
+    for item in top:
+        if not item.is_dir:
+            continue
+        yield item.name, item
+        if depth > 1:
+            yield from walk(item, item.name, 2)
+
+
+def _empty_or_scaffold(reader, skip: set[str]) -> list[Clutter]:
+    """Drawers holding nothing, or almost nothing but more drawers."""
+    out: list[Clutter] = []
+    for path, entry in _drawers_worth_looking_at(reader, depth=1):
+        if path.lower() in skip:
+            continue
+        files, drawers = _tree_counts(reader, entry)
+        if files == 0 and drawers == 0:
+            out.append(Clutter(path, "is empty", EMPTY))
+        elif files == 0:
+            out.append(Clutter(
+                path, f"holds {drawers} drawer{'s' if drawers != 1 else ''} "
+                      f"and no files at all", EMPTY))
+        elif drawers >= SCAFFOLD_DRAWERS and files <= SCAFFOLD_FILES:
+            #  Offered, not assumed: "almost empty" is a judgement, and the
+            #  few files in there are somebody's.
+            out.append(Clutter(
+                path, f"holds {drawers} drawers and only {files} "
+                      f"file{'s' if files != 1 else ''}", EMPTY, certain=False))
+    return out
+
+
+def _emulator_only(reader, skip: set[str]) -> list[Clutter]:
+    """Drawers whose contents only mean anything inside an emulator.
+
+    Recognised by what the files actually invoke rather than by what they are
+    called: ``uae-configuration`` and its friends are already named in
+    ``compat.EMULATOR_COMMANDS``, and a drawer whose every runnable file calls
+    one of them does nothing at all on this hardware.
+    """
+    from .compat import EMULATOR_COMMANDS                # noqa: PLC0415
+    out: list[Clutter] = []
+    for path, entry in _drawers_worth_looking_at(reader):
+        if path.lower() in skip:
+            continue
+        try:
+            inside = reader.listdir(_locator(entry))
+        except Exception:                                # noqa: BLE001
+            continue
+        runnable = emulator = 0
+        for item in inside:
+            if item.is_dir or item.name.lower().endswith(ICON_SUFFIX):
+                continue
+            try:
+                text = _reads_as_text(reader.read_file(item))
+            except Exception:                            # noqa: BLE001
+                continue
+            if not text:
+                continue
+            runnable += 1
+            if any(name in text.lower() for name in EMULATOR_COMMANDS):
+                emulator += 1
+        if runnable and emulator == runnable:
+            out.append(Clutter(
+                path, f"holds {emulator} script{'s' if emulator != 1 else ''} "
+                      f"that only work inside an emulator", EMULATOR))
+    return out
+
+
+#  "Assign >NIL: ADD A-Games: SYS:Games" - the name being made and the path it
+#  is made to. Only what the line itself says; no attempt to follow one assign
+#  through another, because a target behind a second assign cannot be resolved
+#  from the file and a guess here condemns a working line.
+MAKES_ASSIGN_TO = re.compile(
+    r"(?i)^\s*(?:c:)?assign\s+(?:>nil:\s+)?(?:add\s+)?"
+    r"([A-Za-z0-9_.-]+):\s+(\S+)")
+
+
+def _assigns_to_nothing(reader, going: Iterable[str] = ()) -> list[Clutter]:
+    """Assigns whose target this card will not have.
+
+    This replaced a looser rule that read every file for anything shaped like a
+    volume name. That found 165 candidates on one card and essentially all of
+    them were English prose ending in a colon - "$VER:", "restrictions:",
+    "youtube_autoplay:" - and a list a person cannot trust is worse than no
+    list at all.
+
+    An assign is the precise version of the same question. The line says both
+    halves itself, so there is nothing to infer: ClassicWB's Assign-Startup
+    makes ``A-Games:`` point at ``SYS:Games``, and a card that leaves the Games
+    drawer out has an assign to a drawer that is not there. Everything that
+    reads from it then fails, and the boot says nothing anybody would connect
+    to the choice that caused it.
+
+    Only targets on this volume are judged - ``SYS:`` or a bare path. A target
+    behind another assign cannot be resolved from the file, so it is left
+    alone rather than guessed at.
+    """
+    leaving = {str(p).replace("\\", "/").strip("/").lower() for p in going}
+    out: list[Clutter] = []
+    seen: set[str] = set()
+    for where in ("S/Startup-Sequence", "S/User-Startup", "S/Assign-Startup"):
+        entry = reader.find(where)
+        if entry is None or getattr(entry, "is_dir", False):
+            continue
+        try:
+            text = reader.read_file(entry).decode("latin-1", "replace")
+        except Exception:                                # noqa: BLE001
+            continue
+        for line in text.splitlines():
+            found = MAKES_ASSIGN_TO.match(line)
+            if not found:
+                continue
+            name, target = found.group(1), found.group(2)
+            volume, colon, path = target.partition(":")
+            if colon and not path:
+                #  A bare volume - "Assign ENV: RAM:" - names a device or
+                #  another assign, not a drawer on this drive. Judged as a
+                #  path it looked for a drawer called RAM and called the line
+                #  broken.
+                continue
+            if colon and volume.lower() != "sys":
+                continue                     # behind another assign; not ours
+            path = (path or volume).strip("/")
+            if not path or path.lower() in seen:
+                continue
+            gone = path.lower() in leaving
+            if not gone and reader.find(path) is not None:
+                continue
+            seen.add(path.lower())
+            why = ("is being left out of this card" if gone
+                   else "is not on the drive")
+            out.append(Clutter(
+                f"{where}: Assign {name}:",
+                f"points at {target}, which {why}", BROKEN, certain=gone))
+    return out
+
+
+#  A script that writes over the boot script, matched as a *destination*.
+#
+#  The lookahead is the whole of the care needed here. The installer's own
+#  first line is
+#
+#      Copy SYS:S/Startup-Sequence Disable/S/ CLONE
+#
+#  which is the harmless backup, and the second is
+#
+#      Copy Install_Icons SYS:S/Startup-Sequence CLONE
+#
+#  which is the one that costs the card. Matching the name anywhere on the
+#  line catches both and calls a backup dangerous. Note the path is written
+#  "SYS:S/Startup-Sequence" - volume, drawer, file - so it is the separator
+#  before the name that has to be matched, not a literal "S:".
+REPLACES_THE_BOOT = re.compile(
+    r"(?i)\b(?:copy|rename|move)\s+(?!\S*[:/]startup-sequence)"
+    r"\S+\s+[^\n]*?[:/]startup-sequence\b")
+
+
+def _replaces_the_boot_script(reader, provided: Iterable[str],
+                              skip: set[str]) -> list[Clutter]:
+    """Installers that overwrite S:Startup-Sequence to do their work.
+
+    ClassicWB ships one for PeterK's icon support. It replaces the boot script
+    with a stub, reboots so it can swap libraries that are in use, does the
+    work and restores the real script from a drawer it keeps beside itself.
+    When it finishes, that is fine.
+
+    When it does not, the card is dead. Ours stopped after backing up the boot
+    script and before restoring it, so every boot ran the stub - which has no
+    IPrefs and no LoadWB - waited two seconds and ended the shell. A grey
+    screen, for ever, with nothing on it to say why, and the only way back a
+    Shell from the boot menu.
+
+    So this is offered whenever it is found, and offered *on* when the build
+    already installs what the installer provides: a second, riskier route to
+    something already done is worth nothing and can cost the card.
+    """
+    provided = {str(name).lower() for name in provided}
+    out: list[Clutter] = []
+    #  Three levels, not two: a distribution keeps these in a drawer of its
+    #  own inside its own installers - MyFiles/Install/Icons - and two levels
+    #  stopped one short of it.
+    for path, entry in _drawers_worth_looking_at(reader, depth=3):
+        if path.lower() in skip:
+            continue
+        try:
+            inside = reader.listdir(_locator(entry))
+        except Exception:                                # noqa: BLE001
+            continue
+        hits = []
+        for item in inside:
+            if item.is_dir or item.name.lower().endswith(NOT_A_SCRIPT):
+                continue
+            try:
+                text = _reads_as_text(reader.read_file(item))
+            except Exception:                            # noqa: BLE001
+                continue
+            if text and REPLACES_THE_BOOT.search(text):
+                hits.append(item.name)
+        if not hits:
+            continue
+        #  What it would install, so "you already have this" can be said.
+        already = set()
+        for name in ("Libs", "libs"):
+            libs = reader.find(f"{path}/Enable/{name}")
+            if libs is None:
+                continue
+            try:
+                already = {c.name.lower() for c in reader.listdir(_locator(libs))
+                           } & provided
+            except Exception:                            # noqa: BLE001
+                pass
+            break
+        why = (f"replaces S:Startup-Sequence to install "
+               f"{', '.join(sorted(already))}, which this build already "
+               f"installs" if already else
+               "replaces S:Startup-Sequence to do its work, and leaves the "
+               "card unbootable if it does not finish")
+        out.append(Clutter(path, why, RISK, certain=bool(already)))
+    return out
+
+
+#  Drawers whose loss breaks the system rather than merely losing content.
+#  None is ever offered, whatever a rule finds inside it: the boot-script rule
+#  found a script in "S" and offered to delete the drawer holding every script
+#  on the card, Startup-Sequence included, which is the one way this feature
+#  could destroy a card rather than tidy it.
+#
+#  Deliberately narrower than the builder's SYSTEM_DRAWERS. That list also
+#  covers Games, Demos, Programs and the rest, because the *manifest* must
+#  never tell somebody to "Delete SYS:Demos ALL" - a different question from
+#  what may be offered here. Losing Demos costs content the user chose to
+#  lose; losing S costs the card. Borrowing the wider list stopped the very
+#  drawers this was built to find from being offered at all.
+NEVER_OFFER = {
+    "", "c", "s", "l", "libs", "devs", "classes", "fonts", "locale",
+    "prefs", "system", "wbstartup", "storage", "storage/install",
+    "utilities", "tools", "rexx", "rexxc", "expansion", "trashcan",
+    "monitors", "t", "env-archive",
+    #  Nested ones AmigaOS owns.
+    "locale/catalogs", "locale/help", "prefs/env-archive", "prefs/presets",
+    "devs/networks", "devs/dosdrivers", "devs/monitors", "devs/keymaps",
+    "devs/printers", "libs/mui", "system/mui/libs/mui",
+}
+
+
+def _never_offer() -> set[str]:
+    return set(NEVER_OFFER)
+
+
+def clutter(reader, volumes: Iterable[str] = (),
+            keep: Iterable[str] = (),
+            going: Iterable[str] = (),
+            provided: Iterable[str] = ()) -> list[Clutter]:
+    """Everything on this drive the card would be better off without.
+
+    Offered to the user and never acted on here. ``keep`` names paths that must
+    not be suggested - what the build is about to install, above all, because a
+    drawer that is empty now is not empty on the finished card.
+    """
+    skip = {str(k).replace("\\", "/").strip("/").lower() for k in keep}
+    skip |= _never_offer()
+    found = (_empty_or_scaffold(reader, skip)
+             + _emulator_only(reader, skip)
+             + _replaces_the_boot_script(reader, provided, skip)
+             + _assigns_to_nothing(reader, going))
+    #  One entry per path, and a drawer already offered whole is not offered
+    #  again file by file.
+    out: list[Clutter] = []
+    claimed: set[str] = set()
+    for item in sorted(found, key=lambda c: (c.path.count("/"), c.path.lower())):
+        low = item.path.lower()
+        if low in claimed or any(low.startswith(c + "/") for c in claimed):
+            continue
+        claimed.add(low)
+        out.append(item)
+    return out
+
+
+#  Drawers a person opens without being shown the way. An icon whose file sits
+#  in one of these is reachable already, so the copy on the desktop is a
+#  shortcut rather than the only route to it.
+BROWSABLE = ("utilities", "tools", "system", "prefs", "programs", "storage",
+             "internet", "audio", "wbstartup", "devs", "expansion")
+
+
+@dataclasses.dataclass(frozen=True)
+class OnTheDesktop:
+    """One icon Workbench lifts out onto the desktop."""
+
+    path: str                   # as the file lives, from the volume root
+    reachable: str = ""         # the drawer it can be found in anyway
+    missing: bool = False       # names something not on the drive at all
+
+
+def desktop_icons(reader) -> list[OnTheDesktop]:
+    """What Workbench puts on the desktop instead of inside its drawer.
+
+    ``.backdrop`` is a plain list of paths, one per line, each written from the
+    volume root. An icon named there is shown on the desktop *instead of* in the
+    drawer the file lives in - so taking a line out removes nothing, it puts the
+    icon back where the file already is.
+
+    That distinction is the whole point of reading this separately from the
+    clutter pass: "take this off the desktop" and "take this off the card" are
+    different requests, and answering the first with the second would delete
+    somebody's program.
+    """
+    entry = reader.find(BACKDROP)
+    if entry is None or getattr(entry, "is_dir", False):
+        return []
+    try:
+        text = reader.read_file(entry).decode("latin-1", "replace")
+    except Exception:                                        # noqa: BLE001
+        return []
+    out: list[OnTheDesktop] = []
+    for line in text.splitlines():
+        named = line.strip().lstrip(":").replace("\\", "/").strip("/")
+        if not named:
+            continue
+        drawer = named.rpartition("/")[0]
+        top = named.split("/", 1)[0].lower()
+        out.append(OnTheDesktop(
+            path=named,
+            reachable=drawer if drawer and top in BROWSABLE else "",
+            missing=reader.find(named) is None))
+    return out

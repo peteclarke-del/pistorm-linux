@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import threading
+from collections.abc import Iterable
 from pathlib import Path
 
 import gi
@@ -1025,6 +1026,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  software out of a build that is no longer using that drive.
             self._refresh_older_copies()
             self._refresh_what_cannot_work()
+            self._refresh_clutter()
+            self._refresh_desktop()
             self._refresh_what_arrives()
             self._quick_preview()
             return
@@ -1047,6 +1050,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._relayout_partitions()
         self._refresh_older_copies()
         self._refresh_what_cannot_work()
+        self._refresh_clutter()
+        self._refresh_desktop()
         self._refresh_what_arrives()
         self._quick_preview()
 
@@ -1883,6 +1888,40 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.broken_group.set_visible(False)
         page.add(self.broken_group)
 
+        #  Clutter: drawers that are empty, that only mean something inside an
+        #  emulator, or assigns left pointing at something this build removes.
+        #  Discovered from the drive rather than named anywhere, because a list
+        #  of paths is right for one distribution and finds nothing on the next.
+        #  Removing is destructive, so every one of these is offered and the
+        #  uncertain ones default to keeping what is there.
+        self.clutter_group = Adw.PreferencesGroup(
+            title="Clutter this card has no use for",
+            description="Found by looking at the drive, not from a list: "
+                        "drawers holding nothing, scripts that only work "
+                        "inside an emulator, and assigns pointing at what you "
+                        "are leaving out. Turn one on to remove it.")
+        self.clutter_rows: dict[str, Adw.SwitchRow] = {}
+        #  What each row was last set to by this code, so an answer the user
+        #  has given can be told apart from one that is still the default.
+        self._clutter_default: dict[str, bool] = {}
+        self.clutter_group.set_visible(False)
+        page.add(self.clutter_group)
+
+        #  Separate from the clutter list on purpose. "Take this off the
+        #  desktop" and "take this off the card" are different requests, and
+        #  answering the first with the second would delete somebody's
+        #  program: an icon named in .backdrop is shown on the desktop
+        #  *instead of* inside its drawer, so dropping the line puts it back
+        #  where the file already is and removes nothing.
+        self.desktop_group = Adw.PreferencesGroup(
+            title="Icons on the Workbench desktop",
+            description="What the drive puts on the desktop rather than in a "
+                        "drawer. Turn one off to have it sit in its own drawer "
+                        "instead - nothing is deleted either way.")
+        self.desktop_rows: dict[str, Adw.SwitchRow] = {}
+        self.desktop_group.set_visible(False)
+        page.add(self.desktop_group)
+
         #  One group per category, so a long list reads as a few short ones.
         #  What a fresh window starts with is the same recommendation the
         #  "suggest a set" button makes, for the machine and screen the
@@ -2388,6 +2427,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  older-copies list still described the set that was ticked before.
         self._refresh_older_copies()
         self._refresh_what_cannot_work()
+        self._refresh_clutter()
+        self._refresh_desktop()
         self._refresh_what_arrives()
 
     def _refresh_categories(self) -> None:
@@ -2410,7 +2451,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             return found
         try:
             from ..core import amigaos, content, packages as _p  # noqa: PLC0415
-            wanted, filling = _p.principal_programs(chosen)
+            wanted, filling = self._principal(chosen)
             if not wanted:
                 return found
             reader, _label = amigaos.open_amiga_volume(path, "")
@@ -2461,30 +2502,33 @@ class ImagerWindow(Adw.ApplicationWindow):
                 reader = None
             if reader is not None:
                 try:
-                    found = content.installed_programs(reader)
+                    found = self._installed_on_the_drive(path, reader)
                 finally:
                     try:
                         reader.f.close()
                     except Exception:                        # noqa: BLE001
                         pass
-        #  Not what the other list already has. FMSsys was in both - on
+        #  Not what another list is already dropping. FMSsys was in both - on
         #  here meaning "keep it", on there meaning "remove it" - so the page
         #  said two opposite things about the same program, and the one that
-        #  read as keeping it was the longer list.
-        already = set(getattr(self, "broken_rows", {}))
+        #  read as keeping it was the longer list. That was fixed for the
+        #  "cannot work" list alone, and the older copies and the clutter
+        #  behave the same way: AWeb was offered for removal as an older copy
+        #  and listed as arriving from the drive at the same time.
+        removing = self._being_removed()
         wanted = {f"{drawer}/{name}" for drawer, name in found
-                  if f"{drawer}/{name}" not in already}
+                  if not self._covered_by(f"{drawer}/{name}", removing)}
         for key, row in list(self.arrives_rows.items()):
             if key not in wanted:
                 self.arrives_group.remove(row)
                 del self.arrives_rows[key]
         for drawer, name in found:
             key = f"{drawer}/{name}"
-            if key in self.arrives_rows or key in already:
+            if key in self.arrives_rows or key not in wanted:
                 continue
             row = Adw.SwitchRow(title=name, subtitle=f"in {drawer}")
             row.set_active(True)                 # keep it, unless told not to
-            row.connect("notify::active", lambda *_a: self._update_summary())
+            row.connect("notify::active", lambda *_a: self._decisions_changed())
             self.arrives_rows[key] = row
             self.arrives_group.add(row)
         self.arrives_group.set_visible(bool(self.arrives_rows))
@@ -2531,10 +2575,238 @@ class ImagerWindow(Adw.ApplicationWindow):
             row = Adw.SwitchRow(title=f"Remove {drawer}",
                                 subtitle="; ".join(broken.reasons))
             row.set_active(True)
-            row.connect("notify::active", lambda *_a: self._update_summary())
+            row.connect("notify::active", lambda *_a: self._decisions_changed())
             self.broken_rows[drawer] = row
             self.broken_group.add(row)
         self.broken_group.set_visible(bool(self.broken_rows))
+
+    def _refresh_clutter(self) -> None:
+        """Offer what the drive carries that this card would be better without.
+
+        Every candidate is discovered - an empty drawer, a drawer of emulator
+        scripts, an assign whose target is being left out - and every one is
+        offered rather than acted on, because a drawer goes whole.
+        """
+        if not hasattr(self, "clutter_group"):
+            return
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        found = []
+        if path:
+            try:
+                from ..core import amigaos, content            # noqa: PLC0415
+                reader, _label = amigaos.open_amiga_volume(path, "")
+            except Exception:                                  # noqa: BLE001
+                reader = None
+            if reader is not None:
+                try:
+                    named = [spec.volume_name or spec.name
+                             for spec in (row.spec() for row
+                                          in getattr(self, "partition_rows", []))]
+                    #  What the packages are about to fill is never offered: a
+                    #  drawer empty now is not empty on the finished card.
+                    _wanted, filling = self._principal(
+                        self._chosen_packages())
+                    #  ...and whatever the Workbench disks will add. A drawer
+                    #  empty on the drive being built from is not empty on the
+                    #  finished card: ClassicWB ships Rexxc and Expansion with
+                    #  nothing in them and the floppy install fills both, so
+                    #  offering to remove one took Commodore's own files with
+                    #  it and the card came out with no ARexx commands at all.
+                    keep = set(filling)
+                    if self.adf_row.path:
+                        keep |= amigaos.drawers_on_the_disks(self.adf_row.path)
+                    #  Libraries this build soft-kicks for itself. A
+                    #  distribution's own installer for one of them is a
+                    #  second, riskier route to something already done.
+                    chosen = set(self._chosen_packages())
+                    provided = [p.boot_library for p in packages.CATALOGUE
+                                if p.boot_library and p.key in chosen]
+                    found = content.clutter(
+                        reader, content.volumes_on_the_card(reader, named),
+                        keep=keep, going=self._already_leaving(),
+                        provided=provided)
+                except Exception:                              # noqa: BLE001
+                    found = []
+                finally:
+                    try:
+                        reader.f.close()
+                    except Exception:                          # noqa: BLE001
+                        pass
+        wanted = {c.path: c for c in found}
+        for key, row in list(self.clutter_rows.items()):
+            if key not in wanted:
+                self.clutter_group.remove(row)
+                del self.clutter_rows[key]
+                self._clutter_default.pop(key, None)
+        for where, item in wanted.items():
+            row = self.clutter_rows.get(where)
+            if row is None:
+                row = Adw.SwitchRow(title=f"Remove {where}")
+                row.connect("notify::active",
+                            lambda *_a: self._decisions_changed())
+                self.clutter_rows[where] = row
+                self.clutter_group.add(row)
+                self._clutter_default[where] = None
+            #  A row's reason and its default both depend on the rest of the
+            #  page. Ticking the icon library turns "replaces
+            #  S:Startup-Sequence to do its work" into "...to install
+            #  icon.library, which this build already installs", and the
+            #  answer from "ask" to "yes". Created once and then skipped, the
+            #  row kept the wording and the switch it was born with, so the
+            #  card went out still carrying the installer that had bricked one.
+            row.set_subtitle(item.reason)
+            #  On only where the evidence is conclusive - "almost empty" is a
+            #  judgement, and the answer that keeps somebody's files is safe.
+            #  An answer the user has given is never overwritten: the default
+            #  moves only while the switch still sits where this put it.
+            was = self._clutter_default.get(where)
+            if was is None or row.get_active() == was:
+                row.set_active(item.certain)
+            self._clutter_default[where] = item.certain
+        self.clutter_group.set_visible(bool(self.clutter_rows))
+
+    def _refresh_desktop(self) -> None:
+        """Offer each icon the drive keeps on the Workbench desktop."""
+        if not hasattr(self, "desktop_group"):
+            return
+        path = getattr(getattr(self, "quick_hdf", None), "path", "")
+        found = []
+        if path:
+            try:
+                from ..core import amigaos, content            # noqa: PLC0415
+                reader, _label = amigaos.open_amiga_volume(path, "")
+            except Exception:                                  # noqa: BLE001
+                reader = None
+            if reader is not None:
+                try:
+                    found = content.desktop_icons(reader)
+                except Exception:                              # noqa: BLE001
+                    found = []
+                finally:
+                    try:
+                        reader.f.close()
+                    except Exception:                          # noqa: BLE001
+                        pass
+        wanted = {i.path: i for i in found}
+        for key, row in list(self.desktop_rows.items()):
+            if key not in wanted:
+                self.desktop_group.remove(row)
+                del self.desktop_rows[key]
+        for where, icon in wanted.items():
+            if where in self.desktop_rows:
+                continue
+            if icon.missing:
+                why = "names something that is not on the drive"
+            elif icon.reachable:
+                why = f"also in {icon.reachable}, so the desktop copy is a shortcut"
+            else:
+                why = "only reachable from the desktop"
+            row = Adw.SwitchRow(title=where, subtitle=why)
+            #  On means "leave it on the desktop". Everything the drive chose
+            #  to put there stays until somebody says otherwise; this is a
+            #  preference, and the card works either way.
+            row.set_active(True)
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.desktop_rows[where] = row
+            self.desktop_group.add(row)
+        self.desktop_group.set_visible(bool(self.desktop_rows))
+
+    def _principal(self, chosen: list[str]):
+        """``packages.principal_programs`` for a set of ticks, remembered.
+
+        It unpacks and reads every chosen archive - over a second on a full
+        selection - and depends on nothing but the ticks, yet it was
+        recomputed by both lists that use it on every refresh. With the lists
+        now re-deriving each other whenever a switch moves, that turned each
+        click into a multi-second pause.
+        """
+        key = tuple(sorted(chosen))
+        if getattr(self, "_principal_key", None) != key:
+            self._principal_key = key
+            self._principal_value = packages.principal_programs(chosen)
+        return self._principal_value
+
+    def _installed_on_the_drive(self, path: str, reader):
+        """What the drive carries, remembered per drive.
+
+        The list shown is this filtered by what the rest of the page is
+        dropping, and only the filter changes when a switch moves.
+        """
+        if getattr(self, "_installed_path", None) != path:
+            self._installed_path = path
+            self._installed_value = content.installed_programs(reader)
+        return self._installed_value
+
+    def _being_removed(self) -> list[str]:
+        """Every path the removal lists are currently set to drop.
+
+        The page shows one drive through several lists, and they describe the
+        same facts: a drawer offered as an older copy is also a drawer the
+        drive arrives with. Each list must therefore be able to see what the
+        others have decided, and there can only be one answer to "is this
+        going". Assembled separately, the page said two opposite things about
+        the same program - AWeb switched on under "older copies", meaning
+        remove it, and switched on under "already installed on the drive",
+        meaning keep it - and moving either switch did nothing to the other.
+
+        Nothing here names a program, a drawer or a distribution: the lists
+        are matched by path, so this holds for whatever drive somebody starts
+        from.
+        """
+        out: list[str] = []
+        for rows in (getattr(self, "older_rows", {}),
+                     getattr(self, "broken_rows", {}),
+                     getattr(self, "clutter_rows", {})):
+            out += [key for key, row in rows.items() if row.get_active()]
+        return out
+
+    @staticmethod
+    def _covered_by(path: str, removing: Iterable[str]) -> bool:
+        """Whether a path is one being dropped, or sits inside one.
+
+        Equality is not enough: the lists need not agree on depth, and a
+        program inside a drawer that is going is going with it.
+        """
+        low = path.strip("/").lower()
+        return any(low == other or low.startswith(other + "/")
+                   for other in (p.strip("/").lower() for p in removing)
+                   if other)
+
+    def _already_leaving(self) -> list[str]:
+        """Paths the other lists are already dropping from the card.
+
+        An assign is only broken by a removal if the removal is happening, so
+        the clutter pass has to be told what the rest of the page has decided.
+        """
+        return [key for key, row in getattr(self, "arrives_rows", {}).items()
+                if not row.get_active()] + self._being_removed()
+
+    def _decisions_changed(self) -> None:
+        """One list has been answered, so re-derive the ones that depend on it.
+
+        Without this the tie is only as good as the moment a list was built:
+        switching "remove this older copy" on left the same drawer still
+        listed as arriving from the drive, and switching it off left it
+        hidden. Re-entrant because refreshing a list moves switches, so it is
+        fenced rather than left to chance.
+
+        Only the list that can *contradict* another is re-derived here. The
+        clutter pass is deliberately not: it is given ``_already_leaving()``,
+        which includes its own switched-on rows, so re-running it on every
+        click feeds it its own output and the removal count climbs with each
+        one - six, then eight, then nine on a single drive. That loop is
+        real work (dropping a drawer does break an assign to it) but it has
+        to be run to a fixed point on purpose, not a step at a time by
+        whoever last touched a switch. It keeps the triggers it had.
+        """
+        if getattr(self, "_settling_lists", False):
+            return
+        self._settling_lists = True
+        try:
+            self._refresh_what_arrives()
+        finally:
+            self._settling_lists = False
+        self._update_summary()
 
     def _refresh_older_copies(self) -> None:
         """Show one row per older copy actually found, keeping any answers."""
@@ -2553,7 +2825,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  the one being installed. Anything else is a question, and the
             #  answer that keeps somebody's software is the safe one.
             row.set_active(how == "sure")
-            row.connect("notify::active", lambda *_a: self._update_summary())
+            row.connect("notify::active", lambda *_a: self._decisions_changed())
             self.older_rows[drawer] = row
             self.older_group.add(row)
         self.older_group.set_visible(bool(self.older_rows))
@@ -3090,7 +3362,13 @@ class ImagerWindow(Adw.ApplicationWindow):
                    if row.get_active()]
                 + [drawer for drawer, row
                    in getattr(self, "broken_rows", {}).items()
+                   if row.get_active()]
+                + [where for where, row
+                   in getattr(self, "clutter_rows", {}).items()
                    if row.get_active()])),
+            off_desktop=sorted(
+                where for where, row in getattr(self, "desktop_rows", {}).items()
+                if not row.get_active()),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides

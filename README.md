@@ -186,6 +186,7 @@ pistorm_imager/
     compat.py    automatic emulator-to-PiStorm fixes (RTG driver, startup)
     amigainfo.py Workbench .info icons, enough to retarget tool types
     machines.py  target machine profiles: chipset, board, Kickstart, display
+    emulate.py   turns a machine profile into an FS-UAE configuration
     presets.py   turns a machine and a source into a complete build
     packages.py  optional software taken from a system you already have
     content.py   what a games or demos tree is divided into, and what runs here
@@ -208,7 +209,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 596 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 665 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -393,23 +394,67 @@ FS-UAE configuration so it is never written twice.
 
 That matters because the hand-written harness used through one long bisection
 had drifted into describing a different machine entirely — `amiga_model =
-A1200` (AGA, not the ECS A500 in question), `fpu = 68040` on an accelerator
-that has no FPU at all, and `accuracy = 0`, which runs a fast, inexact 68040 on
-which WHDLoad cannot start a single game. That last one cost hours of hunting a
-defect in the imager that was a flag in the emulator. The module fixes
-`accuracy = 1`, takes the model from the chipset, the chip RAM from the
-trapdoor choice, and asks for no FPU.
+A1200` (AGA, not the ECS A500 in question) and `accuracy = 0`, which runs a
+fast, inexact 68040 on which WHDLoad cannot start a single game. That one cost
+hours of hunting a defect in the imager that was a flag in the emulator. The
+module fixes `accuracy = 1`, takes the model from the chipset, and takes the
+chip RAM from the trapdoor choice.
 
-One caveat is recorded rather than papered over: FS-UAE 3.0.3 accepts
-`fpu = none` silently and says nothing either way, so whether it takes effect
-is **unverified**. Assume floating point code may still run in the emulator and
-guru on the real machine.
+It also asks for `fpu = 68040`, and that line was wrong for a long time. It
+said `fpu = none`, on the belief that a PiStorm has no FPU — see [the FPU, and
+a wrong answer held for a long time](#the-fpu-and-a-wrong-answer-held-for-a-long-time).
+The mistake hid itself twice over: FS-UAE 3.0.3 does not accept `none`, logs
+`WARNING: Unknown FPU specified` where nobody was reading, and falls back to a
+full 68040 FPU — so the emulator accidentally matched the real machine while
+the code said the opposite. `fpu = 0` is the value FS-UAE honours and the wrong
+one to use here: an emulator stricter than the hardware fails software that
+would have run, which misleads exactly as badly as one more forgiving.
 
 Attach **the whole `0x76` partition**, not the bootable drive alone, so that
 every drive mounts and can be checked — and copy it *exactly*. A copy one
 mebibyte short of the partition made the last drive come up as `NDOS`, because
 PFS3 keeps a copy of its root block at the end; that looked exactly like a
 formatting bug in this tool and was not.
+
+### Bisecting an intermittent fault: prove the control first
+
+A card was seen to crash a few seconds after Workbench had drawn, in roughly
+three boots out of seven — sometimes a guru, sometimes a reboot ending in
+`CPU halted PC=00000000`, sometimes just a black screen. Chasing that turned up
+a rule worth writing down.
+
+The first suspect was Roadshow's `wifipi.device`, a driver for the Raspberry
+Pi's own WiFi chip which the emulator has not got. To test it, two images were
+built from one saved job differing only in that package — but **cut down to
+DH0** so they would build in minutes instead of half an hour. The control, with
+Roadshow, then crashed **zero times in six boots**. A clean result from the
+other image would have proved nothing whatever, and the whole comparison had to
+be thrown away.
+
+**Confirm the control reproduces the fault before changing the variable.** An
+intermittent bug makes this easy to get wrong, because a control that passes
+looks like a control that works.
+
+What the bisection did establish, once each image was built from the same job
+with one difference at a time and booted six times unattended:
+
+| image | crashed |
+| --- | --- |
+| the card itself, all four drives filled | 3 of 7 |
+| DH0 only | 0 of 6 |
+| four volumes, the card's real geometry, content drives empty | 0 of 6 |
+| as above, with one content drive filled by 1 MB of stand-in files | 0 of 6 |
+
+So the fault is not the network stack, not the geometry, not the number of
+mounted volumes — it needs the *contents* of the games and demos drives, and
+which part is still unknown. Recorded here so the next attempt starts from the
+rows already ruled out rather than repeating them.
+
+Two details make these runs comparable at all. Boot **untouched**: an earlier
+black screen turned out to be the consequence of clicking a requester, not of
+the card. And read the verdict out of FS-UAE's own log rather than off the
+screen — a healthy run prints its memory map three times, and every extra one
+is a reset the machine was not asked for.
 
 ## How big is the card, and which gigabyte do you mean
 
@@ -995,7 +1040,7 @@ one or left the list:
 | WookieChat | `comm/irc/WookieChat2.11_OS3.lha` |
 | MiamiDx (`network`) | **Replaced.** The device it needed was the donor's `vlink.device`, which nobody publishes. Emu68's own release carries `wifipi.device` for the wireless chip the Pi actually has, so that is the network card now, with the firmware for every Pi model, and Roadshow's interface file names it. |
 | IBrowse | **Dropped.** Commercial, and not distributable. NetSurf is the browser. |
-| AWeb | **Dropped.** Aminet's `AWeb.lha` is a 3.2 demo; the free APL release is a per-CPU build whose 68020 binary carries floating point instructions, and [a PiStorm has no FPU](#a-pistorm-has-no-fpu). |
+| AWeb | **Installed**, from the free APL release. Aminet's `AWeb.lha` is only a 3.2 demo, so `comm/www/aweb3.5.09_68k_20070721.lha` is used instead: the drawer goes to `Programs/AWeb_APL` and the build adds the `AWEB_APL:` assign its own Installer would have made, so there is nothing left to run on the Amiga. It is the browser for an OCS or ECS machine — NetSurf wants an RTG screen and a lot of memory. This entry once read "Dropped", on the grounds that the 68020 binary carries floating point instructions and a PiStorm has no FPU; [that reasoning was wrong](#the-fpu-and-a-wrong-answer-held-for-a-long-time). |
 | A newer SetPatch | **Dropped.** Commodore's, from a later release, undistributable — and it stopped every WHDLoad game from starting. |
 | Backdrops and boot pictures | **Dropped.** They were another distribution's artwork. |
 
@@ -1050,9 +1095,11 @@ the one inside is the tool icon that makes the program startable. A test checks
 both, because a drawer with a tool icon on it is a drawer Workbench will not
 open.
 
-Both binaries were checked for floating point instructions before being added,
-since [a PiStorm has no FPU](#a-pistorm-has-no-fpu). They sit at the same noise
-floor as `C:WHDLoad`, which has 55 such words and runs perfectly.
+Both binaries were counted for floating point instructions before being added,
+back when [a missing FPU was thought to explain a failure it does
+not](#the-fpu-and-a-wrong-answer-held-for-a-long-time). They sit at the same
+noise floor as `C:WHDLoad`, which has 55 such words and runs perfectly — which
+was the first sign that counting F-line words predicts nothing.
 
 ### What a package needs to actually run
 
@@ -1125,10 +1172,13 @@ than a guess:
   build. Emu68 presents a 68040, so the plain one is right — and none of the
   binaries copied contains a floating point instruction, which was counted
   rather than assumed.
-- **Which prefs program.** AHI ships MUI and BGUI builds side by side. The BGUI
-  one would avoid depending on MUI, and its `bgui.library` carries floating
-  point instructions — guru `8000000B` on an FPU-less 68040. So the MUI build
-  is used and `mui` is declared as a requirement. It also has to be **renamed**
+- **Which prefs program.** AHI ships MUI and BGUI builds side by side. The MUI
+  build is used and `mui` is declared as a requirement. The BGUI one would
+  avoid that dependency, and was passed over because its `bgui.library` carries
+  floating point instructions — reasoning that [no longer
+  holds](#the-fpu-and-a-wrong-answer-held-for-a-long-time), though the choice
+  is unaffected: MUI is on the card anyway for iGame and the browsers, so the
+  dependency costs nothing. It also has to be **renamed**
   to `AHI` as it lands, because the icon in the archive is `AHI.info` and would
   otherwise point at nothing.
 - **The `AUDIO:` handler ships with its mountlist, or not at all.** ClassicWB's
@@ -1149,6 +1199,34 @@ Birdie's line said **`C:Run`**, and there is no `C:Run`. `Run` is one of the
 shell's ROM-internal commands and AmigaOS 3.1 ships no file for it, so the
 pathed form failed on every boot and Birdie never started. ClassicWB's own
 User-Startup says `Run >NIL: C:XpkMasterPrefs`, which is the form that works.
+
+A third fault, found the same way: with the line fixed Birdie *did* start, and
+what it did was open a window titled **About Birdie 2000** on every boot. The
+line was `Run >NIL: C:Birdie` with nothing after it, and Birdie takes the
+patterns to draw with as command line arguments. Given none, the branch it
+takes is the one that opens its about window — that is not a reading of the
+documentation, which says only that it "simply returns"; it is the window title
+string inside the binary and the branch that reaches it, taken when the
+`PATTERNS` argument is empty. So the patterns were copied to
+`Prefs/Presets/Birdie`, nothing ever named them, and the desktop got an about
+box instead of patterned borders.
+
+The names cannot be written into the catalogue — the archive decides what
+patterns it ships — so a startup line may now carry a placeholder that the
+build fills in from the files the package **actually put on the card**:
+
+    startup=("Run >NIL: C:Birdie {patterns}",),
+    startup_files=("patterns", "Prefs/Presets/Birdie", 1),
+
+One pattern, not all seven: Birdie keeps each in three versions — plain, shine
+and shadow — so handing it the whole drawer costs memory on a machine that has
+little, and gives every window one picked at random, which is a patchwork
+rather than a look.
+
+**A line whose files are missing is dropped rather than written bare**, because
+a bare line is exactly what opened the about window. The patterns are JPEGs
+loaded through datatypes, so a system with no JPEG datatype gets plain borders
+and no window.
 
 And ClassicWB already starts FBlit, FText and BlazeWCP from its own boot
 script, so the lines added for those started each of them a **second** time. A
@@ -1469,7 +1547,9 @@ showed it:
   installed as `C:LhA`.
 - **Birdie** and **PowerWindows** were staged with a note asking the user to
   copy them into place. Birdie now goes into `C:` with its patterns, and is
-  started from `S:User-Startup` the way its own documentation says; PowerWindows
+  started from `S:User-Startup` the way its own documentation says — with the
+  first of those patterns named on the line, without which it opens its about
+  window instead of drawing anything; PowerWindows
   goes into `Utilities/PowerWindows` whole, because it looks for its external
   routines beside itself.
 
@@ -1477,6 +1557,283 @@ One bug fell out of that work: `fetch()` chose "place the archive whole" on
 whether a package listed `items`, so a package that placed its files by
 `rename` instead took that branch and its entire archive went to `stage` —
 which for such a package is `""`, the volume root.
+
+#### An installer for something already installed
+
+An archive ships an Installer script so somebody can install it on the Amiga.
+Staged into `Storage/Install`, that script is the entire point — the package
+patches the system and only its own Installer can do that honestly. Installed
+by this tool instead, the same script sits in the finished drawer offering to
+do again what is already done: `Programs/iGame/Install-iGame` beside the iGame
+just installed, `Programs/AWeb_APL/Install` beside AWeb.
+
+Where it lands is the whole discriminator. iGame's, AWeb's and Picasso96's
+installer icons all say `DefaultTool=Installer`, so nothing about the file or
+the icon separates them — only whether it is going to the staging drawer. One
+that lands anywhere else belongs to software that is already in place.
+
+#### One binary per processor: keep the one this machine runs
+
+An archive shipping `iGame.030`, `iGame.040` and `iGame.060` is installed by
+`rename` — the right one goes on under the name its icon launches — and its own
+drawer is usually copied whole as well, so the others land beside it. A card
+built for a 68040 carried three copies in one drawer: two for hardware it has
+not got, one byte for byte identical to the `iGame` next to it, and not one of
+them with an icon to click. The same again in `iDemos`.
+
+The leftovers are read off the `rename` itself rather than named here, so it
+holds for whatever an archive calls them, and the suffix has to be a whole
+processor marker — `AWeb.developer` is a different build, not a different
+processor, and is left alone.
+
+They are `outrank`ed rather than displaced, because the refusal has to still be
+in force when the packages' own files go on, which is exactly when these
+arrive.
+
+#### An icon that is there and cannot be drawn
+
+Several files on a finished card looked as though they had no icon at all -
+AWeb's installer, VirusZ and its documentation among them. They all had one.
+They are **OS3.5 ColorIcons**: the picture lives in an appended `FORM ICON`
+chunk and the classic planar image is left as a three- or five-pixel stub.
+Kickstart 3.1's `icon.library` reads only the classic part, so it paints a
+three-pixel dot, which reads as nothing at all. `AWeb` itself is a plain 55x24
+classic icon, which is why that one looked right.
+
+PeterK's `icon.library` reads them, and the catalogue has always recommended
+it - but it was never installed on a card built from a distribution. It needs a
+`LoadModule` line in `S:Startup-Sequence` before IPrefs opens the ROM copy, and
+a distribution's own boot script is written out by the compatibility pass
+rather than copied, so the editor that inserts that line never saw it and the
+package was dropped every time. The pass now runs the distribution's script
+through the same editor, and the line goes in where it belongs.
+
+#### A row has to follow the answers around it
+
+The rule above is only useful if the switch reaches the card, and for one build
+it did not. The clutter list creates a row the first time it is built and then
+skipped any row it already had — which is right for preserving somebody's
+answers, and wrong for everything else about the row.
+
+Both the wording and the default depend on the rest of the page. Before the
+icon library is ticked, the installer reads "replaces S:Startup-Sequence to do
+its work, and leaves the card unbootable if it does not finish" and is offered
+as a question. After it is ticked, it should read "…to install icon.library,
+which this build already installs" and be switched **on**. Created once and
+never revisited, it kept the wording and the switch it was born with, so a card
+went out still carrying the installer that had bricked one — and nothing on
+screen said the choice had been ignored.
+
+Every row's reason and default are now recomputed on each refresh, while an
+answer the user has actually given is left alone: the default moves only while
+the switch still sits where the last refresh put it. The GUI checks drive the
+whole sequence — offered as a question, switched on by ticking the library,
+reworded, and then held against a refresh once the user has moved it.
+
+#### An installer that rewrites the boot script can cost the card
+
+ClassicWB ships its own PeterK icon support at `MyFiles/Install/Icons`. It
+installs by replacing `S:Startup-Sequence` with a stub, rebooting so it can
+swap libraries that are in use, doing the work and restoring the real script
+from a drawer beside itself. When it finishes, that is fine.
+
+When it does not, the card is dead. One stopped after backing up the boot
+script and before restoring it, and the stub is what booted: no IPrefs, no
+LoadWB, a grey screen for ever with nothing on it to say why, and the only way
+back a Shell from the boot menu. It happened on a real card and reproduced
+exactly in the emulator.
+
+So a drawer holding a script that *writes over* `S:Startup-Sequence` is offered
+for removal - and offered **on** where the build already installs what that
+installer provides, which is now the case for `icon.library`. A second and far
+riskier route to a job already done is worth nothing and can cost the card.
+
+The rule matches the destructive line only. The installer's own first line is
+`Copy SYS:S/Startup-Sequence Disable/S/`, the harmless backup, and its second
+is `Copy Install_Icons SYS:S/Startup-Sequence`. Matching the name anywhere on
+the line condemns the backup too.
+
+**And nothing that would break the system is ever offered.** The first version
+of this rule found a script inside `S` and offered to delete the drawer holding
+every script on the card, `Startup-Sequence` included - the one way this
+feature could destroy a card rather than tidy it. Every detector now checks a
+list of drawers whose loss breaks the system, deliberately narrower than the
+builder's `SYSTEM_DRAWERS`: that one also covers Games, Demos and Programs so
+the *manifest* never says "Delete SYS:Demos ALL", which is a different
+question. Borrowing the wider list stopped the very drawers this was built to
+find from being offered at all.
+
+#### Taking an icon off the desktop is not removing it
+
+`.backdrop` is a plain list of paths at the root of a drive, and Workbench shows
+each icon named there **on the desktop instead of inside the drawer its file
+lives in**. So `Tools/Commodities/CXHandler` appearing on the desktop does not
+mean the file is loose: it is exactly where a commodity belongs, and taking the
+line out puts the icon back in that drawer.
+
+That distinction is why this is a separate list from the clutter one. "Take this
+off the desktop" and "take this off the card" are different requests, and
+answering the first with the second would delete somebody's program. The switches
+feed `off_desktop` rather than `leave_out`, and a test asserts that an icon taken
+off the desktop leaves both the file and its drawer untouched.
+
+The desktop list is offered whole, defaulting to keeping what the drive chose,
+because where an icon sits is a preference and the card works either way. Each
+row says what is known about it - the drawer the file can be found in anyway, or
+that it names something not on the drive at all.
+
+One line goes without being asked about: a `.backdrop` entry naming something
+this build leaves out. That is not a preference but a broken desktop, because
+Workbench is being told to show an icon that will not be there.
+
+**Known gap: only the boot drive's `.backdrop` is looked at.** A content drive's
+copy is written out exactly as the source folder had it, so the same rule that
+prunes DH0 never runs on Games or Demos. On a card built from PiMiga the games
+volume asks Workbench for two icons that exist nowhere on it:
+
+    :ScummVM/1.8.0/ScummVM180
+    :ScummVM/1.8.1/scummvm-1.8.1-68040-fpu
+
+Both entries are already dead in the source collection, so this is not damage
+the content filtering did - but the check that would catch it is written and
+runs one drive too narrowly. It is harmless as far as it has been tested: an
+image carrying exactly that `.backdrop` booted six times out of six without
+trouble. It is recorded rather than quietly fixed because the fix wants the same
+proof-by-restoring-the-bug as everything else here, and because it is worth
+knowing that a `.backdrop` can be broken *in the source* rather than by this
+tool.
+
+#### Finding the clutter rather than being told what it is
+
+Working through a finished card it is easy to name what should come off it — a
+`Games` and a `Demos` drawer left almost empty by the dedicated volumes beside
+them, a `MyFiles/UAE` drawer of `uae-configuration` scripts. Adding those paths
+to a job's `leave_out` list is the same defect as writing them into the source:
+right for one distribution, and finding nothing at all on the next.
+
+So the tool recognises the **kinds**, from evidence in the files, and offers
+what it finds on the Programs tab beside the other three lists — refreshed by
+the auto-config button, and never acted on by itself, because a drawer goes
+whole:
+
+* **Empty by construction** — a drawer whose tree holds no files at all. Icons
+  do not count; a drawer of nothing but `.info` files is empty to anybody using
+  the card. A *scaffold* — many drawers around almost no files, which is what a
+  WHDLoad collection's A–Z letter drawers look like — is offered as a question
+  defaulting to keep, because "almost empty" is a judgement.
+* **Emulator-only** — a drawer whose every readable file invokes one of the
+  commands in `compat.EMULATOR_COMMANDS`. Recognised by what the files do, not
+  by what they are called.
+* **An assign whose target is going** — `A-Games:` points at `SYS:Games`, and a
+  card that leaves that drawer out has an assign to a drawer that is not there.
+  Everything reading from it then fails and the boot says nothing anybody would
+  connect to the choice that caused it.
+
+Two things this cost, both worth writing down. The first attempt at the third
+rule read *every* file for anything shaped like a volume name, and produced
+**165 candidates on one card** — essentially all of them English prose ending in
+a colon: `$VER:`, `restrictions:`, `youtube_autoplay:`. A list a person cannot
+trust is worse than no list. An assign is the precise version of the same
+question, because the line names both halves itself and there is nothing to
+infer.
+
+And filtering "binary" files out of the scan threw away exactly the files the
+scan is for. A ButtonMenu bar is a binary record with its commands sitting
+inside it as strings — `BM123\x00Blitter\x00topaz.font` — and it is where both
+the emulator commands and the volume references live. Rejecting anything with a
+NUL byte, or anything under nine-tenths printable, found nothing at all. Only
+what is definitely data is refused now: executables, oversized files, and the
+image formats by their magic. A test pins that, because it looked like a
+tidy-up and silently disabled a whole rule.
+
+A third thing it cost, and the most expensive: **empty on the drive is not
+empty on the finished card.** ClassicWB ships `Rexxc` and `Expansion` holding
+nothing at all, and the Workbench floppy install fills both. Offered as empty
+and ticked, the drawer was refused - and refusing a drawer refuses everything
+destined for it, so Commodore's ARexx commands had nowhere to land. That card
+booted with `System/Rexxmast` still started and no `rx` to run anything.
+
+The guard for it already existed - what the build is about to fill is never
+offered - and had only been given the packages' destinations. It is now given
+the drawers read off the Workbench disks as well, which on a real drive is the
+difference between offering `Demos, Expansion, MyFiles/UAE, Rexxc, WBStartupM`
+and offering `Demos, MyFiles/UAE, WBStartupM`. It reached an image before the
+test existed.
+
+On a real 500 MB ClassicWB drive this finds three things and no false positives,
+in under two seconds.
+
+#### A browser an OCS or ECS machine can actually run
+
+NetSurf renders modern HTML and CSS and is the most capable browser on 68k
+hardware, but it wants an RTG screen and a lot of memory. On an A500 or A600
+watching its own video it is not a realistic choice, and it was the only
+browser in the catalogue.
+
+**AWeb APL 3.5.09** is the other one. It is the open-source release of AWeb-II
+under the Amiga Public Licence, built for OS3.x on 68k, and it ships a
+`2MBSettings` drawer because it was written for machines that size.
+
+Neither is given a `role`, so ticking both raises no question. That was worth
+getting wrong once: a role means two packages patch the same part of the system
+and are alternatives, and the catalogue is deliberately sparing with them. Two
+browsers on one card is a preference, exactly like the three module players, and
+a false clash would nag about a choice that is perfectly fine.
+
+It is **installed, not staged**. Its own Installer script does two things —
+copy the drawer, and add an `Assign AWEB_APL:` line to `S:User-Startup` — and
+the build does both, so the browser is ready to run rather than ready to
+install. It lands in `Programs/AWeb_APL`, which is where its installer puts it
+by default and, as it happens, exactly where ClassicWB's own User-Startup
+already assigns `AWEB_APL:` — so a card built on that distribution finds the
+browser the distribution was expecting rather than a second copy elsewhere. The
+assign is written anyway and guarded with `IF EXISTS`, because a card built from
+floppies has no such line and assigning twice to the same path costs nothing.
+
+#### An icon travels with the file it belongs to
+
+A staged package is one this tool copies onto the card rather than installs,
+because it patches the system and only its own Installer script can do that
+honestly. That bargain is only kept if the script can be *started* — and on
+Workbench a file with no `.info` beside it is not drawn at all. Five staged
+packages arrived with no way to run their installer, by three different routes:
+
+* **`_merged()` threw away every top-level `.info`**, which cost Roadshow the
+  icon on `Install_Roadshow`.
+* **A package listing its files by hand could list the script and forget the
+  icon** — KingCON listed `Installation` and not `Installation.info`.
+* **MCP, Scalos and Picasso96 ship the icon under a name of its own.**
+  `MCP-Install.english.info` says `SCRIPT=Install_MCP`, `Setup.info` says
+  `SCRIPT=InstallPicasso96`. The icon has no file and the file has no icon, so
+  Workbench draws neither.
+
+Three rules, none of which names a package: whatever is placed brings its icon,
+a drawer's icon goes in the *parent* rather than inside it, and an orphaned icon
+naming a `SCRIPT=` that exists beside it is placed a second time under that
+script's name. Nothing is invented — these are the archives' own icons, saying
+themselves which script they belong to. Where an archive ships one icon per
+language, the English one is chosen rather than fallen into: sorted order alone
+handed over MCP's German installer.
+
+The guards for this are at the level of `fetch()` rather than the helpers. The
+first version of them called the two helpers directly and went on passing with
+both unhooked — which is exactly the state that shipped the fault.
+
+#### Every drive wears the card's icon
+
+A volume with no `Disk.info` never appears on the Workbench desktop. A drive
+this build formats and names but fills with nothing got no icon at all, so the
+Work drive was created, named, and then invisible — which reads as the
+partition having failed. And a drive filled from somebody else's tree wore
+*their* volume icon: PiMiga's Games and Demos arrive with an 8 KB icon drawn for
+a different desktop, beside a system drive wearing its own.
+
+Every drive on the card now wears the boot drive's icon, and the boot drive
+keeps the one it came with. It is read from the boot drive's *source* rather
+than the finished volume, because drives are filled in whatever order the
+partitions were listed and the boot drive is not reliably first; a card built
+from floppies takes it off Commodore's own Workbench disk instead. The saved
+icon position is cleared, or every drive claims the same square of the desktop.
 
 ### One answer to what a card should carry
 
@@ -1529,12 +1886,13 @@ for a second drive keeps whatever the program's name starts with — `iGame`
 gives `iDemos`.
 
 `tests/test_content.py` walks every source file's AST and fails if a catalogue
-key appears as a string constant outside the catalogue definition. Five words
+key appears as a string constant outside the catalogue definition. Six words
 are allowed through with a note saying what they really are: the `identify`
 subcommand that reads Kickstart ROMs, the `Libs/Picasso96` drawer on a drive
 being read, the `MUI:` assign in a list of AmigaDOS device names, the `lha`
-unpacker run on this machine, and the `WHDLoad` drawer a game collection keeps
-its installs in.
+unpacker run on this machine, Commodore's `Installer` command as an icon's
+default tool names it, and the `WHDLoad` drawer a game collection keeps its
+installs in.
 
 ### Software that needs a line in the boot script
 
@@ -1575,13 +1933,28 @@ a conflict, and a false clash would nag about a choice that was fine. A role
 naming only one package is refused by a test, since it could never raise a
 question.
 
-**SysInfo** joins the extras, and it is worth saying which one. Version 4.0
-gurus on a 68040 with no FPU — precisely what Emu68 provides — and Aminet still
-carries a patch for that bug, which makes the package look unsafe. Its own
-history records the fix twice: *"68040 non FPU guru fixed"* in 4.3 and
-*"68040/68060 non FPU guru fixed, again!"* in 4.4. `util/moni/SysInfo.lha`
-serves 4.4, so the patch is not needed and the 53 floating point instructions
-still in the binary are behind a CPU check.
+**And the build says so too, because the question is not always asked.** The
+dialog fires when somebody switches a second package on; it is deliberately
+suppressed when rows are *settled* rather than clicked — restoring a saved job,
+loading the suggested set, or the display forcing Picasso96 on — since a
+question in answer to nothing the person did is an interruption. The effect was
+that a saved job carrying both NewIcons and DefIcons44 built a card with two
+default icon systems and warned nowhere, and the second one was found only when
+the NewIcons installer stalled at 50% on an interactive icon picker. So the
+clash is also reported by `concerns()`, which every build passes through and
+which the command line reaches as well. A rule that lives in one code path is
+this project's recurring defect; the roles come off the packages, so a pair
+added later is covered without touching the check.
+
+**SysInfo** joins the extras, and it is worth saying which one. Aminet still
+carries a patch for a guru in version 4.0, which makes the package look unsafe
+at a glance. It is not needed: SysInfo's own history records the fix twice —
+*"68040 non FPU guru fixed"* in 4.3 and *"68040/68060 non FPU guru fixed,
+again!"* in 4.4 — and `util/moni/SysInfo.lha` serves 4.4. The 53 floating point
+instructions still in the binary are behind a CPU check. (This entry used to
+add that a PiStorm is the FPU-less 68040 that bug needs; [it is
+not](#the-fpu-and-a-wrong-answer-held-for-a-long-time). Taking the current
+release rather than the oldest one that runs is the right choice regardless.)
 
 ### Leaving out what this machine cannot run
 
@@ -1854,9 +2227,12 @@ is searched for them. What makes that safe rather than a guess:
   only real AmigaDOS executables. Matching every file inside a package's tree
   turned a PFS3 tool in `MyFiles` into a duplicate of something buried in
   Visage — and the version comparison made it look certain.
-- **The drawer has to be named for the program.** What goes is the whole
-  drawer, so a program sitting inside somebody else's is not a duplicate of
-  anything. Without this the search offered — *switched on* — to delete
+- **The drawer has to be named for the program**, or named for it with a
+  suffix — ClassicWB keeps AWeb in `Programs/AWeb_APL`, and requiring the two
+  to be *equal* meant the drive's AWeb was never recognised at all. The
+  separator is what keeps the looser match honest: `DiskSalv` still does not
+  match a program called `Disk`. What goes is the whole drawer, so a program
+  sitting inside somebody else's is not a duplicate of anything. Without this the search offered — *switched on* — to delete
   `Programs/DiskSalv`, because Picasso96 ships an `Installer` and DiskSalv's
   drawer has one too; part of `Programs/SysSpeed`, because a `cruncher` drawer
   contains an `LhA`; and `Tools/Commodities`, holding Exchange, Blanker,
@@ -1868,9 +2244,11 @@ is searched for them. What makes that safe rather than a guess:
   spelled out. That is what separates the two real duplicates from the two
   false ones: SysInfo is 3.24 against 4.4, while ClassicWB's `System/FBlit`
   carries the *same* build as the package plus an FBlitGUI it does not ship.
-- **Never a drawer this build is filling**, nor anything inside one. Our MUI
-  overlay merges into the drive's own `System/MUI`, so every class in it matches
-  by name and none of them is a duplicate.
+- **Never *inside* a drawer this build is filling.** Our MUI overlay merges
+  into the drive's own `System/MUI`, so every class in it matches by name and
+  none of them is a duplicate. **The drawer itself is a different matter**, and
+  getting that wrong is what let a card go out with the wrong browser on it —
+  see below.
 - **One row per drawer**, because the drawer is what would go.
 
 On ClassicWB FULL, with a full package selection, that search returns exactly
@@ -1879,6 +2257,98 @@ hand-written entry said, arrived at without being told — and one question:
 `System/Scalos`, where **the drive's copy is the newer one** (39.222 against
 39.218), so removing it would be a downgrade. Each row says which way round it
 is rather than lumping "same version" together with "cannot be compared".
+
+#### The gap where a whole-drawer package lands on a drawer that exists
+
+A card built with AWeb ticked came out carrying ClassicWB's **AWeb-II 3.4APL**,
+with a scatter of the chosen **AWeb APL Lite 3.5.09** files over the top. Three
+faults had to line up, and the middle one is the interesting one: **two
+components each deferred to the other.**
+
+- `find_duplicates` skipped `Programs/AWeb_APL` because it is a drawer this
+  build fills, reasoning that a copy in the same place is an older *file*,
+  which displacement replaces.
+- `_landing_paths` did not displace it, because the package's payload is a
+  whole drawer rather than single files — and refusing a drawer during the copy
+  would take the drive's own contents with it.
+
+Neither is wrong on its own terms. Together they leave nothing handling the
+case, and since the copy creates files and never overwrites them, the drive's
+files land first and win. `Tools/SysInfo` was caught only because ClassicWB
+keeps SysInfo somewhere this build does *not* write.
+
+So a match at the **top** of a filled drawer is now reported: that is the
+package's own principal program, colliding at the exact path the package
+installs to, and the merge will not overwrite it. Deeper inside, the exclusion
+stands unchanged — that is the MUI case it was written for.
+
+The two faults on either side of it:
+
+- **A single file landing in a drawer does not fill it.** `filling` took the
+  destination of *every* overlay pair, so a package dropping its icon beside
+  its drawer put the bare parent into the set. `Programs`, `Utilities`, `Audio`,
+  `System`, `Prefs`, `Storage`, `Libs`, `C`, `S`, `L`, `Devs`, `Locale` and
+  `WBStartup` were all in there, and everything beneath them was skipped. That
+  is why this search had only ever reported one answer: `Tools` is the one
+  place no package happens to put a file.
+- **A version cookie can be anywhere in a binary.** `version_of` read the first
+  200,000 bytes. AWeb APL 3.5.09 is 695,848 bytes and carries its `$VER:` at
+  offset **493,908**, so the chosen copy claimed no version at all and could not
+  have been compared with the drive's even if it had been found.
+
+With all three fixed, the same drive and the same package selection now report
+six rows rather than one — `Programs/AWeb_APL` (3.4 against 3.5),
+`Programs/VirusZ` (1.2 against 1.4), `Programs/iGame` (1.6 against 2.6) and
+`Tools/SysInfo` (3.24 against 4.4) as confident answers, with `System/MUI`
+(19.14 either way) and `System/Scalos` (39.222 against 39.218, the drive's
+newer) as questions, switched off.
+
+#### One drive, several lists, one set of answers
+
+The Programs page shows the same drive through several lists — what it already
+carries, what this card cannot run, older copies of chosen software, and the
+clutter — and they describe the same facts. Assembled independently, they
+contradicted each other. `Programs/AWeb_APL` appeared under **older copies**
+switched on, meaning *remove it*, and under **already installed on the drive**
+switched on, meaning *keep it*; `Programs/iGame` and `Programs/VirusZ` the
+same. Moving either switch did nothing to the other.
+
+An exclusion for exactly this already existed — "already installed" skipped
+whatever the *cannot work* list was dropping, added when FMSsys turned up in
+both — but it covered one of the three removal lists. A rule written for one
+pair rather than as a relation over all of them is this project's recurring
+defect.
+
+So there is now one definition of what the page is dropping, and one test for
+whether a row is covered by it:
+
+- `_being_removed()` is the union of every switched-on row across the three
+  removal lists. Nothing else may ask the lists directly.
+- `_covered_by(path, removing)` is a **path relation** — the same path, or
+  inside one — not a name match and not equality. The lists need not agree on
+  depth, and a program inside a drawer that is going is going with it.
+- Answering any of them re-derives the list that could contradict it, so
+  switching a removal off brings the program back under "already installed"
+  and switching it on takes it away again.
+
+Nothing here names a program, a drawer or a distribution. The rows come from
+the drive and the catalogue, and are matched by path, so this holds for
+whatever somebody started from.
+
+**The clutter pass is deliberately left out of that tie.** It is given
+`_already_leaving()`, which includes its own switched-on rows — dropping a
+drawer really does break an assign to it, so its output is legitimately part
+of its next input. Re-running it on every click therefore feeds it its own
+answers: on one drive the removal count climbed from six to eight to nine
+across two toggles. That loop wants running to a fixed point on purpose, not a
+step at a time by whoever last touched a switch, so it keeps the triggers it
+had.
+
+Two scans are now remembered rather than repeated, because the lists re-derive
+each other on every switch: `principal_programs`, which unpacks and reads every
+chosen archive and depends on nothing but the ticks, and the drive's own
+program list. Without them a single click cost between two and six seconds; it
+is now immediate.
 
 Each answer is left out whole, which is a strong thing to do, so it is fenced
 further:
@@ -2015,33 +2485,72 @@ what the server said while the answer is still at hand; this was found when a
 real download arrived 170 KB short and the failure only surfaced two steps
 later.
 
-### Nothing on the card may need an FPU
+### The FPU, and a wrong answer held for a long time
 
 *This is what stopped iGame launching games.* It listed them correctly and then
-did nothing when one was clicked - window closed, WHDLoad never started, nothing
-reported. With the FPU libraries off the card and `no_guigfx=1` in its
-preferences, it launches.
+did nothing when one was clicked — window closed, WHDLoad never started,
+nothing reported. With `guigfx.library` and `render.library` off the card and
+`no_guigfx=1` in its preferences, it launches. **That fix is real and stays.**
 
+The *explanation* attached to it was wrong, and it is written up here because
+it was confident, specific, and repeated across this file for months.
 
-Emu68 gives a PiStorm a **68040 with no FPU**. A floating point instruction on
-such a machine raises a line-F exception - **guru 8000000B** - and iGame's own
-site warns about exactly that guru for exactly these libraries.
+**The claim was:** Emu68 gives a PiStorm a 68040 with no FPU, so a floating
+point instruction raises a line-F exception — guru 8000000B — which is the guru
+iGame's own site warns about for exactly these libraries.
 
-Counting F-line opcodes in the binaries settles it, with the published no-FPU
-build of `guigfx` as the control:
+**Emu68's own documentation says otherwise.** The release archive ships
+`overlays/overlays.md`, which lists for `emu68.dtbo`:
 
-| Library | FPU instructions |
-| --- | --- |
-| `guigfx.library` (standard) | 41 |
-| `guigfx.library` (no-FPU build) | 0 |
-| `render.library` | **153** |
+> `no_fpu` — Disables the FPU entirely. Every FPU instruction will throw an
+> exception
 
-There is a no-FPU `guigfx` on Aminet and **no no-FPU `render` anywhere**, and
-`guigfx.library` opens `render.library`, so the whole stack is unusable here.
-iGame lists all three as optional, so the card does without them and iGame is
-installed with `no_guigfx=1` in its own preferences. It loses the screenshots
-and keeps working. PiMiga's copy of that preferences file had the same line in
-it, which suggests somebody else met this years ago.
+A switch that *disables* the FPU is a switch on a machine that has one. The
+equivalent kernel command line word is `nofpu` — a different spelling from the
+dtparam — and it appears in the option list inside both the v1.0.7 and the
+v1.1.0-beta.1 kernels, so this is not new in the beta. **This imager never
+writes that switch, so every card it builds has an FPU.**
+
+**Nor do the instruction counts support it.** The libraries really do carry
+floating point code, counted as F-line opcodes (`0xF200`–`0xF23F`) in the
+copies inside `MCC_Guigfx.lha`, which is the archive this tool installs:
+
+| Library | FPU instructions | Of those, needing a trap |
+| --- | --- | --- |
+| `guigfx.library` | 41 | **0** |
+| `render.library` | **153** | **0** |
+
+The second column is the one that matters and was never checked. A 68040's
+on-chip FPU implements only part of the 68881 instruction set; the
+transcendentals — `FSIN`, `FCOS`, `FTAN`, `FETOX`, `FLOGN` and the rest — trap
+as *unimplemented instructions* and have to be serviced in software. If Emu68
+did not service them, code built for a 68881 would still fail on a machine that
+has an FPU, and that would have rescued the original conclusion.
+
+It does not. Decoding each instruction's extension word and reading its opmode
+field, **every** floating point instruction in both libraries is one the 68040
+executes on-chip: moves, `FADD`, `FMUL`, `FDIV`, `FSUB`, `FABS`, `FNEG`,
+`FCMP`, `FSQRT` and their kin. Not one transcendental in either library. So
+nothing about the FPU — present, absent, or partially implemented — explains
+why these two libraries fail here.
+
+**What is actually established**, and all the card is built on:
+
+* iGame's screenshots did not work, and iGame's own site names `guigfx` and
+  `render` as the cause;
+* with `no_guigfx=1` in `igame.prefs` and those libraries left off, iGame
+  works. PiMiga's copy of that preferences file carries the same line, which
+  suggests somebody else met this years ago;
+* **why** they fail on a PiStorm is unestablished. It is not the FPU.
+
+There was a clue in this file all along: `C:WHDLoad` carries 55 F-line words
+and runs perfectly on every card built here. Counting them predicts nothing.
+
+**The general rule this leaves behind.** Do not carry a capability claim about
+Emu68 from memory. The release archive carries `overlays/overlays.md` and the
+kernel carries its own option list as plain strings; both are one command away.
+Read those, and read the card's own `cmdline.txt` and `config.txt` to see which
+options the card in front of you actually sets.
 
 ### MUI, and the classes that are not in MUI
 
@@ -2362,10 +2871,76 @@ has none, and the card came out with the graphics driver present, no screenmode
 to select it, and a line in an hour-old build log as the only explanation.
 
 Picasso96 is installed from its own archive now: `Picasso96API.library`, its own
-`Devs/Monitors/Picasso96` and icon, `Devs/Picasso96Settings`, `fastlayers.library`
-and `Prefs/Picasso96Mode`, with Emu68's `VideoCore.card` as the board. The full
-archive is still staged in `Storage/Install` for the datatypes and the drivers
-for painting programs.
+`Devs/Monitors/Picasso96` and icon, `Devs/Picasso96Settings`, `rtg.library`,
+`fastlayers.library`, `emulation.library` and `Prefs/Picasso96Mode`, with Emu68's
+`VideoCore.card` as the board. The full archive is still staged in
+`Storage/Install` for the datatypes and the drivers for painting programs.
+
+#### `rtg.library` was missing, and it is the whole subsystem
+
+Three libraries live in the archive's `Libs/Picasso96`, and its installer
+`copylib`s all three into `SYS:Libs/Picasso96` unconditionally. Only
+`fastlayers.library` was being copied. `rtg.library` — the RTG subsystem itself,
+216 KB of it — was not, so **every card built with an RTG display came out
+without it**.
+
+`DEVS:Monitors/Picasso96` is not a data file: it is an executable, and
+`S:Startup-Sequence` runs everything in that drawer at boot. The string inside
+it is `picasso96/rtg.library`, opened relative to `LIBS:`. So the boot said the
+library was missing, and the card had no RTG screen modes at all — the board
+driver, the monitor, the settings and the API library all present, and nothing
+able to bring them up.
+
+The version pairing is the one Emu68 expects: `rtg.library 40.3945` and
+`Picasso96 40.42` out of the same 1999 archive, which is the Picasso96 2.0 that
+`VideoCore.card` is documented to be installed against. This is not the trap
+described above — that was a monitor from *somewhere else* meeting a donor
+drive's library. Monitor and library here are the matched pair from one archive.
+
+#### Nothing told Picasso96 which board to drive
+
+`VideoCore.card` was on every RTG card, and nothing ever loaded it.
+
+Picasso96 finds its board through the **`BOARDTYPE`** tool type on the monitor's
+icon in `DEVS:Monitors`, and then opens `LIBS:Picasso96/<BOARDTYPE>.card`. The
+archive ships that icon with **no tool types at all** — its own installer asks
+which board you have and writes one — and the copy going onto the card was
+untouched. Read back off a finished card, `Devs/Monitors/Picasso96.info` held an
+empty list.
+
+It does not fail quietly. Picasso96 *guesses*, by scanning for an autoconfig
+board, and Emu68's VideoCore is not one: the card finds the Pi through its
+device tree (`[VC] FindCard`, `devicetree.resource`). So the guess failed, the
+boot console said
+
+    Picasso96: Could not create graphics board context for 'Picasso96',
+
+and — because that left a console window open — IPrefs could not then reset the
+Workbench screen, so **"Intuition is attempting to reset the Workbench screen.
+Please close all windows"** came up on every boot as well.
+
+The compatibility pass had the right code all along and ran it down the wrong
+branch: it stamped `BOARDTYPE` only when adapting *a donor's* monitor, and on
+the package path merely logged a note saying VideoCore was the board — which was
+not true of the card. A `tooltypes` field on a download now stamps the icon on
+the way past, from the single definition of the board name in `compat`.
+
+**One board gets one monitor.** With a donor that carries an emulator's monitor,
+the compatibility pass would make a second `Devs/Monitors/VideoCore` beside the
+package's own `Devs/Monitors/Picasso96` — both naming this board, and
+`S:Startup-Sequence` runs everything in that drawer, so the second would bring
+up hardware that is already up. The package's monitor now wins, because it
+arrives with the settings and the API library that belong to it rather than
+being adapted from somebody else's drive. Tested in both directions: taking the
+second monitor away must not take the only one away from a card that has no
+package to supply one.
+
+The guard is an invariant read out of the driver rather than a list typed into a
+test: for every monitor driver the catalogue installs, every
+`<drawer>/<name>.library` string inside that binary must be installed at
+`Libs/<drawer>/<name>.library`. It holds for whatever display driver the
+catalogue gains next, and for whatever the publisher ships next. Putting the bug
+back makes it fail by name.
 
 **The library and the monitor have to travel together**, and a test enforces it.
 The earlier failure was not caused by supplying a monitor; it was caused by that

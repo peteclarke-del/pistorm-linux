@@ -4,6 +4,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -541,3 +542,191 @@ class TestTheGamesListIsNotCarriedOver(unittest.TestCase):
             b"Games:WHDLOAD/OCS/\nGames:WHDLOAD/AGA/\n").decode("latin-1")
         self.assertIn("OCS", out)
         self.assertNotIn("AGA", out)
+
+
+class OneBoardGetsOneMonitor(unittest.TestCase):
+    """A card must not end up with two monitors driving the same board.
+
+    Both routes to RTG name Emu68's board. The compatibility pass can make a
+    monitor out of an emulator's, renaming it to ``VideoCore``; and the
+    Picasso96 package installs its own ``Devs/Monitors/Picasso96``, whose icon
+    is stamped ``BOARDTYPE=VideoCore``. ``S:Startup-Sequence`` runs everything
+    in ``DEVS:Monitors``, so with both present the board would be brought up
+    twice - the second attempt against hardware that is already running.
+
+    The package's own monitor wins, because it arrives with the settings and
+    the API library that belong to it rather than being adapted from somebody
+    else's drive.
+    """
+
+    def _finished(self, expect_picasso: bool) -> FakeVolume:
+        fixer = compat.Compatibility(QUIET, enabled=True, rtg=True)
+        #  offer() then skip() is how the copy asks: the data is remembered by
+        #  the first and the decision taken by the second.
+        for path, data in (("Devs/Monitors/uaegfx", b"monitor loader"),
+                           ("Devs/Monitors/uaegfx.info",
+                            make_icon(["BOARDTYPE=uaegfx"])),
+                           ("Libs/Picasso96/rtg.library", b"p96")):
+            fixer.offer(path, data)
+            fixer.skip(path)
+        if expect_picasso:
+            fixer.expect_picasso()
+        volume = FakeVolume()
+        with unittest.mock.patch.object(compat, "fetch_videocore_card",
+                                        lambda _progress: b"card"):
+            fixer.finish(volume, QUIET)
+        return volume
+
+    def test_the_donors_monitor_is_not_written_beside_the_packages(self):
+        written = self._finished(expect_picasso=True).written
+        self.assertNotIn(("Devs/Monitors", compat.EMU68_BOARD), written,
+                         "two monitors would bring the same board up twice")
+        self.assertNotIn(("Devs/Monitors", compat.EMU68_BOARD + ".info"),
+                         written)
+        #  The board driver itself is still installed - it is what the
+        #  package's own monitor loads.
+        self.assertIn(("Libs/Picasso96", compat.EMU68_CARD), written)
+
+    def test_without_the_package_the_donors_monitor_is_still_adapted(self):
+        #  The other direction, in the same place: taking the second monitor
+        #  away must not take the only one away from a card that has no
+        #  package to supply one.
+        written = self._finished(expect_picasso=False).written
+        self.assertIn(("Devs/Monitors", compat.EMU68_BOARD), written)
+        self.assertIn(("Devs/Monitors", compat.EMU68_BOARD + ".info"), written)
+
+
+class TakingAnIconOffTheDesktopRemovesNothing(unittest.TestCase):
+    """`.backdrop` names the icons Workbench shows on the desktop.
+
+    An icon listed there is shown on the desktop *instead of* inside the drawer
+    its file lives in, so dropping the line puts it back in that drawer. That is
+    the whole distinction between this and leaving something out: one is where
+    an icon appears, the other is whether the file is on the card at all, and
+    answering the first with the second would delete somebody's program.
+    """
+
+    BACKDROP = (b":System/ClearRAM\n"
+                b":System/BMenu/Drawers\n"
+                b":Tools/Commodities/CXHandler\n")
+
+    def fixer(self, off_desktop=(), leaving=()):
+        made = compat.Compatibility(QUIET, enabled=True,
+                                    off_desktop=off_desktop)
+        made.supersede(leaving)
+        return made
+
+    def kept(self, fixer):
+        out = fixer.offer(".backdrop", self.BACKDROP)
+        return [line.strip().lstrip(":")
+                for line in out.decode("latin-1").splitlines() if line.strip()]
+
+    def test_nothing_is_touched_when_nothing_was_asked_for(self):
+        self.assertEqual(self.kept(self.fixer()),
+                         ["System/ClearRAM", "System/BMenu/Drawers",
+                          "Tools/Commodities/CXHandler"])
+
+    def test_an_icon_can_be_taken_off_the_desktop(self):
+        kept = self.kept(self.fixer(
+            off_desktop=["Tools/Commodities/CXHandler"]))
+        self.assertNotIn("Tools/Commodities/CXHandler", kept)
+        self.assertIn("System/ClearRAM", kept)
+
+    def test_the_file_itself_is_not_removed(self):
+        """The point of the whole exercise: the program stays where it is."""
+        made = self.fixer(off_desktop=["Tools/Commodities/CXHandler"])
+        made.offer(".backdrop", self.BACKDROP)
+        path = "Tools/Commodities/CXHandler"
+        made.offer(path, b"the commodity itself")
+        self.assertFalse(made.skip(path),
+                         "taking an icon off the desktop deleted the program")
+        self.assertFalse(made.skip_drawer("Tools/Commodities"))
+
+    def test_a_line_naming_something_left_out_goes_too(self):
+        #  Not a preference: the icon would not be there to show.
+        kept = self.kept(self.fixer(leaving=["System/BMenu"]))
+        self.assertNotIn("System/BMenu/Drawers", kept)
+        self.assertIn("Tools/Commodities/CXHandler", kept)
+
+    def test_a_drive_with_no_backdrop_is_left_alone(self):
+        made = self.fixer(off_desktop=["Anything"])
+        self.assertEqual(made.offer("S/Startup-Sequence", b"C:LoadWB\n"),
+                         b"C:LoadWB\n")
+
+
+class ADistributionsBootScriptGetsTheSoftKickToo(unittest.TestCase):
+    """PeterK's icon.library has to be soft-kicked from S:Startup-Sequence.
+
+    A modern Amiga icon keeps its picture in an appended OS3.5 colour chunk and
+    leaves the classic planar image as a three-pixel stub. Kickstart 3.1's
+    icon.library cannot read that, so every one of them draws as a dot - which
+    reads as the file having no icon at all. The replacement on disk handles
+    them, but only if it is loaded before IPrefs opens the ROM one.
+
+    A distribution's own boot script is written out by this pass rather than
+    copied, so the editor never saw it and the package was dropped instead: a
+    ClassicWB card came out with AWeb's installer, VirusZ and its documentation
+    all apparently icon-less. Running that script through the same editor gives
+    the line somewhere to go.
+    """
+
+    CLASSICWB = (b";ClassicWB Startup-Sequence\n"
+                 b"C:SetPatch QUIET\n"
+                 b"C:AddDataTypes REFRESH QUIET\n"
+                 b"C:IPrefs\n"
+                 b"C:ConClip\n"
+                 b"C:LoadWB\n")
+
+    def editor(self):
+        from pistorm_imager.core import amigaos                  # noqa: PLC0415
+        return amigaos.StartupSequenceEditor(
+            ["IF EXISTS C:LoadModule",
+             "   IF EXISTS LIBS:icon.library",
+             "      C:LoadModule AUTO LIBS:workbench.library LIBS:icon.library",
+             "   EndIF",
+             "EndIF"], QUIET)
+
+    def written(self, editor):
+        made = compat.Compatibility(QUIET, enabled=True,
+                                    startup_editor=editor)
+        made.finish_classicwb_install()
+        made.offer("T/Science", self.CLASSICWB)
+        made.skip("T/Science")
+        volume = FakeVolume()
+        made.finish(volume, QUIET)
+        return made, volume
+
+    def test_the_line_goes_into_the_distributions_own_script(self):
+        made, volume = self.written(self.editor())
+        self.assertIn(("S", "Startup-Sequence"), volume.written)
+        body = made._classicwb_startup.decode("latin-1")
+        self.assertNotIn("LoadModule", body, "the source is left alone")
+
+    def test_a_package_needing_a_boot_line_is_no_longer_dropped(self):
+        made, _volume = self.written(self.editor())
+        self.assertFalse(
+            made.writes_its_own_startup,
+            "with an editor there is somewhere to put the line, so the icon "
+            "library must not be left out")
+
+    def test_without_an_editor_it_is_still_dropped(self):
+        #  The other direction, in the same place: nothing to insert with
+        #  means the package still cannot work and must still be left out.
+        made, _volume = self.written(None)
+        self.assertTrue(made.writes_its_own_startup)
+
+    def test_the_line_is_guarded_and_uses_auto(self):
+        """The shape of the line is what stopped a card boot-looping.
+
+        LoadModule soft resets so the modules are in place from the next boot.
+        Without AUTO it resets every time, and on a card where they do not
+        survive that is a loop - a machine two resets deep with a black screen.
+        """
+        editor = self.editor()
+        out = editor.offer("S/Startup-Sequence",
+                           self.CLASSICWB).decode("latin-1")
+        self.assertIn("IF EXISTS C:LoadModule", out)
+        self.assertIn("IF EXISTS LIBS:icon.library", out)
+        self.assertIn("AUTO", out)
+        #  ...and before IPrefs, or the ROM copy is already open.
+        self.assertLess(out.index("LoadModule AUTO"), out.index("C:IPrefs"))
