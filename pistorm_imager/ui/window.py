@@ -14,7 +14,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from .. import __version__  # noqa: E402
 from ..core import (amigaos, bootcfg, builder, content, devices,  # noqa: E402
@@ -743,7 +743,34 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.page_quick = page
 
 
-        #  Three things anyone actually wants to do, rather than a page of
+        #  A masthead, so the choice sits in the window rather than clinging
+        #  to the top of it. The page was three rows and then a great deal of
+        #  nothing, which read as though something had failed to load.
+        banner = Adw.PreferencesGroup()
+        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                       halign=Gtk.Align.CENTER)
+        hero.set_margin_top(18)
+        hero.set_margin_bottom(12)
+        icon = Gtk.Image.new_from_icon_name("pistorm-imager")
+        icon.set_pixel_size(96)
+        #  The installed application icon if the desktop has it, and a stock
+        #  one if this is running from a checkout that has never installed it.
+        if not Gtk.IconTheme.get_for_display(
+                Gdk.Display.get_default()).has_icon("pistorm-imager"):
+            icon.set_from_icon_name("drive-harddisk-symbolic")
+        hero.append(icon)
+        title = Gtk.Label(label="PiStorm Imager")
+        title.add_css_class("title-1")
+        hero.append(title)
+        strap = Gtk.Label(
+            label="Build an Amiga SD card for PiStorm and Emu68",
+            wrap=True, justify=Gtk.Justification.CENTER)
+        strap.add_css_class("dim-label")
+        hero.append(strap)
+        banner.add(hero)
+        page.add(banner)
+
+        #  The things anyone actually wants to do, rather than a page of
         #  settings that happens to be first.
         choices = Adw.PreferencesGroup(
             title="What would you like to do?",
@@ -751,23 +778,38 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  and nothing else - so it can no longer promise settings here.
             description="Each one leads to what it needs, and back here if "
                         "you change your mind.")
-        for title, subtitle, label, handler in (
+        for title_text, subtitle, label, icon_name, handler in (
             ("A basic PiStorm card",
              "Emu68 and an empty Amiga drive, partitioned and formatted, ready "
              "to install Workbench onto from floppies.",
-             "Set up", self._choose_basic),
+             "Set up", "media-flash-symbolic", self._choose_basic),
             ("Write a prepared system",
              "A finished image you have downloaded - CaffeineOS, an Emu68 "
              "Hatcher image, or a backup of a card.",
-             "Choose image", self._choose_prepared),
+             "Choose image", "folder-download-symbolic", self._choose_prepared),
             ("Customise an installation",
              "The full workflow: sources, storage, the software to add, boot "
              "options. Everything the other two decide for you.",
-             "Customise", lambda: self._set_customising(True)),
+             "Customise", "preferences-system-symbolic",
+             lambda: self._set_customising(True)),
+            #  Reading drives back out is a task like the others, and belongs
+            #  where somebody looking for it would start.
+            ("Export drives as .hdf",
+             "Take the Amiga drives out of a card or an image and write each "
+             "one as its own file, ready for WinUAE or FS-UAE.",
+             #  Not a download arrow: that is what "Write a prepared system"
+             #  uses, and the two read as the same action at a glance. This
+             #  one is about drives coming off a card.
+             "Export", "drive-multidisk-symbolic", self._choose_export),
         ):
-            row = Adw.ActionRow(title=title, subtitle=subtitle)
+            row = Adw.ActionRow(title=title_text, subtitle=subtitle)
+            prefix = Gtk.Image.new_from_icon_name(icon_name)
+            prefix.set_pixel_size(32)
+            prefix.add_css_class("dim-label")
+            row.add_prefix(prefix)
             button = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
             button.add_css_class("suggested-action")
+            button.set_size_request(128, -1)     # one column, not a ragged edge
             button.connect("clicked", lambda _b, h=handler: h())
             row.add_suffix(button)
             row.set_activatable_widget(button)
@@ -2221,6 +2263,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         return view
 
     # ------------------------------------------------------------- helpers
+
+    def _choose_export(self) -> None:
+        """Go straight to reading drives out of an image."""
+        for index, entry in enumerate(MODES):
+            if entry[1] is builder.BuildMode.EXPORT:
+                self.mode_row.set_selected(index)
+                break
+        self._sync_visibility()
 
     def _page_export(self) -> Adw.PreferencesPage:
         """Read the Amiga drives back out of a card, one .hdf each.

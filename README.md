@@ -43,7 +43,13 @@ nowhere to put a Workbench install, a package or a folder of games, the build
 **says so before it starts** rather than quietly dropping them - the ticks stay
 where they are.
 
-There is a fifth task that writes no card at all: **Export drives as .hdf**
+All of them are offered on the first screen, which is a choice of what to do
+rather than a page of settings that happens to be first. It carries a masthead
+so the choice sits in the window instead of clinging to the top of it: three
+rows above a large empty area read as though something had failed to load, and
+each task now has an icon and a button in one column.
+
+There is a fourth task that writes no card at all: **Export drives as .hdf**
 reads the Amiga drives back *out* of a card, a backup or an `.hdf`, and writes
 each one you tick as its own file.
 
