@@ -807,6 +807,30 @@ def on_activate(app: ImagerApplication) -> None:
         check(not window.clutter_group.get_visible(),
               "and the group hides again with no drive chosen")
 
+        # ---------------------------------------- a card with no Amiga drive
+        #  The pinned rule for this project: an option on screen that does not
+        #  change the card is worse than no option, because it looks honoured.
+        print("\na card with no Amiga drive")
+        window.mode_row.set_selected(0)
+        window._sync_visibility()
+        before = len(window.partition_rows)
+        window.boot_only_row.set_active(True)
+        built = window.gather()
+        check(built.boot_only, "the switch reaches the build")
+        check(built.amiga_partitions == [],
+              f"and no drives go with it: {built.amiga_partitions}")
+        check(not window.partition_group.get_visible(),
+              "the layout is hidden while it cannot apply")
+        check(len(window.partition_rows) == before,
+              "but the rows are kept, not destroyed")
+        check(built.validate() == [],
+              f"no drives is valid, not an error: {built.validate()}")
+        window.boot_only_row.set_active(False)
+        back = window.gather()
+        check(not back.boot_only and len(back.amiga_partitions) == before,
+              "and switching back restores exactly the layout that was there")
+        check(window.partition_group.get_visible(), "with the rows on screen again")
+
         # ------------------------- one drive, several lists, one set of answers
         #  The page shows the same drive through several lists, and they
         #  describe the same facts. Assembled independently they contradicted

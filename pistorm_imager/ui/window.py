@@ -82,7 +82,7 @@ ZIP_FILTERS = [("Emu68 release", ["*.zip"])]
 KEPT_ACROSS_QUICK_SETUP = (
     "release_tag", "emu68_archive", "install_emu68", "kickstart_key",
     "amiga_volume_name", "wifi_ssid", "wifi_password", "wifi_country",
-    "expand_to_fill", "extra_partitions",
+    "expand_to_fill", "extra_partitions", "boot_only",
     #  The quick page has a source chooser of its own, so these belong to the
     #  Source page alone: applying a fresh layout used to empty it.
     "source_image", "hdf_image", "repair_rdb",
@@ -1965,6 +1965,26 @@ class ImagerWindow(Adw.ApplicationWindow):
 
         page.add(self.group_sizes)
 
+        #  Some machines keep their storage elsewhere - a second card in a CF
+        #  adapter, a disk on the IDE port - and want the card to be Emu68 and
+        #  a Kickstart and nothing more. An empty partition is not the same
+        #  answer: it still claims the rest of the card and still comes up
+        #  asking to be initialised.
+        self.boot_only_group = Adw.PreferencesGroup(
+            title="What this card carries",
+            description="Emu68 boots the machine from the FAT32 partition. The "
+                        "Amiga's drives are a separate question.")
+        self.boot_only_row = Adw.SwitchRow(
+            title="Emu68 only, no Amiga drive",
+            subtitle="For a machine whose storage is elsewhere. The rest of the "
+                     "card is left unclaimed rather than formatted, so nothing "
+                     "asks to be initialised.")
+        self.boot_only_row.set_active(False)
+        self.boot_only_row.connect("notify::active",
+                                   lambda *_a: self._boot_only_changed())
+        self.boot_only_group.add(self.boot_only_row)
+        page.add(self.boot_only_group)
+
         self.partition_group = Adw.PreferencesGroup(
             title="Amiga partitions",
             description="Written as a Rigid Disk Block inside the 0x76 partition. "
@@ -2353,6 +2373,21 @@ class ImagerWindow(Adw.ApplicationWindow):
             if not release.prerelease:
                 self.release_row.set_selected(index)
                 break
+
+    def _boot_only_changed(self) -> None:
+        """A card with no Amiga drive has nothing to lay out or fill.
+
+        The rows are hidden rather than cleared, so turning the switch off
+        again brings back exactly the layout that was there - the answer to
+        "how big is DH0" should not be destroyed by asking a different
+        question.
+        """
+        only = self.boot_only_row.get_active()
+        for group in ("partition_group", "expand_group"):
+            widget = getattr(self, group, None)
+            if widget is not None:
+                widget.set_visible(not only)
+        self._update_summary()
 
     def _add_partition(self, spec: builder.AmigaPartitionSpec | None = None) -> None:
         if len(self.partition_rows) >= 10:
@@ -3321,7 +3356,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             repair_rdb=self.repair_row.get_active(),
             patch_display=self.patch_display_row.get_active(),
             boot_size=boot_size,
-            amiga_partitions=[row.spec() for row in self.partition_rows],
+            boot_only=self.boot_only_row.get_active(),
+            #  The rows are kept while the switch is on, so the layout
+            #  survives being asked a different question - but they must not
+            #  reach a card that is not going to have them.
+            amiga_partitions=([] if self.boot_only_row.get_active()
+                              else [row.spec() for row in self.partition_rows]),
             pfs3_binary=self.quick_donor.path,
             #  Only a card we are partitioning ourselves can have an OS
             #  installed onto it from floppies - but a drive imported onto
@@ -3944,6 +3984,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.replace_older_row.set_active(config.replace_older_software)
         self.patch_display_row.set_active(config.patch_display)
         self.expand_row.set_active(config.expand_to_fill)
+        self.boot_only_row.set_active(config.boot_only)
+        self._boot_only_changed()
         for row in list(self.extra_rows):
             self.expand_group.remove(row)
         self.extra_rows.clear()

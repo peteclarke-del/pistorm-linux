@@ -25,6 +25,24 @@ drive brings no Workbench, so it needs the floppies alongside it.
 | **Import an Amiga hard disk image** | Takes a WinUAE/FS-UAE/HstWB `.hdf` — the Amiga drive on its own, with no partition table — and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
 | **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
 
+**A card can also carry Emu68 and nothing else.** Some machines keep their
+storage elsewhere - a second card in a CF adapter, a real disk on the IDE port -
+and want the SD to be the boot partition and no more. *Emu68 only, no Amiga
+drive* on the Drives page does that: the MBR gets **one** entry, and the rest of
+the card is left unclaimed.
+
+An empty Amiga partition is not the same answer, which is why this is a switch
+rather than a layout with nothing in it. An empty partition still takes the rest
+of the card, still appears on the desktop, and still asks to be initialised -
+and the space cannot be given to anything else. With no entry at all the card
+says what it is.
+
+The choice hides the layout rather than clearing it, so turning it off brings
+back exactly the drives that were there. And because a boot-only card has
+nowhere to put a Workbench install, a package or a folder of games, the build
+**says so before it starts** rather than quietly dropping them - the ticks stay
+where they are.
+
 It can also produce a bare **Amiga hard disk image** instead of a card, which
 works here and in WinUAE or FS-UAE.
 
@@ -209,7 +227,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 665 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 668 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 

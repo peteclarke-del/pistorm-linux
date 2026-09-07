@@ -115,6 +115,13 @@ class BuildConfig:
 
     #  Partitioning (FRESH mode)
     boot_size: int = DEFAULT_BOOT_SIZE
+    #  A card with the Emu68 boot partition and nothing else. The Amiga's
+    #  storage is then somebody else's problem - a second SD in a CF adapter,
+    #  a real hard disk on the IDE port, whatever the machine already has -
+    #  and this tool has no business formatting a drive that is not going to
+    #  be used. Distinct from an empty partition, which still takes the rest
+    #  of the card and still appears on the desktop asking to be initialised.
+    boot_only: bool = False
     amiga_partitions: list[AmigaPartitionSpec] = dataclasses.field(
         default_factory=lambda: [AmigaPartitionSpec("DH0", None, "PFS3", True, 0)])
     pfs3_binary: str = ""              # optional pfs3aio to embed in the RDB
@@ -268,11 +275,29 @@ class BuildConfig:
             said.append(
                 "Workbench is set to open on the RTG screen, and this card "
                 "has no RTG display configured.")
-        if not self.install_amigaos and not filled and self.mode is BuildMode.FRESH:
+        if not self.install_amigaos and not filled and not self.boot_only \
+                and self.mode is BuildMode.FRESH:
             said.append(
                 "Nothing is being put on the Amiga drives: no Workbench, no "
                 "imported drive and no folder, so the card will boot to a "
                 "screen asking for a disk.")
+        #  A boot-only card has nowhere to put any of it. Saying so beats
+        #  writing a card that quietly ignored half of what was chosen: the
+        #  ticks stay where they are, so turning the option off again brings
+        #  them all back.
+        if self.boot_only and self.mode is BuildMode.FRESH:
+            ignored = []
+            if self.install_amigaos:
+                ignored.append("the Workbench install")
+            if keys:
+                ignored.append(f"{len(keys)} package(s)")
+            if filled:
+                ignored.append(f"{len(filled)} drive(s) to fill")
+            if ignored:
+                said.append(
+                    f"This card is Emu68 and the Kickstart only, so "
+                    f"{', '.join(ignored)} will not be written - there is no "
+                    f"Amiga drive on it to write them to.")
         #  Only the ones that are actually missing.  This asked whether a
         #  package *can* be fetched and never whether it already had been, so
         #  a card built from a cache that held Roadshow opened its log with a
@@ -336,7 +361,12 @@ class BuildConfig:
         if self.mode is BuildMode.FRESH:
             if self.boot_size < 64 * MIB and not self.output_hdf:
                 problems.append("The boot partition must be at least 64 MiB.")
-            if not self.amiga_partitions:
+            if self.boot_only and self.output_hdf:
+                problems.append(
+                    "A bare Amiga hard disk image is the Amiga drive on its "
+                    "own, and a boot-only card is the boot partition on its "
+                    "own. Choose one.")
+            if not self.amiga_partitions and not self.boot_only:
                 problems.append("Define at least one Amiga partition.")
             flexible = [p for p in self.amiga_partitions if p.size is None]
             if len(flexible) > 1:
@@ -2119,24 +2149,43 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
 
 
 def _write_partition_table(handle, config: BuildConfig, total_size: int,
-                           progress: Progress) -> tuple[mbr.MbrPartition, mbr.MbrPartition]:
+                           progress: Progress
+                           ) -> tuple[mbr.MbrPartition, mbr.MbrPartition | None]:
+    """The MBR, and where the two partitions sit in it.
+
+    The Amiga partition is *absent*, not empty, when the card is boot-only.
+    Writing a 0x76 entry over the rest of the card and leaving it unformatted
+    would be worse than useless: the space is claimed, AmigaDOS offers to
+    initialise a drive nobody asked for, and another machine cannot have it
+    either. With no entry the space is simply free, and the card is what it
+    says it is - Emu68 and a Kickstart, with the storage left to whatever the
+    Amiga already has.
+    """
     progress.step("Creating the partition table")
     total_sectors = total_size // SECTOR
     boot_start = DEFAULT_BOOT_START
     boot_sectors = align_up(config.boot_size, MIB) // SECTOR
     amiga_start = align_up(boot_start + boot_sectors, MIB // SECTOR)
-    if amiga_start >= total_sectors:
+    if amiga_start >= total_sectors and not config.boot_only:
         raise RuntimeError("the boot partition does not leave room for an Amiga partition")
-    amiga_sectors = total_sectors - amiga_start
+    if boot_start + boot_sectors > total_sectors:
+        raise RuntimeError("the boot partition does not fit on this card")
 
     boot = mbr.MbrPartition(0, 0x80, mbr.TYPE_FAT32_LBA, boot_start, boot_sectors)
-    amiga = mbr.MbrPartition(1, 0x00, mbr.TYPE_AMIGA, amiga_start, amiga_sectors)
+    amiga = None if config.boot_only else mbr.MbrPartition(
+        1, 0x00, mbr.TYPE_AMIGA, amiga_start, total_sectors - amiga_start)
     #  Wipe any stale table and filesystem signatures at the head of the card.
     handle.seek(0)
     handle.write(b"\0" * (DEFAULT_BOOT_START * SECTOR))
-    mbr.write_table(handle, [boot, amiga], disk_id=0x50495354)  # 'PIST'
+    mbr.write_table(handle, [p for p in (boot, amiga) if p is not None],
+                    disk_id=0x50495354)  # 'PIST'
     progress.log(f"1: FAT32 boot  {human_size(boot.size_bytes)} at sector {boot_start}")
-    progress.log(f"2: Amiga 0x76  {human_size(amiga.size_bytes)} at sector {amiga_start}")
+    if amiga is None:
+        free = (total_sectors - boot_start - boot_sectors) * SECTOR
+        progress.log(f"   no Amiga partition: {human_size(free)} left "
+                     f"unclaimed for another storage device")
+    else:
+        progress.log(f"2: Amiga 0x76  {human_size(amiga.size_bytes)} at sector {amiga_start}")
     return boot, amiga
 
 
@@ -2788,7 +2837,15 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
                     handle.seek(boot_part.start_bytes)
                     copy_stream(boot_handle, handle, boot_part.size_bytes, progress)
 
-                if config.mode is BuildMode.HDF:
+                if amiga_part is None:
+                    #  Boot-only: there is no Amiga drive on this card, so
+                    #  there is no RDB to write, nothing to install AmigaOS
+                    #  onto and no content to copy. The card is finished.
+                    progress.log("The Amiga side is left to your own storage: "
+                                 "this card carries Emu68 and the Kickstart "
+                                 "and claims no space beyond the boot "
+                                 "partition.")
+                elif config.mode is BuildMode.HDF:
                     _write_hdf(config, handle, amiga_part, progress)
                     check_and_repair(handle, amiga_part.start_bytes,
                                      amiga_part.size_bytes, config, progress)
