@@ -1900,6 +1900,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                         "inside an emulator, and assigns pointing at what you "
                         "are leaving out. Turn one on to remove it.")
         self.clutter_rows: dict[str, Adw.SwitchRow] = {}
+        #  What each row was last set to by this code, so an answer the user
+        #  has given can be told apart from one that is still the default.
+        self._clutter_default: dict[str, bool] = {}
         self.clutter_group.set_visible(False)
         page.add(self.clutter_group)
 
@@ -2630,16 +2633,32 @@ class ImagerWindow(Adw.ApplicationWindow):
             if key not in wanted:
                 self.clutter_group.remove(row)
                 del self.clutter_rows[key]
+                self._clutter_default.pop(key, None)
         for where, item in wanted.items():
-            if where in self.clutter_rows:
-                continue
-            row = Adw.SwitchRow(title=f"Remove {where}", subtitle=item.reason)
-            #  On only where the evidence is conclusive. "Almost empty" is a
+            row = self.clutter_rows.get(where)
+            if row is None:
+                row = Adw.SwitchRow(title=f"Remove {where}")
+                row.connect("notify::active",
+                            lambda *_a: self._update_summary())
+                self.clutter_rows[where] = row
+                self.clutter_group.add(row)
+                self._clutter_default[where] = None
+            #  A row's reason and its default both depend on the rest of the
+            #  page. Ticking the icon library turns "replaces
+            #  S:Startup-Sequence to do its work" into "...to install
+            #  icon.library, which this build already installs", and the
+            #  answer from "ask" to "yes". Created once and then skipped, the
+            #  row kept the wording and the switch it was born with, so the
+            #  card went out still carrying the installer that had bricked one.
+            row.set_subtitle(item.reason)
+            #  On only where the evidence is conclusive - "almost empty" is a
             #  judgement, and the answer that keeps somebody's files is safe.
-            row.set_active(item.certain)
-            row.connect("notify::active", lambda *_a: self._update_summary())
-            self.clutter_rows[where] = row
-            self.clutter_group.add(row)
+            #  An answer the user has given is never overwritten: the default
+            #  moves only while the switch still sits where this put it.
+            was = self._clutter_default.get(where)
+            if was is None or row.get_active() == was:
+                row.set_active(item.certain)
+            self._clutter_default[where] = item.certain
         self.clutter_group.set_visible(bool(self.clutter_rows))
 
     def _refresh_desktop(self) -> None:
