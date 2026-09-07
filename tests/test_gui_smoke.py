@@ -807,6 +807,94 @@ def on_activate(app: ImagerApplication) -> None:
         check(not window.clutter_group.get_visible(),
               "and the group hides again with no drive chosen")
 
+        # ------------------------- one drive, several lists, one set of answers
+        #  The page shows the same drive through several lists, and they
+        #  describe the same facts. Assembled independently they contradicted
+        #  each other: AWeb was switched on under "older copies", meaning
+        #  remove it, and switched on under "already installed on the drive",
+        #  meaning keep it, and moving either switch did nothing to the other.
+        print("\none drive, several lists, one set of answers")
+
+        cover = type(window)._covered_by
+        check(cover("Programs/Thing", ["Programs/Thing"]),
+              "a path being dropped is covered by itself")
+        check(cover("Programs/Thing/Sub", ["Programs/Thing"]),
+              "and so is anything inside it")
+        check(not cover("Programs/Thingamajig", ["Programs/Thing"]),
+              "but a longer name is a different drawer")
+        check(not cover("Programs/Thing", ["Programs/Other"]),
+              "and an unrelated drawer is not covered")
+
+        #  Every removal list feeds the one shared answer, not just the one
+        #  the original exclusion happened to be written for.
+        class _Row:
+            def __init__(self, on): self._on = on
+            def get_active(self): return self._on
+        keep = dict(window.older_rows), dict(window.broken_rows), \
+            dict(window.clutter_rows), dict(window.arrives_rows)
+        window.older_rows = {"Programs/Older": _Row(True)}
+        window.broken_rows = {"Programs/Broken": _Row(True)}
+        window.clutter_rows = {"Programs/Clutter": _Row(True),
+                               "Programs/Kept": _Row(False)}
+        window.arrives_rows = {}
+        removing = set(window._being_removed())
+        for where in ("Programs/Older", "Programs/Broken", "Programs/Clutter"):
+            check(where in removing, f"{where} counts as being removed")
+        check("Programs/Kept" not in removing,
+              "a removal row switched off does not count")
+        window.older_rows, window.broken_rows, window.clutter_rows, \
+            window.arrives_rows = keep
+
+        #  And the tie itself, driven through the real window on the real
+        #  drive when it is here: answering one list re-derives the other.
+        drive = Path.home() / "Downloads/ClassicWB_FULL_v28/System.hdf"
+        if drive.exists():
+            window.quick_hdf.set_path(str(drive))
+            #  Every package that suits this machine, so the older-copy search
+            #  has something to supersede whatever the drive happens to carry.
+            #  Nothing is named: the ticks come from the catalogue and the
+            #  answers from the drive, so this holds for any setup.
+            was_settling = getattr(window, "_settling_packages", False)
+            window._settling_packages = True
+            ticked = {}
+            try:
+                for key, row in window.package_rows.items():
+                    ticked[key] = row.get_active()
+                    if row.get_sensitive():
+                        row.set_active(True)
+            finally:
+                window._settling_packages = was_settling
+            window._refresh_older_copies()
+            window._refresh_what_cannot_work()
+            window._refresh_what_arrives()
+            clash = [k for k in window.arrives_rows
+                     if cover(k, window._being_removed())]
+            check(not clash,
+                  f"no program is in two lists at once: {clash}")
+            picked = next((d for d, r in window.older_rows.items()
+                           if r.get_active()), None)
+            if picked is not None:
+                check(picked not in window.arrives_rows,
+                      f"{picked} is not also listed as arriving")
+                window.older_rows[picked].set_active(False)
+                check(picked in window.arrives_rows,
+                      "and it comes back when the removal is switched off")
+                window.older_rows[picked].set_active(True)
+                check(picked not in window.arrives_rows,
+                      "and goes again when it is switched back on")
+            else:
+                print("  --   nothing on this drive is superseded; tie not driven")
+            window._settling_packages = True
+            try:
+                for key, was in ticked.items():
+                    window.package_rows[key].set_active(was)
+            finally:
+                window._settling_packages = was_settling
+            window.quick_hdf.set_path("")
+            window._refresh_what_arrives()
+        else:
+            print("  --   ClassicWB is not on this machine; tie not driven")
+
         # ------------------------------------- icons on the Workbench desktop
         print("\nicons on the Workbench desktop")
         window.quick_hdf.set_path(str(CLUTTER_IMAGE))

@@ -2245,6 +2245,53 @@ six rows rather than one — `Programs/AWeb_APL` (3.4 against 3.5),
 (19.14 either way) and `System/Scalos` (39.222 against 39.218, the drive's
 newer) as questions, switched off.
 
+#### One drive, several lists, one set of answers
+
+The Programs page shows the same drive through several lists — what it already
+carries, what this card cannot run, older copies of chosen software, and the
+clutter — and they describe the same facts. Assembled independently, they
+contradicted each other. `Programs/AWeb_APL` appeared under **older copies**
+switched on, meaning *remove it*, and under **already installed on the drive**
+switched on, meaning *keep it*; `Programs/iGame` and `Programs/VirusZ` the
+same. Moving either switch did nothing to the other.
+
+An exclusion for exactly this already existed — "already installed" skipped
+whatever the *cannot work* list was dropping, added when FMSsys turned up in
+both — but it covered one of the three removal lists. A rule written for one
+pair rather than as a relation over all of them is this project's recurring
+defect.
+
+So there is now one definition of what the page is dropping, and one test for
+whether a row is covered by it:
+
+- `_being_removed()` is the union of every switched-on row across the three
+  removal lists. Nothing else may ask the lists directly.
+- `_covered_by(path, removing)` is a **path relation** — the same path, or
+  inside one — not a name match and not equality. The lists need not agree on
+  depth, and a program inside a drawer that is going is going with it.
+- Answering any of them re-derives the list that could contradict it, so
+  switching a removal off brings the program back under "already installed"
+  and switching it on takes it away again.
+
+Nothing here names a program, a drawer or a distribution. The rows come from
+the drive and the catalogue, and are matched by path, so this holds for
+whatever somebody started from.
+
+**The clutter pass is deliberately left out of that tie.** It is given
+`_already_leaving()`, which includes its own switched-on rows — dropping a
+drawer really does break an assign to it, so its output is legitimately part
+of its next input. Re-running it on every click therefore feeds it its own
+answers: on one drive the removal count climbed from six to eight to nine
+across two toggles. That loop wants running to a fixed point on purpose, not a
+step at a time by whoever last touched a switch, so it keeps the triggers it
+had.
+
+Two scans are now remembered rather than repeated, because the lists re-derive
+each other on every switch: `principal_programs`, which unpacks and reads every
+chosen archive and depends on nothing but the ticks, and the drive's own
+program list. Without them a single click cost between two and six seconds; it
+is now immediate.
+
 Each answer is left out whole, which is a strong thing to do, so it is fenced
 further:
 
