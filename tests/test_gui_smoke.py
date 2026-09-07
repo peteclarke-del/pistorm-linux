@@ -48,6 +48,29 @@ ADF_FOLDER = Path(__file__).resolve().parent.parent / "samples" / "workbench"
 
 CLUTTER_IMAGE = SCRATCH / "clutter.hdf"
 
+#  A small image with two Amiga drives in it, for the export page to read.
+EXPORT_IMAGE = SCRATCH / "toexport.img"
+from pistorm_imager.core.util import Progress as _Progress  # noqa: E402
+QUIET_PROGRESS = _Progress()
+
+
+def _make_export_image() -> None:
+    from pistorm_imager.core import rdb                    # noqa: PLC0415
+    geom = rdb.Geometry()
+    cyl = geom.cyl_blocks * geom.block_size
+    total = 10 * cyl
+    parts = rdb.layout(geom, total // geom.block_size,
+                       [("DH0", 2 * cyl, rdb.parse_dostype("PFS3")),
+                        ("DH1", None, rdb.parse_dostype("PFS3"))])
+    table = rdb.Rdb(geometry=geom, partitions=parts,
+                    filesystems=[rdb.FileSystem(
+                        dostype=rdb.parse_dostype("PFS3"),
+                        seglist=b"handler" * 128, version=19 << 16 | 2)],
+                    cylinders=total // cyl)
+    with open(EXPORT_IMAGE, "wb") as handle:
+        handle.truncate(total)
+        table.write(handle, 0)
+
 
 def _make_clutter_hdf() -> None:
     """A small drive carrying one of each thing the clutter pass looks for.
@@ -126,6 +149,7 @@ def _make_test_hdf() -> None:
 
 _make_test_hdf()
 _make_clutter_hdf()
+_make_export_image()
 
 failures: list[str] = []
 
@@ -1762,17 +1786,82 @@ def on_activate(app: ImagerApplication) -> None:
         pump()
         check(not window.gather().target_is_device,
               "switching back to an image file still writes a file")
-        window.target_row.set_selected(2)
+        #  There used to be a third choice here, "Amiga hard disk image
+        #  (.hdf)", which wrote the build's output as one bare drive. A card
+        #  carries four, so it could not say which drive it was. It is gone,
+        #  and reading drives back out is its own task now.
+        check(window.target_row.get_model().get_n_items() == 2,
+              "the bare .hdf output option is gone, not merely hidden")
+        check(not window._making_hdf(), "and nothing still asks for one")
+        window.target_row.set_selected(1)
         pump()
-        check(window._making_hdf(),
-              "and the .hdf option is not overwritten by the mirror")
+        check(not window.gather().target_is_device,
+              "and the two that remain still survive the mirror")
         window.target_row.set_selected(1)
         window.device_list = []
         pump()
+        # ------------------------------- exporting drives out of an image
+        #  The old answer wrote the build's output as one bare .hdf, which
+        #  cannot describe the four drives a PiStorm card carries. This is
+        #  the replacement, and it has to reach the job like anything else.
+        print("\nexporting drives as .hdf")
+        #  Put the window back exactly as it was afterwards: this task hides
+        #  every other page while it is chosen, and the checks that follow
+        #  are about the quick start.
+        was_customising = getattr(window, "_customising", False)
+        was_mode = window.mode_row.get_selected()
+        export_mode = next(i for i, m in enumerate(MODES)
+                           if m[1] is builder.BuildMode.EXPORT)
+        window.mode_row.set_selected(export_mode)
+        window._sync_visibility()
+        pump()
+        check(window._mode() is builder.BuildMode.EXPORT, "the task can be chosen")
+        pages = {n: window.stack.get_page(window.stack.get_child_by_name(n))
+                 for n in ("export", "amiga", "packages", "target")}
+        check(pages["export"] is not None and pages["export"].get_visible(),
+              "its own page is shown")
+        check(not any(pages[n].get_visible() for n in ("amiga", "packages", "target")),
+              "and the pages about building a card are not")
+
+        window.export_source.set_path(str(EXPORT_IMAGE))
+        pump()
+        names = sorted(window.export_rows)
+        check(names == ["DH0", "DH1"],
+              f"the drives are read out of the image, not guessed: {names}")
+        subtitle = window.export_rows["DH1"].get_subtitle()
+        check(".hdf" in subtitle, f"and each says what file it becomes: {subtitle}")
+
+        out = SCRATCH / "exported"
+        window.export_dir.set_path(str(out))
+        window.export_rows["DH0"].set_active(False)
+        pump()
+        job = window.gather()
+        check(job.export_drives == ["DH1"],
+              f"only the ticked drives reach the job: {job.export_drives}")
+        check(job.export_dir == str(out), "and so does where they go")
+        check(job.source_image == str(EXPORT_IMAGE),
+              "the image comes from this page, not the Source page")
+        check(job.validate() == [], f"the job is runnable: {job.validate()}")
+
+        #  And it really writes them: the whole point is a file that mounts.
+        builder.run_build(job, QUIET_PROGRESS)
+        made = sorted(q.name for q in out.glob("*.hdf"))
+        check(made == ["DH1.hdf"], f"one self-contained file per drive: {made}")
+        from pistorm_imager.core import export as export_mod
+        back = export_mod.drives(out / "DH1.hdf")
+        check([d.name for d in back] == ["DH1"],
+              "and it reads back as the drive it came from")
+
+        window.mode_row.set_selected(was_mode)
+        window._sync_visibility()
+        window._set_customising(was_customising)
+        pump()
+
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()
         failures.append(f"exception: {error}")
+
     finally:
         app.quit()
 

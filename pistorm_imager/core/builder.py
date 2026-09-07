@@ -56,6 +56,11 @@ class BuildMode(enum.Enum):
     IMAGE = "image"
     HDF = "hdf"
     CUSTOMISE = "customise"
+    #  Not a build at all: reading the Amiga drives back out of a card as
+    #  separate .hdf files. It lives here so that it reaches the card through
+    #  the same job, the same progress and the same button as everything else,
+    #  rather than growing a second way to run.
+    EXPORT = "export"
 
 
 @dataclasses.dataclass
@@ -180,6 +185,9 @@ class BuildConfig:
 
     #  Output shape: a whole SD card, or just an Amiga hard disk image
     output_hdf: bool = False
+    #  EXPORT only: which drives to lift out, and where to put them.
+    export_drives: list[str] = dataclasses.field(default_factory=list)
+    export_dir: str = ""
     #  Repair the RDB of an imported image for PiStorm compatibility
     repair_rdb: bool = True
     #  After writing a prepared system, clear a saved screen mode that would
@@ -340,6 +348,18 @@ class BuildConfig:
     def validate(self) -> list[str]:
         """Return a list of problems; an empty list means the config is usable."""
         problems: list[str] = []
+        if self.mode is BuildMode.EXPORT:
+            #  Nothing is written to a card here, so the target is not the
+            #  question - the image to read and the folder to fill are.
+            if not self.source_image:
+                problems.append("No image to export drives from.")
+            elif not Path(self.source_image).is_file():
+                problems.append(f"Image not found: {self.source_image}")
+            if not self.export_dir:
+                problems.append("No folder chosen to export into.")
+            if not self.export_drives:
+                problems.append("No drives chosen to export.")
+            return problems
         if not self.target:
             problems.append("No target selected.")
         if self.mode is BuildMode.IMAGE and not self.source_image:
@@ -2777,6 +2797,13 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
 
 
 def _run_build(config: BuildConfig, progress: Progress) -> None:
+    if config.mode is BuildMode.EXPORT:
+        from . import export as export_module                # noqa: PLC0415
+        written = export_module.export(config.source_image, config.export_drives,
+                                       config.export_dir, progress)
+        progress.step("Done")
+        progress.log(f"{len(written)} drive(s) exported to {config.export_dir}")
+        return
     if config.cache_root:
         emu68.use_cache(config.cache_root)
     for concern in config.concerns():
