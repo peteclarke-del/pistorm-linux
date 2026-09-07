@@ -70,7 +70,7 @@ or install it from the published release and use the desktop entry:
 
 ```
 pipx install --system-site-packages \
-    "git+https://github.com/peteclarke-del/pistorm-linux@v0.5.1"
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.6.0"
 pistorm-imager-cli install-desktop
 ```
 
