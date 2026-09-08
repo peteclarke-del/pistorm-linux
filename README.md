@@ -501,6 +501,43 @@ the card. And read the verdict out of FS-UAE's own log rather than off the
 screen — a healthy run prints its memory map three times, and every extra one
 is a reset the machine was not asked for.
 
+### Starting up
+
+The window took **11.5 seconds** to appear on the machine this was measured on,
+which is long enough to look broken. Roughly 2.5 of those are imports, and a
+second of that is GTK itself; the rest was work done before anything could be
+drawn.
+
+The largest single cause was reading the same Amiga volume over and over.
+Rebuilding the list of categories that can be left out walks the whole volume,
+and every signal that could change that list rebuilt it - so choosing one image
+walked it several times before the window existed. The answer is remembered per
+`(path, drive)`, since neither the file nor the drive inside it changes while
+the application is looking at them. That took it to **about 8 seconds** and cut
+the call count from 203,000 to 174,000.
+
+**What remains, and why it is still there.** Most of the rest is building
+widgets, and the obvious next step is to show the window first and read the
+world - the removable drives, the sample folders, the last session - on an idle
+callback afterwards. That was tried: it reaches about 6.4 seconds, and it
+breaks three of the GUI checks.
+
+It is worth recording why, because the failure is not where it looks. The pages
+lend groups to one another - the Workbench floppy chooser is moved to whichever
+page has to ask about it - and `_sync_visibility` decides that from what
+`_detect_material` found. Deferring the pair keeps them in the same order but
+no longer keeps them *alone*: other idle work interleaves, the chooser ends up
+on the wrong page, and the page then reports that a folder of floppy images is
+still needed. Restoring the exact original order inside the idle callback does
+not fix it, so the lending needs untangling first rather than the startup being
+reordered around it.
+
+The check that would have caught this quietly is worth keeping in mind: with
+the deferral in place and no wait for it, every check passed - because the
+deferred work ran partway through the test, after the checks that would have
+noticed. A test that waits for the window to settle fails honestly; one that
+races it does not.
+
 ## How big is the card, and which gigabyte do you mean
 
 ### A card's size must survive being shown
