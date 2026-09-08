@@ -287,9 +287,25 @@ class PartitionRow(Adw.ExpanderRow):
                 f"this machine")
 
     def _what_is_in_there(self, path: str) -> list:
-        """What can be left out of this source, folder or image alike."""
+        """What can be left out of this source, folder or image alike.
+
+        Remembered per (path, drive). Rebuilding the category list walks the
+        whole volume, and every signal that could change the list rebuilt it -
+        so choosing one image walked it several times over before the window
+        had even appeared. Neither the file nor the drive inside it changes
+        while the application is looking at it.
+        """
         if not path:
             return []
+        key = (path, self._chosen_drive())
+        cached = getattr(self, "_contents_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        found = self._discover_contents(path)
+        self._contents_cache = (key, found)
+        return found
+
+    def _discover_contents(self, path: str) -> list:
         if Path(path).is_dir():
             return content.discover(path)
         try:
@@ -468,6 +484,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  Start on the quick start with nothing else in the way.  A restored
         #  session that was in the middle of customising reopens there.
         self._set_customising(getattr(self, "_restored_customising", False))
+        self._settled = True
 
     # ------------------------------------------------------------ setup UI
 

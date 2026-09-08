@@ -171,6 +171,8 @@ def on_activate(app: ImagerApplication) -> None:
     try:
         window = app.window
         check(window is not None, "window constructed")
+        check(getattr(window, "_settled", False),
+              "the startup work has finished before the window is handed over")
         #  How the window looks before anything is done to it, so "forget the
         #  saved setup" can be held to putting it back exactly here.
         pristine_rows = [dataclasses.asdict(r.spec())
