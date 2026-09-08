@@ -1931,6 +1931,26 @@ def on_activate(app: ImagerApplication) -> None:
         check(window.stack.get_visible_child_name() == "export",
               f"and is the page actually shown: "
               f"{window.stack.get_visible_child_name()!r}")
+        #  A task that writes no card does not survive a restart: the session
+        #  records the mode, so quitting inside Export reopened there - the
+        #  one task that hides the first screen. This is the rule startup
+        #  applies after restoring.
+        window.mode_row.set_selected(
+            next(i for i, m in enumerate(MODES)
+                 if m[1] is builder.BuildMode.EXPORT))
+        pump()
+        check(window._mode() is builder.BuildMode.EXPORT, "chosen for the check")
+        window._forget_tasks_that_write_no_card()
+        window._sync_visibility()
+        pump()
+        check(window._mode() is not builder.BuildMode.EXPORT,
+              "a restored session does not open on Export")
+        check(window.stack.get_visible_child_name() == "quick",
+              f"it opens on the first screen: "
+              f"{window.stack.get_visible_child_name()!r}")
+        check(not window.back_button.get_visible(),
+              "with no Back on it")
+
         window._go_back()
         pump()
         check(quick_page.get_visible(), "and Back brings the first screen back")

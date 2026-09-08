@@ -478,6 +478,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._detect_material()
         self._refresh_devices()
         self._restore_session()
+        self._forget_tasks_that_write_no_card()
         self.connect("close-request", self._on_close)
         self._load_releases_async()
         self._sync_visibility()
@@ -2331,6 +2332,22 @@ class ImagerWindow(Adw.ApplicationWindow):
                 self.mode_row.set_selected(index)
                 break
         self._sync_visibility()
+
+    def _forget_tasks_that_write_no_card(self) -> None:
+        """A restored session opens on the first screen, not on Export.
+
+        Every setting the session held is restored as before; this is only
+        about where the window opens. Quitting inside Export reopened there,
+        which is not where anyone expects to start - and it is the one task
+        that hides the first screen while it is chosen, so the window came up
+        with no obvious way back to the choice.
+        """
+        if self._mode() is not builder.BuildMode.EXPORT:
+            return
+        for index, entry in enumerate(MODES):
+            if entry[1] is not builder.BuildMode.EXPORT:
+                self.mode_row.set_selected(index)
+                return
 
     def _page_export(self) -> Adw.PreferencesPage:
         """Read the Amiga drives back out of a card, one .hdf each.
