@@ -71,7 +71,11 @@ carrying PFS3 19.2 in 59,532 bytes, and the volume mounts as `Demos`.
 
 The drives are **read from the image, never guessed**: choose a file and the
 page lists what is actually in it, by the name a person calls it, with the file
-each one would become. A drive whose name cannot be read is still offered -
+each one would become. Every one starts **unticked**, and Export stays disabled
+until at least one is chosen - unticking them all disables it again. The rest
+of this application defaults to what is already there, but this page writes new
+files and a games drive is twenty gigabytes, so exporting all four because
+nobody said otherwise is not a sensible default. A drive whose name cannot be read is still offered -
 being unreadable here is a reason to hand it to something else, not a reason to
 leave it out.
 
