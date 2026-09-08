@@ -543,6 +543,12 @@ it had just hidden.
 The check now asserts `get_visible_child_name()`, not merely which pages are
 enabled. The weaker version passed against the bug.
 
+**And a task that writes no card does not survive a restart.** The session
+records the mode along with everything else, so quitting inside Export reopened
+there - which is not where anyone expects to start, and it is the one task that
+hides the first screen while it is chosen. Every setting is still restored; only
+the landing is forced back to the choice.
+
 ### Starting up
 
 The window took **11.5 seconds** to appear on the machine this was measured on,
