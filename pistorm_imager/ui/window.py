@@ -605,8 +605,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  bar there was no Back, no summary and - worse - no button to run
         #  the export with: the task could be chosen and then not left or
         #  performed.
+        #
+        #  Asked of the mode rather than of _was_exporting, which is only a
+        #  marker for the last transition: a session saved while exporting
+        #  came back with the flag set, the first screen showing and a bar on
+        #  it offering Back to the place it already was.
         beyond_the_choice = (getattr(self, "_customising", False)
-                             or getattr(self, "_was_exporting", False)
+                             or self._mode() is builder.BuildMode.EXPORT
                              or getattr(self, "_quick_screen", "choices")
                              != "choices")
         self.back_button.set_visible(beyond_the_choice)
@@ -735,7 +740,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         thing there is to do.
         """
         self._customising = bool(on)
-        exporting = getattr(self, "_was_exporting", False)
+        #  Whether a task other than building a card is chosen. Taken from the
+        #  mode: this runs at the end of startup, after a saved session has
+        #  been restored, and a session saved while exporting used to bring
+        #  the quick start back on top of the export task - the first screen,
+        #  with an export summary and a Back button pointing nowhere.
+        exporting = self._mode() is builder.BuildMode.EXPORT
         for name in ("source", "storage", "amiga", "packages", "options",
                      "target"):
             page = self.stack.get_page(self.stack.get_child_by_name(name))
@@ -748,7 +758,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             page.set_visible(self._customising and exporting)
         quick = self.stack.get_page(self.stack.get_child_by_name("quick"))
         if quick is not None:
-            quick.set_visible(not self._customising)
+            quick.set_visible(not self._customising and not exporting)
+        page = self.stack.get_page(self.stack.get_child_by_name("export"))
+        if page is not None:
+            page.set_visible(exporting)
+        if exporting:
+            self.stack.set_visible_child_name("export")
         self._update_back()
         if self._customising:
             #  The full workflow owns these again.
