@@ -520,6 +520,18 @@ asserting the rule on each. Eleven screens, and the check fails naming
 `export` if the bar forgets a task again. Reasoning about which screens exist
 is exactly how this was missed the first time.
 
+A second way to break the same rule, found by a screenshot: the first screen
+appeared **on top of** a task that was still chosen, with an export summary on
+it and a Back button pointing at where it already was. `_set_customising` shows
+the quick start whenever the full workflow is not wanted, and it did that
+without asking what task was chosen - so a session saved while exporting came
+back to the wrong screen. It runs last at startup, after the session has been
+restored, which is why only a saved session showed it.
+
+The mode is the truth. Both that and the Back rule now ask it directly rather
+than a flag left over from the last transition, and the check covers coming
+back to a saved export task as well as choosing one.
+
 ### Starting up
 
 The window took **11.5 seconds** to appear on the machine this was measured on,

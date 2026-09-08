@@ -1897,6 +1897,30 @@ def on_activate(app: ImagerApplication) -> None:
               "the first screen is a choice, and needs no Back")
         check(not window.bottom_bar.get_visible(), "nor a bar to put it in")
 
+        #  And it stays that way when another task is chosen. A session saved
+        #  while exporting used to come back with the first screen on top of
+        #  the export task: no image chosen, so the bar read "Still needed: No
+        #  image to export drives from" and offered Back to where it already
+        #  was. _set_customising showed the quick page without asking what the
+        #  mode was.
+        window.mode_row.set_selected(
+            next(i for i, m in enumerate(MODES)
+                 if m[1] is builder.BuildMode.EXPORT))
+        window._sync_visibility()
+        window._set_customising(False)          # what startup does last
+        pump()
+        quick_page = window.stack.get_page(window.stack.get_child_by_name("quick"))
+        check(not quick_page.get_visible(),
+              "the first screen does not reappear under another task")
+        check(window.stack.get_page(
+            window.stack.get_child_by_name("export")).get_visible(),
+              "the task that was chosen is the one shown")
+        window._go_back()
+        pump()
+        check(quick_page.get_visible(), "and Back brings the first screen back")
+        check(not window.back_button.get_visible(),
+              "with no Back on it once more")
+
         elsewhere = []
         for screen in ("basic", "prepared", "image", "default"):
             window._set_quick_screen(screen)
