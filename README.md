@@ -529,8 +529,19 @@ back to the wrong screen. It runs last at startup, after the session has been
 restored, which is why only a saved session showed it.
 
 The mode is the truth. Both that and the Back rule now ask it directly rather
-than a flag left over from the last transition, and the check covers coming
-back to a saved export task as well as choosing one.
+than a flag left over from the last transition.
+
+That was still not the whole of it, and the rest is worth knowing about
+`Adw.ViewStack`: **hiding a page does not move the stack off it.** With the
+quick page hidden and the export page shown, the switcher listed only Export
+while the quick page's own content was still what was displayed - the
+screenshot showed a masthead, four choices, and an export summary on the bar
+below them. `_set_customising` ends by choosing where to land, and that line
+knew about only two destinations, so it sent the stack back to the quick page
+it had just hidden.
+
+The check now asserts `get_visible_child_name()`, not merely which pages are
+enabled. The weaker version passed against the bug.
 
 ### Starting up
 

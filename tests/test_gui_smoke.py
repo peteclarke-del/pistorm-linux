@@ -1914,10 +1914,20 @@ def on_activate(app: ImagerApplication) -> None:
               "the first screen does not reappear under another task")
         check(window.stack.get_page(
             window.stack.get_child_by_name("export")).get_visible(),
-              "the task that was chosen is the one shown")
+              "the task that was chosen is enabled")
+        #  And is the one actually on screen. Hiding a page does not move the
+        #  stack off it: the switcher listed only Export while the quick
+        #  page's content was still displayed, which is exactly what the
+        #  screenshot showed. Asking which pages are enabled would have passed.
+        check(window.stack.get_visible_child_name() == "export",
+              f"and is the page actually shown: "
+              f"{window.stack.get_visible_child_name()!r}")
         window._go_back()
         pump()
         check(quick_page.get_visible(), "and Back brings the first screen back")
+        check(window.stack.get_visible_child_name() == "quick",
+              f"landing on it, not merely enabling it: "
+              f"{window.stack.get_visible_child_name()!r}")
         check(not window.back_button.get_visible(),
               "with no Back on it once more")
 
