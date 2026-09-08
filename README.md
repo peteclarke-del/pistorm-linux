@@ -501,6 +501,25 @@ the card. And read the verdict out of FS-UAE's own log rather than off the
 screen — a healthy run prints its memory map three times, and every extra one
 is a reset the machine was not asked for.
 
+### A way back from everywhere but the first screen
+
+The first screen is a choice and nothing else, so it carries no Back and no
+bar at all - there is nothing yet to go back to, summarise or write. Every
+other screen has both.
+
+That rule was broken by adding a task rather than a page. The bar holds Back,
+the summary *and* the button that starts the job, and it was shown only while
+customising or partway through a quick screen - so the export task, which is
+neither, produced a screen that could be neither left nor used. The bug
+reported was "no Back"; the button to run the export was missing from the same
+cause.
+
+It is now checked by walking every screen the window can show - the choice,
+each quick screen, each page of the full workflow, and the export task - and
+asserting the rule on each. Eleven screens, and the check fails naming
+`export` if the bar forgets a task again. Reasoning about which screens exist
+is exactly how this was missed the first time.
+
 ### Starting up
 
 The window took **11.5 seconds** to appear on the machine this was measured on,

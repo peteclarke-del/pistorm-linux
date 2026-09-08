@@ -1883,6 +1883,58 @@ def on_activate(app: ImagerApplication) -> None:
         window._set_customising(was_customising)
         pump()
 
+        # ------------------------------ a way back from everywhere but the start
+        #  The rule: the first screen is a choice and needs no Back, and
+        #  every other screen has one. The export page broke it by being a
+        #  task the bar had never heard of - and the bar carries the button
+        #  that runs the job as well, so that page could be neither left nor
+        #  used. Walked here rather than reasoned about, one screen at a time.
+        print("\na way back from everywhere but the first screen")
+        window._set_customising(False)
+        window._set_quick_screen("choices")
+        pump()
+        check(not window.back_button.get_visible(),
+              "the first screen is a choice, and needs no Back")
+        check(not window.bottom_bar.get_visible(), "nor a bar to put it in")
+
+        elsewhere = []
+        for screen in ("basic", "prepared", "image", "default"):
+            window._set_quick_screen(screen)
+            pump()
+            if window._quick_screen == screen:
+                elsewhere.append((f"quick/{screen}",
+                                  window.back_button.get_visible(),
+                                  window.bottom_bar.get_visible()))
+        window._set_quick_screen("choices")
+        window._set_customising(True)
+        pump()
+        for name in ("source", "storage", "amiga", "packages", "options",
+                     "target"):
+            if window.stack.get_child_by_name(name) is None:
+                continue
+            window.stack.set_visible_child_name(name)
+            pump()
+            elsewhere.append((name, window.back_button.get_visible(),
+                              window.bottom_bar.get_visible()))
+        window._set_customising(False)
+        window.mode_row.set_selected(
+            next(i for i, m in enumerate(MODES)
+                 if m[1] is builder.BuildMode.EXPORT))
+        window._sync_visibility()
+        pump()
+        elsewhere.append(("export", window.back_button.get_visible(),
+                          window.bottom_bar.get_visible()))
+
+        check(len(elsewhere) >= 10,
+              f"every other screen was actually visited: {len(elsewhere)}")
+        without = [n for n, back, _bar in elsewhere if not back]
+        check(not without, f"and every one of them has a Back: missing {without}")
+        barless = [n for n, _back, bar in elsewhere if not bar]
+        check(not barless, f"and a bar to put it in: missing {barless}")
+
+        window._go_back()
+        pump()
+
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()
