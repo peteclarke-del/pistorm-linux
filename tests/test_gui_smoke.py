@@ -1830,12 +1830,34 @@ def on_activate(app: ImagerApplication) -> None:
         names = sorted(window.export_rows)
         check(names == ["DH0", "DH1"],
               f"the drives are read out of the image, not guessed: {names}")
+
+        #  Nothing is exported because nobody said otherwise: these write new
+        #  files, and a games drive is twenty gigabytes.
+        check(not any(r.get_active() for r in window.export_rows.values()),
+              "every drive starts unticked")
+        window.export_dir.set_path(str(SCRATCH / "exported"))
+        pump()
+        check(not window.write_button.get_sensitive(),
+              "and Export is disabled with none of them chosen")
+        window.export_rows["DH1"].set_active(True)
+        pump()
+        check(window.write_button.get_sensitive(),
+              "choosing one enables it")
+        window.export_rows["DH0"].set_active(True)
+        pump()
+        check(window.write_button.get_sensitive(), "and two keep it enabled")
+        window.export_rows["DH0"].set_active(False)
+        window.export_rows["DH1"].set_active(False)
+        pump()
+        check(not window.write_button.get_sensitive(),
+              "unticking them all disables it again")
+        window.export_rows["DH1"].set_active(True)
+        pump()
         subtitle = window.export_rows["DH1"].get_subtitle()
         check(".hdf" in subtitle, f"and each says what file it becomes: {subtitle}")
 
         out = SCRATCH / "exported"
         window.export_dir.set_path(str(out))
-        window.export_rows["DH0"].set_active(False)
         pump()
         job = window.gather()
         check(job.export_drives == ["DH1"],
@@ -1862,6 +1884,10 @@ def on_activate(app: ImagerApplication) -> None:
         check(window.write_button.get_label() == "Export",
               f"even with nothing chosen yet: {window.write_button.get_label()!r}")
         window.export_source.set_path(str(EXPORT_IMAGE))
+        pump()
+        #  Choosing an image rebuilds the rows, and they come back unticked -
+        #  which is the point of the default, so say so again here.
+        window.export_rows["DH1"].set_active(True)
         pump()
         summary = window.summary.get_text()
         check("DH1" in summary and "Export" in summary,

@@ -2415,7 +2415,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         for drive in found:
             row = Adw.SwitchRow(title=drive.label, subtitle=
                                 f"{drive.description}  ->  {drive.filename()}")
-            row.set_active(True)
+            #  Off to begin with. Every other list on this page defaults to
+            #  what is already there, but this one writes new files, and a
+            #  games drive is twenty gigabytes - so exporting all four
+            #  because nobody said otherwise is not a sensible default. The
+            #  Export button stays disabled until something is chosen.
+            row.set_active(False)
             row.connect("notify::active", lambda *_a: self._update_summary())
             self.export_rows[drive.name] = row
             self.export_group.add(row)
