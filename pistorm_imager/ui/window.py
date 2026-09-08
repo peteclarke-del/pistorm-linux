@@ -762,8 +762,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         page = self.stack.get_page(self.stack.get_child_by_name("export"))
         if page is not None:
             page.set_visible(exporting)
-        if exporting:
-            self.stack.set_visible_child_name("export")
         self._update_back()
         if self._customising:
             #  The full workflow owns these again.
@@ -782,8 +780,16 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.group_plan.set_visible(True)
         else:
             self._set_quick_screen(getattr(self, "_quick_screen", "choices"))
-        self.stack.set_visible_child_name("source" if self._customising
-                                          else "quick")
+        #  Where to land. Hiding a page does not move the stack off it - the
+        #  switcher listed only Export while the quick page's own content was
+        #  still on screen, which is what "Back on the first screen" turned
+        #  out to be. So the landing is chosen here, last, and has to know
+        #  about a task that is neither the workflow nor the quick start.
+        if exporting:
+            self.stack.set_visible_child_name("export")
+        else:
+            self.stack.set_visible_child_name("source" if self._customising
+                                              else "quick")
 
     def _page_quick(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
