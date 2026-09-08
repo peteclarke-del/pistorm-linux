@@ -10,8 +10,10 @@ top of it.
 
 ## What it does
 
-Four tasks, all ending with the same boot-partition customisation pass. Two of
-them take a `.hdf`, and the difference between them is the whole point: **Write
+Four tasks that write a card, all ending with the same boot-partition
+customisation pass, and a fifth that writes no card at all - **Export drives as
+.hdf**, described below. Two of the four take a `.hdf`, and the difference
+between them is the whole point: **Write
 a drive image unchanged** keeps the image's own partitions and file systems and
 adds nothing, while **Build a new card** can take the *files* out of that same
 image, put them on a layout of your choosing, and add the Workbench disks and
@@ -22,11 +24,60 @@ drive brings no Workbench, so it needs the floppies alongside it.
 | --- | --- |
 | **Build a new card** | Writes an MBR with a FAT32 boot partition (Emu68 + Raspberry Pi firmware + your Kickstart) and a type `0x76` Amiga partition carrying a Rigid Disk Block. Optionally installs AmigaOS onto it from a set of Workbench floppy images, so the card boots straight to Workbench. |
 | **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
-| **Import an Amiga hard disk image** | Takes a WinUAE/FS-UAE/HstWB `.hdf` — the Amiga drive on its own, with no partition table — and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
+| **Import an Amiga hard disk image** | Takes a WinUAE/FS-UAE/HstWB `.hdf` - the Amiga drive on its own, with no partition table - and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
 | **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
 
-It can also produce a bare **Amiga hard disk image** instead of a card, which
-works here and in WinUAE or FS-UAE.
+**A card can also carry Emu68 and nothing else.** Some machines keep their
+storage elsewhere - a second card in a CF adapter, a real disk on the IDE port -
+and want the SD to be the boot partition and no more. *Emu68 only, no Amiga
+drive* on the Drives page does that: the MBR gets **one** entry, and the rest of
+the card is left unclaimed.
+
+An empty Amiga partition is not the same answer, which is why this is a switch
+rather than a layout with nothing in it. An empty partition still takes the rest
+of the card, still appears on the desktop, and still asks to be initialised -
+and the space cannot be given to anything else. With no entry at all the card
+says what it is.
+
+The choice hides the layout rather than clearing it, so turning it off brings
+back exactly the drives that were there. And because a boot-only card has
+nowhere to put a Workbench install, a package or a folder of games, the build
+**says so before it starts** rather than quietly dropping them - the ticks stay
+where they are.
+
+All of them are offered on the first screen, which is a choice of what to do
+rather than a page of settings that happens to be first. It carries a masthead
+so the choice sits in the window instead of clinging to the top of it: three
+rows above a large empty area read as though something had failed to load, and
+each task now has an icon and a button in one column.
+
+There is a fourth task that writes no card at all: **Export drives as .hdf**
+reads the Amiga drives back *out* of a card, a backup or an `.hdf`, and writes
+each one you tick as its own file.
+
+This replaces an option that was quietly wrong. "Write to: Amiga hard disk
+image (.hdf)" used to write the build's *output* as one bare drive - and a
+PiStorm card normally carries four, a system drive, games, demos and a work
+drive, so a single bare file could not say which of them it was. Reading drives
+back out is a different job, and it now has its own page rather than a third
+entry in a list about where to write a card.
+
+Each file is **self-contained**: its own Rigid Disk Block naming the drive, and
+the file system handler the source card embedded copied in beside it. That is
+what self-contained has to mean for PFS3, which no emulator has built in - a
+bare copy of those blocks cannot be mounted without the handler, and the volume
+name goes with it. Verified against a real card: `DH2` came out as `Demos.hdf`
+carrying PFS3 19.2 in 59,532 bytes, and the volume mounts as `Demos`.
+
+The drives are **read from the image, never guessed**: choose a file and the
+page lists what is actually in it, by the name a person calls it, with the file
+each one would become. Every one starts **unticked**, and Export stays disabled
+until at least one is chosen - unticking them all disables it again. The rest
+of this application defaults to what is already there, but this page writes new
+files and a games drive is twenty gigabytes, so exporting all four because
+nobody said otherwise is not a sensible default. A drive whose name cannot be read is still offered -
+being unreadable here is a reason to hand it to something else, not a reason to
+leave it out.
 
 Along the way it will:
 
@@ -70,7 +121,7 @@ or install it from the published release and use the desktop entry:
 
 ```
 pipx install --system-site-packages \
-    "git+https://github.com/peteclarke-del/pistorm-linux@v0.6.0"
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.7.0"
 pistorm-imager-cli install-desktop
 ```
 
@@ -101,40 +152,40 @@ out and back in before the icon appears.
 ## The window
 
 It opens on a choice of three, and nothing else, because a choice with a page of
-settings under it is not a choice — the settings are the thing being chosen
+settings under it is not a choice - the settings are the thing being chosen
 between:
 
 | | |
 | --- | --- |
 | **A basic PiStorm card** | Emu68 and an empty Amiga drive, partitioned and formatted, ready to install Workbench onto from floppies. Leads to which Amiga it is for, what was found to install from, the card and its size, and the plan. |
-| **Write a prepared system** | A finished image you have downloaded — CaffeineOS, an Emu68 Hatcher image, or a backup of a card. Leads to the image chooser and the card, and nothing about the machine, because the image brings its own answer to that. |
+| **Write a prepared system** | A finished image you have downloaded - CaffeineOS, an Emu68 Hatcher image, or a backup of a card. Leads to the image chooser and the card, and nothing about the machine, because the image brings its own answer to that. |
 | **Customise an installation** | The full workflow: sources, storage, the software to add, boot options. Everything the other two decide for you. |
 
 Each screen is laid out in the order its decisions are made, and ends with the
 same block: **what this will build**, and `Apply this setup` beneath it. That
-block finishes whichever route was taken — the last thing on a quick screen, or
-the last thing on the Target page when customising — so the same decision reads
+block finishes whichever route was taken - the last thing on a quick screen, or
+the last thing on the Target page when customising - so the same decision reads
 the same way whichever way it was reached.
 
 Nothing is written until that Apply has been pressed. Write stays off before it,
-and goes off again whenever something changes what would actually be written —
+and goes off again whenever something changes what would actually be written -
 a partition renamed two pages away puts the setup back to needing another look,
 and says so beside the summary. Apply itself is offered only once enough has been
 chosen for a card to boot: not merely a configuration that will write, but one
 with a Kickstart for Emu68 to map and floppies for an install from floppies. What
-is still wanted is named where the button is —
+is still wanted is named where the button is -
 
 > Still needed: a Kickstart ROM, and 1 more
 
-— and a prepared image is exempt, because the image and a card are the whole
+ - and a prepared image is exempt, because the image and a card are the whole
 requirement.
 
 `Back` sits bottom left, in the same bar as `Write`, and always returns to the
 choice. It withdraws the acceptance with it, so reconsidering the choice that led
 to a setup does not leave Write lit while you do.
 
-**Check for updates…** in the menu asks GitHub for this project's releases and
-says what it found — the newest with its notes and a way to go and get it, or
+**Check for updates...** in the menu asks GitHub for this project's releases and
+says what it found - the newest with its notes and a way to go and get it, or
 that this is already the newest. It is asked for rather than done at startup: a
 tool that prepares a card should not reach out to the internet unless someone has
 asked it a question. No network, a changed API or a repository with no releases
@@ -164,7 +215,7 @@ python3 -m pistorm_imager.cli check disk.hdf --fix        # compatibility repair
 python3 -m pistorm_imager.cli build --job saved-settings.json
 ```
 
-`Save settings…` in the GUI menu writes exactly the job file that `build`
+`Save settings...` in the GUI menu writes exactly the job file that `build`
 consumes, so a card can be reproduced later or on another machine.
 
 ## Layout
@@ -187,6 +238,7 @@ pistorm_imager/
     amigainfo.py Workbench .info icons, enough to retarget tool types
     machines.py  target machine profiles: chipset, board, Kickstart, display
     emulate.py   turns a machine profile into an FS-UAE configuration
+    export.py    lifting the Amiga drives back out of a card, one file each
     presets.py   turns a machine and a source into a complete build
     packages.py  optional software taken from a system you already have
     content.py   what a games or demos tree is divided into, and what runs here
@@ -209,7 +261,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 665 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 673 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 ```
 
@@ -250,12 +302,12 @@ about 100 Kickstart ROMs including Cloanto-encrypted ones.
 
 **Verified on hardware:** a basic Workbench-only card, built here from the
 original floppy images, has been written and booted on a real PiStorm. That
-covers the parts every build shares — the MBR, the FAT32 boot partition, the
+covers the parts every build shares - the MBR, the FAT32 boot partition, the
 Emu68 and firmware payload, `config.txt` and `cmdline.txt`, the `0x76`
 partition, the Rigid Disk Block inside it and the AmigaOS install on top.
 
-**Booted in an emulator:** a card built here from PiMiga — its System drive on a
-multi-gigabyte PFS3 partition — has been lifted out as an `.hdf` and booted in
+**Booted in an emulator:** a card built here from PiMiga - its System drive on a
+multi-gigabyte PFS3 partition - has been lifted out as an `.hdf` and booted in
 FS-UAE, which runs the real PFS3 19.2 handler out of the RDB rather than this
 project's own reader. That is what found and then settled five PFS3 writer bugs
 that were silent at build time and fatal at mount.
@@ -298,7 +350,7 @@ Games and Work rather than displacing them.
 ### What Quick setup decides, and what it leaves alone
 
 Applying a quick setup rebuilds the whole layout from the machine, the card and
-the source — that is what the page is for. It has no opinion about the settings
+the source - that is what the page is for. It has no opinion about the settings
 made elsewhere, so those are carried through untouched: the WiFi network, the
 volume name, the Emu68 release and any local archive, a Cloanto Kickstart key,
 the source image and `.hdf` on the Source page, and the boot switches only a
@@ -319,8 +371,8 @@ still saying it was on.
 ### Every option the machine decides has to reach the card
 
 The card is written from `gather()`, and `gather()` built its boot options
-from the widgets alone. Two settings have no widget — the machine or the
-display decides them — so both sat at their dataclass default on every card
+from the widgets alone. Two settings have no widget - the machine or the
+display decides them - so both sat at their dataclass default on every card
 written from the pages:
 
 | Option | Decided by | What its absence did |
@@ -330,7 +382,7 @@ written from the pages:
 
 A save/load round trip cannot catch this: a field never set at all is
 consistently wrong in both directions, so it survives the comparison. The
-guard is an invariant instead —
+guard is an invariant instead -
 `EveryOptionTheMachineDecidesReachesTheCard` asserts that everything
 `machines.boot_options()` can decide is either passed by `gather()` or owned by
 a widget it reads. It was proved by putting the bug back and watching it fail.
@@ -339,11 +391,11 @@ a widget it reads. It was proved by putting the bug back and watching it fail.
 
 `move_slow_to_chip` moves the trapdoor RAM at `0xC00000` into the chip range.
 It can only move RAM that has been mapped, and mapping it is a different set of
-options — `enable_c0_slow`, `enable_c8_slow`, `enable_d0_slow` — which Emu68
+options - `enable_c0_slow`, `enable_c8_slow`, `enable_d0_slow` - which Emu68
 takes for any OCS or ECS machine. Sent on its own, `move_slow_to_chip` is inert.
 
 Nothing on screen decides those: the *machine* does. `machines.boot_options()`
-set them, and that runs only where a quick setup is assembled — while the card
+set them, and that runs only where a quick setup is assembled - while the card
 is written from `gather()`, which built its boot options from the widgets alone
 and so left the field at its default. **Every card this tool wrote went out
 without them**, and the symptom was the same 512K of chip RAM the paragraph
@@ -364,7 +416,7 @@ one rule rather than two, and the same card reads:
 
 Most of it is not this program. On the machine it was measured on, the source
 content and the output image live on **the same USB spinning disk**, and the
-source is a loop-mounted `.img` sitting on that same disk — so one set of heads
+source is a loop-mounted `.img` sitting on that same disk - so one set of heads
 is reading eleven gigabytes of small files through a loop device while writing
 eight gigabytes to another large file beside it. Reading alone, with nothing
 being written, measured **32 MB/s**; with the writes competing for the same
@@ -376,14 +428,14 @@ Two ways round it, both worth more than any change here:
   the SD card, so nothing contends, and it saves writing the image out
   afterwards as a separate pass. The size box also locks to the card's real
   capacity, which is the other thing that has bitten.
-- **Put the image on a different disk** from the source content — an internal
+- **Put the image on a different disk** from the source content - an internal
   SSD rather than the same external one.
 
 What *was* this program's fault: `install_tree` worked out each file's path
 with `Path.relative_to`, which re-parses both paths and walks their parts.
 Everything `rglob` returns is under the folder it was given, so the relative
 path is a slice of the string. On a synthetic games drive that one line was
-**half the time the copy took** — more than writing the data — and removing it
+**half the time the copy took** - more than writing the data - and removing it
 took the copy from 785 to 1,845 files a second.
 
 ## Testing a card in an emulator
@@ -393,7 +445,7 @@ already exists: `pistorm_imager/core/emulate.py` turns a `Machine` into an
 FS-UAE configuration so it is never written twice.
 
 That matters because the hand-written harness used through one long bisection
-had drifted into describing a different machine entirely — `amiga_model =
+had drifted into describing a different machine entirely - `amiga_model =
 A1200` (AGA, not the ECS A500 in question) and `accuracy = 0`, which runs a
 fast, inexact 68040 on which WHDLoad cannot start a single game. That one cost
 hours of hunting a defect in the imager that was a flag in the emulator. The
@@ -401,17 +453,17 @@ module fixes `accuracy = 1`, takes the model from the chipset, and takes the
 chip RAM from the trapdoor choice.
 
 It also asks for `fpu = 68040`, and that line was wrong for a long time. It
-said `fpu = none`, on the belief that a PiStorm has no FPU — see [the FPU, and
+said `fpu = none`, on the belief that a PiStorm has no FPU - see [the FPU, and
 a wrong answer held for a long time](#the-fpu-and-a-wrong-answer-held-for-a-long-time).
 The mistake hid itself twice over: FS-UAE 3.0.3 does not accept `none`, logs
 `WARNING: Unknown FPU specified` where nobody was reading, and falls back to a
-full 68040 FPU — so the emulator accidentally matched the real machine while
+full 68040 FPU - so the emulator accidentally matched the real machine while
 the code said the opposite. `fpu = 0` is the value FS-UAE honours and the wrong
 one to use here: an emulator stricter than the hardware fails software that
 would have run, which misleads exactly as badly as one more forgiving.
 
 Attach **the whole `0x76` partition**, not the bootable drive alone, so that
-every drive mounts and can be checked — and copy it *exactly*. A copy one
+every drive mounts and can be checked - and copy it *exactly*. A copy one
 mebibyte short of the partition made the last drive come up as `NDOS`, because
 PFS3 keeps a copy of its root block at the end; that looked exactly like a
 formatting bug in this tool and was not.
@@ -419,13 +471,13 @@ formatting bug in this tool and was not.
 ### Bisecting an intermittent fault: prove the control first
 
 A card was seen to crash a few seconds after Workbench had drawn, in roughly
-three boots out of seven — sometimes a guru, sometimes a reboot ending in
+three boots out of seven - sometimes a guru, sometimes a reboot ending in
 `CPU halted PC=00000000`, sometimes just a black screen. Chasing that turned up
 a rule worth writing down.
 
 The first suspect was Roadshow's `wifipi.device`, a driver for the Raspberry
 Pi's own WiFi chip which the emulator has not got. To test it, two images were
-built from one saved job differing only in that package — but **cut down to
+built from one saved job differing only in that package - but **cut down to
 DH0** so they would build in minutes instead of half an hour. The control, with
 Roadshow, then crashed **zero times in six boots**. A clean result from the
 other image would have proved nothing whatever, and the whole comparison had to
@@ -446,15 +498,100 @@ with one difference at a time and booted six times unattended:
 | as above, with one content drive filled by 1 MB of stand-in files | 0 of 6 |
 
 So the fault is not the network stack, not the geometry, not the number of
-mounted volumes — it needs the *contents* of the games and demos drives, and
+mounted volumes - it needs the *contents* of the games and demos drives, and
 which part is still unknown. Recorded here so the next attempt starts from the
 rows already ruled out rather than repeating them.
 
 Two details make these runs comparable at all. Boot **untouched**: an earlier
 black screen turned out to be the consequence of clicking a requester, not of
 the card. And read the verdict out of FS-UAE's own log rather than off the
-screen — a healthy run prints its memory map three times, and every extra one
+screen - a healthy run prints its memory map three times, and every extra one
 is a reset the machine was not asked for.
+
+### A way back from everywhere but the first screen
+
+The first screen is a choice and nothing else, so it carries no Back and no
+bar at all - there is nothing yet to go back to, summarise or write. Every
+other screen has both.
+
+That rule was broken by adding a task rather than a page. The bar holds Back,
+the summary *and* the button that starts the job, and it was shown only while
+customising or partway through a quick screen - so the export task, which is
+neither, produced a screen that could be neither left nor used. The bug
+reported was "no Back"; the button to run the export was missing from the same
+cause.
+
+It is now checked by walking every screen the window can show - the choice,
+each quick screen, each page of the full workflow, and the export task - and
+asserting the rule on each. Eleven screens, and the check fails naming
+`export` if the bar forgets a task again. Reasoning about which screens exist
+is exactly how this was missed the first time.
+
+A second way to break the same rule, found by a screenshot: the first screen
+appeared **on top of** a task that was still chosen, with an export summary on
+it and a Back button pointing at where it already was. `_set_customising` shows
+the quick start whenever the full workflow is not wanted, and it did that
+without asking what task was chosen - so a session saved while exporting came
+back to the wrong screen. It runs last at startup, after the session has been
+restored, which is why only a saved session showed it.
+
+The mode is the truth. Both that and the Back rule now ask it directly rather
+than a flag left over from the last transition.
+
+That was still not the whole of it, and the rest is worth knowing about
+`Adw.ViewStack`: **hiding a page does not move the stack off it.** With the
+quick page hidden and the export page shown, the switcher listed only Export
+while the quick page's own content was still what was displayed - the
+screenshot showed a masthead, four choices, and an export summary on the bar
+below them. `_set_customising` ends by choosing where to land, and that line
+knew about only two destinations, so it sent the stack back to the quick page
+it had just hidden.
+
+The check now asserts `get_visible_child_name()`, not merely which pages are
+enabled. The weaker version passed against the bug.
+
+**And a task that writes no card does not survive a restart.** The session
+records the mode along with everything else, so quitting inside Export reopened
+there - which is not where anyone expects to start, and it is the one task that
+hides the first screen while it is chosen. Every setting is still restored; only
+the landing is forced back to the choice.
+
+### Starting up
+
+The window took **11.5 seconds** to appear on the machine this was measured on,
+which is long enough to look broken. Roughly 2.5 of those are imports, and a
+second of that is GTK itself; the rest was work done before anything could be
+drawn.
+
+The largest single cause was reading the same Amiga volume over and over.
+Rebuilding the list of categories that can be left out walks the whole volume,
+and every signal that could change that list rebuilt it - so choosing one image
+walked it several times before the window existed. The answer is remembered per
+`(path, drive)`, since neither the file nor the drive inside it changes while
+the application is looking at them. That took it to **about 8 seconds** and cut
+the call count from 203,000 to 174,000.
+
+**What remains, and why it is still there.** Most of the rest is building
+widgets, and the obvious next step is to show the window first and read the
+world - the removable drives, the sample folders, the last session - on an idle
+callback afterwards. That was tried: it reaches about 6.4 seconds, and it
+breaks three of the GUI checks.
+
+It is worth recording why, because the failure is not where it looks. The pages
+lend groups to one another - the Workbench floppy chooser is moved to whichever
+page has to ask about it - and `_sync_visibility` decides that from what
+`_detect_material` found. Deferring the pair keeps them in the same order but
+no longer keeps them *alone*: other idle work interleaves, the chooser ends up
+on the wrong page, and the page then reports that a folder of floppy images is
+still needed. Restoring the exact original order inside the idle callback does
+not fix it, so the lending needs untangling first rather than the startup being
+reordered around it.
+
+The check that would have caught this quietly is worth keeping in mind: with
+the deferral in place and no wait for it, every check passed - because the
+deferred work ran partway through the test, after the checks that would have
+noticed. A test that waits for the window to settle fails honestly; one that
+races it does not.
 
 ## How big is the card, and which gigabyte do you mean
 
@@ -462,16 +599,16 @@ is a reset the machine was not asked for.
 
 Reading a card's capacity and showing it are not the same operation, and the
 difference cost a written card. The size box was filled with `human_size(...)`,
-which rounds to two decimals of a GiB — **steps of 10.7 MB** — and building an
+which rounds to two decimals of a GiB - **steps of 10.7 MB** - and building an
 image file reads that box back through `parse_size`. A 64 GB card holding
 63,864,569,856 bytes was shown as `59.48 GiB`, which reads back as
 63,866,163,691: an image **1.59 MB too big for the card it was measured from**.
 Every one of five real card capacities round-trips wrongly through that text,
 three of them upwards.
 
-`exact_size_text` exists for precisely this — it is the shortest text
+`exact_size_text` exists for precisely this - it is the shortest text
 `parse_size` turns back into exactly the number it was given, falling back to a
-plain byte count when no unit divides evenly — and it is what the box is filled
+plain byte count when no unit divides evenly - and it is what the box is filled
 with now. That card comes out as `60906M`.
 
 Writing **straight to a card** was never affected: the build takes `card.size`
@@ -485,8 +622,8 @@ these builds take an hour. The overshoot is at the end of the card, which is
 where the last drive is, so if that drive has room to give the whole thing can
 be trimmed in place.
 
-The one that prompted this was over by 1,593,835 bytes — **exactly one
-cylinder** of the 1 MiB cylinders the geometry uses — and entirely inside an
+The one that prompted this was over by 1,593,835 bytes - **exactly one
+cylinder** of the 1 MiB cylinders the geometry uses - and entirely inside an
 empty `DH3`, so nothing else had to move:
 
 | | before | after |
@@ -498,7 +635,7 @@ empty `DH3`, so nothing else had to move:
 
 **Patch the RDB in place; never read it and write it back.** `Rdb.read` parses
 the RigidDiskBlock, the partition list and the filesystem headers, but it does
-**not** keep the embedded handler's payload — `FileSystem.data` comes back
+**not** keep the embedded handler's payload - `FileSystem.data` comes back
 empty. Calling `Rdb.write` after a read therefore produces a structurally valid
 RDB with the 59,532-byte `pfs3aio` binary gone, and a card whose PFS3
 partitions cannot be mounted by anything. Edit `de_HighCyl` in the partition
@@ -510,7 +647,7 @@ The order matters, because only the last step cannot be undone:
 1. Patch `de_HighCyl` on the last partition, and `rdb_Cylinders` (offsets 64,
    80, 96, 100, and `rdb_HiCylinder` at 140 as `cylinders - 1`).
 2. Re-read the RDB and check the Amiga area now ends at or before the card.
-3. **Reformat the trimmed drive** — its file system was laid out for the old
+3. **Reformat the trimmed drive** - its file system was laid out for the old
    cylinder count. Check it is empty first; if it is not, it has to be emptied
    or the trim has to come from somewhere else.
 4. Shrink the MBR partition entry to end on the card's last sector.
@@ -604,13 +741,13 @@ one direction by breaking another.
 
 The size box is locked while a card is the target, because a card's capacity is
 not a matter of opinion. Switching the Target page's own "Write to" across to
-an image file only re-laid the page out — it never asked again — so the box
+an image file only re-laid the page out - it never asked again - so the box
 stayed locked at whatever a card had last put in it, and a size that did not fit
 could not be corrected. That switch now re-runs the same question the card
 chooser does.
 
-And when a size is a little larger than a card that is actually in the reader —
-within five percent, so a deliberately bigger image is not nagged about — the
+And when a size is a little larger than a card that is actually in the reader -
+within five percent, so a deliberately bigger image is not nagged about - the
 size line says so, by how much, and what to type instead.
 
 
@@ -720,8 +857,8 @@ the machine.
 Dopus Magellan as its Workbench replacement, its own custom Kickstart on the
 boot partition, and its own Emu68 kernel and command line. It wants a 64 GB
 card or larger. The detail worth knowing before committing a card to it is that
-its Workbench opens on an **RTG screen only** — its own WinUAE configuration
-sets `rtg_nocustom=true` — so on a machine watched on the Amiga's own 15 kHz
+its Workbench opens on an **RTG screen only** - its own WinUAE configuration
+sets `rtg_nocustom=true` - so on a machine watched on the Amiga's own 15 kHz
 video there is a desktop nobody can see. The tool says so, and says it more
 loudly when the display is set to native.
 
@@ -737,7 +874,7 @@ repartitioning between releases. An unknown image is never guessed at.
 ### Adapting one after it has been written
 
 Writing a prepared image copies raw sectors, so none of the file-by-file
-compatibility work described below happens to it — which is right, because a
+compatibility work described below happens to it - which is right, because a
 system built for Emu68 already has the drivers it needs. What it cannot know is
 which *screen* this machine is watched on. CaffeineOS's startup already branches
 on the board it finds and applies `ENVARC:Sys/screenmode.prefs.PI` on a PiStorm;
@@ -748,7 +885,7 @@ An optional pass after writing blanks the saved mode, so the machine keeps the
 native screen it started on and a mode can be chosen in Prefs and saved there. It
 only ever *removes* a saved choice and never installs one, because which mode
 suits a monitor is not something this can know. Blanking a file's data touches no
-metadata — the extents are already allocated — which is what makes it safe on a
+metadata - the extents are already allocated - which is what makes it safe on a
 finished volume, where deleting a file would not be.
 
 **It applies to any system built elsewhere, not only a whole image.** A drive
@@ -757,8 +894,8 @@ somebody else's machine and watched on somebody else's screen in exactly the
 same way, and the pass ran only for images written as they were. The switch was
 part of the image chooser, on a page such a build never shows, so there was no
 way to ask for it either. It lives with the display on the **Amiga** page now,
-appears whenever a ready-made system is involved, and one predicate —
-`BuildConfig.brings_a_system_from_elsewhere()` — decides both.
+appears whenever a ready-made system is involved, and one predicate -
+`BuildConfig.brings_a_system_from_elsewhere()` - decides both.
 
 ### A rev 6A A500 is not necessarily OCS
 
@@ -878,14 +1015,14 @@ uninstalled, so its contents say nothing about what a system expects.
 A WHDLoad collection is arranged by category, and not every category suits every
 Amiga: the AGA games on an OCS A500 waste gigabytes on titles that cannot run and
 leave iGame offering them. The categories are **discovered from the tree itself**
-rather than fixed here, because collections differ and grow — PiMiga's Games
+rather than fixed here, because collections differ and grow - PiMiga's Games
 drawer has ten (ARCADIA, BETA, CD32, CDTV, Cinemaware, Foreign, Mags, NTSC, OCS
 and AGA) and its Demos drawer four, one of which appears in no other collection
 this project has seen.
 
 Each is a switch on the partition, with the count of titles in it. What is fixed
 is what a handful of well-known names *mean*, which is enough to propose a
-default: AGA and CD32 need AGA, ECS needs ECS, and CDTV does not — it is an A500
+default: AGA and CD32 need AGA, ECS needs ECS, and CDTV does not - it is an A500
 with a CD drive, which is easy to assume otherwise. A name nothing is known about
 is offered with nothing assumed, so it is never excluded by default. The default
 follows the machine and moves with it, and every switch stays changeable, because
@@ -922,12 +1059,12 @@ rest is greyed out with the reason.
 
 Most `.hdf` files were built for WinUAE, which is forgiving about things real
 hardware is not. Every imported drive is analysed, and the safe repairs applied
-automatically — only RDB metadata is rewritten, never partition contents, so a
+automatically - only RDB metadata is rewritten, never partition contents, so a
 repair cannot lose files.
 
 What it looks for, and fixes where it can:
 
-* **MaxTransfer above `0x1FE00`** — the classic cause of silent data corruption
+* **MaxTransfer above `0x1FE00`** - the classic cause of silent data corruption
   on real hardware, and very common in images built for emulators.
 * **A transfer Mask that allows odd addresses.**
 * A partition whose **file system handler is not in the RDB** and is not one
@@ -937,7 +1074,7 @@ What it looks for, and fixes where it can:
 * **No partition marked bootable**, **duplicate device names**, a
   `SectorsPerBlock` other than 1, zero reserved blocks or zero buffers.
 * **Overlapping partitions, partitions past the end of the drive, a partition
-  sitting on the RDB, a non-512-byte block size** — reported and refused, since
+  sitting on the RDB, a non-512-byte block size** - reported and refused, since
   fixing them would mean moving or reformatting data.
 
 ```
@@ -956,7 +1093,7 @@ while an SD card invites partitions far larger than that.
 
 PFS3 is not part of Kickstart, so its handler must also be embedded in the RDB
 or the Amiga cannot mount the partition. Point the tool at a `pfs3aio` binary,
-**or at another `.hdf` that already contains one** — an HstWB or PiMiga image
+**or at another `.hdf` that already contains one** - an HstWB or PiMiga image
 carries a matching PFS3, and the handler is lifted straight out of its RDB. A
 PFS3 and a PDS3 handler are the same binary, so either satisfies a partition
 asking for the other. FFS partitions need no driver.
@@ -974,7 +1111,7 @@ Past about 4.9 GiB a volume switches to the **SUPERINDEX** layout, and that
 changes where the anode index lives: the root block's index array is given over
 to the bitmap, and the handler instead reaches the index blocks through a level
 of `'SB'` super blocks named by the root block extension. Getting this wrong is
-silent at build time and fatal at boot — the volume looks complete, every file
+silent at build time and fatal at boot - the volume looks complete, every file
 is written and every index block is in place, but the handler cannot reach any
 of it and refuses to mount with *Anode index invalid* followed by *Disk update
 failed*. Both layouts are now created and read back in the tests; the large one
@@ -995,13 +1132,13 @@ agree with perfectly:
 * **Every directory entry ends with a two-byte "extra fields" bitmask**, because
   these volumes carry `MODE_DIR_EXTENSION`. The handler reads it by stepping
   back from the end of the entry. Leave it out and the last two bytes of the
-  name are read as that bitmask instead — zero, and so harmless, for an
+  name are read as that bitmask instead - zero, and so harmless, for an
   even-length name, but not for an odd one.
 * **Every block of a directory names that directory's parent**, not just the
   first. A directory that outgrows one block becomes a chain of them, and each
   block carries the anode of its own directory and of that directory's parent.
   Filling the parent in on the first block only is invisible to a name lookup,
-  which walks the chain comparing names — but anything that has to resolve an
+  which walks the chain comparing names - but anything that has to resolve an
   object's *path* asks the block the entry sits in who its parent is, and a
   zero there reads as the root. A file in the tenth block of `LIBS:` then
   resolves to `SYS:` + its own name, which does not exist, so it can be found
@@ -1015,8 +1152,8 @@ people add next are offered as a catalogue of 48 packages, grouped as System,
 Updates and patches, Look and feel, Speed, Networking, Music and pictures, and
 Handy extras.
 
-Every one of them comes **from whoever publishes it** — Aminet, or the project
-that makes it — and is cached under `~/.cache/pistorm-imager/packages`, so a
+Every one of them comes **from whoever publishes it** - Aminet, or the project
+that makes it - and is cached under `~/.cache/pistorm-imager/packages`, so a
 second card costs no download. That cache is passed to the privileged helper
 when a card is written directly, because [it runs as
 root](#the-privileged-build-has-to-use-your-cache-not-roots) and would
@@ -1040,8 +1177,8 @@ one or left the list:
 | WookieChat | `comm/irc/WookieChat2.11_OS3.lha` |
 | MiamiDx (`network`) | **Replaced.** The device it needed was the donor's `vlink.device`, which nobody publishes. Emu68's own release carries `wifipi.device` for the wireless chip the Pi actually has, so that is the network card now, with the firmware for every Pi model, and Roadshow's interface file names it. |
 | IBrowse | **Dropped.** Commercial, and not distributable. NetSurf is the browser. |
-| AWeb | **Installed**, from the free APL release. Aminet's `AWeb.lha` is only a 3.2 demo, so `comm/www/aweb3.5.09_68k_20070721.lha` is used instead: the drawer goes to `Programs/AWeb_APL` and the build adds the `AWEB_APL:` assign its own Installer would have made, so there is nothing left to run on the Amiga. It is the browser for an OCS or ECS machine — NetSurf wants an RTG screen and a lot of memory. This entry once read "Dropped", on the grounds that the 68020 binary carries floating point instructions and a PiStorm has no FPU; [that reasoning was wrong](#the-fpu-and-a-wrong-answer-held-for-a-long-time). |
-| A newer SetPatch | **Dropped.** Commodore's, from a later release, undistributable — and it stopped every WHDLoad game from starting. |
+| AWeb | **Installed**, from the free APL release. Aminet's `AWeb.lha` is only a 3.2 demo, so `comm/www/aweb3.5.09_68k_20070721.lha` is used instead: the drawer goes to `Programs/AWeb_APL` and the build adds the `AWEB_APL:` assign its own Installer would have made, so there is nothing left to run on the Amiga. It is the browser for an OCS or ECS machine - NetSurf wants an RTG screen and a lot of memory. This entry once read "Dropped", on the grounds that the 68020 binary carries floating point instructions and a PiStorm has no FPU; [that reasoning was wrong](#the-fpu-and-a-wrong-answer-held-for-a-long-time). |
+| A newer SetPatch | **Dropped.** Commodore's, from a later release, undistributable - and it stopped every WHDLoad game from starting. |
 | Backdrops and boot pictures | **Dropped.** They were another distribution's artwork. |
 
 One thing genuinely goes with the donor: **WHDLoad's `DEVS:Kickstarts`**. Those
@@ -1053,11 +1190,11 @@ Whatever can be installed outright is installed, and `Storage/Install` is a last
 resort rather than the default: a tick box that produces an installer you have to
 find and run has not delivered what it promised. What still needs running on the
 Amiga is the part that *replaces* files already on the card, because the file
-system here creates files and never overwrites them — so VisualPrefs, MCP,
+system here creates files and never overwrites them - so VisualPrefs, MCP,
 NewIcons, Scalos and Picasso96, which patch the system or restyle what is
-already there, are unpacked into `Storage/Install` and say so in the log. Where a package needs a line to take effect — PeterK's
+already there, are unpacked into `Storage/Install` and say so in the log. Where a package needs a line to take effect - PeterK's
 `icon.library` has to be soft-kicked over the one in ROM, FBlit has to be
-started — the build writes `S:User-Startup` to do it.
+started - the build writes `S:User-Startup` to do it.
 
 ### The virus killer, and where the scanning actually happens
 
@@ -1065,12 +1202,12 @@ started — the build writes `S:User-Startup` to do it.
 about why it is the one to have: *"the last one of the classic antivirus
 programs for Amiga computers that still gets updated"*. Copyright runs to 2021.
 
-But the program is a front end. Every current Amiga virus killer — VirusZ,
-VirusChecker, VirusExecutor — shares one recognition engine, **`xvs.library`**,
+But the program is a front end. Every current Amiga virus killer - VirusZ,
+VirusChecker, VirusExecutor - shares one recognition engine, **`xvs.library`**,
 and that split exists precisely so the scanner can be updated without
 re-releasing the programs. So the part that has to be recent is the library,
 not the application, and `util/virus/xvslibrary.lha` is **version 33.49,
-published in April 2025** — the most recently updated piece of Amiga software
+published in April 2025** - the most recently updated piece of Amiga software
 on a finished card. Installing VirusZ without it gives a virus killer that
 knows about no viruses at all.
 
@@ -1078,11 +1215,11 @@ knows about no viruses at all.
 drives carry a copy, but [a card must not be built out of what the source image
 happened to hold](#nothing-is-taken-from-the-drive-being-built-on): build on a
 drive without one and the killer opens no requester and looks broken. Both
-libraries are `support_only`, so nobody has to know they exist — ticking VirusZ
+libraries are `support_only`, so nobody has to know they exist - ticking VirusZ
 brings them, and untickng it takes them away again.
 
 It is **not started at boot**. A resident memory watcher costs something every
-second on a machine with 8 MB of fast RAM, and this is a checker to reach for —
+second on a machine with 8 MB of fast RAM, and this is a checker to reach for -
 most usefully on an `.adf` before mounting it, which is the classic Amiga
 infection route and the reason it lands beside [the ADF
 mounter](#where-an-archive-ships-no-way-to-start-it). It is in the catalogue
@@ -1098,7 +1235,7 @@ open.
 Both binaries were counted for floating point instructions before being added,
 back when [a missing FPU was thought to explain a failure it does
 not](#the-fpu-and-a-wrong-answer-held-for-a-long-time). They sit at the same
-noise floor as `C:WHDLoad`, which has 55 such words and runs perfectly — which
+noise floor as `C:WHDLoad`, which has 55 such words and runs perfectly - which
 was the first sign that counting F-line words predicts nothing.
 
 ### What a package needs to actually run
@@ -1106,7 +1243,7 @@ was the first sign that counting F-line words predicts nothing.
 #### Where an archive ships no way to start it
 
 ADF Device mounts an `.adf` as a floppy drive, so a disk image appears on
-Workbench as `AD0:` without being written to real media — sixteen units, swapped
+Workbench as `AD0:` without being written to real media - sixteen units, swapped
 in and out like disks. ClassicWB ships `Programs/FMSsys` for the same job and it
 cannot work as it arrives: the drawer has `ADF2FMS`, `MountFMS` and a mountlist,
 and neither the handler nor the device they need.
@@ -1115,13 +1252,13 @@ What the archive does *not* ship is any way to start it from Workbench. Its own
 scripts want a Shell and a filename, and the author's suggestion was to drive
 them from ToolsDaemon or DOpus. So the package writes a small script of its own,
 `Utilities/ADF_Device/MountADF`, which asks for the file with `RequestFile` and
-then hands over to the archive's `Insert.script` — which asks which unit, mounts
+then hands over to the archive's `Insert.script` - which asks which unit, mounts
 it if it is not mounted, and tells DOS the disk has changed.
 
 Making it double-clickable needs a **project icon**, whose DefaultTool is the
 program Workbench runs on the file beside it: `IconX`, the script runner. An
 icon invented from scratch would have no image and draw as nothing, so the
-package borrows one the archive already has and retargets it — that is what
+package borrows one the archive already has and retargets it - that is what
 `Download.retool` does, and `amigainfo.set_default_tool` rewrites the string in
 place. Everything after the DefaultTool in a `.info` moves when it changes
 length, so a test checks the tool types still read back identically afterwards;
@@ -1129,7 +1266,7 @@ getting that wrong leaves an icon Workbench cannot parse, which looks exactly
 like the file having no icon at all.
 
 The helper is part of this package rather than a loose extra, because it is no
-use without the device beside it — and a test ties the two together: the script
+use without the device beside it - and a test ties the two together: the script
 it calls has to be one this same package installs, and the icon has to land in
 the same drawer under the script's own name plus `.info`, or the pair are two
 files that do nothing.
@@ -1141,12 +1278,12 @@ build, and it cannot start on a 68k machine at all.
 
 Directory Opus 4 was in the catalogue for a long time as Aminet's
 `DirectoryOpus-4.18.22.lha`, whose own listing says **`Architecture:
-ppc-amigaos >= 4.0.0`** — the AmigaOS 4 port. Its `DirectoryOpus` begins
+ppc-amigaos >= 4.0.0`** - the AmigaOS 4 port. Its `DirectoryOpus` begins
 `\x7fELF`. It went onto every card built with it and could never have run, and
 worse, the entry that replaced ClassicWB's own working 68k Opus 4.16 with it
 made those cards worse than leaving them alone. Nothing on Aminet carries a 68k
-build of Opus 4 — what is there is the MorphOS port, the GPL source, the
-catalogs and the manual — so the package is gone rather than pointed somewhere
+build of Opus 4 - what is there is the MorphOS port, the GPL source, the
+catalogs and the manual - so the package is gone rather than pointed somewhere
 hopeful, and a card built on ClassicWB keeps the working 4.16 it came with.
 
 Removing one package is not the fix, though, because the same thing arrives
@@ -1154,7 +1291,7 @@ quietly in other archives: iGame ships `iGame.OS4` and `iGame.MOS` beside the
 68k builds. So the compatibility pass refuses **any** file whose first four
 bytes are `\x7fELF`, whatever package it came from and whether or not anybody
 noticed it was there. A test walks every file the cached packages install,
-finds the ELF ones, and requires the pass to refuse each — it fails if it meets
+finds the ELF ones, and requires the pass to refuse each - it fails if it meets
 none, so it cannot quietly stop testing anything.
 
 #### A driver has to go where the system looks for it
@@ -1169,13 +1306,13 @@ Three decisions in it are worth writing down, because each was a check rather
 than a guess:
 
 - **Which `ahi.device`.** The archive ships `.000`, `.060` and a plain 68020+
-  build. Emu68 presents a 68040, so the plain one is right — and none of the
+  build. Emu68 presents a 68040, so the plain one is right - and none of the
   binaries copied contains a floating point instruction, which was counted
   rather than assumed.
 - **Which prefs program.** AHI ships MUI and BGUI builds side by side. The MUI
   build is used and `mui` is declared as a requirement. The BGUI one would
   avoid that dependency, and was passed over because its `bgui.library` carries
-  floating point instructions — reasoning that [no longer
+  floating point instructions - reasoning that [no longer
   holds](#the-fpu-and-a-wrong-answer-held-for-a-long-time), though the choice
   is unaffected: MUI is on the card anyway for iGame and the browsers, so the
   dependency costs nothing. It also has to be **renamed**
@@ -1204,22 +1341,22 @@ A third fault, found the same way: with the line fixed Birdie *did* start, and
 what it did was open a window titled **About Birdie 2000** on every boot. The
 line was `Run >NIL: C:Birdie` with nothing after it, and Birdie takes the
 patterns to draw with as command line arguments. Given none, the branch it
-takes is the one that opens its about window — that is not a reading of the
+takes is the one that opens its about window - that is not a reading of the
 documentation, which says only that it "simply returns"; it is the window title
 string inside the binary and the branch that reaches it, taken when the
 `PATTERNS` argument is empty. So the patterns were copied to
 `Prefs/Presets/Birdie`, nothing ever named them, and the desktop got an about
 box instead of patterned borders.
 
-The names cannot be written into the catalogue — the archive decides what
-patterns it ships — so a startup line may now carry a placeholder that the
+The names cannot be written into the catalogue - the archive decides what
+patterns it ships - so a startup line may now carry a placeholder that the
 build fills in from the files the package **actually put on the card**:
 
     startup=("Run >NIL: C:Birdie {patterns}",),
     startup_files=("patterns", "Prefs/Presets/Birdie", 1),
 
-One pattern, not all seven: Birdie keeps each in three versions — plain, shine
-and shadow — so handing it the whole drawer costs memory on a machine that has
+One pattern, not all seven: Birdie keeps each in three versions - plain, shine
+and shadow - so handing it the whole drawer costs memory on a machine that has
 little, and gives every window one picked at random, which is a patchwork
 rather than a look.
 
@@ -1231,14 +1368,14 @@ and no window.
 And ClassicWB already starts FBlit, FText and BlazeWCP from its own boot
 script, so the lines added for those started each of them a **second** time. A
 package's lines are now left out when the drive's own boot already runs
-everything they run — judged per package rather than per line, because a line
+everything they run - judged per package rather than per line, because a line
 on its own can be half of an `IF` block, and by all of a package's commands
 rather than any, so a package that runs two is only redundant when both are
 covered. MUI's lines are assigns and name no command, so they can never be
 dropped.
 
 Finding what the drive starts needed one correction: the distribution's real
-boot script is **not** `S:Startup-Sequence` — that is its *installer* — but
+boot script is **not** `S:Startup-Sequence` - that is its *installer* - but
 `T:Science`, which the installer renames into place. Looking in the obvious
 file found the installer, which starts nothing, so nothing was ever recognised
 as already running.
@@ -1246,8 +1383,8 @@ as already running.
 #### An icon's tool has to be findable
 
 Workbench runs the tool an icon names and does **not** search for it the way a
-shell would. ClassicWB's `def_project.info` — the icon every file falls back on
-— names simply `MultiView`, with no path, so double-clicking a file found
+shell would. ClassicWB's `def_project.info` - the icon every file falls back on
+ - names simply `MultiView`, with no path, so double-clicking a file found
 nothing, while `def_view.info` beside it says `SYS:Utilities/MultiView` and
 works. Reported as *"MultiView is installed, but no app can find it to open
 files"*.
@@ -1257,7 +1394,7 @@ the drive really has that program: one already carrying a path is untouched,
 and a name nothing answers to is left alone rather than guessed at.
 
 Finding it needs one wrinkle. ClassicWB's `Utilities` holds `MultiView.info`
-and **no `MultiView`** — it expects the Workbench floppies to supply one, and
+and **no `MultiView`** - it expects the Workbench floppies to supply one, and
 this build does, but not until after those icons have been copied. So an icon
 with no program beside it still counts as saying where the program is meant to
 be. On a real build that repairs six icons, including PPaint's and PictIcon's.
@@ -1266,8 +1403,8 @@ be. On a real build that repairs six icons, including PPaint's and PictIcon's.
 
 FullPalette ships two programs whose names read backwards from what they are.
 The archive's own installer says it plainly: *"FPPrefs (the FullPalette daemon
-that is run in the Startup-sequence)"*. `FullPalette` is the **editor** — its
-strings are Palette Preferences, Load, Save — and it was the one going into
+that is run in the Startup-sequence)"*. `FullPalette` is the **editor** - its
+strings are Palette Preferences, Load, Save - and it was the one going into
 `WBStartup`, so the palette editor opened on **every single boot**. They are
 the right way round now, and the daemon borrows the editor's icon under its own
 name, because a program in `WBStartup` without one never starts at all.
@@ -1279,13 +1416,13 @@ Two opposite failures live here, and a card carried both.
 **A program with no icon is never started.** Workbench enumerates the *icons*
 in `WBStartup`; a file without one is simply not seen. DefIcons, FullPalette
 and MagicMenu were each copied in without theirs, so every card this tool built
-carried three programs that could not run — the missing colour icons DefIcons
+carried three programs that could not run - the missing colour icons DefIcons
 draws being the visible half of it. Each of those archives ships its own icon
 and it is copied now.
 
 **A program with an icon and no `DONOTWAIT` stops the boot**, because Workbench
 waits for it to exit and a commodity never does. FullPalette's own icon, as
-shipped, has no `DONOTWAIT` — so supplying the icons without also checking for
+shipped, has no `DONOTWAIT` - so supplying the icons without also checking for
 it would have turned three inert programs into a card that does not finish
 booting. Every icon landing in `WBStartup` is checked and given one if it is
 missing, including icons from a drive being imported and from any package added
@@ -1293,7 +1430,7 @@ later.
 
 **Not every icon in an archive is one Workbench 3.1 can read.** MagicMenu ships
 two sets, and the obvious pick was wrong: `Icons/DualPNG/MagicMenu.info` is a
-PNG file with an `.info` name — an OS4 icon — which would have left MagicMenu
+PNG file with an `.info` name - an OS4 icon - which would have left MagicMenu
 exactly as unstarted as no icon at all. `Icons/MagicWB/MagicMenu.info` is a real
 DiskObject, and already carries `DONOTWAIT` and `STARTPRI=80`. The catalogue
 cannot tell these apart by name, so a test reads every icon it names.
@@ -1307,7 +1444,7 @@ hand, and the package says so.
 **It has to land under the name it is replacing.** FreeWheel's archive file is
 `FreeWheel_020`, and a drive that brings its own keeps it in `WBStartup` as
 `FreeWheel`. Installed under the archive's name, ours sat beside the older copy
-rather than in place of it — two input handlers scrolling one window, once the
+rather than in place of it - two input handlers scrolling one window, once the
 missing icon stopped hiding the problem. It is renamed on the way in, so the
 displacement that replaces an older copy can find it.
 
@@ -1317,7 +1454,7 @@ great deal of Amiga software draws itself with **MUI**, and iGame, AmFTP,
 WookieChat and NetSurf all do: copied on their own they land on the card, appear
 on Workbench, and then do nothing whatsoever when clicked, because
 `muimaster.library` is not there. So packages declare what they need, and a
-dependency is pulled in whether or not it was ticked — MUI is copied to
+dependency is pulled in whether or not it was ticked - MUI is copied to
 `SYS:System/MUI` and given its `MUI:` assign in `S:User-Startup`, which is how a
 real MUI install is arranged and how the donor systems carry it.
 
@@ -1325,7 +1462,7 @@ The same goes for the shared libraries a program draws through, which are kept
 apart from the package itself because a program fetched from Aminet still needs
 them off the donor: `guigfx.library` and `render.library` for iGame's
 screenshots, `codesets.library` and `openurl.library` for the browsers, and the
-ReAction classes — `Classes/Gadgets` plus `window.class` and its companions —
+ReAction classes - `Classes/Gadgets` plus `window.class` and its companions -
 without which AWeb opens no window at all. A library wanted by three packages is
 copied once; the file system here creates files and refuses to overwrite them, so
 a second copy would not merely be wasteful, it would end the build.
@@ -1356,13 +1493,13 @@ the Amiga answers `icon.library 51.4`.
 
 Installing from the original floppies gives you exactly what shipped in 1994.
 A PiStorm is a **68040-class accelerator**, and Workbench 3.1's idea of a 68040
-is `SetPatch 40.16` from February 1994 and `68040.library 37.30` — both older
+is `SetPatch 40.16` from February 1994 and `68040.library 37.30` - both older
 than the CPU they are meant to set up. Replacing them looks like an obvious
 improvement.
 
 **It stops every WHDLoad game from running.** Either one is enough on its own:
 `SetPatch 44.38` leaves a game hanging on a black screen, and MMULib's
-libraries give a yellow screen — a CPU exception, with no operating system left
+libraries give a yellow screen - a CPU exception, with no operating system left
 to draw a Guru. This was established by building the same card four times,
 changing one thing at a time, against a card proven to run the game.
 
@@ -1376,7 +1513,7 @@ Two updates are offered:
 | | |
 | --- | --- |
 | **68k CPU libraries (MMULib)** | Thomas Richter's maintained replacements, fetched from Aminet: `68020` through `68060`, `680x0`, `mmu`, `memory` and `softieee`. `68040.library` goes from 37.30 (1994) to **47.1 (2022)**, `mmu.library` to **47.11 (2025)**. |
-| **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have — it is not on Aminet. |
+| **A SetPatch that knows about the 68040** | 44.38 in place of 40.16. Commodore's own, from a later release, so it can only come from a system you already have - it is not on Aminet. |
 
 ### The privileged build has to use your cache, not root's
 
@@ -1484,7 +1621,7 @@ separate faults:
 2. **With both, the floppy install was thrown away.** `_install_amigaos`
    formatted DH0, installed Workbench and applied the packages; the content
    pass then re-created the same drive from the image, destroying all of it.
-   A card built that way is the imported distribution and nothing else — which
+   A card built that way is the imported distribution and nothing else - which
    is exactly what a card built here turned out to be when its `Programs`
    drawer was read back: fifteen programs, none of them from this catalogue.
 3. **A package could never replace an older copy.** Whatever the drive or the
@@ -1492,13 +1629,13 @@ separate faults:
    ticked was skipped as "already present".
 
 All three are fixed. The floppy install is skipped when the boot drive is
-filled from an image — the content pass fills it and takes what the disks
-provide for the gaps — and the packages, the drawer icons and `S:User-Startup`
+filled from an image - the content pass fills it and takes what the disks
+provide for the gaps - and the packages, the drawer icons and `S:User-Startup`
 are applied there instead. Packages are resolved **before** the drive is
 filled, so they can take the place of an older copy.
 
 **Displacing stops when the filling does.** Refusing a path is a rule about
-copying a drive, and the package's own files go on through the same pass — so
+copying a drive, and the package's own files go on through the same pass - so
 leaving it switched on refused those too, and the file landed nowhere at all.
 Whole drawers were unaffected, which is what made the resulting card look like
 a packaging problem rather than this: `Utilities/PowerWindows`, `Internet/
@@ -1506,7 +1643,7 @@ NetSurf` and `Programs/iGame` were all present and correct while `C:WHDLoad`,
 `C:LhA`, `Libs:icon.library` and `Programs/iGame/iGame` were simply absent.
 
 A drawer claims its **name** as well. ClassicWB keeps `Visage` as a *file* in
-`Utilities:` and this build wants a drawer of that name there — a collision
+`Utilities:` and this build wants a drawer of that name there - a collision
 that ended an hour-long build outright with *"Visage already exists as a
 file"*. The name is freed the same way, and safely: the copy asks about files
 and never about drawers, so claiming a name can only ever displace a file, and
@@ -1520,8 +1657,8 @@ Whether they do is **asked**, not assumed. *"Replace older copies already on
 the imported drive"* sits with the software list and appears only when a drive
 is actually being imported. On, the release you ticked is installed in place of
 the drive's; off, the drive's own copy is kept. Only whole files are ever
-displaced — a drawer is merged into what is there, and refusing one during the
-copy would take the drive's own contents with it — and only paths a package has
+displaced - a drawer is merged into what is there, and refusing one during the
+copy would take the drive's own contents with it - and only paths a package has
 already fetched, so a failed download can never leave the card without the file
 it refused.
 
@@ -1534,7 +1671,7 @@ showed it:
   16.8 that has not moved since. **Changing the source was not enough**: the
   cache is keyed on the file name and both publishers serve
   `WHDLoad_usr.lha`, so cards went on being built from the archive already
-  downloaded while the catalogue said 20.0 — caught by reading the version
+  downloaded while the catalogue said 20.0 - caught by reading the version
   string off a finished card, not from the build log, which reported the
   cache hit perfectly honestly. A cached archive now records the address it
   came from, and one of unrecorded or different origin is fetched again. The card being built against it came out
@@ -1542,12 +1679,12 @@ showed it:
   comes from the author's own site, which serves 20.0.
 - **LhA** was left in `Storage/Install` as a self-extracting Amiga program to
   run by hand, so a card could arrive with no archiver at all. An archiver has
-  to be shipped that way — you need one to unpack the other — but the archive
+  to be shipped that way - you need one to unpack the other - but the archive
   inside is an ordinary LhA one, so it is taken out here and the 68040 build
   installed as `C:LhA`.
 - **Birdie** and **PowerWindows** were staged with a note asking the user to
   copy them into place. Birdie now goes into `C:` with its patterns, and is
-  started from `S:User-Startup` the way its own documentation says — with the
+  started from `S:User-Startup` the way its own documentation says - with the
   first of those patterns named on the line, without which it opens its about
   window instead of drawing anything; PowerWindows
   goes into `Utilities/PowerWindows` whole, because it looks for its external
@@ -1555,13 +1692,13 @@ showed it:
 
 One bug fell out of that work: `fetch()` chose "place the archive whole" on
 whether a package listed `items`, so a package that placed its files by
-`rename` instead took that branch and its entire archive went to `stage` —
+`rename` instead took that branch and its entire archive went to `stage` -
 which for such a package is `""`, the volume root.
 
 #### An installer for something already installed
 
 An archive ships an Installer script so somebody can install it on the Amiga.
-Staged into `Storage/Install`, that script is the entire point — the package
+Staged into `Storage/Install`, that script is the entire point - the package
 patches the system and only its own Installer can do that honestly. Installed
 by this tool instead, the same script sits in the finished drawer offering to
 do again what is already done: `Programs/iGame/Install-iGame` beside the iGame
@@ -1569,13 +1706,13 @@ just installed, `Programs/AWeb_APL/Install` beside AWeb.
 
 Where it lands is the whole discriminator. iGame's, AWeb's and Picasso96's
 installer icons all say `DefaultTool=Installer`, so nothing about the file or
-the icon separates them — only whether it is going to the staging drawer. One
+the icon separates them - only whether it is going to the staging drawer. One
 that lands anywhere else belongs to software that is already in place.
 
 #### One binary per processor: keep the one this machine runs
 
 An archive shipping `iGame.030`, `iGame.040` and `iGame.060` is installed by
-`rename` — the right one goes on under the name its icon launches — and its own
+`rename` - the right one goes on under the name its icon launches - and its own
 drawer is usually copied whole as well, so the others land beside it. A card
 built for a 68040 carried three copies in one drawer: two for hardware it has
 not got, one byte for byte identical to the `iGame` next to it, and not one of
@@ -1583,7 +1720,7 @@ them with an icon to click. The same again in `iDemos`.
 
 The leftovers are read off the `rename` itself rather than named here, so it
 holds for whatever an archive calls them, and the suffix has to be a whole
-processor marker — `AWeb.developer` is a different build, not a different
+processor marker - `AWeb.developer` is a different build, not a different
 processor, and is left alone.
 
 They are `outrank`ed rather than displaced, because the refusal has to still be
@@ -1612,22 +1749,22 @@ through the same editor, and the line goes in where it belongs.
 
 The rule above is only useful if the switch reaches the card, and for one build
 it did not. The clutter list creates a row the first time it is built and then
-skipped any row it already had — which is right for preserving somebody's
+skipped any row it already had - which is right for preserving somebody's
 answers, and wrong for everything else about the row.
 
 Both the wording and the default depend on the rest of the page. Before the
 icon library is ticked, the installer reads "replaces S:Startup-Sequence to do
 its work, and leaves the card unbootable if it does not finish" and is offered
-as a question. After it is ticked, it should read "…to install icon.library,
+as a question. After it is ticked, it should read "...to install icon.library,
 which this build already installs" and be switched **on**. Created once and
 never revisited, it kept the wording and the switch it was born with, so a card
-went out still carrying the installer that had bricked one — and nothing on
+went out still carrying the installer that had bricked one - and nothing on
 screen said the choice had been ignored.
 
 Every row's reason and default are now recomputed on each refresh, while an
 answer the user has actually given is left alone: the default moves only while
 the switch still sits where the last refresh put it. The GUI checks drive the
-whole sequence — offered as a question, switched on by ticking the library,
+whole sequence - offered as a question, switched on by ticking the library,
 reworded, and then held against a refresh once the user has moved it.
 
 #### An installer that rewrites the boot script can cost the card
@@ -1705,33 +1842,33 @@ tool.
 
 #### Finding the clutter rather than being told what it is
 
-Working through a finished card it is easy to name what should come off it — a
+Working through a finished card it is easy to name what should come off it - a
 `Games` and a `Demos` drawer left almost empty by the dedicated volumes beside
 them, a `MyFiles/UAE` drawer of `uae-configuration` scripts. Adding those paths
 to a job's `leave_out` list is the same defect as writing them into the source:
 right for one distribution, and finding nothing at all on the next.
 
 So the tool recognises the **kinds**, from evidence in the files, and offers
-what it finds on the Programs tab beside the other three lists — refreshed by
+what it finds on the Programs tab beside the other three lists - refreshed by
 the auto-config button, and never acted on by itself, because a drawer goes
 whole:
 
-* **Empty by construction** — a drawer whose tree holds no files at all. Icons
+* **Empty by construction** - a drawer whose tree holds no files at all. Icons
   do not count; a drawer of nothing but `.info` files is empty to anybody using
-  the card. A *scaffold* — many drawers around almost no files, which is what a
-  WHDLoad collection's A–Z letter drawers look like — is offered as a question
+  the card. A *scaffold* - many drawers around almost no files, which is what a
+  WHDLoad collection's A-Z letter drawers look like - is offered as a question
   defaulting to keep, because "almost empty" is a judgement.
-* **Emulator-only** — a drawer whose every readable file invokes one of the
+* **Emulator-only** - a drawer whose every readable file invokes one of the
   commands in `compat.EMULATOR_COMMANDS`. Recognised by what the files do, not
   by what they are called.
-* **An assign whose target is going** — `A-Games:` points at `SYS:Games`, and a
+* **An assign whose target is going** - `A-Games:` points at `SYS:Games`, and a
   card that leaves that drawer out has an assign to a drawer that is not there.
   Everything reading from it then fails and the boot says nothing anybody would
   connect to the choice that caused it.
 
 Two things this cost, both worth writing down. The first attempt at the third
 rule read *every* file for anything shaped like a volume name, and produced
-**165 candidates on one card** — essentially all of them English prose ending in
+**165 candidates on one card** - essentially all of them English prose ending in
 a colon: `$VER:`, `restrictions:`, `youtube_autoplay:`. A list a person cannot
 trust is worse than no list. An assign is the precise version of the same
 question, because the line names both halves itself and there is nothing to
@@ -1739,7 +1876,7 @@ infer.
 
 And filtering "binary" files out of the scan threw away exactly the files the
 scan is for. A ButtonMenu bar is a binary record with its commands sitting
-inside it as strings — `BM123\x00Blitter\x00topaz.font` — and it is where both
+inside it as strings - `BM123\x00Blitter\x00topaz.font` - and it is where both
 the emulator commands and the volume references live. Rejecting anything with a
 NUL byte, or anything under nine-tenths printable, found nothing at all. Only
 what is definitely data is refused now: executables, oversized files, and the
@@ -1780,12 +1917,12 @@ and are alternatives, and the catalogue is deliberately sparing with them. Two
 browsers on one card is a preference, exactly like the three module players, and
 a false clash would nag about a choice that is perfectly fine.
 
-It is **installed, not staged**. Its own Installer script does two things —
-copy the drawer, and add an `Assign AWEB_APL:` line to `S:User-Startup` — and
+It is **installed, not staged**. Its own Installer script does two things -
+copy the drawer, and add an `Assign AWEB_APL:` line to `S:User-Startup` - and
 the build does both, so the browser is ready to run rather than ready to
 install. It lands in `Programs/AWeb_APL`, which is where its installer puts it
 by default and, as it happens, exactly where ClassicWB's own User-Startup
-already assigns `AWEB_APL:` — so a card built on that distribution finds the
+already assigns `AWEB_APL:` - so a card built on that distribution finds the
 browser the distribution was expecting rather than a second copy elsewhere. The
 assign is written anyway and guarded with `IF EXISTS`, because a card built from
 floppies has no such line and assigning twice to the same path costs nothing.
@@ -1794,14 +1931,14 @@ floppies has no such line and assigning twice to the same path costs nothing.
 
 A staged package is one this tool copies onto the card rather than installs,
 because it patches the system and only its own Installer script can do that
-honestly. That bargain is only kept if the script can be *started* — and on
+honestly. That bargain is only kept if the script can be *started* - and on
 Workbench a file with no `.info` beside it is not drawn at all. Five staged
 packages arrived with no way to run their installer, by three different routes:
 
 * **`_merged()` threw away every top-level `.info`**, which cost Roadshow the
   icon on `Install_Roadshow`.
 * **A package listing its files by hand could list the script and forget the
-  icon** — KingCON listed `Installation` and not `Installation.info`.
+  icon** - KingCON listed `Installation` and not `Installation.info`.
 * **MCP, Scalos and Picasso96 ship the icon under a name of its own.**
   `MCP-Install.english.info` says `SCRIPT=Install_MCP`, `Setup.info` says
   `SCRIPT=InstallPicasso96`. The icon has no file and the file has no icon, so
@@ -1810,20 +1947,20 @@ packages arrived with no way to run their installer, by three different routes:
 Three rules, none of which names a package: whatever is placed brings its icon,
 a drawer's icon goes in the *parent* rather than inside it, and an orphaned icon
 naming a `SCRIPT=` that exists beside it is placed a second time under that
-script's name. Nothing is invented — these are the archives' own icons, saying
+script's name. Nothing is invented - these are the archives' own icons, saying
 themselves which script they belong to. Where an archive ships one icon per
 language, the English one is chosen rather than fallen into: sorted order alone
 handed over MCP's German installer.
 
 The guards for this are at the level of `fetch()` rather than the helpers. The
 first version of them called the two helpers directly and went on passing with
-both unhooked — which is exactly the state that shipped the fault.
+both unhooked - which is exactly the state that shipped the fault.
 
 #### Every drive wears the card's icon
 
 A volume with no `Disk.info` never appears on the Workbench desktop. A drive
 this build formats and names but fills with nothing got no icon at all, so the
-Work drive was created, named, and then invisible — which reads as the
+Work drive was created, named, and then invisible - which reads as the
 partition having failed. And a drive filled from somebody else's tree wore
 *their* volume icon: PiMiga's Games and Demos arrive with an 8 KB icon drawn for
 a different desktop, beside a system drive wearing its own.
@@ -1847,7 +1984,7 @@ called themselves "a sensible card", and pressing **Suggest a set** changed the
 answer without anything explaining why.
 
 Now `default` is the only statement of it, and `suggested()` walks the
-catalogue applying what each package already declares about where it belongs —
+catalogue applying what each package already declares about where it belongs -
 `rtg_only`, `native_only`, `chipsets`, `or_rtg`. Adding a package to the
 recommended set is one word on the package, and the button and the tick boxes
 read the same field, so they cannot come apart again.
@@ -1882,7 +2019,7 @@ about a *kind* of package, so each became a field on `Package`:
 Where the launcher lives, what a second copy of it is called and the name of
 the file listing what it scans are all derived from the catalogue entry too:
 the destination is the shortest of the package's own destinations, and a copy
-for a second drive keeps whatever the program's name starts with — `iGame`
+for a second drive keeps whatever the program's name starts with - `iGame`
 gives `iDemos`.
 
 `tests/test_content.py` walks every source file's AST and fails if a catalogue
@@ -1898,8 +2035,8 @@ installs in.
 
 PeterK's `icon.library` only works if something soft-kicks it over the one in
 ROM, and that line goes into `S:Startup-Sequence`. A distribution that carries
-its own boot script has that script written out **verbatim** — the editor which
-inserts lines into a Workbench install never sees it — so on such a card the
+its own boot script has that script written out **verbatim** - the editor which
+inserts lines into a Workbench install never sees it - so on such a card the
 line never lands and the library cannot do its job.
 
 Worse, it does not simply sit there harmlessly. **DefIcons asks for
@@ -1915,15 +2052,15 @@ else will trip over it, is worse than not installing it at all.
 ### The software has a page of its own
 
 **Packages** is now a page in its own right. The list had been sharing the
-Amiga page with the model, the Kickstart and the Workbench disks — which are
-facts about the hardware — while being longer than everything else on that page
+Amiga page with the model, the Kickstart and the Workbench disks - which are
+facts about the hardware - while being longer than everything else on that page
 put together.
 
 **Two packages that do the same job are alternatives, and you are asked.** A
 package can name the `role` it fills; ticking one while another with the same
 role is on raises a question naming both, offering *Keep both* or *Remove the
 other*. Nothing is taken away without an answer, and *Keep both* is a perfectly
-good answer — they patch the same part of Workbench, which is a reason to ask
+good answer - they patch the same part of Workbench, which is a reason to ask
 rather than a reason to forbid.
 
 The catalogue is deliberately sparing with roles. **DefIcons** and **NewIcons**
@@ -1935,8 +2072,8 @@ question.
 
 **And the build says so too, because the question is not always asked.** The
 dialog fires when somebody switches a second package on; it is deliberately
-suppressed when rows are *settled* rather than clicked — restoring a saved job,
-loading the suggested set, or the display forcing Picasso96 on — since a
+suppressed when rows are *settled* rather than clicked - restoring a saved job,
+loading the suggested set, or the display forcing Picasso96 on - since a
 question in answer to nothing the person did is an interruption. The effect was
 that a saved job carrying both NewIcons and DefIcons44 built a card with two
 default icon systems and warned nowhere, and the second one was found only when
@@ -1948,9 +2085,9 @@ added later is covered without touching the check.
 
 **SysInfo** joins the extras, and it is worth saying which one. Aminet still
 carries a patch for a guru in version 4.0, which makes the package look unsafe
-at a glance. It is not needed: SysInfo's own history records the fix twice —
+at a glance. It is not needed: SysInfo's own history records the fix twice -
 *"68040 non FPU guru fixed"* in 4.3 and *"68040/68060 non FPU guru fixed,
-again!"* in 4.4 — and `util/moni/SysInfo.lha` serves 4.4. The 53 floating point
+again!"* in 4.4 - and `util/moni/SysInfo.lha` serves 4.4. The 53 floating point
 instructions still in the binary are behind a CPU check. (This entry used to
 add that a PiStorm is the FPU-less 68040 that bug needs; [it is
 not](#the-fpu-and-a-wrong-answer-held-for-a-long-time). Taking the current
@@ -1958,16 +2095,16 @@ release rather than the oldest one that runs is the right choice regardless.)
 
 ### Leaving out what this machine cannot run
 
-A collection keeps its titles in a container drawer — `WHDLOAD` is the usual
-one — divided into categories whose names say what they need, and those have
+A collection keeps its titles in a container drawer - `WHDLOAD` is the usual
+one - divided into categories whose names say what they need, and those have
 always been offered as things to leave out, with the ones this machine cannot
 run switched off to start with.
 
 **Everything beside that drawer was offered nowhere.** A Games drive with forty
 native titles sitting next to its `WHDLOAD` collection could only be taken
 whole, so `Turrican2AGA` went onto an ECS machine along with the rest. Those are
-listed now too — one entry per program, on any drive being filled from a folder,
-games and demos alike — so anything can be suppressed whether or not this tool
+listed now too - one entry per program, on any drive being filled from a folder,
+games and demos alike - so anything can be suppressed whether or not this tool
 can judge it.
 
 What it *can* judge, it judges from the title's own name: `AGA` or `CD32` in
@@ -1979,14 +2116,14 @@ left in, because the honest answer is that we do not know.
 **A folder and an image are asked the same question.** The listing used to walk
 a host directory, so a drive imported from an `.hdf` was offered nothing to
 leave out and could only be taken whole. The FFS and PFS3 readers both list a
-directory by name, so the same walk works on either — one directory at a time
+directory by name, so the same walk works on either - one directory at a time
 rather than over the whole drive, which on twenty gigabytes of games would take
 longer than the build.
 
 A loose *file* is listed only when its own name says what it needs. That is not
 fussiness: `Turrican2AGA` on a real drive is a fourteen-byte launcher rather
 than a drawer, so a rule about drawers alone missed the one title on the whole
-drive that could be identified — while listing every file would have buried it
+drive that could be identified - while listing every file would have buried it
 among save files and icons.
 
 **Leaving out a launcher takes what it runs with it.** `Turrican2AGA` is
@@ -2007,7 +2144,7 @@ never a guess.
 
 ### The drive's own S:User-Startup is kept, and added to
 
-A package that has to be *started* — FBlit, FText, Birdie, BlazeWCP — puts its
+A package that has to be *started* - FBlit, FText, Birdie, BlazeWCP - puts its
 line in `S:User-Startup`. A drive being imported brings its own, and this file
 system creates files and never overwrites them, so the build said
 
@@ -2017,8 +2154,8 @@ and those four went onto the card as programs that were never run. Read off a
 finished card, every one of their lines was absent; the only reason MUI's
 appeared was that ClassicWB's own file happens to carry identical assigns.
 
-The drive's file is now held back during the copy — the same trick that lets a
-distribution's real boot script replace its installer — and written out again
+The drive's file is now held back during the copy - the same trick that lets a
+distribution's real boot script replace its installer - and written out again
 whole with the packages' lines appended after it. Left whole deliberately: it
 is the distribution's own setup, and replacing it would break the system the
 card is built on.
@@ -2030,8 +2167,8 @@ an hour in, over a script that was already correct.
 
 ### The card says what was put on it
 
-AmigaOS has no uninstaller. Commodore's Installer only ever installed — it has
-no removal facility — and the third-party tools on Aminet that fill the gap
+AmigaOS has no uninstaller. Commodore's Installer only ever installed - it has
+no removal facility - and the third-party tools on Aminet that fill the gap
 either read Installer's log file (`util/wb/Uninstaller.lha`) or watch an
 installation as it happens and record what changed (`util/misc/DeInstaller.lha`).
 Neither helps here, because nothing this tool installs goes through Installer
@@ -2040,7 +2177,7 @@ installing rather than staging. So there is no log to undo.
 
 Taking a package back off a finished card therefore meant reading an hour-old
 build log, if it was still on the screen. Every build now writes its own record
-to `S:PiStorm-Installed` on the drive the machine boots from — readable on the
+to `S:PiStorm-Installed` on the drive the machine boots from - readable on the
 Amiga with `Type`, and grouped by the package that asked for each path:
 
     ; WHDLoad
@@ -2053,13 +2190,13 @@ Amiga with `Type`, and grouped by the package that asked for each path:
 The distinction in that example is the one that matters. A package bringing its
 own drawer is named as the drawer, because deleting it removes exactly that
 package and nothing else. A package that merges into a drawer the *system*
-owns — WHDLoad puts three commands into `C` — is listed file by file, because
+owns - WHDLoad puts three commands into `C` - is listed file by file, because
 naming the drawer there would read as an instruction to delete `SYS:C` and take
 AmigaDOS with it.
 
 **Only what was really written is listed.** The first version walked the
 source tree instead, and claimed five of ClassicWB's own libraries as
-NewInstaller's — because the overlay offered them and the drive already had
+NewInstaller's - because the overlay offered them and the drive already had
 them, which its own log said plainly:
 
     skipped guigfx.library: guigfx.library already exists
@@ -2071,7 +2208,7 @@ compatibility rule refused, and one that could not be written are all absent.
 
 **A drawer is named as one line only when this build created it**, so that
 everything inside it really did come from the package. ClassicWB brings its
-own `System/MUI`, and ours merges 56 files into it while skipping 339 — naming
+own `System/MUI`, and ours merges 56 files into it while skipping 339 - naming
 that drawer would hand over the drive's MUI as though this build had put it
 there, so its 56 files are listed instead. `Internet/NetSurf`, which did not
 exist until this build made it, stays one line.
@@ -2083,8 +2220,8 @@ into a system drawer does so under exactly that drawer's own name, and the
 build log is full of `Libs/ -> Libs`, `C/ -> C` and `S/ -> S`. That rule would
 have written `C`, `Libs` and `S` into a file whose header says to delete what
 it lists. So `SYSTEM_DRAWERS` names the drawers AmigaOS, Workbench and this
-build own — including the ones several packages share, like `Internet` and
-`Storage/Install` — and anything landing in one of those is listed file by
+build own - including the ones several packages share, like `Internet` and
+`Storage/Install` - and anything landing in one of those is listed file by
 file. Everything else is the package's own drawer, whatever the archive
 unpacked as: WookieChat arrives as `WookieChat2.11_OS3_Installer` and lands in
 `Internet/WookieChat`, which is one line rather than 145.
@@ -2097,7 +2234,7 @@ Nothing this file does can end a build. It is written at the very last step of
 a build that takes an hour, and the first version of it ended one: MUI ships
 `Locale/Catalogs/français`, whose name arrives from the host as a lone
 surrogate, and a plain `latin-1` encode raised on it *after* every file had
-been copied — taking the volume with it, unclosed and unformatted, 413 MB
+been copied - taking the volume with it, unclosed and unformatted, 413 MB
 allocated out of nine gigabytes. Names are now encoded through
 `surrogateescape`, which puts back the byte the Amiga had in the first place,
 and the whole write is wrapped so that any other failure is a warning and the
@@ -2113,12 +2250,12 @@ software that is. It is held back during the copy, the same way the drive's
 Three rebuilds were lost to one shape of bug, in three different places: a
 thing kept from an earlier run and handed back although what it came from had
 changed. Each one built a card that looked right and was not, and each was only
-found by reading the finished card rather than the build log — which reported
+found by reading the finished card rather than the build log - which reported
 the cache hit perfectly honestly every time.
 
 | Cache | Was keyed on | Now |
 | --- | --- | --- |
-| The downloaded archive | its file name — and Aminet and whdload.de both serve `WHDLoad_usr.lha` | the address it came from, recorded beside it |
+| The downloaded archive | its file name - and Aminet and whdload.de both serve `WHDLoad_usr.lha` | the address it came from, recorded beside it |
 | The unpacked tree | the archive's name | discarded when the archive is newer than it |
 | Emu68's RTG driver | existence alone | the release URL it was extracted from |
 | The Raspberry Pi firmware | existence alone, with no check of what arrived | the source URL, and `Content-Length` |
@@ -2146,7 +2283,7 @@ Each content drive gets its own installation now, the way PiMiga does it. The
 first keeps the familiar name; every drive after it gets a launcher named for
 the drive, so a card with Games and Demos arrives with **iGame** and **iDemos**
 side by side, each scanning only its own. A second installation is the whole
-program again, not just a preferences file — a `repos.prefs` on its own is a
+program again, not just a preferences file - a `repos.prefs` on its own is a
 launcher with nothing to launch it.
 
 Nothing here names a drive. `Games`, `Demos` and the rest come from the
@@ -2161,7 +2298,7 @@ Repositories" found nothing and the list stayed empty on a card whose drives
 were full of games. Found by booting a written card in an emulator and
 watching iGame open its repositories requester with nothing in it.
 
-The build knows exactly which drives it filled, so it says so — one line per
+The build knows exactly which drives it filled, so it says so - one line per
 drive it put content on, naming the `WHDLoad` drawer inside only when that
 drawer is really there. Nothing is guessed: a drive this build did not fill is
 not named, because pointing iGame at a drawer that does not exist is precisely
@@ -2179,7 +2316,7 @@ what they open as plain strings, so everything a copied program mentioned that
 the *donor* had was copied too, transitively. It found nineteen missing files
 where hand-written declarations had found three. It also only ever worked
 because there was a donor system to mine, and with everything coming from its
-publisher there is nothing to scan against — an archive that needs
+publisher there is nothing to scan against - an archive that needs
 `codesets.library` ships it.
 
 **Some things no scan can find.** A WHDLoad slave asks for the Kickstart the
@@ -2194,7 +2331,7 @@ install - `ENVARC:mui`, `ENVARC:AWeb3` and `ENVARC:ClassAct`, and the
 #### And that look like the desktop they are joining
 
 Having an icon is not the same as having the right one. A drive being imported
-brings a desktop somebody designed — ClassicWB's drawers are MagicWB-styled —
+brings a desktop somebody designed - ClassicWB's drawers are MagicWB-styled -
 and the drawers this build adds beside them were given a stock Workbench 3.1
 drawer, because the only icons on offer came off the floppies. The result was a
 desktop where the software the user chose was the part that looked foreign.
@@ -2202,19 +2339,19 @@ desktop where the software the user chose was the part that looked foreign.
 The drive's own drawer icons are now taken from it and offered **first**, with
 the floppies as the fallback that still covers a card built from floppies
 alone. Only real drawer icons, and only from the root, which is where a
-distribution's style is set — ClassicWB FULL yields 24 of them. Because
+distribution's style is set - ClassicWB FULL yields 24 of them. Because
 `_drawer_icon_sources` merges with `setdefault`, first offered is first kept,
 so the drive beats the floppies by ordering alone.
 
 **A distribution's own older copy is replaced too.** ClassicWB FULL keeps
 SysInfo **3.24, from 1993** in `Tools/SysInfo` while the package installs 4.4
 into `Utilities/SysInfo`, and Directory Opus **4.16** in `Programs/DirOpus4`
-beside the package's 4.18.22 — both landed, and only one of each was ever
+beside the package's 4.18.22 - both landed, and only one of each was ever
 opened. Displacement could not see them: it matches on path, and these sit
 where this build would never write.
 
 **These are discovered, not declared.** The candidates were once a curated
-tuple on each package — two entries, checked by hand against ClassicWB FULL v28
+tuple on each package - two entries, checked by hand against ClassicWB FULL v28
 and correct for nothing else. Build on another distribution and the feature
 found nothing and said nothing about it, which is the same shape of failure as
 RTG depending on the source drive. Nothing about which programs exist belongs in
@@ -2226,13 +2363,13 @@ is searched for them. What makes that safe rather than a guess:
 - **Only principal programs.** What a package puts at the *top* of a drawer, and
   only real AmigaDOS executables. Matching every file inside a package's tree
   turned a PFS3 tool in `MyFiles` into a duplicate of something buried in
-  Visage — and the version comparison made it look certain.
+  Visage - and the version comparison made it look certain.
 - **The drawer has to be named for the program**, or named for it with a
-  suffix — ClassicWB keeps AWeb in `Programs/AWeb_APL`, and requiring the two
+  suffix - ClassicWB keeps AWeb in `Programs/AWeb_APL`, and requiring the two
   to be *equal* meant the drive's AWeb was never recognised at all. The
   separator is what keeps the looser match honest: `DiskSalv` still does not
   match a program called `Disk`. What goes is the whole drawer, so a program
-  sitting inside somebody else's is not a duplicate of anything. Without this the search offered — *switched on* — to delete
+  sitting inside somebody else's is not a duplicate of anything. Without this the search offered - *switched on* - to delete
   `Programs/DiskSalv`, because Picasso96 ships an `Installer` and DiskSalv's
   drawer has one too; part of `Programs/SysSpeed`, because a `cruncher` drawer
   contains an `LhA`; and `Tools/Commodities`, holding Exchange, Blanker,
@@ -2247,13 +2384,13 @@ is searched for them. What makes that safe rather than a guess:
 - **Never *inside* a drawer this build is filling.** Our MUI overlay merges
   into the drive's own `System/MUI`, so every class in it matches by name and
   none of them is a duplicate. **The drawer itself is a different matter**, and
-  getting that wrong is what let a card go out with the wrong browser on it —
+  getting that wrong is what let a card go out with the wrong browser on it -
   see below.
 - **One row per drawer**, because the drawer is what would go.
 
 On ClassicWB FULL, with a full package selection, that search returns exactly
-one confident answer — `Tools/SysInfo`, 3.24 against 4.4, which is what the
-hand-written entry said, arrived at without being told — and one question:
+one confident answer - `Tools/SysInfo`, 3.24 against 4.4, which is what the
+hand-written entry said, arrived at without being told - and one question:
 `System/Scalos`, where **the drive's copy is the newer one** (39.222 against
 39.218), so removing it would be a downgrade. Each row says which way round it
 is rather than lumping "same version" together with "cannot be compared".
@@ -2269,7 +2406,7 @@ components each deferred to the other.**
   build fills, reasoning that a copy in the same place is an older *file*,
   which displacement replaces.
 - `_landing_paths` did not displace it, because the package's payload is a
-  whole drawer rather than single files — and refusing a drawer during the copy
+  whole drawer rather than single files - and refusing a drawer during the copy
   would take the drive's own contents with it.
 
 Neither is wrong on its own terms. Together they leave nothing handling the
@@ -2280,7 +2417,7 @@ keeps SysInfo somewhere this build does *not* write.
 So a match at the **top** of a filled drawer is now reported: that is the
 package's own principal program, colliding at the exact path the package
 installs to, and the merge will not overwrite it. Deeper inside, the exclusion
-stands unchanged — that is the MUI case it was written for.
+stands unchanged - that is the MUI case it was written for.
 
 The two faults on either side of it:
 
@@ -2297,7 +2434,7 @@ The two faults on either side of it:
   have been compared with the drive's even if it had been found.
 
 With all three fixed, the same drive and the same package selection now report
-six rows rather than one — `Programs/AWeb_APL` (3.4 against 3.5),
+six rows rather than one - `Programs/AWeb_APL` (3.4 against 3.5),
 `Programs/VirusZ` (1.2 against 1.4), `Programs/iGame` (1.6 against 2.6) and
 `Tools/SysInfo` (3.24 against 4.4) as confident answers, with `System/MUI`
 (19.14 either way) and `System/Scalos` (39.222 against 39.218, the drive's
@@ -2305,17 +2442,17 @@ newer) as questions, switched off.
 
 #### One drive, several lists, one set of answers
 
-The Programs page shows the same drive through several lists — what it already
+The Programs page shows the same drive through several lists - what it already
 carries, what this card cannot run, older copies of chosen software, and the
-clutter — and they describe the same facts. Assembled independently, they
+clutter - and they describe the same facts. Assembled independently, they
 contradicted each other. `Programs/AWeb_APL` appeared under **older copies**
 switched on, meaning *remove it*, and under **already installed on the drive**
 switched on, meaning *keep it*; `Programs/iGame` and `Programs/VirusZ` the
 same. Moving either switch did nothing to the other.
 
-An exclusion for exactly this already existed — "already installed" skipped
+An exclusion for exactly this already existed - "already installed" skipped
 whatever the *cannot work* list was dropping, added when FMSsys turned up in
-both — but it covered one of the three removal lists. A rule written for one
+both - but it covered one of the three removal lists. A rule written for one
 pair rather than as a relation over all of them is this project's recurring
 defect.
 
@@ -2324,8 +2461,8 @@ whether a row is covered by it:
 
 - `_being_removed()` is the union of every switched-on row across the three
   removal lists. Nothing else may ask the lists directly.
-- `_covered_by(path, removing)` is a **path relation** — the same path, or
-  inside one — not a name match and not equality. The lists need not agree on
+- `_covered_by(path, removing)` is a **path relation** - the same path, or
+  inside one - not a name match and not equality. The lists need not agree on
   depth, and a program inside a drawer that is going is going with it.
 - Answering any of them re-derives the list that could contradict it, so
   switching a removal off brings the program back under "already installed"
@@ -2336,7 +2473,7 @@ the drive and the catalogue, and are matched by path, so this holds for
 whatever somebody started from.
 
 **The clutter pass is deliberately left out of that tie.** It is given
-`_already_leaving()`, which includes its own switched-on rows — dropping a
+`_already_leaving()`, which includes its own switched-on rows - dropping a
 drawer really does break an assign to it, so its output is legitimately part
 of its next input. Re-running it on every click therefore feeds it its own
 answers: on one drive the removal count climbed from six to eight to nine
@@ -2357,7 +2494,7 @@ further:
   take `Tools/SysInfoExtra` with it.
 - **The drawer and its icon go, not just the files inside.** The first version
   asked `skip()` about files only, and both copy paths create a drawer without
-  asking at all — so a card came out with an empty `Tools/SysInfo` whose icon
+  asking at all - so a card came out with an empty `Tools/SysInfo` whose icon
   was still on the desktop, opening an empty window. That is worse than having
   done nothing. `skip_drawer` is asked before a drawer is made, and
   `<drawer>.info` counts as part of the drawer. Found by reading the finished
@@ -2365,7 +2502,7 @@ further:
 - **It is a separate set from displacement**, which stays exact-match, and
   `skip_drawer` consults only the superseded set. Making displacement
   prefix-match, or asking it about drawers, would have turned every drawer
-  overlay from a merge into a wipe — MUI's overlay claims the name `System/MUI` so a *file*
+  overlay from a merge into a wipe - MUI's overlay claims the name `System/MUI` so a *file*
   of that name cannot block it, and must still merge into ClassicWB's own MUI.
 - **Each entry is checked against a real distribution, never inferred from a
   name.** ClassicWB's `System/FBlit` looks like a duplicate and is not: it
@@ -2375,8 +2512,8 @@ further:
   both are still there.
 
 Removing somebody's software is not a thing to do quietly, so the Packages page
-lists each older copy it actually found **on the drive in front of you** — the
-drive is asked, rather than the catalogue believed — and any one of them can be
+lists each older copy it actually found **on the drive in front of you** - the
+drive is asked, rather than the catalogue believed - and any one of them can be
 switched off and kept.
 
 Worth knowing about the layout while you are here: **the destinations already
@@ -2386,10 +2523,10 @@ anyway, so software lands in the drawer a ClassicWB user would look in. Software
 ClassicWB user would look in without anything being moved.
 
 
-A drawer with no `.info` beside it does not appear on Workbench — it can only be
+A drawer with no `.info` beside it does not appear on Workbench - it can only be
 reached from a Shell or by turning on **Window/Show/All Files**. That is correct
 for `C:` and `LIBS:`, which is why Commodore ships them without icons, but this
-tool also creates drawers of its own — `Programs`, `Internet`, `AmiTCP` — and
+tool also creates drawers of its own - `Programs`, `Internet`, `AmiTCP` - and
 gave them none either, so every browser and launcher that was installed could
 not be found from the desktop. It looked exactly like the software never having
 been installed. `Storage` had the same problem: the real Commodore installer
@@ -2397,8 +2534,8 @@ creates that drawer *and* its icon, and installing from the ADFs creates only th
 drawer.
 
 Every drawer this build makes now gets an icon, taken from a real Amiga icon
-rather than invented — the chosen icon set, or failing that the Workbench
-disks — matched on the drawer's own name and otherwise any drawer icon among
+rather than invented - the chosen icon set, or failing that the Workbench
+disks - matched on the drawer's own name and otherwise any drawer icon among
 them. Two things decide
 which one is usable:
 
@@ -2444,12 +2581,12 @@ right answer genuinely differs:
 | Desktop | the stock icons, drawn for exactly this palette | a heavier desktop such as Scalos becomes affordable |
 
 Common to both: WHDLoad, LhA, Installer, a faster `icon.library`, MagicMenu and
-VisualPrefs. Networking — the Pi's WiFi as an Amiga network card, Roadshow,
-AmiSSL and NetSurf — is suggested when a WiFi network has been configured.
+VisualPrefs. Networking - the Pi's WiFi as an Amiga network card, Roadshow,
+AmiSSL and NetSurf - is suggested when a WiFi network has been configured.
 
 **A switch that cannot be moved says why, first.** A package held on by the
 display is shown ticked and insensitive, and the reason used to be appended to
-its subtitle — after the description, the fetch note and the installation note,
+its subtitle - after the description, the fetch note and the installation note,
 some three hundred characters in, where it was asked about rather than read. It
 now leads: *"Required by the display you chose, so it is on and cannot be turned
 off - change the display on the Amiga page to release it."*
@@ -2458,7 +2595,7 @@ off - change the display on the Amiga page to release it."*
 the RTG subsystem; Emu68's driver is a card for it, and without it a card set
 up for the Pi's HDMI output has no RTG screen modes to open on. It was an
 ordinary tick box beside the display choice, and nothing rebuilt the software
-list when the display changed — so choosing both outputs left it off, silently.
+list when the display changed - so choosing both outputs left it off, silently.
 Choosing a display that draws on the Pi now ticks it and locks it, and says
 why in the row.
 
@@ -2466,7 +2603,7 @@ why in the row.
 
 A published release is the newest there is; a donor's copy was whatever its
 author installed, which may be years old, and there was no way to tell from the
-card which had happened. So there is one route now — the publisher's — and a
+card which had happened. So there is one route now - the publisher's - and a
 package that cannot be fetched says so before the build rather than in the log
 afterwards:
 
@@ -2488,7 +2625,7 @@ later.
 ### The FPU, and a wrong answer held for a long time
 
 *This is what stopped iGame launching games.* It listed them correctly and then
-did nothing when one was clicked — window closed, WHDLoad never started,
+did nothing when one was clicked - window closed, WHDLoad never started,
 nothing reported. With `guigfx.library` and `render.library` off the card and
 `no_guigfx=1` in its preferences, it launches. **That fix is real and stays.**
 
@@ -2496,23 +2633,23 @@ The *explanation* attached to it was wrong, and it is written up here because
 it was confident, specific, and repeated across this file for months.
 
 **The claim was:** Emu68 gives a PiStorm a 68040 with no FPU, so a floating
-point instruction raises a line-F exception — guru 8000000B — which is the guru
+point instruction raises a line-F exception - guru 8000000B - which is the guru
 iGame's own site warns about for exactly these libraries.
 
 **Emu68's own documentation says otherwise.** The release archive ships
 `overlays/overlays.md`, which lists for `emu68.dtbo`:
 
-> `no_fpu` — Disables the FPU entirely. Every FPU instruction will throw an
+> `no_fpu` - Disables the FPU entirely. Every FPU instruction will throw an
 > exception
 
 A switch that *disables* the FPU is a switch on a machine that has one. The
-equivalent kernel command line word is `nofpu` — a different spelling from the
-dtparam — and it appears in the option list inside both the v1.0.7 and the
+equivalent kernel command line word is `nofpu` - a different spelling from the
+dtparam - and it appears in the option list inside both the v1.0.7 and the
 v1.1.0-beta.1 kernels, so this is not new in the beta. **This imager never
 writes that switch, so every card it builds has an FPU.**
 
 **Nor do the instruction counts support it.** The libraries really do carry
-floating point code, counted as F-line opcodes (`0xF200`–`0xF23F`) in the
+floating point code, counted as F-line opcodes (`0xF200`-`0xF23F`) in the
 copies inside `MCC_Guigfx.lha`, which is the archive this tool installs:
 
 | Library | FPU instructions | Of those, needing a trap |
@@ -2522,7 +2659,7 @@ copies inside `MCC_Guigfx.lha`, which is the archive this tool installs:
 
 The second column is the one that matters and was never checked. A 68040's
 on-chip FPU implements only part of the 68881 instruction set; the
-transcendentals — `FSIN`, `FCOS`, `FTAN`, `FETOX`, `FLOGN` and the rest — trap
+transcendentals - `FSIN`, `FCOS`, `FTAN`, `FETOX`, `FLOGN` and the rest - trap
 as *unimplemented instructions* and have to be serviced in software. If Emu68
 did not service them, code built for a 68881 would still fail on a machine that
 has an FPU, and that would have rescued the original conclusion.
@@ -2531,7 +2668,7 @@ It does not. Decoding each instruction's extension word and reading its opmode
 field, **every** floating point instruction in both libraries is one the 68040
 executes on-chip: moves, `FADD`, `FMUL`, `FDIV`, `FSUB`, `FABS`, `FNEG`,
 `FCMP`, `FSQRT` and their kin. Not one transcendental in either library. So
-nothing about the FPU — present, absent, or partially implemented — explains
+nothing about the FPU - present, absent, or partially implemented - explains
 why these two libraries fail here.
 
 **What is actually established**, and all the card is built on:
@@ -2695,7 +2832,7 @@ there, and stages the rest in `Storage/Install/Roadshow`. Two details matter:
 A PiStorm does not take the Amiga's own video away. The chipset carries on
 driving the RGB port whatever the Pi is doing, so a very common setup has both
 live: Workbench on a flat panel over the Pi's HDMI, games and demos on a 1084
-plugged into the Amiga. **Both — RTG on the Pi's HDMI and the Amiga's own video
+plugged into the Amiga. **Both - RTG on the Pi's HDMI and the Amiga's own video
 output** covers that, and it is not the same as either output alone:
 
 | | Emu68 RTG driver | Native monitor driver | Saved screen mode |
@@ -2705,7 +2842,7 @@ output** covers that, and it is not the same as either output alone:
 | Both | installed | installed | depends on the next question |
 | Framethrower | installed | installed | depends on the next question |
 
-With two outputs there is a real question — **where Workbench opens** — and the
+With two outputs there is a real question - **where Workbench opens** - and the
 answer changes what is written. Left on the RTG screen (the default) the saved
 screen mode is kept as it is. Moved to the Amiga's own output, the saved mode is
 dropped so Workbench falls back to a native one, while the RTG driver stays
@@ -2718,13 +2855,13 @@ board. Wherever the Amiga's own output is in use, the uninstalled `PAL` (or
 something to offer. Where one is already installed, nothing is touched.
 
 With one output there is nothing to decide, so the question is not asked, and a
-preference left over from a two-output setup is ignored rather than obeyed —
+preference left over from a two-output setup is ignored rather than obeyed -
 honouring it would open Workbench on a screen nobody is looking at.
 
 ### Switching without rebuilding
 
 Which monitor is actually switched on is not a property of the card. Some days
-it is the HDMI panel, some days the Amiga's monitor, some days both — so with
+it is the HDMI panel, some days the Amiga's monitor, some days both - so with
 two outputs wired the answer is *not* settled when the card is written. Two
 scripts are installed:
 
@@ -2744,16 +2881,16 @@ The stash is filled from whatever the system already had. Nothing is fabricated:
 writing a screen mode from scratch would mean guessing a Picasso96 display ID,
 and a wrong guess opens Workbench on a screen that does not exist. If a card was
 built with no RTG mode saved anywhere, `PiStorm-Use-HDMI` says so and tells you
-to set one in Prefs/ScreenMode first — after which switching works in both
+to set one in Prefs/ScreenMode first - after which switching works in both
 directions for good.
 
 Every step in both scripts is guarded with `IF EXISTS`. In an AmigaDOS script a
-command that fails — deleting a file that is not there, making a drawer that
-already exists — stops the whole script at the default `FAILAT` of 10.
+command that fails - deleting a file that is not there, making a drawer that
+already exists - stops the whole script at the default `FAILAT` of 10.
 
 ## Bringing an emulator installation to real hardware
 
-A system built for Amiberry or WinUAE is ordinary Amiga software — AmigaOS 3.9,
+A system built for Amiberry or WinUAE is ordinary Amiga software - AmigaOS 3.9,
 Scalos and a Kickstart ROM all behave the same on a PiStorm. What does not carry
 over is the *emulator's own drivers*, and a graphics driver for a card that does
 not exist leaves Workbench with nowhere to appear.
@@ -2795,7 +2932,7 @@ could never have mounted anything.
 
 Only what can be shown from the files counts:
 
-- a binary whose first four bytes are `\x7fELF` — built for PowerPC, AROS or
+- a binary whose first four bytes are `\x7fELF` - built for PowerPC, AROS or
   OS4, and unloadable here;
 - a script that mounts a device with no matching `DEVS:DOSDrivers` entry;
 - a script needing a volume the card will not have.
@@ -2806,7 +2943,7 @@ makes, plus every assign the drive makes in its own `S:Startup-Sequence` and
 missing would condemn most of what it ships.
 
 **One program, one row.** These were listed here *and* in "software the drive
-already has" — where a switch that is **on** means *keep it*, the exact
+already has" - where a switch that is **on** means *keep it*, the exact
 opposite of what it means here. So the page said two contradictory things about
 FMSsys, and the one that read as keeping it was the longer, more prominent
 list. It was in fact being removed, because the two lists are unioned into the
@@ -2814,31 +2951,31 @@ same answer, but nobody could tell that by looking. Anything that cannot work
 is now left out of the other list entirely.
 
 Note that the **suggested load** button has nothing to say about any of this.
-It chooses *packages* — what to install, for this machine and screen — while
+It chooses *packages* - what to install, for this machine and screen - while
 these three lists are about the software the drive arrives with. Removing
 FMSsys was never something that button could do.
 
 Documentation is not evidence. A `.guide` explaining how to mount `PC:` is not
 a script that tries to, and quoting one is how a check like this stops being
 believed. On ClassicWB FULL the result is two: `Programs/FMSsys` and
-`Programs/Ami-pc`, which mounts a `PC:` that is not there either — out of
+`Programs/Ami-pc`, which mounts a `PC:` that is not there either - out of
 thirty-seven programs, the other thirty-five are left alone.
 
 ### Leaving out what the drive arrives with
 
 A ready-made distribution has its own idea of what belongs on a card. ClassicWB
 FULL carries thirty programs in `Programs` alone and seven little games in
-`WBGames`, some obsolete, some unfinished, some simply not to taste — and the
+`WBGames`, some obsolete, some unfinished, some simply not to taste - and the
 only choice was all of it or none.
 
 The Packages page now lists what the chosen drive already holds, one row per
 program, all on. Turn one off and it is left out: **the drawer, everything in
-it, and its icon**, by the same rule that removes a superseded older copy — the
+it, and its icon**, by the same rule that removes a superseded older copy - the
 rule that had to be fixed once already, when leaving the files out but keeping
 the drawer produced an empty `Tools/SysInfo` with its icon still on the desktop.
 
-Only the drawers software actually lives in are offered — `Programs`,
-`WBGames`, `Internet`, `Audio`, `Extras` — and only one level down. `Utilities`
+Only the drawers software actually lives in are offered - `Programs`,
+`WBGames`, `Internet`, `Audio`, `Extras` - and only one level down. `Utilities`
 and `Tools` are left alone deliberately: they hold Workbench's own commands, and
 a list offering to delete `Tools/Commodities` is a trap rather than a choice. On
 a system drive `Games` and `Demos` are the letter drawers a distribution creates
@@ -2848,7 +2985,7 @@ games themselves are chosen on their own drive.
 Unticking is independent of *Replace older copies*: that switch decides which of
 two copies of the same thing wins, while this is software named for removal, and
 it goes whatever else is set. Both lists describe the drive that was chosen, so
-dropping the drive drops them — otherwise a build with no drive selected would
+dropping the drive drops them - otherwise a build with no drive selected would
 still be leaving things out of it.
 
 An older exclusion chooser existed and did not help here: it was built for a
@@ -2858,15 +2995,15 @@ groups with nothing in any of them.
 ### Nothing is taken from the drive being built on
 
 Every file a card needs comes from a package fetched from its publisher. Where
-something is only *adapted* — an emulator's monitor rewritten for this board,
-its RTG driver swapped for Emu68's — that is the compatibility pass doing its
+something is only *adapted* - an emulator's monitor rewritten for this board,
+its RTG driver swapped for Emu68's - that is the compatibility pass doing its
 job. What must never happen is a feature **depending** on the source drive
 having carried something, because then it works or does not according to which
 distribution somebody started from, and nothing on screen says which.
 
 RTG was exactly that. `LIBS:Picasso96/VideoCore.card` was always installed, but
 `DEVS:Monitors/VideoCore` was written *only* when a monitor file had been seen
-during the copy — an emulator's, from a PiMiga image. Build on ClassicWB, which
+during the copy - an emulator's, from a PiMiga image. Build on ClassicWB, which
 has none, and the card came out with the graphics driver present, no screenmode
 to select it, and a line in an hour-old build log as the only explanation.
 
@@ -2880,21 +3017,21 @@ Picasso96 is installed from its own archive now: `Picasso96API.library`, its own
 
 Three libraries live in the archive's `Libs/Picasso96`, and its installer
 `copylib`s all three into `SYS:Libs/Picasso96` unconditionally. Only
-`fastlayers.library` was being copied. `rtg.library` — the RTG subsystem itself,
-216 KB of it — was not, so **every card built with an RTG display came out
+`fastlayers.library` was being copied. `rtg.library` - the RTG subsystem itself,
+216 KB of it - was not, so **every card built with an RTG display came out
 without it**.
 
 `DEVS:Monitors/Picasso96` is not a data file: it is an executable, and
 `S:Startup-Sequence` runs everything in that drawer at boot. The string inside
 it is `picasso96/rtg.library`, opened relative to `LIBS:`. So the boot said the
-library was missing, and the card had no RTG screen modes at all — the board
+library was missing, and the card had no RTG screen modes at all - the board
 driver, the monitor, the settings and the API library all present, and nothing
 able to bring them up.
 
 The version pairing is the one Emu68 expects: `rtg.library 40.3945` and
 `Picasso96 40.42` out of the same 1999 archive, which is the Picasso96 2.0 that
 `VideoCore.card` is documented to be installed against. This is not the trap
-described above — that was a monitor from *somewhere else* meeting a donor
+described above - that was a monitor from *somewhere else* meeting a donor
 drive's library. Monitor and library here are the matched pair from one archive.
 
 #### Nothing told Picasso96 which board to drive
@@ -2903,8 +3040,8 @@ drive's library. Monitor and library here are the matched pair from one archive.
 
 Picasso96 finds its board through the **`BOARDTYPE`** tool type on the monitor's
 icon in `DEVS:Monitors`, and then opens `LIBS:Picasso96/<BOARDTYPE>.card`. The
-archive ships that icon with **no tool types at all** — its own installer asks
-which board you have and writes one — and the copy going onto the card was
+archive ships that icon with **no tool types at all** - its own installer asks
+which board you have and writes one - and the copy going onto the card was
 untouched. Read back off a finished card, `Devs/Monitors/Picasso96.info` held an
 empty list.
 
@@ -2915,19 +3052,19 @@ boot console said
 
     Picasso96: Could not create graphics board context for 'Picasso96',
 
-and — because that left a console window open — IPrefs could not then reset the
+and - because that left a console window open - IPrefs could not then reset the
 Workbench screen, so **"Intuition is attempting to reset the Workbench screen.
 Please close all windows"** came up on every boot as well.
 
 The compatibility pass had the right code all along and ran it down the wrong
 branch: it stamped `BOARDTYPE` only when adapting *a donor's* monitor, and on
-the package path merely logged a note saying VideoCore was the board — which was
+the package path merely logged a note saying VideoCore was the board - which was
 not true of the card. A `tooltypes` field on a download now stamps the icon on
 the way past, from the single definition of the board name in `compat`.
 
 **One board gets one monitor.** With a donor that carries an emulator's monitor,
 the compatibility pass would make a second `Devs/Monitors/VideoCore` beside the
-package's own `Devs/Monitors/Picasso96` — both naming this board, and
+package's own `Devs/Monitors/Picasso96` - both naming this board, and
 `S:Startup-Sequence` runs everything in that drawer, so the second would bring
 up hardware that is already up. The package's monitor now wins, because it
 arrives with the settings and the API library that belong to it rather than
@@ -2949,8 +3086,8 @@ monitor with the matching `Picasso96API.library` beside it is a different thing
 from a monitor alone, and reading the old lesson as "never supply a monitor" is
 what left RTG half-installed on every ClassicWB card.
 
-Of the settings files the archive ships — one per monitor frequency, which its
-installer asks about — the 64 kHz one is used, because Emu68's output is HDMI
+Of the settings files the archive ships - one per monitor frequency, which its
+installer asks about - the 64 kHz one is used, because Emu68's output is HDMI
 and the others cut the mode list short for no reason.
 
 A card built from floppies is **not** given a monitor file, and this is
@@ -2967,8 +3104,8 @@ than one that does not boot.
 * startup scripts have emulator-only commands (`uae-configuration` and friends)
   commented out, so they cannot fail the boot;
 * `S:WHDLoad.prefs` is cleaned the same way. This is where WHDLoad's settings
-  actually live — the quit key, whether it forces PAL, and the hooks it runs
-  around every game — and PiMiga's copy sets `ExecuteStartup` and
+  actually live - the quit key, whether it forces PAL, and the hooks it runs
+  around every game - and PiMiga's copy sets `ExecuteStartup` and
   `ExecuteCleanup` to `uae-configuration`, Amiberry's own control program. Carried
   over unedited, a card runs a missing command before and after every single game.
 
@@ -2982,13 +3119,13 @@ differences have to be settled on the way in:
 
 * **Character set.** Amiga names are ISO-8859-1 bytes, and Linux stores file
   names as bytes too, so `português.language` already carries exactly the bytes
-  AmigaOS wants — even though Python cannot read them as UTF-8. Those names are
+  AmigaOS wants - even though Python cannot read them as UTF-8. Those names are
   passed through untouched. A name genuinely stored as UTF-8 is converted, and
   the occasional letter ISO-8859-1 has no room for is folded to its unaccented
-  form (`čeština` → `cestina`) rather than replaced with `?`, which AmigaDOS
+  form (`čeština` -> `cestina`) rather than replaced with `?`, which AmigaDOS
   reads as a pattern wildcard.
 * **Case.** AmigaDOS cannot tell `Bombuzal.slave` from `Bombuzal.Slave`, and a
-  collection built on Linux is full of such pairs — on PiMiga's Games drive,
+  collection built on Linux is full of such pairs - on PiMiga's Games drive,
   289 of them. Only one of each can exist here, and, which is what decides the
   matter, only one can be *reached*: every spelling of a name finds the same
   entry, so a second copy kept as `Bombuzal_2.slave` is a file nothing would
@@ -2999,7 +3136,7 @@ differences have to be settled on the way in:
   slave in a `SLAVE=` tool type, and an emulator mounting the host directory
   opens that exact spelling; keeping the other would run a *different build* of
   the game here than the same collection runs there. That is not a matter of
-  taking the newest file — in seven of PiMiga's pairs the icon names a slave
+  taking the newest file - in seven of PiMiga's pairs the icon names a slave
   years older than the one beside it, and reproducing what it does means
   keeping the old one. Every file left out is named in the log.
 
@@ -3009,15 +3146,15 @@ differences have to be settled on the way in:
   had to be cut short is reported as shortened, and that is the warning worth
   acting on: a shortened name can stop a game starting, because a WHDLoad slave
   and an icon's tool types both name files. Where the reference is one this tool
-  can see — a tool type naming a file in the same drawer — it is **rewritten to
+  can see - a tool type naming a file in the same drawer - it is **rewritten to
   match**, so the icon still launches its slave. A name buried inside a binary
   cannot be reached that way, which is why the warning still exists. Choosing
   PFS3 sidesteps the question almost entirely: 3 names across PiMiga's four
   drives are too long for it, against 1,597 on the Work drive alone under FFS.
 
 Across PiMiga 5's System, Demos and Games drives this brings the names that have
-to change down from 309 to 3 — all three of them names that were already
-corrupt in the source — and leaves every accented locale name alone. Nothing is
+to change down from 309 to 3 - all three of them names that were already
+corrupt in the source - and leaves every accented locale name alone. Nothing is
 renamed to make room for something else any more, so no `_2` names appear on the
 card at all.
 
@@ -3026,11 +3163,11 @@ card at all.
 A `.hdf` is not the same thing as a card image, and the difference decides
 whether it boots:
 
-* **With an RDB** (HstWB's `120gb.hdf`, most multi-partition HDFs) — block 0
+* **With an RDB** (HstWB's `120gb.hdf`, most multi-partition HDFs) - block 0
   starts with `RDSK` and already describes DH0, DH1 and so on. It is written
   into the 0x76 partition unchanged.
 * **Without an RDB** (ClassicWB's `System_P96.hdf`, most single-partition HDFs)
-  — block 0 starts with a bare file system signature such as `DOS\1`. The image
+ - block 0 starts with a bare file system signature such as `DOS\1`. The image
   is moved past a generated RDB, and the drive geometry is chosen so that a
   whole number of cylinders matches the image *exactly*: the file system's
   bitmap covers precisely the blocks in the file, and a partition rounded up to
