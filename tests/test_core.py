@@ -412,6 +412,75 @@ class TestFullBuild(_Scratch):
             self.assertEqual([p.drive_name for p in table.partitions], ["DH0", "DH1"])
             self.assertTrue(table.partitions[0].bootable)
 
+    def test_a_boot_only_card_claims_nothing_beyond_the_boot_partition(self):
+        """Emu68 and a Kickstart, with the Amiga's storage left to itself.
+
+        For a machine whose drive is somebody else's - a second card in a CF
+        adapter, a disk on the IDE port. An *empty* Amiga partition would not
+        do: it still takes the rest of the card and still comes up asking to
+        be initialised.
+        """
+        folder = self.scratch()
+        target = folder / "bootonly.img"
+        emu68_dir = folder / "emu68"
+        emu68_dir.mkdir()
+        (emu68_dir / "Emu68-pistorm32lite").write_bytes(os.urandom(300_000))
+        (emu68_dir / "config.txt").write_text("kernel=placeholder\n")
+        rom = folder / "kick.rom"
+        rom.write_bytes(TestKickstart.rom())
+
+        config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(target),
+            image_size=2 * GIB, boot_size=128 * MIB,
+            emu68_prepared_dir=str(emu68_dir), kickstart_path=str(rom),
+            boot_only=True, amiga_partitions=[],
+        )
+        self.assertEqual(config.validate(), [],
+                         "no Amiga drive is the point, not a mistake")
+        builder.run_build(config, QUIET)
+
+        with open(target, "rb") as handle:
+            #  read_table returns all four slots, so count the used ones.
+            parts = [p for p in mbr.read_table(handle) if p.sector_count]
+            #  The card says what it is: one partition, and no 0x76 entry
+            #  claiming the rest of it.
+            self.assertEqual(len(parts), 1, [str(p) for p in parts])
+            self.assertEqual(parts[0].type_id, mbr.TYPE_FAT32_LBA)
+            self.assertNotIn(mbr.TYPE_AMIGA,
+                             [p.type_id for p in mbr.read_table(handle)])
+            #  ...and it still boots: the whole point is a usable Emu68 card.
+            fs = fat32.Fat32(handle, parts[0].start_bytes)
+            names = {e.name for e in fs.listdir("/")}
+            self.assertIn("Emu68-pistorm32lite", names)
+            self.assertIn("kick.rom", names)
+            self.assertIn("config.txt", names)
+            self.assertEqual(fs.read_bytes("kick.rom"), rom.read_bytes())
+
+    def test_a_boot_only_card_says_what_it_cannot_carry(self):
+        """The ticks are not silently dropped - the build says so first."""
+        config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target="/tmp/x.img",
+            image_size=2 * GIB, boot_size=128 * MIB,
+            boot_only=True, amiga_partitions=[],
+            install_amigaos=True, package_keys=["whdload"],
+        )
+        said = " ".join(config.concerns())
+        self.assertIn("Emu68 and the Kickstart only", said)
+        self.assertIn("Workbench install", said)
+        self.assertIn("package", said)
+        #  And the warning about a card with nothing on its drives does not
+        #  also fire: there are no drives, which is what was asked for.
+        self.assertNotIn("Nothing is being put on the Amiga drives", said)
+
+    def test_a_boot_only_bare_hdf_is_a_contradiction(self):
+        config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target="/tmp/x.hdf",
+            image_size=2 * GIB, boot_size=128 * MIB,
+            boot_only=True, output_hdf=True, amiga_partitions=[],
+        )
+        self.assertTrue([p for p in config.validate() if "Choose one" in p],
+                        config.validate())
+
     def test_image_mode_writes_and_then_expands(self):
         folder = self.scratch()
         source = folder / "source.img"

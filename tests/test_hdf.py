@@ -884,3 +884,96 @@ class EveryDriveWearsTheCardsIcon(_Scratch):
         entry = volume.find("Disk.info")
         self.assertIsNotNone(entry)
         self.assertEqual(volume.read_file(entry), b"the card's own volume icon")
+
+
+class ExportingDrivesAsSeparateFiles(_Scratch):
+    """Reading the Amiga drives back out of a card, one file each.
+
+    The old answer - write the *output* as a bare .hdf - could only ever
+    describe one drive, and a PiStorm card normally carries four.
+    """
+
+    def _card(self, drives):
+        """A small card image with an RDB and the named drives in it."""
+        from pistorm_imager.core import rdb                     # noqa: PLC0415
+        folder = self.scratch()
+        path = folder / "card.img"
+        geom = rdb.Geometry()
+        cyl = geom.cyl_blocks * geom.block_size
+        total = (len(drives) + 3) * 4 * cyl
+        parts = rdb.layout(geom, total // geom.block_size,
+                           [(n, 2 * cyl, rdb.parse_dostype(d)) for n, d in drives])
+        parts[0].bootable = True
+        table = rdb.Rdb(geometry=geom, partitions=parts,
+                        filesystems=[rdb.FileSystem(
+                            dostype=rdb.parse_dostype("PFS3"),
+                            seglist=b"handler-bytes" * 64, version=19 << 16 | 2)],
+                        cylinders=total // cyl)
+        with open(path, "wb") as handle:
+            handle.truncate(total)
+            table.write(handle, 0)
+            #  Something recognisable in each drive, to prove the right
+            #  blocks travel into the right file.
+            for index, part in enumerate(table.partitions):
+                handle.seek(part.low_cyl * cyl)
+                handle.write(bytes([index + 1]) * 4096)
+        return path, table
+
+    def test_every_drive_is_found_with_its_type_and_size(self):
+        from pistorm_imager.core import export                   # noqa: PLC0415
+        path, _ = self._card([("DH0", "PFS3"), ("DH1", "PFS3"), ("DH2", "FFS-INTL")])
+        found = export.drives(path)
+        self.assertEqual([d.name for d in found], ["DH0", "DH1", "DH2"])
+        self.assertTrue(found[0].bootable)
+        self.assertFalse(found[1].bootable)
+        self.assertEqual(found[2].dostype, rdb_dostype("FFS-INTL"))
+
+    def test_each_chosen_drive_becomes_a_self_contained_file(self):
+        from pistorm_imager.core import builder, export          # noqa: PLC0415
+        path, _ = self._card([("DH0", "PFS3"), ("DH1", "PFS3")])
+        out = self.scratch()
+        written = export.export(path, ["DH1"], out, QUIET)
+        self.assertEqual(len(written), 1)
+        with open(written[0], "rb") as handle:
+            located = builder.find_rdb(handle)
+            self.assertIsNotNone(located, "the exported file has its own RDB")
+            _base, table = located
+            #  One drive, named as it was, and the handler travelled with it -
+            #  without which an emulator cannot read a PFS3 drive at all.
+            self.assertEqual([p.drive_name for p in table.partitions], ["DH1"])
+            self.assertTrue(table.filesystems, "the PFS3 handler is embedded")
+            self.assertEqual(table.filesystems[0].dostype,
+                             rdb_dostype("PFS3"))
+
+    def test_the_right_blocks_land_in_the_right_file(self):
+        """The check that a name-only test would pass while shipping DH0."""
+        from pistorm_imager.core import builder, export          # noqa: PLC0415
+        path, _ = self._card([("DH0", "PFS3"), ("DH1", "PFS3"), ("DH2", "PFS3")])
+        out = self.scratch()
+        written = export.export(path, ["DH2"], out, QUIET)
+        with open(written[0], "rb") as handle:
+            _base, table = builder.find_rdb(handle)
+            part = table.partitions[0]
+            handle.seek(part.low_cyl * table.geometry.cyl_blocks
+                        * table.geometry.block_size)
+            #  DH2 is the third drive, so its blocks are filled with 3.
+            self.assertEqual(handle.read(16), bytes([3]) * 16)
+
+    def test_a_drive_that_is_not_there_is_refused_by_name(self):
+        from pistorm_imager.core import export                   # noqa: PLC0415
+        path, _ = self._card([("DH0", "PFS3")])
+        with self.assertRaises(RuntimeError) as caught:
+            export.export(path, ["DH7"], self.scratch(), QUIET)
+        self.assertIn("DH7", str(caught.exception))
+        self.assertIn("DH0", str(caught.exception), "and says what it does hold")
+
+    def test_an_image_with_no_rdb_yields_no_drives(self):
+        from pistorm_imager.core import export                   # noqa: PLC0415
+        blank = self.scratch() / "blank.img"
+        blank.write_bytes(b"\0" * (1 << 20))
+        self.assertEqual(export.drives(blank), [])
+
+
+def rdb_dostype(name):
+    from pistorm_imager.core import rdb                          # noqa: PLC0415
+    return rdb.parse_dostype(name)

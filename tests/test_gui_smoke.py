@@ -48,6 +48,29 @@ ADF_FOLDER = Path(__file__).resolve().parent.parent / "samples" / "workbench"
 
 CLUTTER_IMAGE = SCRATCH / "clutter.hdf"
 
+#  A small image with two Amiga drives in it, for the export page to read.
+EXPORT_IMAGE = SCRATCH / "toexport.img"
+from pistorm_imager.core.util import Progress as _Progress  # noqa: E402
+QUIET_PROGRESS = _Progress()
+
+
+def _make_export_image() -> None:
+    from pistorm_imager.core import rdb                    # noqa: PLC0415
+    geom = rdb.Geometry()
+    cyl = geom.cyl_blocks * geom.block_size
+    total = 10 * cyl
+    parts = rdb.layout(geom, total // geom.block_size,
+                       [("DH0", 2 * cyl, rdb.parse_dostype("PFS3")),
+                        ("DH1", None, rdb.parse_dostype("PFS3"))])
+    table = rdb.Rdb(geometry=geom, partitions=parts,
+                    filesystems=[rdb.FileSystem(
+                        dostype=rdb.parse_dostype("PFS3"),
+                        seglist=b"handler" * 128, version=19 << 16 | 2)],
+                    cylinders=total // cyl)
+    with open(EXPORT_IMAGE, "wb") as handle:
+        handle.truncate(total)
+        table.write(handle, 0)
+
 
 def _make_clutter_hdf() -> None:
     """A small drive carrying one of each thing the clutter pass looks for.
@@ -126,6 +149,7 @@ def _make_test_hdf() -> None:
 
 _make_test_hdf()
 _make_clutter_hdf()
+_make_export_image()
 
 failures: list[str] = []
 
@@ -147,6 +171,8 @@ def on_activate(app: ImagerApplication) -> None:
     try:
         window = app.window
         check(window is not None, "window constructed")
+        check(getattr(window, "_settled", False),
+              "the startup work has finished before the window is handed over")
         #  How the window looks before anything is done to it, so "forget the
         #  saved setup" can be held to putting it back exactly here.
         pristine_rows = [dataclasses.asdict(r.spec())
@@ -806,6 +832,30 @@ def on_activate(app: ImagerApplication) -> None:
         window._refresh_clutter()
         check(not window.clutter_group.get_visible(),
               "and the group hides again with no drive chosen")
+
+        # ---------------------------------------- a card with no Amiga drive
+        #  The pinned rule for this project: an option on screen that does not
+        #  change the card is worse than no option, because it looks honoured.
+        print("\na card with no Amiga drive")
+        window.mode_row.set_selected(0)
+        window._sync_visibility()
+        before = len(window.partition_rows)
+        window.boot_only_row.set_active(True)
+        built = window.gather()
+        check(built.boot_only, "the switch reaches the build")
+        check(built.amiga_partitions == [],
+              f"and no drives go with it: {built.amiga_partitions}")
+        check(not window.partition_group.get_visible(),
+              "the layout is hidden while it cannot apply")
+        check(len(window.partition_rows) == before,
+              "but the rows are kept, not destroyed")
+        check(built.validate() == [],
+              f"no drives is valid, not an error: {built.validate()}")
+        window.boot_only_row.set_active(False)
+        back = window.gather()
+        check(not back.boot_only and len(back.amiga_partitions) == before,
+              "and switching back restores exactly the layout that was there")
+        check(window.partition_group.get_visible(), "with the rows on screen again")
 
         # ------------------------- one drive, several lists, one set of answers
         #  The page shows the same drive through several lists, and they
@@ -1738,17 +1788,247 @@ def on_activate(app: ImagerApplication) -> None:
         pump()
         check(not window.gather().target_is_device,
               "switching back to an image file still writes a file")
-        window.target_row.set_selected(2)
+        #  There used to be a third choice here, "Amiga hard disk image
+        #  (.hdf)", which wrote the build's output as one bare drive. A card
+        #  carries four, so it could not say which drive it was. It is gone,
+        #  and reading drives back out is its own task now.
+        check(window.target_row.get_model().get_n_items() == 2,
+              "the bare .hdf output option is gone, not merely hidden")
+        check(not window._making_hdf(), "and nothing still asks for one")
+        window.target_row.set_selected(1)
         pump()
-        check(window._making_hdf(),
-              "and the .hdf option is not overwritten by the mirror")
+        check(not window.gather().target_is_device,
+              "and the two that remain still survive the mirror")
         window.target_row.set_selected(1)
         window.device_list = []
         pump()
+        # ------------------------------- exporting drives out of an image
+        #  The old answer wrote the build's output as one bare .hdf, which
+        #  cannot describe the four drives a PiStorm card carries. This is
+        #  the replacement, and it has to reach the job like anything else.
+        print("\nexporting drives as .hdf")
+        #  Put the window back exactly as it was afterwards: this task hides
+        #  every other page while it is chosen, and the checks that follow
+        #  are about the quick start.
+        was_customising = getattr(window, "_customising", False)
+        was_mode = window.mode_row.get_selected()
+        export_mode = next(i for i, m in enumerate(MODES)
+                           if m[1] is builder.BuildMode.EXPORT)
+        window.mode_row.set_selected(export_mode)
+        window._sync_visibility()
+        pump()
+        check(window._mode() is builder.BuildMode.EXPORT, "the task can be chosen")
+        pages = {n: window.stack.get_page(window.stack.get_child_by_name(n))
+                 for n in ("export", "amiga", "packages", "target")}
+        check(pages["export"] is not None and pages["export"].get_visible(),
+              "its own page is shown")
+        check(not any(pages[n].get_visible() for n in ("amiga", "packages", "target")),
+              "and the pages about building a card are not")
+
+        window.export_source.set_path(str(EXPORT_IMAGE))
+        pump()
+        names = sorted(window.export_rows)
+        check(names == ["DH0", "DH1"],
+              f"the drives are read out of the image, not guessed: {names}")
+
+        #  Nothing is exported because nobody said otherwise: these write new
+        #  files, and a games drive is twenty gigabytes.
+        check(not any(r.get_active() for r in window.export_rows.values()),
+              "every drive starts unticked")
+        window.export_dir.set_path(str(SCRATCH / "exported"))
+        pump()
+        check(not window.write_button.get_sensitive(),
+              "and Export is disabled with none of them chosen")
+        window.export_rows["DH1"].set_active(True)
+        pump()
+        check(window.write_button.get_sensitive(),
+              "choosing one enables it")
+        window.export_rows["DH0"].set_active(True)
+        pump()
+        check(window.write_button.get_sensitive(), "and two keep it enabled")
+        window.export_rows["DH0"].set_active(False)
+        window.export_rows["DH1"].set_active(False)
+        pump()
+        check(not window.write_button.get_sensitive(),
+              "unticking them all disables it again")
+        window.export_rows["DH1"].set_active(True)
+        pump()
+        subtitle = window.export_rows["DH1"].get_subtitle()
+        check(".hdf" in subtitle, f"and each says what file it becomes: {subtitle}")
+
+        out = SCRATCH / "exported"
+        window.export_dir.set_path(str(out))
+        pump()
+        job = window.gather()
+        check(job.export_drives == ["DH1"],
+              f"only the ticked drives reach the job: {job.export_drives}")
+        check(job.export_dir == str(out), "and so does where they go")
+        check(job.source_image == str(EXPORT_IMAGE),
+              "the image comes from this page, not the Source page")
+        check(job.validate() == [], f"the job is runnable: {job.validate()}")
+
+        #  The bar carries Back, the summary and the button that runs the
+        #  export. Without it the task could be chosen and then neither left
+        #  nor performed, which is how it first shipped.
+        check(window.bottom_bar.get_visible(), "the bottom bar is on this page")
+        check(window.back_button.get_visible(), "with a way back")
+        check(window.write_button.get_sensitive(),
+              "and the button is usable without applying a setup first")
+        check(window.write_button.get_label() == "Export",
+              f"and says what it does: {window.write_button.get_label()!r}")
+        #  Including before the task is ready: the label names the task, not
+        #  the state of it, and an export with no image still said "Write
+        #  card" because the label was set after the early return.
+        window.export_source.set_path("")
+        pump()
+        check(window.write_button.get_label() == "Export",
+              f"even with nothing chosen yet: {window.write_button.get_label()!r}")
+        window.export_source.set_path(str(EXPORT_IMAGE))
+        pump()
+        #  Choosing an image rebuilds the rows, and they come back unticked -
+        #  which is the point of the default, so say so again here.
+        window.export_rows["DH1"].set_active(True)
+        pump()
+        summary = window.summary.get_text()
+        check("DH1" in summary and "Export" in summary,
+              f"the summary describes the export: {summary!r}")
+
+        #  And it really writes them: the whole point is a file that mounts.
+        builder.run_build(job, QUIET_PROGRESS)
+        made = sorted(q.name for q in out.glob("*.hdf"))
+        check(made == ["DH1.hdf"], f"one self-contained file per drive: {made}")
+        from pistorm_imager.core import export as export_mod
+        back = export_mod.drives(out / "DH1.hdf")
+        check([d.name for d in back] == ["DH1"],
+              "and it reads back as the drive it came from")
+
+        #  Back has to leave the task, not just the page: the mode is what
+        #  hides everything else.
+        window._go_back()
+        pump()
+        check(window._mode() is not builder.BuildMode.EXPORT,
+              "Back leaves the export task")
+        export_page = window.stack.get_page(window.stack.get_child_by_name("export"))
+        check(not export_page.get_visible(), "and its page with it")
+        quick_page = window.stack.get_page(window.stack.get_child_by_name("quick"))
+        check(quick_page.get_visible(), "landing back on the first screen")
+
+        window.mode_row.set_selected(was_mode)
+        window._sync_visibility()
+        window._set_customising(was_customising)
+        pump()
+
+        # ------------------------------ a way back from everywhere but the start
+        #  The rule: the first screen is a choice and needs no Back, and
+        #  every other screen has one. The export page broke it by being a
+        #  task the bar had never heard of - and the bar carries the button
+        #  that runs the job as well, so that page could be neither left nor
+        #  used. Walked here rather than reasoned about, one screen at a time.
+        print("\na way back from everywhere but the first screen")
+        window._set_customising(False)
+        window._set_quick_screen("choices")
+        pump()
+        check(not window.back_button.get_visible(),
+              "the first screen is a choice, and needs no Back")
+        check(not window.bottom_bar.get_visible(), "nor a bar to put it in")
+
+        #  And it stays that way when another task is chosen. A session saved
+        #  while exporting used to come back with the first screen on top of
+        #  the export task: no image chosen, so the bar read "Still needed: No
+        #  image to export drives from" and offered Back to where it already
+        #  was. _set_customising showed the quick page without asking what the
+        #  mode was.
+        window.mode_row.set_selected(
+            next(i for i, m in enumerate(MODES)
+                 if m[1] is builder.BuildMode.EXPORT))
+        window._sync_visibility()
+        window._set_customising(False)          # what startup does last
+        pump()
+        quick_page = window.stack.get_page(window.stack.get_child_by_name("quick"))
+        check(not quick_page.get_visible(),
+              "the first screen does not reappear under another task")
+        check(window.stack.get_page(
+            window.stack.get_child_by_name("export")).get_visible(),
+              "the task that was chosen is enabled")
+        #  And is the one actually on screen. Hiding a page does not move the
+        #  stack off it: the switcher listed only Export while the quick
+        #  page's content was still displayed, which is exactly what the
+        #  screenshot showed. Asking which pages are enabled would have passed.
+        check(window.stack.get_visible_child_name() == "export",
+              f"and is the page actually shown: "
+              f"{window.stack.get_visible_child_name()!r}")
+        #  A task that writes no card does not survive a restart: the session
+        #  records the mode, so quitting inside Export reopened there - the
+        #  one task that hides the first screen. This is the rule startup
+        #  applies after restoring.
+        window.mode_row.set_selected(
+            next(i for i, m in enumerate(MODES)
+                 if m[1] is builder.BuildMode.EXPORT))
+        pump()
+        check(window._mode() is builder.BuildMode.EXPORT, "chosen for the check")
+        window._forget_tasks_that_write_no_card()
+        window._sync_visibility()
+        pump()
+        check(window._mode() is not builder.BuildMode.EXPORT,
+              "a restored session does not open on Export")
+        check(window.stack.get_visible_child_name() == "quick",
+              f"it opens on the first screen: "
+              f"{window.stack.get_visible_child_name()!r}")
+        check(not window.back_button.get_visible(),
+              "with no Back on it")
+
+        window._go_back()
+        pump()
+        check(quick_page.get_visible(), "and Back brings the first screen back")
+        check(window.stack.get_visible_child_name() == "quick",
+              f"landing on it, not merely enabling it: "
+              f"{window.stack.get_visible_child_name()!r}")
+        check(not window.back_button.get_visible(),
+              "with no Back on it once more")
+
+        elsewhere = []
+        for screen in ("basic", "prepared", "image", "default"):
+            window._set_quick_screen(screen)
+            pump()
+            if window._quick_screen == screen:
+                elsewhere.append((f"quick/{screen}",
+                                  window.back_button.get_visible(),
+                                  window.bottom_bar.get_visible()))
+        window._set_quick_screen("choices")
+        window._set_customising(True)
+        pump()
+        for name in ("source", "storage", "amiga", "packages", "options",
+                     "target"):
+            if window.stack.get_child_by_name(name) is None:
+                continue
+            window.stack.set_visible_child_name(name)
+            pump()
+            elsewhere.append((name, window.back_button.get_visible(),
+                              window.bottom_bar.get_visible()))
+        window._set_customising(False)
+        window.mode_row.set_selected(
+            next(i for i, m in enumerate(MODES)
+                 if m[1] is builder.BuildMode.EXPORT))
+        window._sync_visibility()
+        pump()
+        elsewhere.append(("export", window.back_button.get_visible(),
+                          window.bottom_bar.get_visible()))
+
+        check(len(elsewhere) >= 10,
+              f"every other screen was actually visited: {len(elsewhere)}")
+        without = [n for n, back, _bar in elsewhere if not back]
+        check(not without, f"and every one of them has a Back: missing {without}")
+        barless = [n for n, _back, bar in elsewhere if not bar]
+        check(not barless, f"and a bar to put it in: missing {barless}")
+
+        window._go_back()
+        pump()
+
     except Exception as error:  # noqa: BLE001
         import traceback
         traceback.print_exc()
         failures.append(f"exception: {error}")
+
     finally:
         app.quit()
 
