@@ -3468,6 +3468,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  The plan reads from the same configuration, so a partition edited
         #  on the Storage page shows up in it.
         self._describe_plan()
+        #  Before anything can return early: the button names the task, not
+        #  the state of it, and an unfinished export was still offering to
+        #  "Write card".
+        self.write_button.set_label(
+            "Export" if self._mode() is builder.BuildMode.EXPORT
+            else "Write card")
         missing = self._missing_choices()
         self._show_readiness(missing)
         try:
@@ -3490,7 +3496,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  the folder rather than a card, and there is no setup to apply
         #  first - reading drives out of an image cannot destroy anything.
         if config.mode is builder.BuildMode.EXPORT:
-            self.write_button.set_label("Export")
             drives = config.export_drives
             names = ", ".join(drives)
             problems = config.validate()
@@ -3503,7 +3508,6 @@ class ImagerWindow(Adw.ApplicationWindow):
                 f"{Path(config.source_image).name} \u2192 {config.export_dir}")
             self.write_button.set_sensitive(True)
             return
-        self.write_button.set_label("Write card")
         if config.mode is builder.BuildMode.IMAGE:
             what = f"Write {Path(config.source_image).name}"
         elif config.mode is builder.BuildMode.HDF:

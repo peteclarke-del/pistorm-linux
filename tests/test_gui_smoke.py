@@ -1854,6 +1854,15 @@ def on_activate(app: ImagerApplication) -> None:
               "and the button is usable without applying a setup first")
         check(window.write_button.get_label() == "Export",
               f"and says what it does: {window.write_button.get_label()!r}")
+        #  Including before the task is ready: the label names the task, not
+        #  the state of it, and an export with no image still said "Write
+        #  card" because the label was set after the early return.
+        window.export_source.set_path("")
+        pump()
+        check(window.write_button.get_label() == "Export",
+              f"even with nothing chosen yet: {window.write_button.get_label()!r}")
+        window.export_source.set_path(str(EXPORT_IMAGE))
+        pump()
         summary = window.summary.get_text()
         check("DH1" in summary and "Export" in summary,
               f"the summary describes the export: {summary!r}")
