@@ -560,6 +560,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         self._applied_config = None
         self._quick_screen = "choices"
+        if getattr(self, "_was_exporting", False):
+            #  Leave the task itself, not just the page: the mode is what
+            #  hides everything else, so putting the page back without
+            #  putting the mode back would show a card workflow that still
+            #  thought it was exporting.
+            for index, entry in enumerate(MODES):
+                if entry[1] is not builder.BuildMode.EXPORT:
+                    self.mode_row.set_selected(index)
+                    break
+            self._sync_visibility()
         if getattr(self, "_customising", False):
             self._set_customising(False)
         else:
@@ -574,7 +584,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         if not hasattr(self, "back_button"):
             return
+        #  Exporting counts too. It hides every other page, and without the
+        #  bar there was no Back, no summary and - worse - no button to run
+        #  the export with: the task could be chosen and then not left or
+        #  performed.
         beyond_the_choice = (getattr(self, "_customising", False)
+                             or getattr(self, "_was_exporting", False)
                              or getattr(self, "_quick_screen", "choices")
                              != "choices")
         self.back_button.set_visible(beyond_the_choice)
@@ -1598,6 +1613,13 @@ class ImagerWindow(Adw.ApplicationWindow):
             return ["a target to write to"]
         missing = [problem.rstrip(".") for problem in config.validate()]
 
+        if config.mode is builder.BuildMode.EXPORT:
+            #  Reading drives out of an image needs an image, a folder and a
+            #  tick - all of which validate() covers. It needs no Kickstart,
+            #  no Emu68 and no card, and asking for them left the page saying
+            #  "Still needed: a Kickstart ROM" for a task that writes no card.
+            return missing
+
         if config.mode is builder.BuildMode.IMAGE:
             #  A prepared system brings its own everything; the image and a
             #  card is the whole of it.
@@ -2416,6 +2438,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                     self.stack.get_page(child).set_visible(False)
                 #  Hand the pages back to whoever owns them.
                 self._set_customising(getattr(self, "_customising", False))
+            self._update_back()
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
         self.os_group.set_visible(mode is builder.BuildMode.FRESH)
@@ -3424,6 +3447,25 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  be written puts the setup back to needing another look.
         applied = repr(config) == getattr(self, "_applied_config", None)
         target = config.target
+        #  Exporting writes files out of an image and touches no card, so the
+        #  button that says "Write card" is the wrong promise, the target is
+        #  the folder rather than a card, and there is no setup to apply
+        #  first - reading drives out of an image cannot destroy anything.
+        if config.mode is builder.BuildMode.EXPORT:
+            self.write_button.set_label("Export")
+            drives = config.export_drives
+            names = ", ".join(drives)
+            problems = config.validate()
+            if problems:
+                self.summary.set_text(problems[0])
+                self.write_button.set_sensitive(False)
+                return
+            self.summary.set_text(
+                f"Export {len(drives)} drive(s) - {names} - from "
+                f"{Path(config.source_image).name} \u2192 {config.export_dir}")
+            self.write_button.set_sensitive(True)
+            return
+        self.write_button.set_label("Write card")
         if config.mode is builder.BuildMode.IMAGE:
             what = f"Write {Path(config.source_image).name}"
         elif config.mode is builder.BuildMode.HDF:

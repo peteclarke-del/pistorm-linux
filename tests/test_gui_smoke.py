@@ -1843,6 +1843,19 @@ def on_activate(app: ImagerApplication) -> None:
               "the image comes from this page, not the Source page")
         check(job.validate() == [], f"the job is runnable: {job.validate()}")
 
+        #  The bar carries Back, the summary and the button that runs the
+        #  export. Without it the task could be chosen and then neither left
+        #  nor performed, which is how it first shipped.
+        check(window.bottom_bar.get_visible(), "the bottom bar is on this page")
+        check(window.back_button.get_visible(), "with a way back")
+        check(window.write_button.get_sensitive(),
+              "and the button is usable without applying a setup first")
+        check(window.write_button.get_label() == "Export",
+              f"and says what it does: {window.write_button.get_label()!r}")
+        summary = window.summary.get_text()
+        check("DH1" in summary and "Export" in summary,
+              f"the summary describes the export: {summary!r}")
+
         #  And it really writes them: the whole point is a file that mounts.
         builder.run_build(job, QUIET_PROGRESS)
         made = sorted(q.name for q in out.glob("*.hdf"))
@@ -1851,6 +1864,17 @@ def on_activate(app: ImagerApplication) -> None:
         back = export_mod.drives(out / "DH1.hdf")
         check([d.name for d in back] == ["DH1"],
               "and it reads back as the drive it came from")
+
+        #  Back has to leave the task, not just the page: the mode is what
+        #  hides everything else.
+        window._go_back()
+        pump()
+        check(window._mode() is not builder.BuildMode.EXPORT,
+              "Back leaves the export task")
+        export_page = window.stack.get_page(window.stack.get_child_by_name("export"))
+        check(not export_page.get_visible(), "and its page with it")
+        quick_page = window.stack.get_page(window.stack.get_child_by_name("quick"))
+        check(quick_page.get_visible(), "landing back on the first screen")
 
         window.mode_row.set_selected(was_mode)
         window._sync_visibility()
