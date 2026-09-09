@@ -192,6 +192,11 @@ class BuildConfig:
     #  or 3.9 at all.
     accelerator: str = "pistorm"       # a machines.Accelerator value
     accelerator_cpu: str = ""          # a machines.Cpu value, when fitted
+    #  Which Amiga the card is for.  The chipset alone cannot answer this, and
+    #  two things now need the machine itself: whether its processor can run
+    #  AmigaOS 3.5 or 3.9, and which of a BoingBag's per-machine drivers to
+    #  install - an A1200's IDE driver on an A500 would be inventing hardware.
+    machine_key: str = ""
 
     #  Boot configuration
     boot_options: bootcfg.BootOptions = dataclasses.field(
@@ -292,6 +297,7 @@ class BuildConfig:
             if not (package.rtg_only and package.essential):
                 continue
             if self.rtg_display and package.key not in keys \
+                    and not self.os_cd \
                     and not any(p.content_hdf or p.content_folder
                                 for p in self.amiga_partitions if p.bootable):
                 said.append(
@@ -303,7 +309,8 @@ class BuildConfig:
             said.append(
                 "Workbench is set to open on the RTG screen, and this card "
                 "has no RTG display configured.")
-        if not self.install_amigaos and not filled and not self.boot_only \
+        if not self.install_amigaos and not filled and not self.os_cd \
+                and not self.boot_only \
                 and self.mode is BuildMode.FRESH:
             said.append(
                 "Nothing is being put on the Amiga drives: no Workbench, no "
@@ -2819,7 +2826,7 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     volume: the volume writer creates files and never overwrites them, so the
     last copy has to be the winner *before* anything is written.
     """
-    from . import amigacd, bbupdate, boingbag                 # noqa: PLC0415
+    from . import amigacd, machines                           # noqa: PLC0415
 
     match = amigacd.identify(config.os_cd)
     if match.release is None:
@@ -2833,7 +2840,8 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
             f"{Path(config.os_cd).name} is missing {missing}, which an install "
             f"cannot be built without.")
 
-    machine = machines.MACHINES_BY_KEY.get(config.machine_key or "a1200")
+    machine = machines.MACHINES_BY_KEY.get(config.machine_key or "a1200",
+                                           machines.MACHINES_BY_KEY["a1200"])
     accelerator = machines.Accelerator(config.accelerator)
     card_cpu = machines.Cpu(config.accelerator_cpu) \
         if config.accelerator_cpu else None
@@ -2882,6 +2890,7 @@ def _apply_boingbags(config: BuildConfig, release, staged: Path,
                      card_cpu, progress: Progress) -> None:
     """Lay the update packs over the staged system, oldest first."""
     from . import bbupdate, boingbag, packages                # noqa: PLC0415
+    from . import machines                                    # noqa: PLC0415
 
     if not config.boingbag_archives:
         return
