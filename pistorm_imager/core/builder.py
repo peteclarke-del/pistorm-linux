@@ -127,6 +127,11 @@ class BuildConfig:
     #  be used. Distinct from an empty partition, which still takes the rest
     #  of the card and still appears on the desktop asking to be initialised.
     boot_only: bool = False
+    #  The mirror of boot_only: Amiga drives and no Emu68 boot partition at
+    #  all.  A real accelerator with an IDE interface reads a Rigid Disk Block
+    #  at block 0 and knows nothing about an MBR, so a card for one carries no
+    #  partition table - the RDB *is* the partition table.
+    amiga_only: bool = False
     amiga_partitions: list[AmigaPartitionSpec] = dataclasses.field(
         default_factory=lambda: [AmigaPartitionSpec("DH0", None, "PFS3", True, 0)])
     pfs3_binary: str = ""              # optional pfs3aio to embed in the RDB
@@ -408,6 +413,16 @@ class BuildConfig:
         if self.mode is BuildMode.FRESH:
             if self.boot_size < 64 * MIB and not self.output_hdf:
                 problems.append("The boot partition must be at least 64 MiB.")
+            if self.amiga_only and self.boot_only:
+                problems.append(
+                    "A card cannot be both Emu68 only and Amiga drives only.")
+            if self.amiga_only and self.install_emu68:
+                problems.append(
+                    "Emu68 needs a boot partition, and an Amiga-drives-only "
+                    "card has none.")
+            if self.amiga_only and not self.amiga_partitions:
+                problems.append(
+                    "An Amiga-drives-only card needs at least one drive.")
             if self.boot_only and self.output_hdf:
                 problems.append(
                     "A bare Amiga hard disk image is the Amiga drive on its "
@@ -422,13 +437,13 @@ class BuildConfig:
             #  Everything has to fit the card that was asked for. Nothing
             #  checked, so a layout larger than the image was accepted and
             #  the drives were simply laid out past the end of it.
-            overhead = 0 if self.output_hdf else (
+            overhead = 0 if (self.output_hdf or self.amiga_only) else (
                 (DEFAULT_BOOT_START * SECTOR) + self.boot_size)
             fixed = sum(p.size or 0 for p in self.amiga_partitions)
             flexible = any(p.size is None for p in self.amiga_partitions)
             if overhead + fixed > self.image_size:
                 over = overhead + fixed - self.image_size
-                with_boot = ("" if self.output_hdf else
+                with_boot = ("" if (self.output_hdf or self.amiga_only) else
                              f", which with the {human_size(self.boot_size)} "
                              f"boot partition")
                 problems.append(
@@ -2217,8 +2232,22 @@ def _write_partition_table(handle, config: BuildConfig, total_size: int,
     says it is - Emu68 and a Kickstart, with the storage left to whatever the
     Amiga already has.
     """
-    progress.step("Creating the partition table")
     total_sectors = total_size // SECTOR
+    if config.amiga_only:
+        #  No MBR at all.  An Amiga IDE controller reads a Rigid Disk Block at
+        #  block 0; a DOS partition table there is not something it looks for,
+        #  and the RDB has to start where it expects it.  So the whole device
+        #  is the Amiga partition and nothing precedes it.
+        progress.step("Laying the card out for an Amiga controller")
+        progress.log("No MBR: the Rigid Disk Block starts at block 0, which is "
+                     "where an Amiga IDE or SCSI controller looks for it.")
+        progress.log(f"Amiga drives: {human_size(total_size)}, the whole card")
+        #  Wipe anything at the head that a controller might read instead.
+        handle.seek(0)
+        handle.write(b"\0" * (DEFAULT_BOOT_START * SECTOR))
+        return None, mbr.MbrPartition(0, 0x00, mbr.TYPE_AMIGA, 0, total_sectors)
+
+    progress.step("Creating the partition table")
     boot_start = DEFAULT_BOOT_START
     boot_sectors = align_up(config.boot_size, MIB) // SECTOR
     amiga_start = align_up(boot_start + boot_sectors, MIB // SECTOR)
@@ -3007,18 +3036,25 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
             if config.mode in (BuildMode.FRESH, BuildMode.HDF):
                 boot_part, amiga_part = _write_partition_table(
                     handle, config, target_size, progress)
+                #  An Amiga-drives-only card has no boot partition to make or
+                #  copy, so the whole FAT32 pass is skipped rather than made
+                #  to cope with a partition that is not there.
 
-                progress.step("Creating the FAT32 boot partition")
-                boot_image = _make_boot_filesystem(boot_part.size_bytes, workdir, progress)
-                with open(boot_image, "r+b") as boot_handle:
-                    fs = Fat32(boot_handle)
-                    _populate_boot(fs, config, emu68_files, emu68_root, progress)
-                    boot_handle.flush()
-                    os.fsync(boot_handle.fileno())
-                progress.step("Copying the boot partition onto the card")
-                with open(boot_image, "rb") as boot_handle:
-                    handle.seek(boot_part.start_bytes)
-                    copy_stream(boot_handle, handle, boot_part.size_bytes, progress)
+                if boot_part is not None:
+                    progress.step("Creating the FAT32 boot partition")
+                    boot_image = _make_boot_filesystem(boot_part.size_bytes,
+                                                       workdir, progress)
+                    with open(boot_image, "r+b") as boot_handle:
+                        fs = Fat32(boot_handle)
+                        _populate_boot(fs, config, emu68_files, emu68_root,
+                                       progress)
+                        boot_handle.flush()
+                        os.fsync(boot_handle.fileno())
+                    progress.step("Copying the boot partition onto the card")
+                    with open(boot_image, "rb") as boot_handle:
+                        handle.seek(boot_part.start_bytes)
+                        copy_stream(boot_handle, handle, boot_part.size_bytes,
+                                    progress)
 
                 if amiga_part is None:
                     #  Boot-only: there is no Amiga drive on this card, so
