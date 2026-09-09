@@ -277,10 +277,18 @@ def _describe_imported_drive(path: str) -> tuple[list[str], bool]:
 
 def describe(config: builder.BuildConfig, detected: Detected) -> str:
     """A plain account of what the build will actually put on the card."""
-    carries = "FAT32 with Emu68" if config.install_emu68 else \
-        "FAT32, without Emu68 - only what is put on it below"
-    lines = [f"Boot partition: {human_size(config.boot_size)} {carries}"]
-    if config.kickstart_path:
+    if getattr(config, "amiga_only", False):
+        #  No boot partition and no MBR: the card is Amiga drives and nothing
+        #  else, which is what a real accelerator's IDE controller reads.
+        lines = ["No boot partition: the Rigid Disk Block starts at block 0, "
+                 "for an Amiga IDE or SCSI controller rather than Emu68"]
+    else:
+        carries = "FAT32 with Emu68" if config.install_emu68 else \
+            "FAT32, without Emu68 - only what is put on it below"
+        lines = [f"Boot partition: {human_size(config.boot_size)} {carries}"]
+    if getattr(config, "amiga_only", False):
+        pass                    # nothing here maps a ROM; the machine has its own
+    elif config.kickstart_path:
         name = detected.kickstart.name if detected.kickstart else "Kickstart"
         lines.append(f"Kickstart: {name}")
     elif config.install_emu68:
