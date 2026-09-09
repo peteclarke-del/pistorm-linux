@@ -8,6 +8,8 @@ understands pre-built images such as **PiMiga**, so you can write one to a card
 and still apply your own Emu68 build, Kickstart, video mode and WiFi settings on
 top of it.
 
+![The opening screen: four tasks, each with an icon and a button](docs/images/01-welcome.png)
+
 ## What it does
 
 Four tasks that write a card, all ending with the same boot-partition
@@ -24,13 +26,13 @@ drive brings no Workbench, so it needs the floppies alongside it.
 | --- | --- |
 | **Build a new card** | Writes an MBR with a FAT32 boot partition (Emu68 + Raspberry Pi firmware + your Kickstart) and a type `0x76` Amiga partition carrying a Rigid Disk Block. Optionally installs AmigaOS onto it from a set of Workbench floppy images, so the card boots straight to Workbench. |
 | **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
-| **Import an Amiga hard disk image** | Takes a WinUAE/FS-UAE/HstWB `.hdf` - the Amiga drive on its own, with no partition table - and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
+| **Write a drive image unchanged** | Takes a WinUAE/FS-UAE/HstWB `.hdf` - the Amiga drive on its own, with no partition table - and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
 | **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
 
 **A card can also carry Emu68 and nothing else.** Some machines keep their
 storage elsewhere - a second card in a CF adapter, a real disk on the IDE port -
 and want the SD to be the boot partition and no more. *Emu68 only, no Amiga
-drive* on the Drives page does that: the MBR gets **one** entry, and the rest of
+drive* on the Storage page does that: the MBR gets **one** entry, and the rest of
 the card is left unclaimed.
 
 An empty Amiga partition is not the same answer, which is why this is a switch
@@ -51,7 +53,7 @@ so the choice sits in the window instead of clinging to the top of it: three
 rows above a large empty area read as though something had failed to load, and
 each task now has an icon and a button in one column.
 
-There is a fourth task that writes no card at all: **Export drives as .hdf**
+The fifth task writes no card at all. **Export drives as .hdf**
 reads the Amiga drives back *out* of a card, a backup or an `.hdf`, and writes
 each one you tick as its own file.
 
@@ -151,46 +153,104 @@ out and back in before the icon appears.
 
 ## The window
 
-It opens on a choice of three, and nothing else, because a choice with a page of
-settings under it is not a choice - the settings are the thing being chosen
-between:
+It opens on a choice of what to do, and nothing else, because a choice with a
+page of settings under it is not a choice - the settings are the thing being
+chosen between.
 
 | | |
 | --- | --- |
 | **A basic PiStorm card** | Emu68 and an empty Amiga drive, partitioned and formatted, ready to install Workbench onto from floppies. Leads to which Amiga it is for, what was found to install from, the card and its size, and the plan. |
 | **Write a prepared system** | A finished image you have downloaded - CaffeineOS, an Emu68 Hatcher image, or a backup of a card. Leads to the image chooser and the card, and nothing about the machine, because the image brings its own answer to that. |
 | **Customise an installation** | The full workflow: sources, storage, the software to add, boot options. Everything the other two decide for you. |
+| **Export drives as .hdf** | Reads the Amiga drives back *out* of a card or an image and writes each one you tick as its own file. Writes no card at all, which is why it is a task here rather than a destination on the Target page. |
 
-Each screen is laid out in the order its decisions are made, and ends with the
-same block: **what this will build**, and `Apply this setup` beneath it. That
-block finishes whichever route was taken - the last thing on a quick screen, or
-the last thing on the Target page when customising - so the same decision reads
-the same way whichever way it was reached.
+The first two lead to one screen that asks only what it needs. Choosing **A
+basic PiStorm card** keeps the masthead and adds the machine, whatever Kickstart
+and Workbench disks were found on this computer, the card, and the plan:
 
-Nothing is written until that Apply has been pressed. Write stays off before it,
-and goes off again whenever something changes what would actually be written -
-a partition renamed two pages away puts the setup back to needing another look,
-and says so beside the summary. Apply itself is offered only once enough has been
-chosen for a card to boot: not merely a configuration that will write, but one
-with a Kickstart for Emu68 to map and floppies for an install from floppies. What
-is still wanted is named where the button is -
+![Quick setup, with a Kickstart and a full AmigaOS 3.1 disk set already found](docs/images/02-quick-setup.png)
+
+The two greyed rows are detections, not settings. They are what the scan found
+to build from - here a 40.68 A1200 ROM and a complete 3.1 floppy set - and the
+refresh button beside the heading looks again.
+
+### Customising
+
+**Customise an installation** replaces that single screen with six, reachable
+in any order from the switcher along the top. Each is laid out in the order its
+decisions are made.
+
+| Page | What it asks |
+| --- | --- |
+| **Source** | The task - the five listed under [What it does](#what-it-does) - and where the Amiga system comes from: a new drive, a PiMiga installation, or a hard disk image. |
+| **Storage** | The size of the system drive, whether the rest of the card becomes a PFS3 work drive, whether the card carries an Amiga drive at all, and the Amiga partitions themselves. |
+| **Amiga** | Which Amiga the card is for, how you look at it, the Kickstart ROM, and the Workbench floppy images. |
+| **Packages** | The optional software, fetched from its publisher rather than taken from a drive you happen to have. |
+| **Options** | HDMI output, the Raspberry Pi's own settings, and the Emu68 switches that end up in `cmdline.txt`. |
+| **Target** | Where the result goes, how big the boot partition is, and **what this will build**. |
+
+![The Source page: the task, and where the system comes from](docs/images/03-source.png)
+
+![The Storage page: drive sizes, the boot-only switch, and the Amiga partitions](docs/images/04-storage.png)
+
+![The Amiga page: the machine, the display, and the Kickstart](docs/images/05-amiga.png)
+
+![The Packages page: software fetched from its publisher](docs/images/06-packages.png)
+
+![The Options page: display, Raspberry Pi and Emu68 switches](docs/images/07-options.png)
+
+Every route ends with the same block: **what this will build**, and `Apply this
+setup` beneath it. That block finishes whichever route was taken - the last
+thing on a quick screen, or the last thing on the Target page when customising -
+so the same decision reads the same way whichever way it was reached.
+
+![The Target page, ending in what this will build and Apply this setup](docs/images/08-target.png)
+
+Nothing is written until that Apply has been pressed. `Write card` stays off
+before it, and goes off again whenever something changes what would actually be
+written - a partition renamed two pages away puts the setup back to needing
+another look, and says so beside the summary. Apply itself is offered only once
+enough has been chosen for a card to boot: not merely a configuration that will
+write, but one with a Kickstart for Emu68 to map and floppies for an install
+from floppies. What is still wanted is named where the button is -
 
 > Still needed: a Kickstart ROM, and 1 more
 
  - and a prepared image is exempt, because the image and a card are the whole
 requirement.
 
-`Back` sits bottom left, in the same bar as `Write`, and always returns to the
-choice. It withdraws the acceptance with it, so reconsidering the choice that led
-to a setup does not leave Write lit while you do.
+`Back` sits bottom left, in the same bar as `Write card`, and always returns to
+the choice. It withdraws the acceptance with it, so reconsidering the choice
+that led to a setup does not leave Write lit while you do.
 
-**Check for updates...** in the menu asks GitHub for this project's releases and
-says what it found - the newest with its notes and a way to go and get it, or
-that this is already the newest. It is asked for rather than done at startup: a
-tool that prepares a card should not reach out to the internet unless someone has
-asked it a question. No network, a changed API or a repository with no releases
-yet are all reported as the question going unanswered, because none of them mean
+### Exporting
+
+**Export drives as .hdf** is the one task with no card at the end of it, and its
+page reads the drives out of whatever you point it at rather than guessing:
+
+![The Export page, listing three drives read out of a card image](docs/images/09-export-drives.png)
+
+Every drive starts unticked and `Export` stays off until at least one is chosen,
+because this page writes new files and a games drive is twenty gigabytes. The
+button names the task too - it says `Export` here rather than `Write card`.
+
+### The menu
+
+| | |
+| --- | --- |
+| **Save settings…** | Writes exactly the job file that the `build` subcommand consumes. |
+| **Load settings…** | Reads one back into the window. |
+| **Forget saved setup** | Puts the window back to how it opens, discarding the session it remembered. |
+| **Inspect the target** | Shows the partitions and the Rigid Disk Block of the chosen card or image. |
+| **Check for updates…** | Asks GitHub for this project's releases and says what it found. |
+| **About** | Version and licence. |
+
+**Check for updates…** is asked for rather than done at startup: a tool that
+prepares a card should not reach out to the internet unless someone has asked it
+a question. No network, a changed API or a repository with no releases yet are
+all reported as the question going unanswered, because none of them mean
 anything is wrong with the copy in front of you.
+
 
 ## Privileges
 
@@ -255,6 +315,8 @@ pistorm_imager/
   app.py         the GTK application itself
 pistorm_imager/data/   the icon and desktop entry, in the layout they
                  install into, and shipped inside the wheel
+docs/images/     the screenshots above, rendered from the real window by
+                 tests/shots.py rather than captured by hand
 tests/           unit tests plus a real end-to-end image build
 ```
 
@@ -263,6 +325,7 @@ tests/           unit tests plus a real end-to-end image build
 ```
 python3 -m unittest discover -s tests -p 'test_*.py' -v   # 673 tests
 python3 tests/test_gui_smoke.py                           # needs a display
+python3 tests/shots.py                # redraws the screenshots in this README
 ```
 
 The core suite builds real images in a temporary directory and reads them back,
