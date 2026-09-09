@@ -28,7 +28,8 @@ from gi.repository import Adw, GLib  # noqa: E402
 from pistorm_imager.core import (bootcfg, builder, jobs,  # noqa: E402
                                  machines,
                                  packages as packages_mod)
-from pistorm_imager.ui.window import MODES  # noqa: E402
+from pistorm_imager.ui.window import (FRESH_SOURCES,  # noqa: E402
+                                      MODES)
 
 import tempfile  # noqa: E402
 
@@ -50,8 +51,32 @@ CLUTTER_IMAGE = SCRATCH / "clutter.hdf"
 
 #  A small image with two Amiga drives in it, for the export page to read.
 EXPORT_IMAGE = SCRATCH / "toexport.img"
+
+#  A disc shaped like an AmigaOS 3.9 CD - the trees it carries, empty - so the
+#  CD path can be driven without the real 490 MB image being on this machine.
+CD_IMAGE = SCRATCH / "AmigaOS39.iso"
 from pistorm_imager.core.util import Progress as _Progress  # noqa: E402
 QUIET_PROGRESS = _Progress()
+
+
+def _make_cd_image() -> bool:
+    """Master a stand-in AmigaOS 3.9 disc.  False if there is no tool for it."""
+    import shutil as _shutil                                # noqa: PLC0415
+    import subprocess as _subprocess                        # noqa: PLC0415
+    from pistorm_imager.core import amigacd                 # noqa: PLC0415
+    tool = _shutil.which("genisoimage") or _shutil.which("mkisofs")
+    if tool is None:
+        return False
+    tree = SCRATCH / "cdtree"
+    for layer in amigacd.RELEASES_BY_KEY["3.9"].layers:
+        drawer = tree / layer.source
+        drawer.mkdir(parents=True, exist_ok=True)
+        (drawer / "afile").write_bytes(b"content")
+    #  Rock Ridge, because that is what the real 3.9 disc carries and what
+    #  the reader has to go through to get the names right.
+    _subprocess.run([tool, "-quiet", "-R", "-V", "AmigaOS3.9",
+                     "-o", str(CD_IMAGE), str(tree)], check=True)
+    return True
 
 
 def _make_export_image() -> None:
@@ -150,6 +175,7 @@ def _make_test_hdf() -> None:
 _make_test_hdf()
 _make_clutter_hdf()
 _make_export_image()
+HAVE_CD = _make_cd_image()
 
 failures: list[str] = []
 
@@ -209,6 +235,13 @@ def on_activate(app: ImagerApplication) -> None:
               f"and the processor fitted to it: {settings.accelerator_cpu!r}")
         check(settings.boingbag_emulator is False,
               "the FS-UAE switch reaches the card")
+        #  Which Amiga the card is for.  The chipset alone cannot answer it,
+        #  and the build needs the machine itself - to decide whether its
+        #  processor can run 3.5/3.9, and which of a BoingBag's per-machine
+        #  drivers to install.  Reaching the build only as a chipset is how
+        #  _prepare_os_cd came to ask for a field that was not there.
+        check(settings.machine_key == window._machine().key,
+              f"the machine reaches the card: {settings.machine_key!r}")
         window.boingbag_emulator.set_active(True)
         check(window.gather().boingbag_emulator is True,
               "and reaches it the other way round too")
@@ -227,6 +260,48 @@ def on_activate(app: ImagerApplication) -> None:
         with_none = window.gather().boingbags
         check(with_none == [],
               f"no CD means no BoingBags to name: {with_none}")
+
+        #  A CD carries the whole operating system, so a build taking one must
+        #  not still be asking for floppies.  Reported from the running app:
+        #  "I am selecting OS3.9 from CD but the config won't apply unless I
+        #  select a floppy disc folder!" - Apply stayed off with a 3.9 disc
+        #  chosen and nothing actually missing.
+        if not HAVE_CD:
+            print("  skip  no genisoimage, so the CD checks are not run")
+        else:
+            window.quick_system_source.set_selected(FRESH_SOURCES.index("cd"))
+            window._on_source_changed()
+            window.os_cd_row.set_path(str(CD_IMAGE))
+            window._on_os_cd_chosen()
+            check(not window.adf_row.path,
+                  "the floppy folder is genuinely empty for this check")
+            wanted = window._missing_choices()
+            floppies = [item for item in wanted
+                        if "floppy" in item or "Workbench disks" in item]
+            check(not floppies,
+                  f"a CD install does not ask for floppies: {floppies}")
+            check(window.gather().os_cd == str(CD_IMAGE),
+                  "and the CD reaches the build")
+            check(window.gather().os_cd_release == "3.9",
+                  f"with its release read off the disc: "
+                  f"{window.gather().os_cd_release!r}")
+            #  Choosing the CD source and then no CD has to say so, rather
+            #  than falling silent because the floppy question no longer
+            #  applies either.
+            window.os_cd_row.set_path("")
+            window._on_os_cd_chosen()
+            asked = window._missing_choices()
+            check(any("CD image" in item for item in asked),
+                  f"a CD install with no CD asks for one: {asked}")
+            window.os_cd_row.set_path(str(CD_IMAGE))
+            window._on_os_cd_chosen()
+
+            #  And the other direction: a path left in the row after switching
+            #  back to floppies must not quietly install from it.
+            window.quick_system_source.set_selected(FRESH_SOURCES.index("adf"))
+            window._on_source_changed()
+            check(window.gather().os_cd == "",
+                  "switching back to floppies stops using the CD")
 
         window.mode_row.set_selected(0)
         window._sync_visibility()
