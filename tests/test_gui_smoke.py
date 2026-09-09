@@ -255,6 +255,46 @@ def on_activate(app: ImagerApplication) -> None:
         check(not window.quick_accelerator_cpu.get_visible(),
               "and the row asking for one is hidden")
 
+        #  Emu68 is answered on the Source page, a page *before* the Storage
+        #  one carrying the two switches it rules out, so it has to be the
+        #  thing that decides - not the other way about.  With no boot
+        #  partition there is nowhere to put a Kickstart, a config.txt or a
+        #  cmdline.txt either, so those go off the window rather than being
+        #  filled in and silently dropped.
+        options_page = window.stack.get_page(
+            window.stack.get_child_by_name("options"))
+        #  The Options page only exists as a page while customising, so that
+        #  is the state in which its coming and going means anything.
+        window._set_customising(True)
+        window.install_emu_row.set_active(True)
+        window._sync_visibility()
+        check(window.boot_only_row.get_sensitive()
+              and not window.amiga_only_row.get_sensitive(),
+              "with Emu68 on, only the boot-only card can be asked for")
+        window.install_emu_row.set_active(False)
+        window._sync_visibility()
+        check(window.amiga_only_row.get_sensitive()
+              and not window.boot_only_row.get_sensitive(),
+              "with Emu68 off, only the drives-only card can be")
+        window.amiga_only_row.set_active(True)
+        check(window.gather().amiga_only,
+              "and the drives-only choice reaches the card")
+        check(not window.group_kickstart.get_visible()
+              and not window.boot_group.get_visible()
+              and not options_page.get_visible(),
+              "a card with no boot partition stops asking about one")
+        #  And turning Emu68 back on undoes it rather than leaving a
+        #  contradiction the build would have to settle.
+        window.install_emu_row.set_active(True)
+        window._sync_visibility()
+        check(not window.amiga_only_row.get_active()
+              and not window.gather().amiga_only,
+              "turning Emu68 back on withdraws the drives-only card")
+        check(window.group_kickstart.get_visible()
+              and window.boot_group.get_visible()
+              and options_page.get_visible(),
+              "and brings back everything that lives on the boot partition")
+
         #  The community pack is separable, so the two states have to differ.
         window.os_cd_row.set_path("")
         with_none = window.gather().boingbags
