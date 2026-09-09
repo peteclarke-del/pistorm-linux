@@ -296,6 +296,53 @@ def on_activate(app: ImagerApplication) -> None:
             window.os_cd_row.set_path(str(CD_IMAGE))
             window._on_os_cd_chosen()
 
+            #  A row's subtitle is Pango markup, so a label carrying an
+            #  ampersand - "BoingBags 3 & 4" - makes GTK refuse the whole
+            #  string and keep whatever the row said before.  Reported as
+            #  "says updates found, but then also says no folder - but I
+            #  selected a folder".
+            packs = SCRATCH / "boingbags"
+            packs.mkdir(exist_ok=True)
+            for name in ("BoingBag39-1.lha", "BB1-4.lha"):
+                (packs / name).write_bytes(b"not a real archive")
+            window.boingbag_row.set_path(str(packs))
+            found = window.boingbag_found.get_subtitle() or ""
+            check("archive(s)" in found and "No folder" not in found,
+                  f"the packs found are named, not swallowed: {found!r}")
+
+            #  What is providing the processor is a person's choice, so a
+            #  quick setup must hand it back rather than reset it.  Reported
+            #  as "doesn't persist the accelerator type - defaults to
+            #  pistorm".
+            window.quick_accelerator.set_selected(
+                list(machines.Accelerator).index(
+                    machines.Accelerator.ACCELERATOR))
+            window._on_accelerator_changed()
+            window.quick_accelerator_cpu.set_selected(
+                list(machines.Cpu).index(machines.Cpu.M68030))
+            saved = window.gather()
+            kept = window._keep_other_pages(
+                dataclasses.replace(saved, accelerator="pistorm",
+                                    accelerator_cpu="", os_cd=""),
+                saved)
+            check(kept.accelerator == machines.Accelerator.ACCELERATOR.value,
+                  f"a quick setup keeps the accelerator: {kept.accelerator}")
+            check(kept.accelerator_cpu == machines.Cpu.M68030.value,
+                  f"and its processor: {kept.accelerator_cpu!r}")
+            check(kept.os_cd == str(CD_IMAGE),
+                  "and the CD it was going to install from")
+
+            #  And a loaded setup has to put them back into the widgets.
+            window.quick_accelerator.set_selected(
+                list(machines.Accelerator).index(machines.Accelerator.PISTORM))
+            window._on_accelerator_changed()
+            window.apply(saved)
+            check(window._accelerator() is machines.Accelerator.ACCELERATOR,
+                  f"a loaded setup restores the accelerator: "
+                  f"{window._accelerator().value}")
+            check(window.os_cd_row.path == str(CD_IMAGE),
+                  "and the CD image it named")
+
             #  And the other direction: a path left in the row after switching
             #  back to floppies must not quietly install from it.
             window.quick_system_source.set_selected(FRESH_SOURCES.index("adf"))
