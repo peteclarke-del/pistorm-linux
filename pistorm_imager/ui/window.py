@@ -2264,6 +2264,7 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _page_options(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_options = page
 
         group = Adw.PreferencesGroup(
             title="Display",
@@ -2678,6 +2679,53 @@ class ImagerWindow(Adw.ApplicationWindow):
         for row in (self.variant_row, self.variant_hint, self.release_row,
                     self.local_zip_row):
             row.set_visible(install)
+
+        #  Emu68 is what the rest of the card hangs off, and it is answered on
+        #  the Source page - a page *before* the Storage one that used to rule
+        #  it. So the decision runs this way round: Emu68 decides which of the
+        #  two storage shapes can be asked for, not the other way about.
+        #
+        #    Emu68 on   - "Emu68 only, no Amiga drive" makes sense;
+        #                 "Amiga drives only, no Emu68" contradicts it.
+        #    Emu68 off  - the reverse.
+        #
+        #  A switch that contradicts one already made is turned off as well as
+        #  disabled, so nothing is carried into the build that the page is no
+        #  longer offering.
+        wants_emu68 = self.install_emu_row.get_active()
+        if not wants_emu68 and self.boot_only_row.get_active():
+            self.boot_only_row.set_active(False)
+        if wants_emu68 and self.amiga_only_row.get_active():
+            self.amiga_only_row.set_active(False)
+        self.boot_only_row.set_sensitive(wants_emu68)
+        self.amiga_only_row.set_sensitive(not wants_emu68)
+        self.boot_only_row.set_subtitle(
+            "For a machine whose storage is elsewhere. The rest of the card "
+            "is left unclaimed rather than formatted, so nothing asks to be "
+            "initialised."
+            if wants_emu68 else
+            "Needs Emu68: a boot partition with no Emu68 on it and no Amiga "
+            "drive either would be an empty card.")
+        self.amiga_only_row.set_subtitle(
+            "For a real accelerator with an IDE or SCSI interface rather than "
+            "a PiStorm. The Rigid Disk Block starts at block 0, where the "
+            "controller looks for it, and there is no FAT32 partition."
+            if not wants_emu68 else
+            "Turn off \u201cInstall Emu68\u201d on the Source page first - "
+            "Emu68 needs the boot partition this would remove.")
+
+        #  With no boot partition there is nowhere to put a Kickstart, a
+        #  config.txt or a cmdline.txt, so the settings that only exist there
+        #  are taken off the window rather than left to be filled in and
+        #  silently dropped.
+        amiga_only = self.amiga_only_row.get_active()
+        if getattr(self, "group_kickstart", None) is not None:
+            self.group_kickstart.set_visible(not amiga_only)
+        options = self.stack.get_child_by_name("options")
+        if options is not None:
+            page = self.stack.get_page(options)
+            if page is not None and self._customising:
+                page.set_visible(not amiga_only)
         self.device_group.set_visible(self._writing_to_device())
         self.file_group.set_visible(not self._writing_to_device())
         self.file_group.set_title("Amiga hard disk image" if making_hdf
@@ -2692,7 +2740,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.file_size_row.set_title(
             "Drive size" if making_hdf
             else "Image size - 32GB as cards are sold, 32GiB binary")
-        self.boot_group.set_visible(partitions_ours and not making_hdf)
+        #  No boot partition means no size to choose for one.
+        self.boot_group.set_visible(partitions_ours and not making_hdf
+                                    and not self.amiga_only_row.get_active())
         self._update_summary()
 
     def _on_variant_changed(self) -> None:
@@ -2768,10 +2818,9 @@ class ImagerWindow(Adw.ApplicationWindow):
             widget = getattr(self, group, None)
             if widget is not None:
                 widget.set_visible(not only)
-        #  The two are opposite answers to the same question, so one rules the
-        #  other out rather than being allowed to contradict it.
-        if only and self.amiga_only_row.get_active():
-            self.amiga_only_row.set_active(False)
+        #  Nothing here has to reach across to the other switch: Emu68
+        #  allows one or the other, never both, and _sync_visibility is the
+        #  single place that decides which.
         self._update_summary()
 
     def _amiga_only_changed(self) -> None:
@@ -2783,39 +2832,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         why it cannot be operated - a switch that can only produce a card that
         does not boot is worse than no switch.
         """
-        amiga_only = self.amiga_only_row.get_active()
-        if amiga_only and self.boot_only_row.get_active():
-            self.boot_only_row.set_active(False)
-        if amiga_only:
-            #  Remembered, because turning this off again should give back the
-            #  answer that was there rather than an assumed one.
-            self._emu68_before_amiga_only = self.install_emu_row.get_active()
-            self.install_emu_row.set_active(False)
-            self.install_emu_row.set_subtitle(
-                "There is no boot partition on this card to put Emu68 on.")
-        else:
-            #  Only put back an answer this switch actually took away.  With
-            #  nothing stashed there is nothing to restore, and assuming a
-            #  default here switched Emu68 back on for anyone who had turned
-            #  it off for their own reasons.
-            if hasattr(self, "_emu68_before_amiga_only"):
-                self.install_emu_row.set_active(self._emu68_before_amiga_only)
-                del self._emu68_before_amiga_only
-            self.install_emu_row.set_subtitle(
-                "Off refreshes a card without replacing the Emu68 already on "
-                "it. The FAT32 boot partition is still written either way - "
-                "for a card with no boot partition at all, use \u201cAmiga "
-                "drives only\u201d above.")
-        #  Only forced where it genuinely cannot be honoured.  Turning Emu68
-        #  off on its own is a real thing to want - it refreshes a card
-        #  without replacing what is already on it - so the switch stays
-        #  operable except when there is nowhere to install it.
-        self.install_emu_row.set_sensitive(not amiga_only)
-        for group in ("boot_group", "kickstart_group", "group_kickstart"):
-            widget = getattr(self, group, None)
-            if widget is not None:
-                widget.set_visible(not amiga_only)
-        self._update_summary()
+        self._sync_visibility()
 
     def _add_partition(self, spec: builder.AmigaPartitionSpec | None = None) -> None:
         if len(self.partition_rows) >= 10:
