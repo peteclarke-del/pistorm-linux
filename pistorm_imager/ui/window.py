@@ -44,7 +44,7 @@ PRIMARY_LABELS = [
     "Amiga hard disk image",
 ]
 #  What "Default" can then put on that drive.
-FRESH_SOURCES = ["adf", "none"]
+FRESH_SOURCES = ["adf", "none", "cd"]
 
 MODES = [
     ("Build a new card", builder.BuildMode.FRESH,
@@ -993,7 +993,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_system_source = Adw.ComboRow(
             title="Operating system",
             model=combo(["Install Workbench from my floppy images",
-                         "Don't install one - partition only"]))
+                         "Don't install one - partition only",
+                         "Install AmigaOS 3.5 or 3.9 from a CD image"]))
         self.quick_system_source.connect("notify::selected",
                                          lambda *_a: self._on_source_changed())
         group.add(self.quick_system_source)
@@ -1719,6 +1720,17 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  asking about it alone meant a card that needs the disks and has
         #  none said nothing at all - and built, unbootable. What decides it
         #  is what the setup needs, which is known before any folder is.
+        #  A CD carries the whole operating system, so a build taking one
+        #  wants no floppies at all - and asking for them anyway is what kept
+        #  Apply switched off with a 3.9 disc chosen and nothing missing.
+        if self._system_source() == "cd":
+            if not config.os_cd:
+                missing.append("an AmigaOS 3.5 or 3.9 CD image")
+            elif not self._os_cd_usable():
+                missing.append("a CD image this recognises as AmigaOS 3.5 "
+                               "or 3.9")
+            return missing
+
         needs_disks = (config.install_amigaos
                        or self._system_source() == "adf"
                        or self._imported_needs_floppies())
@@ -3650,6 +3662,10 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------- config gather
 
+    def _os_cd_usable(self) -> bool:
+        match = getattr(self, "_os_cd_match", None)
+        return bool(match and match.release and match.usable)
+
     def _os_cd_release(self) -> str:
         match = getattr(self, "_os_cd_match", None)
         return match.release.key if match and match.release else ""
@@ -3827,7 +3843,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  card is worse than no control, so these are set here - where
             #  the card is actually written from - and not only where a quick
             #  setup is assembled.
-            os_cd=self.os_cd_row.path,
+            os_cd=(self.os_cd_row.path
+                   if self._system_source() == "cd" else ""),
             os_cd_release=self._os_cd_release(),
             boingbag_archives=self._boingbag_archives(),
             boingbags=self._chosen_boingbags(),
@@ -3869,6 +3886,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             off_desktop=sorted(
                 where for where, row in getattr(self, "desktop_rows", {}).items()
                 if not row.get_active()),
+            machine_key=self._machine().key,
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
