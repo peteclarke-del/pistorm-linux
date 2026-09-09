@@ -564,6 +564,23 @@ class ApplyingALockedUpdate(unittest.TestCase):
         bbupdate._remove_hook(staged)
         self.assertFalse((staged / "S" / "User-Startup").exists())
 
+    def test_the_update_is_aimed_at_a_volume_that_is_not_the_booted_one(self):
+        """The files moved aside are the operating system itself.
+
+        C/SetPatch is in BoingBag 1's payload, and the machine runs it out of
+        the Startup-Sequence long before it reaches the Updater - so clearing
+        the volume the emulator boots from stops it booting at all:
+        "C:SetPatch: Unknown command", and the run gets no further. The
+        machine boots one copy, left whole, and updates another.
+        """
+        bag = boingbag.BAGS_BY_KEY["3.9-1"]
+        lines = bbupdate._startup_lines(bag)
+        updates = [line for line in lines if "Updater" in line]
+        self.assertTrue(updates)
+        for line in updates:
+            self.assertIn(f'"{bbupdate.TARGET_LABEL}:"', line)
+            self.assertNotIn('"SYS:"', line)
+
     def test_a_confined_emulator_cannot_see_the_usual_places(self):
         """A snap sees neither /tmp nor the hidden parts of the home."""
         self.assertFalse(bbupdate._reachable(Path("/tmp/anything"), Path("/")))
