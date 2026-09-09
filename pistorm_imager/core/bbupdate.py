@@ -56,6 +56,8 @@ DEFAULT_TIMEOUT = 300
 MARKER = "BoingBag-Applied"
 #  Where the pack is mounted on the Amiga side.
 PACK_DRIVE = "DH1"
+#  And the copy being updated, which is deliberately not the one booted.
+TARGET_LABEL = "Updating"
 
 
 def fsuae_command() -> str | None:
@@ -115,7 +117,8 @@ def _startup_lines(bag: boingbag.Bag) -> list[str]:
         "Assign BB: " + PACK_DRIVE + ":",
     ]
     for payload in bag.locked_payloads:
-        lines.append(f'BB:C/Updater BB:{payload} "SYS:"')
+        #  Updating the *other* copy, not the one this booted from.
+        lines.append(f'BB:C/Updater BB:{payload} "{TARGET_LABEL}:"')
     #  The marker is the signal to this side that the work is done.  It is
     #  written last, so its presence means every payload has been through.
     lines.append(f'Echo >SYS:{MARKER} "applied"')
@@ -271,19 +274,28 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
     #  the tree, the pack and the ROM are brought to it and the results copied
     #  back.  Where it is not confined this costs a move that is not needed,
     #  so it is only done when it is.
-    relocated = None
-    if is_confined(command) and not _reachable(staged, work_dir):
-        relocated = work_dir / "System"
-        shutil.rmtree(relocated, ignore_errors=True)
-        shutil.copytree(staged, relocated)
-        pack_here = work_dir / "Pack"
-        shutil.rmtree(pack_here, ignore_errors=True)
-        shutil.copytree(archive_root, pack_here)
-        rom_here = work_dir / "kickstart.rom"
-        shutil.copy2(kickstart, rom_here)
-        run_on, pack_on, rom_on = relocated, pack_here, rom_here
-    else:
-        run_on, pack_on, rom_on = staged, Path(archive_root), Path(kickstart)
+    #  Two copies of the system, and this is the whole trick.
+    #
+    #  The files a locked payload writes have to be moved out of its way,
+    #  because XAD will not write over one that is already there.  But those
+    #  files are the operating system: C/SetPatch is among them, and the
+    #  machine runs it out of the Startup-Sequence long before it reaches the
+    #  Updater.  Clearing the volume the emulator boots from therefore stops
+    #  it booting - "C:SetPatch: Unknown command", and the run gets no
+    #  further.
+    #
+    #  So the machine boots one copy, which is left whole, and updates the
+    #  other, which is cleared.  Only the second is kept.
+    boot_on = work_dir / "Boot"
+    target_on = work_dir / "Target"
+    pack_on = work_dir / "Pack"
+    rom_on = work_dir / "kickstart.rom"
+    for directory in (boot_on, target_on, pack_on):
+        shutil.rmtree(directory, ignore_errors=True)
+    shutil.copytree(staged, boot_on)
+    shutil.copytree(staged, target_on)
+    shutil.copytree(archive_root, pack_on)
+    shutil.copy2(kickstart, rom_on)
 
     #  The disc, as a volume of its own name, because Updater refuses to run
     #  without seeing it.  Laid out beside the run rather than in place, so a
@@ -310,17 +322,20 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
     #  the run fails the tree is rebuilt from the disc.
     kept_aside = work_dir / "replaced"
     shutil.rmtree(kept_aside, ignore_errors=True)
-    _clear_targets(run_on, pack_on, bag, kept_aside, progress)
+    _clear_targets(target_on, pack_on, bag, kept_aside, progress)
 
     progress.step(f"Applying {bag.label} with its own Updater under FS-UAE")
-    backup = _install_hook(run_on, bag)
+    backup = _install_hook(boot_on, bag)
     try:
         config = emulate.fsuae_config(
-            machine, run_on, rom_on,
+            machine, boot_on, rom_on,
             extra={
                 #  The pack itself, as a second drive, so Updater and the
                 #  payload are both reachable from the Amiga side.
                 "hard_drive_1": str(pack_on),
+                #  The copy being updated, which is not the one booted.
+                "hard_drive_3": str(target_on),
+                "hard_drive_3_label": TARGET_LABEL,
                 #  Nothing to look at and nobody to watch it.
                 "fullscreen": "0",
                 "window_width": "640",
@@ -330,7 +345,7 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
                     "hard_drive_2_read_only": "1"} if disc_here else {}),
             })
         config_file.write_text(config)
-        marker = run_on / MARKER
+        marker = boot_on / MARKER
         if marker.exists():
             marker.unlink()
 
@@ -362,15 +377,17 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
         #  Whatever the update did not write, put back.  After a good run
         #  this restores nothing, because every file moved aside has been
         #  replaced; after a bad one it is what keeps the system whole.
-        returned = _restore_targets(run_on, kept_aside)
+        returned = _restore_targets(target_on, kept_aside)
         if returned:
             progress.log(f"  {returned} files the update did not replace were "
                          f"put back as the CD installed them")
-        if applied and relocated is not None:
-            #  Bring the updated tree back to where the build staged it.
-            _remove_hook(relocated)
+        if applied:
+            #  The updated copy becomes the staged system.  The booted copy is
+            #  thrown away: it carries the startup hook and whatever the boot
+            #  wrote, and none of that belongs on the card.
+            _remove_hook(target_on)
             shutil.rmtree(staged)
-            shutil.copytree(relocated, staged)
+            shutil.copytree(target_on, staged)
         if applied:
             progress.log(f"  {bag.label}: applied by its own Updater")
         else:
@@ -378,18 +395,14 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
                          f"update within {timeout} seconds")
         return applied
     finally:
-        _restore_targets(run_on, kept_aside)
-        _remove_hook(run_on)
+        _restore_targets(target_on, kept_aside)
         _remove_hook(staged)
-        if backup.exists():
-            backup.unlink()
-        if relocated is not None:
-            for leftover in ("System", "Pack", "kickstart.rom"):
-                target = work_dir / leftover
-                if target.is_dir():
-                    shutil.rmtree(target, ignore_errors=True)
-                elif target.exists():
-                    target.unlink()
+        for leftover in ("Boot", "Target", "Pack", "kickstart.rom"):
+            leaving = work_dir / leftover
+            if leaving.is_dir():
+                shutil.rmtree(leaving, ignore_errors=True)
+            elif leaving.exists():
+                leaving.unlink()
 
 
 def apply_or_report(bag: boingbag.Bag, archive_root: Path, staged: Path,
