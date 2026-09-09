@@ -31,6 +31,64 @@ class Chipset(enum.Enum):
         }[self]
 
 
+class Cpu(enum.Enum):
+    """The processor actually executing 68k code on the target machine.
+
+    Recorded even though a PiStorm always satisfies every requirement here,
+    because the requirement belongs to the software rather than to today's
+    hardware: AmigaOS 3.5 and 3.9 need a 68020 or better and will not run on a
+    68000, and the reason a release is offered or refused should be stated
+    where the decision is made.
+
+    Three situations have to be told apart, and only the middle one varies:
+    a stock machine still running its original processor, a stock machine with
+    an accelerator card in it, and a PiStorm - where Emu68 replaces the
+    processor entirely and the original 68000 is not involved at all.
+    """
+
+    M68000 = "68000"
+    M68010 = "68010"
+    M68020 = "68020"
+    M68030 = "68030"
+    M68040 = "68040"
+    M68060 = "68060"
+
+    @property
+    def generation(self) -> int:
+        """20 for a 68020, and so on - the number a requirement is stated in."""
+        return int(self.value[3:5])
+
+    def at_least(self, needed: "Cpu") -> bool:
+        return self.generation >= needed.generation
+
+    @property
+    def label(self) -> str:
+        return f"MC{self.value}"
+
+
+class Accelerator(enum.Enum):
+    """What is providing the processor, which is not always the machine."""
+
+    STOCK = "stock"                 # the processor the Amiga shipped with
+    ACCELERATOR = "accelerator"     # a 68020+ card in the trapdoor or a slot
+    PISTORM = "pistorm"             # Emu68 on a Raspberry Pi, in place of the CPU
+
+    @property
+    def label(self) -> str:
+        return {
+            Accelerator.STOCK: "Stock processor",
+            Accelerator.ACCELERATOR: "Accelerator card",
+            Accelerator.PISTORM: "PiStorm (Emu68)",
+        }[self]
+
+
+#  What Emu68 presents to the Amiga.  It is a 68040-class core, so a PiStorm
+#  clears every processor requirement AmigaOS has ever had - which is why the
+#  check below can only ever refuse a stock machine or an under-specified
+#  accelerator, never a PiStorm.
+PISTORM_CPU = Cpu.M68040
+
+
 class Display(enum.Enum):
     """How the machine is actually being looked at."""
 
@@ -80,10 +138,32 @@ class Machine:
     kickstarts: tuple[tuple[int, int], ...]
     trapdoor_ram: bool = False       # the A500's 512K expansion at 0xC00000
     notes: str = ""
+    #  The processor the machine left the factory with.  What is actually
+    #  executing depends on what has been fitted since, which is why this is
+    #  the stock figure and ``cpu_fitted`` below answers the real question.
+    stock_cpu: Cpu = Cpu.M68000
 
     @property
     def aga(self) -> bool:
         return self.chipset is Chipset.AGA
+
+    def cpu_fitted(self, accelerator: Accelerator,
+                   card_cpu: Cpu | None = None) -> Cpu:
+        """The processor that will actually run the card.
+
+        ``card_cpu`` says what an accelerator provides, for the one case where
+        the machine cannot answer it: a stock Amiga with a third-party card in
+        it can be anything from a 68020 to a 68060, and only the owner knows.
+        It is ignored for a PiStorm, where Emu68 is the processor.
+        """
+        if accelerator is Accelerator.PISTORM:
+            return PISTORM_CPU
+        if accelerator is Accelerator.ACCELERATOR:
+            #  An accelerator with nothing said about it is assumed to be a
+            #  68020, the slowest thing anybody calls an accelerator - so the
+            #  assumption is the one that refuses the most, not the least.
+            return card_cpu or Cpu.M68020
+        return self.stock_cpu
 
 
 MACHINES: list[Machine] = [
@@ -118,10 +198,13 @@ MACHINES: list[Machine] = [
                   "when setting the Zorro RAM size."),
     Machine("a1200", "Amiga 1200", Chipset.AGA, "pistorm32lite",
             "PiStorm32-lite", ((40, 68), (47, 111), (47, 96)),
+            stock_cpu=Cpu.M68020,
             notes="AGA, and the only model here that can show 256-colour "
-                  "native screen modes."),
+                  "native screen modes. The only one that shipped with a "
+                  "68020, so the only one that could run AmigaOS 3.5 or 3.9 "
+                  "without an accelerator."),
     Machine("raspi", "Raspberry Pi on its own", Chipset.NONE, "raspi",
-            "No PiStorm", ((40, 68),),
+            "No PiStorm", ((40, 68),), stock_cpu=PISTORM_CPU,
             notes="Emu68 with no Amiga hardware at all: no chipset, so RTG on "
                   "HDMI is the only display."),
 ]

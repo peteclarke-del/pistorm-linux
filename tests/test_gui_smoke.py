@@ -185,6 +185,49 @@ def on_activate(app: ImagerApplication) -> None:
             window._sync_visibility()
         check(True, f"all {len(MODES)} task modes render without error")
 
+        #  Every control the CD group puts on screen has to reach the card.
+        #  A save/load round trip cannot catch a field that is never set at
+        #  all - it is consistently wrong in both directions and survives the
+        #  comparison - so these are read back off gather() itself, which is
+        #  what actually writes the card.
+        window.mode_row.set_selected(0)                 # a fresh card
+        window._sync_visibility()
+        #  gather() needs somewhere to write before it will answer at all.
+        window.target_row.set_selected(1)               # an image file, not a card
+        window.file_row.set_path("/tmp/pistorm-gui-test.img")
+        window.quick_accelerator.set_selected(
+            list(machines.Accelerator).index(machines.Accelerator.ACCELERATOR))
+        window._on_accelerator_changed()
+        window.quick_accelerator_cpu.set_selected(
+            list(machines.Cpu).index(machines.Cpu.M68060))
+        window.boingbag_community.set_active(False)
+        window.boingbag_emulator.set_active(False)
+        settings = window.gather()
+        check(settings.accelerator == machines.Accelerator.ACCELERATOR.value,
+              f"the accelerator choice reaches the card: {settings.accelerator}")
+        check(settings.accelerator_cpu == machines.Cpu.M68060.value,
+              f"and the processor fitted to it: {settings.accelerator_cpu!r}")
+        check(settings.boingbag_emulator is False,
+              "the FS-UAE switch reaches the card")
+        window.boingbag_emulator.set_active(True)
+        check(window.gather().boingbag_emulator is True,
+              "and reaches it the other way round too")
+        #  A stock machine has no accelerator to describe, so the row that
+        #  describes one is not offered and nothing is claimed about it.
+        window.quick_accelerator.set_selected(
+            list(machines.Accelerator).index(machines.Accelerator.PISTORM))
+        window._on_accelerator_changed()
+        check(window.gather().accelerator_cpu == "",
+              "a PiStorm claims no accelerator processor")
+        check(not window.quick_accelerator_cpu.get_visible(),
+              "and the row asking for one is hidden")
+
+        #  The community pack is separable, so the two states have to differ.
+        window.os_cd_row.set_path("")
+        with_none = window.gather().boingbags
+        check(with_none == [],
+              f"no CD means no BoingBags to name: {with_none}")
+
         window.mode_row.set_selected(0)
         window._sync_visibility()
         before = len(window.partition_rows)

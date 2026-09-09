@@ -173,6 +173,26 @@ class BuildConfig:
     adf_version: str = ""              # "" means "work it out from the disks"
     amiga_volume_name: str = "Workbench"
 
+    #  Installing AmigaOS 3.5 or 3.9 from its CD image.  These two releases
+    #  were sold on CD rather than floppy, so they are a separate source from
+    #  ``adf_folder`` rather than another version of it.
+    os_cd: str = ""                    # the .iso to install from
+    os_cd_release: str = ""            # "3.5" or "3.9"; "" means read the disc
+    #  The BoingBag archives to apply on top, and which of the packs in them
+    #  to use.  Empty means every pack the archives hold that is on by default.
+    boingbag_archives: list[str] = dataclasses.field(default_factory=list)
+    boingbags: list[str] = dataclasses.field(default_factory=list)
+    #  Whether a locked pack may be applied by running its own Updater under
+    #  FS-UAE.  Off leaves those fixes out, and the build says which.
+    boingbag_emulator: bool = True
+
+    #  What is providing the processor.  A PiStorm always clears AmigaOS's
+    #  processor requirements, but the machine model has to be able to say so
+    #  rather than have it assumed - and a stock 68000 machine cannot run 3.5
+    #  or 3.9 at all.
+    accelerator: str = "pistorm"       # a machines.Accelerator value
+    accelerator_cpu: str = ""          # a machines.Cpu value, when fitted
+
     #  Boot configuration
     boot_options: bootcfg.BootOptions = dataclasses.field(
         default_factory=bootcfg.BootOptions)
@@ -446,6 +466,15 @@ class BuildConfig:
                 problems.append(
                     f"{spec.name} is set to {spec.dostype}; content can only be "
                     f"written to an FFS or PFS3 partition.")
+        if self.os_cd:
+            if self.mode is not BuildMode.FRESH:
+                problems.append(
+                    "AmigaOS can only be installed when building a new card.")
+            elif not Path(self.os_cd).is_file():
+                problems.append(f"CD image not found: {self.os_cd}")
+        for archive in self.boingbag_archives:
+            if not Path(archive).is_file():
+                problems.append(f"BoingBag archive not found: {archive}")
         if self.install_amigaos:
             if self.mode is not BuildMode.FRESH:
                 problems.append(
@@ -2780,6 +2809,118 @@ def _expand(handle, config: BuildConfig, target_size: int, progress: Progress) -
 # ------------------------------------------------------------------- entry
 
 
+def _prepare_os_cd(config: BuildConfig, workdir: Path,
+                   progress: Progress) -> BuildConfig:
+    """Stage AmigaOS 3.5 or 3.9 from its CD, with its BoingBags on top.
+
+    The result is a directory tree that looks exactly like the finished system
+    drive, and it is handed to the rest of the build as the boot partition's
+    content.  Everything is layered here, on Linux, rather than on the Amiga
+    volume: the volume writer creates files and never overwrites them, so the
+    last copy has to be the winner *before* anything is written.
+    """
+    from . import amigacd, bbupdate, boingbag                 # noqa: PLC0415
+
+    match = amigacd.identify(config.os_cd)
+    if match.release is None:
+        raise RuntimeError(
+            f"{Path(config.os_cd).name} is not an AmigaOS 3.5 or 3.9 CD "
+            f"(its volume is \"{match.volume_name}\").")
+    if not match.usable:
+        missing = ", ".join(layer.label for layer in match.missing
+                            if layer.required)
+        raise RuntimeError(
+            f"{Path(config.os_cd).name} is missing {missing}, which an install "
+            f"cannot be built without.")
+
+    machine = machines.MACHINES_BY_KEY.get(config.machine_key or "a1200")
+    accelerator = machines.Accelerator(config.accelerator)
+    card_cpu = machines.Cpu(config.accelerator_cpu) \
+        if config.accelerator_cpu else None
+    rom_version = None
+    if config.kickstart_path and Path(config.kickstart_path).is_file():
+        info = kickstart.identify(config.kickstart_path, config.kickstart_key)
+        rom_version = info.version
+    problems = amigacd.requirements(match.release, machine, accelerator,
+                                    card_cpu=card_cpu,
+                                    kickstart_version=rom_version)
+    if problems:
+        raise RuntimeError(" ".join(problems))
+
+    progress.step(f"Installing {match.release.label} from "
+                  f"{Path(config.os_cd).name}")
+    staged = workdir / "amigaos"
+    files = amigacd.stage(match, staged, progress)
+    progress.log(f"{files} files staged from the CD")
+
+    _apply_boingbags(config, match.release, staged, machine, accelerator,
+                     card_cpu, progress)
+
+    #  The staged tree becomes the bootable partition's content.  A partition
+    #  that already has content keeps it: somebody who pointed a drive at an
+    #  image and *also* chose a CD meant both, and the CD is the base.
+    partitions = []
+    placed = False
+    for spec in config.amiga_partitions:
+        if not placed and spec.bootable and not spec.content_folder \
+                and not spec.content_hdf:
+            partitions.append(dataclasses.replace(spec,
+                                                  content_folder=str(staged)))
+            placed = True
+        else:
+            partitions.append(spec)
+    if not placed:
+        raise RuntimeError(
+            "There is no empty bootable partition for the CD install to go on.")
+    return dataclasses.replace(config, amiga_partitions=partitions,
+                               system_source="cd")
+
+
+def _apply_boingbags(config: BuildConfig, release, staged: Path,
+                     machine: machines.Machine,
+                     accelerator: machines.Accelerator,
+                     card_cpu, progress: Progress) -> None:
+    """Lay the update packs over the staged system, oldest first."""
+    from . import bbupdate, boingbag, packages                # noqa: PLC0415
+
+    if not config.boingbag_archives:
+        return
+    wanted = set(config.boingbags)
+    cpu = machine.cpu_fitted(accelerator, card_cpu)
+    #  Emu68 has an FPU unless the card is booted with its "nofpu" switch,
+    #  which this imager does not write - so the builds that want one are the
+    #  right ones to install.
+    has_fpu = True
+
+    unpacked: list[Path] = []
+    for archive in config.boingbag_archives:
+        where = packages.unpack(Path(archive), progress)
+        if where is None:
+            progress.log(f"WARNING: {Path(archive).name} could not be unpacked, "
+                         f"so its updates are not on this card")
+            continue
+        unpacked.append(where)
+
+    for bag in boingbag.for_release(release.key):
+        if wanted and bag.key not in wanted:
+            continue
+        if not wanted and not bag.default_on:
+            continue
+        root = next((found for found in
+                     (boingbag.find_root(where, bag) for where in unpacked)
+                     if found is not None), None)
+        if root is None:
+            continue
+        progress.step(f"Applying {bag.label}")
+        written = boingbag.stage(bag, root, staged, machine, cpu, has_fpu,
+                                 progress)
+        progress.log(f"  {written} files from {bag.label}")
+        if boingbag.is_locked(root, bag):
+            bbupdate.apply_or_report(
+                bag, root, staged, machine, config.kickstart_path, progress,
+                use_emulator=config.boingbag_emulator)
+
+
 def run_build(config: BuildConfig, progress: Progress) -> None:
     """Build the card, saying plainly when the card itself is what failed."""
     try:
@@ -2833,6 +2974,12 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
         emu68_root: Path | None = None
         if config.install_emu68:
             emu68_files, emu68_root = _prepare_emu68(config, workdir, progress)
+        #  A CD install becomes an ordinary folder of content, so everything
+        #  that already happens to a filled drive - the compatibility pass, the
+        #  startup editing, the icons, the packages laid on top - happens to it
+        #  too, rather than needing a second version of all of that.
+        if config.os_cd:
+            config = _prepare_os_cd(config, workdir, progress)
 
         create_size = target_size if (config.mode in (BuildMode.FRESH, BuildMode.HDF)
                                       and not config.target_is_device) else None
