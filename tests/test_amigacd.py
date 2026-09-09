@@ -573,6 +573,63 @@ class ApplyingALockedUpdate(unittest.TestCase):
                                             Path("/")))
 
 
+class WhatThePlanSays(unittest.TestCase):
+    """The plan is the last thing read before Write, so it must be true."""
+
+    def plan(self, **overrides):
+        from pistorm_imager.core import builder, presets           # noqa: PLC0415
+        from pistorm_imager.core import machines as m              # noqa: PLC0415
+        config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target="/tmp/plan.img",
+            boot_size=512 * 1024 * 1024, machine_key="a500ecs",
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                name="DH0", size=None, dostype="PFS3", bootable=True)],
+            **overrides)
+        return presets.describe_machine_setup(
+            config, m.MACHINES_BY_KEY["a500ecs"], m.Display.NATIVE,
+            presets.Detected())
+
+    def test_a_cd_install_is_named_rather_than_left_as_a_key(self):
+        """"System: cd" was the raw value, for want of a label."""
+        said = self.plan(system_source="cd", os_cd="/tmp/AmigaOS39.iso")
+        self.assertIn("System: AmigaOS installed from its CD image", said)
+        self.assertNotIn("System: cd", said)
+
+    def test_a_cd_fills_the_boot_drive_rather_than_leaving_it_empty(self):
+        said = self.plan(system_source="cd", os_cd="/tmp/AmigaOS39.iso")
+        self.assertIn("AmigaOS installed from AmigaOS39.iso", said)
+        self.assertNotIn("DH0: the rest of the card, PFS3 - left empty", said)
+        self.assertNotIn("Nothing will be installed onto the boot drive", said)
+
+    def test_emu68_is_not_promised_when_it_is_not_being_installed(self):
+        """The plan said "FAT32 with Emu68" whether or not it was."""
+        with_it = self.plan(install_emu68=True)
+        self.assertIn("FAT32 with Emu68", with_it)
+        without = self.plan(install_emu68=False)
+        self.assertNotIn("FAT32 with Emu68", without)
+        self.assertIn("without Emu68", without)
+
+    def test_a_missing_kickstart_is_only_a_fault_if_emu68_wants_one(self):
+        """With no Emu68 nothing on the card maps a ROM."""
+        self.assertIn("Emu68 will not start without one",
+                      self.plan(install_emu68=True, kickstart_path=""))
+        self.assertNotIn("Emu68 will not start without one",
+                         self.plan(install_emu68=False, kickstart_path=""))
+
+    def test_the_plan_names_what_provides_the_processor(self):
+        """Naming a PiStorm board on a machine set to an accelerator card
+        described hardware that is not there, in the plan's first line."""
+        self.assertIn("with PiStorm (classic)",
+                      self.plan(accelerator="pistorm").splitlines()[0])
+        accelerated = self.plan(accelerator="accelerator",
+                                accelerator_cpu="68030").splitlines()[0]
+        self.assertIn("an accelerator (MC68030)", accelerated)
+        self.assertNotIn("PiStorm", accelerated)
+        stock = self.plan(accelerator="stock").splitlines()[0]
+        self.assertIn("its own MC68000", stock)
+        self.assertNotIn("PiStorm", stock)
+
+
 class AgainstTheRealDiscs(unittest.TestCase):
     """The synthetic shapes above are only worth as much as they resemble.
 
