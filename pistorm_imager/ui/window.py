@@ -92,6 +92,12 @@ KEPT_ACROSS_QUICK_SETUP = (
     #  The quick page has a source chooser of its own, so these belong to the
     #  Source page alone: applying a fresh layout used to empty it.
     "source_image", "hdf_image", "repair_rdb",
+    #  What is providing the processor, and the CD install, are decided by a
+    #  person rather than by the machine or the layout, so a quick setup has
+    #  no opinion about them and must not throw them away.
+    "accelerator", "accelerator_cpu",
+    "os_cd", "os_cd_release", "boingbag_archives", "boingbags",
+    "boingbag_emulator",
 )
 
 #  The same for the boot settings.  The machine decides the ones that follow
@@ -3662,6 +3668,18 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------- config gather
 
+    @staticmethod
+    def _as_markup(text: str) -> str:
+        """Escape text that is about to become a row's title or subtitle.
+
+        Adwaita rows take Pango markup, so an ampersand in a label is not
+        text - it starts an entity, GTK refuses the whole string, and the row
+        keeps whatever it said before.  That is how "Updates found" went on
+        reading "No folder selected" with a folder plainly selected: the pack
+        is called "BoingBags 3 & 4".
+        """
+        return GLib.markup_escape_text(text)
+
     def _os_cd_usable(self) -> bool:
         match = getattr(self, "_os_cd_match", None)
         return bool(match and match.release and match.usable)
@@ -3706,7 +3724,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             return
         match = amigacd.identify(path)
         self._os_cd_match = match if match.release else None
-        self.os_cd_details.set_subtitle(match.label)
+        self.os_cd_details.set_subtitle(self._as_markup(match.label))
         self._on_boingbags_chosen()
         self._update_summary()
 
@@ -3720,15 +3738,15 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._update_summary()
             return
         if not release:
-            self.boingbag_found.set_subtitle(
+            self.boingbag_found.set_subtitle(self._as_markup(
                 f"{len(archives)} archive(s) - choose a CD to say which "
-                f"release they belong to")
+                f"release they belong to"))
             self._update_summary()
             return
         names = [bag.label for bag in boingbag.for_release(release)]
-        self.boingbag_found.set_subtitle(
+        self.boingbag_found.set_subtitle(self._as_markup(
             f"{len(archives)} archive(s) for AmigaOS {release}: "
-            + ", ".join(names))
+            + ", ".join(names)))
         self._update_summary()
 
     def gather(self) -> builder.BuildConfig:
@@ -4121,6 +4139,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             "kickstart": self.rom_row.path,
             "kickstart_key": self.rom_key_row.path,
             "adf_folder": self.adf_row.path,
+            "boingbag_folder": self.boingbag_row.path,
             "trapdoor": self.quick_trapdoor.get_active(),
             "system_size": self.quick_system.get_text(),
             "boot_size": self.boot_size_row.get_text(),
@@ -4160,6 +4179,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.rom_row.set_path(state.get("kickstart", ""))
             self.rom_key_row.set_path(state.get("kickstart_key", ""))
             self.adf_row.set_path(state.get("adf_folder", ""))
+            self.boingbag_row.set_path(state.get("boingbag_folder", ""))
             self.quick_trapdoor.set_active(bool(state.get("trapdoor")))
             for row, key in ((self.quick_system, "system_size"),
                              (self.boot_size_row, "boot_size")):
@@ -4405,6 +4425,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.repair_row.set_active(config.repair_rdb)
         self.local_zip_row.set_path(config.emu68_archive)
         self.rom_row.set_path(config.kickstart_path)
+        #  What is providing the processor, and the CD install.  A loaded
+        #  setup that could not put these back would come up claiming a
+        #  PiStorm whatever it was saved as.
+        for index, accelerator in enumerate(machines.Accelerator):
+            if accelerator.value == config.accelerator:
+                self.quick_accelerator.set_selected(index)
+        if config.accelerator_cpu:
+            for index, cpu in enumerate(machines.Cpu):
+                if cpu.value == config.accelerator_cpu:
+                    self.quick_accelerator_cpu.set_selected(index)
+        self._on_accelerator_changed()
+        self.os_cd_row.set_path(config.os_cd)
+        self.boingbag_emulator.set_active(config.boingbag_emulator)
+        #  The community pack is a switch rather than a name in the list, so
+        #  it is read back from whether the list carries it.
+        if config.boingbags:
+            self.boingbag_community.set_active(
+                any(not boingbag.BAGS_BY_KEY[key].official
+                    for key in config.boingbags
+                    if key in boingbag.BAGS_BY_KEY))
+        self._on_os_cd_chosen()
         self.rom_key_row.set_path(config.kickstart_key)
         self.volume_row.set_text(config.amiga_volume_name)
         self.adf_row.set_path(config.adf_folder)
