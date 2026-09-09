@@ -630,6 +630,61 @@ class WhatThePlanSays(unittest.TestCase):
         self.assertNotIn("PiStorm", stock)
 
 
+class ACardForARealAccelerator(unittest.TestCase):
+    """Amiga drives and no Emu68 boot partition.
+
+    A real accelerator with an IDE or SCSI interface reads a Rigid Disk Block
+    at block 0 and knows nothing about an MBR, so a card for one carries no
+    DOS partition table at all - the RDB is the partition table.
+    """
+
+    def config(self, **overrides):
+        from pistorm_imager.core import builder                    # noqa: PLC0415
+        base = dict(
+            mode=builder.BuildMode.FRESH, target="/tmp/ide.img",
+            image_size=2 * 1024 * 1024 * 1024,
+            amiga_only=True, install_emu68=False,
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                name="DH0", size=None, dostype="PFS3", bootable=True)])
+        base.update(overrides)
+        return builder.BuildConfig(**base)
+
+    def test_it_cannot_also_be_a_boot_only_card(self):
+        """They are opposite answers to the same question."""
+        problems = self.config(boot_only=True).validate()
+        self.assertTrue(any("both" in p for p in problems), problems)
+
+    def test_emu68_has_nowhere_to_go_on_one(self):
+        problems = self.config(install_emu68=True).validate()
+        self.assertTrue(any("boot partition" in p for p in problems), problems)
+
+    def test_it_needs_at_least_one_drive(self):
+        problems = self.config(amiga_partitions=[]).validate()
+        self.assertTrue(any("at least one drive" in p for p in problems),
+                        problems)
+
+    def test_no_room_is_reserved_for_a_boot_partition_that_is_not_there(self):
+        """Reserving it left the drives looking too big for the card."""
+        from pistorm_imager.core import builder                    # noqa: PLC0415
+        drives = [builder.AmigaPartitionSpec(
+            name="DH0", size=2 * 1024 * 1024 * 1024, dostype="PFS3",
+            bootable=True)]
+        #  Exactly the size of the card, which only fits with no boot partition.
+        self.assertEqual(self.config(amiga_partitions=drives).validate(), [])
+        crowded = self.config(amiga_only=False, install_emu68=True,
+                              amiga_partitions=drives).validate()
+        self.assertTrue(crowded, "with a boot partition it should not fit")
+
+    def test_the_plan_says_there_is_no_boot_partition(self):
+        from pistorm_imager.core import presets                    # noqa: PLC0415
+        said = presets.describe(self.config(), presets.Detected())
+        self.assertIn("No boot partition", said)
+        self.assertIn("block 0", said)
+        self.assertNotIn("FAT32", said)
+        #  And no complaint about a Kickstart, because nothing maps one.
+        self.assertNotIn("Kickstart", said)
+
+
 class AgainstTheRealDiscs(unittest.TestCase):
     """The synthetic shapes above are only worth as much as they resemble.
 
