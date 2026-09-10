@@ -692,6 +692,28 @@ class ACardForARealAccelerator(unittest.TestCase):
                               amiga_partitions=drives).validate()
         self.assertTrue(crowded, "with a boot partition it should not fit")
 
+    def test_emu68_options_are_not_promised_with_nowhere_to_write_them(self):
+        """They go in cmdline.txt on the FAT32 partition, which is not there.
+
+        Listing "Emu68 options: vc4.mem=64 vbr_move ..." on a card with no
+        boot partition promised settings that were never going to reach the
+        machine - the same fault as claiming Emu68 itself would be on it.
+        """
+        from pistorm_imager.core import bootcfg, machines, presets  # noqa: PLC0415
+        options = bootcfg.BootOptions(vc4_mem=64, vbr_move=True)
+
+        def plan(amiga_only):
+            config = self.config(amiga_only=amiga_only,
+                                 install_emu68=not amiga_only,
+                                 boot_options=options)
+            return presets.describe_machine_setup(
+                config, machines.MACHINES_BY_KEY["a500ecs"],
+                machines.Display.NATIVE, presets.Detected())
+
+        #  The fixture bites: with a boot partition they are listed.
+        self.assertIn("Emu68 options:", plan(False))
+        self.assertNotIn("Emu68 options:", plan(True))
+
     def test_the_plan_says_there_is_no_boot_partition(self):
         from pistorm_imager.core import presets                    # noqa: PLC0415
         said = presets.describe(self.config(), presets.Detected())
