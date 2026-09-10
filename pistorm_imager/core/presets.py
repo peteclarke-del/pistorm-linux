@@ -294,9 +294,12 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
     elif config.install_emu68:
         lines.append("Kickstart: none found - Emu68 will not start without one")
     else:
-        #  With no Emu68 there is nothing on the card that maps a ROM, so a
-        #  missing one is not a fault to report.
-        lines.append("Kickstart: none - the machine uses its own ROM")
+        #  Emu68 is not being installed, but the boot partition is still
+        #  written and whatever Emu68 is already on the card will look for a
+        #  ROM there. So this is a note about what is not being replaced,
+        #  not a claim that nothing needs one.
+        lines.append("Kickstart: none being written - whatever is already on "
+                     "the card's boot partition is left alone")
 
     #  Two of the three tasks do not use the partition list at all: the drive
     #  comes out of the image, with its own layout. Walking the list anyway

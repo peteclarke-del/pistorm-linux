@@ -49,9 +49,15 @@ from .util import Progress
 #  not on the path when it is installed that way.
 FSUAE_COMMANDS = ("fs-uae", "fsuae.fs-uae")
 
-#  Long enough for a 3.9 boot and two update passes on a slow machine, short
-#  enough that a build does not appear to have hung.
-DEFAULT_TIMEOUT = 300
+#  How long to wait with *nothing happening* before giving up.  A fixed
+#  overall limit was the wrong rule: 300 seconds looked generous and was not -
+#  a real BoingBag 1 pass writes for something over ten minutes, so every
+#  build quietly fell back to the files in the clear while the emulator was
+#  still working.  Waiting on progress instead means a slow machine is given
+#  as long as it needs and a stuck one is not waited on at all.
+IDLE_TIMEOUT = 240
+#  And a ceiling, so a run that writes slowly for ever still ends.
+DEFAULT_TIMEOUT = 3600
 
 MARKER = "BoingBag-Applied"
 #  Where the pack is mounted on the Amiga side.
@@ -136,6 +142,23 @@ def _reachable(path: Path, work_dir: Path) -> bool:
     except ValueError:
         return False
     return not any(part.startswith(".") for part in relative.parts)
+
+
+def _written_bytes(tree: Path) -> tuple[int, int]:
+    """How much is in a tree, as something cheap to compare.
+
+    The count and the total size together: a file being replaced by one of a
+    different length moves the second even when the first stands still.
+    """
+    count = total = 0
+    for item in tree.rglob("*"):
+        try:
+            if item.is_file():
+                count += 1
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return count, total
 
 
 def _clear_targets(staged: Path, archive_root: Path, bag: boingbag.Bag,
@@ -362,6 +385,12 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.monotonic() + timeout
         applied = False
+        #  Watched rather than merely waited on: the Updater writes into the
+        #  target tree as it goes, so its progress is visible from here, and
+        #  the run is given more time for as long as it is making some.
+        idle_until = time.monotonic() + IDLE_TIMEOUT
+        written = _written_bytes(target_on)
+        told = 0.0
         try:
             while time.monotonic() < deadline:
                 if marker.exists():
@@ -372,7 +401,19 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
                     #  whether that was after the work or instead of it.
                     applied = marker.exists()
                     break
-                time.sleep(1.0)
+                now = _written_bytes(target_on)
+                if now != written:
+                    written = now
+                    idle_until = time.monotonic() + IDLE_TIMEOUT
+                    if time.monotonic() - told > 30:
+                        told = time.monotonic()
+                        progress.log(f"  {bag.label}: still updating "
+                                     f"({now[0]} files written)")
+                elif time.monotonic() > idle_until:
+                    progress.log(f"  {bag.label}: nothing has been written "
+                                 f"for {IDLE_TIMEOUT} seconds; giving up")
+                    break
+                time.sleep(2.0)
         finally:
             if process.poll() is None:
                 process.terminate()
