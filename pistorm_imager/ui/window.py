@@ -4191,6 +4191,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._remember_session()
         return False
 
+    def _where_the_card_goes(self) -> str:
+        """What to do with the card that was just written."""
+        if self.amiga_only_row.get_active():
+            return ("Eject the card and put it on the Amiga's own IDE or "
+                    "SCSI controller - it carries no boot partition, so a "
+                    "PiStorm cannot start from it.")
+        if self.boot_only_row.get_active():
+            return ("Eject the card and put it in your PiStorm. It carries "
+                    "Emu68 and the Kickstart; the Amiga's drives are on your "
+                    "own storage.")
+        return "Eject the card and put it in your PiStorm."
+
     def _finished(self, success: bool, message: str) -> bool:
         self._remember_session()
         self.cancel_button.set_visible(False)
@@ -4199,7 +4211,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         if success:
             self.step_label.set_text("Finished - the card is ready")
             self._set_fraction(1.0)
-            self._append_log("Done. Eject the card and put it in your PiStorm.")
+            #  Where the card goes depends on what was built.  An
+            #  Amiga-drives-only card has no boot partition and no Emu68, so
+            #  a PiStorm cannot boot it at all - it is for the machine's own
+            #  IDE or SCSI controller. Saying otherwise sends somebody to fit
+            #  a card that was never going to work in that slot.
+            self._append_log("Done. " + self._where_the_card_goes())
             self._toast("Card written successfully")
         else:
             self.step_label.set_text("Failed")
