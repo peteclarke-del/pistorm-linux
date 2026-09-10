@@ -2956,7 +2956,12 @@ def _apply_boingbags(config: BuildConfig, release, staged: Path,
         if boingbag.is_locked(root, bag):
             bbupdate.apply_or_report(
                 bag, root, staged, machine, config.kickstart_path, progress,
-                use_emulator=config.boingbag_emulator)
+                use_emulator=config.boingbag_emulator,
+                #  The disc itself: its Updater checks for the CD it is an
+                #  update for before it will apply anything, so a run without
+                #  it sits at "Please insert volume AmigaOS3.9" until it
+                #  times out.
+                disc_image=config.os_cd)
 
 
 def run_build(config: BuildConfig, progress: Progress) -> None:
