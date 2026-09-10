@@ -581,6 +581,75 @@ class ApplyingALockedUpdate(unittest.TestCase):
             self.assertIn(f'"{bbupdate.TARGET_LABEL}:"', line)
             self.assertNotIn('"SYS:"', line)
 
+    def test_the_build_hands_the_disc_to_the_update(self):
+        """The wiring, not just the function that takes it.
+
+        ``apply_locked`` grew a ``disc_image`` argument and the builder was
+        never changed to pass it, so every real build sat at "Please insert
+        volume AmigaOS3.9 in any drive" until it timed out - while the tests
+        went on passing, because they called the function directly and
+        supplied the disc themselves. This drives the builder's own path.
+        """
+        from pistorm_imager.core import builder                    # noqa: PLC0415
+        seen = {}
+
+        def remember(bag, archive_root, staged, machine, kickstart, progress,
+                     **kwargs):
+            seen.update(kwargs)
+            return True
+
+        bag = boingbag.BAGS_BY_KEY["3.9-1"]
+        packs = Path(tempfile.mkdtemp(prefix="pistorm-wiring-"))
+        root = packs / bag.root
+        (root / "Locale").mkdir(parents=True)
+        (root / "Locale" / "afile").write_bytes(b"x")
+        #  A payload that really is locked, so the emulator path is the one
+        #  taken; its contents do not matter here.
+        (root / bag.locked_payloads[0]).write_bytes(b"PK\x03\x04not a zip")
+
+        config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target="/tmp/wiring.img",
+            os_cd="/tmp/AmigaOS39.iso", boingbag_archives=["/tmp/pack.lha"],
+            boingbags=[bag.key], machine_key="a1200")
+
+        original_report = bbupdate.apply_or_report
+        original_locked = boingbag.is_locked
+        original_unpack = None
+        try:
+            from pistorm_imager.core import packages               # noqa: PLC0415
+            original_unpack = packages.unpack
+            packages.unpack = lambda archive, progress: packs
+            bbupdate.apply_or_report = remember
+            boingbag.is_locked = lambda archive_root, bag: True
+            builder._apply_boingbags(
+                config, amigacd.RELEASES_BY_KEY["3.9"],
+                Path(tempfile.mkdtemp(prefix="pistorm-staged-")),
+                MACHINES_BY_KEY["a1200"],
+                __import__("pistorm_imager.core.machines", fromlist=["x"])
+                .Accelerator.PISTORM, None, Progress())
+        finally:
+            bbupdate.apply_or_report = original_report
+            boingbag.is_locked = original_locked
+            if original_unpack is not None:
+                packages.unpack = original_unpack
+            shutil.rmtree(packs, ignore_errors=True)
+
+        self.assertEqual(seen.get("disc_image"), "/tmp/AmigaOS39.iso",
+                         f"the builder did not hand the disc over: {seen}")
+
+    def test_a_locked_pack_with_no_disc_is_refused_rather_than_attempted(self):
+        """Updater asks for the disc first, so a run without one only waits."""
+        bag = boingbag.BAGS_BY_KEY["3.9-1"]
+        staged = Path(tempfile.mkdtemp(prefix="pistorm-nodisc-"))
+        try:
+            applied = bbupdate.apply_locked(
+                bag, staged, staged, MACHINES_BY_KEY["a1200"],
+                __file__,                      # any real file stands in for a ROM
+                Progress(), timeout=1, disc_image=None)
+            self.assertFalse(applied)
+        finally:
+            shutil.rmtree(staged, ignore_errors=True)
+
     def test_a_confined_emulator_cannot_see_the_usual_places(self):
         """A snap sees neither /tmp nor the hidden parts of the home."""
         self.assertFalse(bbupdate._reachable(Path("/tmp/anything"), Path("/")))
