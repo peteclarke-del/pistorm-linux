@@ -2961,7 +2961,12 @@ def _apply_boingbags(config: BuildConfig, release, staged: Path,
                 #  update for before it will apply anything, so a run without
                 #  it sits at "Please insert volume AmigaOS3.9" until it
                 #  times out.
-                disc_image=config.os_cd)
+                disc_image=config.os_cd,
+                #  The trapdoor choice is recorded as this cmdline switch, and
+                #  it decides how much chip RAM the finished machine has - so
+                #  the emulator running the update is given the same.
+                trapdoor_to_chip=("move_slow_to_chip"
+                                  in config.boot_options.extra_cmdline))
 
 
 def run_build(config: BuildConfig, progress: Progress) -> None:
