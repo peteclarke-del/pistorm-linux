@@ -28,7 +28,8 @@ from gi.repository import Adw, GLib  # noqa: E402
 from pistorm_imager.core import (bootcfg, builder, jobs,  # noqa: E402
                                  machines,
                                  packages as packages_mod)
-from pistorm_imager.ui.window import MODES  # noqa: E402
+from pistorm_imager.ui.window import (FRESH_SOURCES,  # noqa: E402
+                                      MODES)
 
 import tempfile  # noqa: E402
 
@@ -50,8 +51,32 @@ CLUTTER_IMAGE = SCRATCH / "clutter.hdf"
 
 #  A small image with two Amiga drives in it, for the export page to read.
 EXPORT_IMAGE = SCRATCH / "toexport.img"
+
+#  A disc shaped like an AmigaOS 3.9 CD - the trees it carries, empty - so the
+#  CD path can be driven without the real 490 MB image being on this machine.
+CD_IMAGE = SCRATCH / "AmigaOS39.iso"
 from pistorm_imager.core.util import Progress as _Progress  # noqa: E402
 QUIET_PROGRESS = _Progress()
+
+
+def _make_cd_image() -> bool:
+    """Master a stand-in AmigaOS 3.9 disc.  False if there is no tool for it."""
+    import shutil as _shutil                                # noqa: PLC0415
+    import subprocess as _subprocess                        # noqa: PLC0415
+    from pistorm_imager.core import amigacd                 # noqa: PLC0415
+    tool = _shutil.which("genisoimage") or _shutil.which("mkisofs")
+    if tool is None:
+        return False
+    tree = SCRATCH / "cdtree"
+    for layer in amigacd.RELEASES_BY_KEY["3.9"].layers:
+        drawer = tree / layer.source
+        drawer.mkdir(parents=True, exist_ok=True)
+        (drawer / "afile").write_bytes(b"content")
+    #  Rock Ridge, because that is what the real 3.9 disc carries and what
+    #  the reader has to go through to get the names right.
+    _subprocess.run([tool, "-quiet", "-R", "-V", "AmigaOS3.9",
+                     "-o", str(CD_IMAGE), str(tree)], check=True)
+    return True
 
 
 def _make_export_image() -> None:
@@ -150,6 +175,7 @@ def _make_test_hdf() -> None:
 _make_test_hdf()
 _make_clutter_hdf()
 _make_export_image()
+HAVE_CD = _make_cd_image()
 
 failures: list[str] = []
 
@@ -184,6 +210,205 @@ def on_activate(app: ImagerApplication) -> None:
             window.mode_row.set_selected(index)
             window._sync_visibility()
         check(True, f"all {len(MODES)} task modes render without error")
+
+        #  Every control the CD group puts on screen has to reach the card.
+        #  A save/load round trip cannot catch a field that is never set at
+        #  all - it is consistently wrong in both directions and survives the
+        #  comparison - so these are read back off gather() itself, which is
+        #  what actually writes the card.
+        window.mode_row.set_selected(0)                 # a fresh card
+        window._sync_visibility()
+        #  gather() needs somewhere to write before it will answer at all.
+        window.target_row.set_selected(1)               # an image file, not a card
+        window.file_row.set_path("/tmp/pistorm-gui-test.img")
+        window.quick_accelerator.set_selected(
+            list(machines.Accelerator).index(machines.Accelerator.ACCELERATOR))
+        window._on_accelerator_changed()
+        window.quick_accelerator_cpu.set_selected(
+            list(machines.Cpu).index(machines.Cpu.M68060))
+        window.boingbag_community.set_active(False)
+        window.boingbag_emulator.set_active(False)
+        settings = window.gather()
+        check(settings.accelerator == machines.Accelerator.ACCELERATOR.value,
+              f"the accelerator choice reaches the card: {settings.accelerator}")
+        check(settings.accelerator_cpu == machines.Cpu.M68060.value,
+              f"and the processor fitted to it: {settings.accelerator_cpu!r}")
+        check(settings.boingbag_emulator is False,
+              "the FS-UAE switch reaches the card")
+        #  Which Amiga the card is for.  The chipset alone cannot answer it,
+        #  and the build needs the machine itself - to decide whether its
+        #  processor can run 3.5/3.9, and which of a BoingBag's per-machine
+        #  drivers to install.  Reaching the build only as a chipset is how
+        #  _prepare_os_cd came to ask for a field that was not there.
+        check(settings.machine_key == window._machine().key,
+              f"the machine reaches the card: {settings.machine_key!r}")
+        window.boingbag_emulator.set_active(True)
+        check(window.gather().boingbag_emulator is True,
+              "and reaches it the other way round too")
+        #  A stock machine has no accelerator to describe, so the row that
+        #  describes one is not offered and nothing is claimed about it.
+        window.quick_accelerator.set_selected(
+            list(machines.Accelerator).index(machines.Accelerator.PISTORM))
+        window._on_accelerator_changed()
+        check(window.gather().accelerator_cpu == "",
+              "a PiStorm claims no accelerator processor")
+        check(not window.quick_accelerator_cpu.get_visible(),
+              "and the row asking for one is hidden")
+
+        #  Emu68 is answered on the Source page, a page *before* the Storage
+        #  one carrying the two switches it rules out, so it has to be the
+        #  thing that decides - not the other way about.  With no boot
+        #  partition there is nowhere to put a Kickstart, a config.txt or a
+        #  cmdline.txt either, so those go off the window rather than being
+        #  filled in and silently dropped.
+        options_page = window.stack.get_page(
+            window.stack.get_child_by_name("options"))
+        #  The Options page only exists as a page while customising, so that
+        #  is the state in which its coming and going means anything.
+        window._set_customising(True)
+        window.install_emu_row.set_active(True)
+        window._sync_visibility()
+        check(window.boot_only_row.get_sensitive()
+              and not window.amiga_only_row.get_sensitive(),
+              "with Emu68 on, only the boot-only card can be asked for")
+        window.install_emu_row.set_active(False)
+        window._sync_visibility()
+        check(window.amiga_only_row.get_sensitive()
+              and not window.boot_only_row.get_sensitive(),
+              "with Emu68 off, only the drives-only card can be")
+        window.amiga_only_row.set_active(True)
+        check(window.gather().amiga_only,
+              "and the drives-only choice reaches the card")
+        check(not window.group_kickstart.get_visible()
+              and not window.boot_group.get_visible()
+              and not options_page.get_visible(),
+              "a card with no boot partition stops asking about one")
+        #  And turning Emu68 back on undoes it rather than leaving a
+        #  contradiction the build would have to settle.
+        window.install_emu_row.set_active(True)
+        window._sync_visibility()
+        check(not window.amiga_only_row.get_active()
+              and not window.gather().amiga_only,
+              "turning Emu68 back on withdraws the drives-only card")
+        check(window.group_kickstart.get_visible()
+              and window.boot_group.get_visible()
+              and options_page.get_visible(),
+              "and brings back everything that lives on the boot partition")
+
+        #  What to do with the finished card depends on what was built. An
+        #  Amiga-drives-only card cannot boot in a PiStorm at all, so telling
+        #  somebody to put it in one sends them to fit a card that was never
+        #  going to work in that slot.
+        window.install_emu_row.set_active(False)
+        window._sync_visibility()
+        window.amiga_only_row.set_active(True)
+        drives_only = window._where_the_card_goes()
+        check("IDE or SCSI" in drives_only and "cannot start" in drives_only,
+              f"a drives-only card is not sent to a PiStorm: {drives_only!r}")
+        window.install_emu_row.set_active(True)
+        window._sync_visibility()
+        window.boot_only_row.set_active(True)
+        boot_only = window._where_the_card_goes()
+        check("PiStorm" in boot_only and "own storage" in boot_only,
+              f"a boot-only card says where its drives are: {boot_only!r}")
+        window.boot_only_row.set_active(False)
+        check(window._where_the_card_goes() == "Eject the card and put it in "
+              "your PiStorm.", "and an ordinary card reads as it always did")
+
+        #  The community pack is separable, so the two states have to differ.
+        window.os_cd_row.set_path("")
+        with_none = window.gather().boingbags
+        check(with_none == [],
+              f"no CD means no BoingBags to name: {with_none}")
+
+        #  A CD carries the whole operating system, so a build taking one must
+        #  not still be asking for floppies.  Reported from the running app:
+        #  "I am selecting OS3.9 from CD but the config won't apply unless I
+        #  select a floppy disc folder!" - Apply stayed off with a 3.9 disc
+        #  chosen and nothing actually missing.
+        if not HAVE_CD:
+            print("  skip  no genisoimage, so the CD checks are not run")
+        else:
+            window.quick_system_source.set_selected(FRESH_SOURCES.index("cd"))
+            window._on_source_changed()
+            window.os_cd_row.set_path(str(CD_IMAGE))
+            window._on_os_cd_chosen()
+            check(not window.adf_row.path,
+                  "the floppy folder is genuinely empty for this check")
+            wanted = window._missing_choices()
+            floppies = [item for item in wanted
+                        if "floppy" in item or "Workbench disks" in item]
+            check(not floppies,
+                  f"a CD install does not ask for floppies: {floppies}")
+            check(window.gather().os_cd == str(CD_IMAGE),
+                  "and the CD reaches the build")
+            check(window.gather().os_cd_release == "3.9",
+                  f"with its release read off the disc: "
+                  f"{window.gather().os_cd_release!r}")
+            #  Choosing the CD source and then no CD has to say so, rather
+            #  than falling silent because the floppy question no longer
+            #  applies either.
+            window.os_cd_row.set_path("")
+            window._on_os_cd_chosen()
+            asked = window._missing_choices()
+            check(any("CD image" in item for item in asked),
+                  f"a CD install with no CD asks for one: {asked}")
+            window.os_cd_row.set_path(str(CD_IMAGE))
+            window._on_os_cd_chosen()
+
+            #  A row's subtitle is Pango markup, so a label carrying an
+            #  ampersand - "BoingBags 3 & 4" - makes GTK refuse the whole
+            #  string and keep whatever the row said before.  Reported as
+            #  "says updates found, but then also says no folder - but I
+            #  selected a folder".
+            packs = SCRATCH / "boingbags"
+            packs.mkdir(exist_ok=True)
+            for name in ("BoingBag39-1.lha", "BB1-4.lha"):
+                (packs / name).write_bytes(b"not a real archive")
+            window.boingbag_row.set_path(str(packs))
+            found = window.boingbag_found.get_subtitle() or ""
+            check("archive(s)" in found and "No folder" not in found,
+                  f"the packs found are named, not swallowed: {found!r}")
+
+            #  What is providing the processor is a person's choice, so a
+            #  quick setup must hand it back rather than reset it.  Reported
+            #  as "doesn't persist the accelerator type - defaults to
+            #  pistorm".
+            window.quick_accelerator.set_selected(
+                list(machines.Accelerator).index(
+                    machines.Accelerator.ACCELERATOR))
+            window._on_accelerator_changed()
+            window.quick_accelerator_cpu.set_selected(
+                list(machines.Cpu).index(machines.Cpu.M68030))
+            saved = window.gather()
+            kept = window._keep_other_pages(
+                dataclasses.replace(saved, accelerator="pistorm",
+                                    accelerator_cpu="", os_cd=""),
+                saved)
+            check(kept.accelerator == machines.Accelerator.ACCELERATOR.value,
+                  f"a quick setup keeps the accelerator: {kept.accelerator}")
+            check(kept.accelerator_cpu == machines.Cpu.M68030.value,
+                  f"and its processor: {kept.accelerator_cpu!r}")
+            check(kept.os_cd == str(CD_IMAGE),
+                  "and the CD it was going to install from")
+
+            #  And a loaded setup has to put them back into the widgets.
+            window.quick_accelerator.set_selected(
+                list(machines.Accelerator).index(machines.Accelerator.PISTORM))
+            window._on_accelerator_changed()
+            window.apply(saved)
+            check(window._accelerator() is machines.Accelerator.ACCELERATOR,
+                  f"a loaded setup restores the accelerator: "
+                  f"{window._accelerator().value}")
+            check(window.os_cd_row.path == str(CD_IMAGE),
+                  "and the CD image it named")
+
+            #  And the other direction: a path left in the row after switching
+            #  back to floppies must not quietly install from it.
+            window.quick_system_source.set_selected(FRESH_SOURCES.index("adf"))
+            window._on_source_changed()
+            check(window.gather().os_cd == "",
+                  "switching back to floppies stops using the CD")
 
         window.mode_row.set_selected(0)
         window._sync_visibility()
