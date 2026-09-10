@@ -3770,6 +3770,36 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         return GLib.markup_escape_text(text)
 
+    def _suit_the_rom_to_the_release(self) -> None:
+        """Swap an auto-chosen Kickstart for one the release can run.
+
+        Detection happens at startup, before any CD has been named, so it has
+        no release to go on and prefers the newest ROM it can see. That is the
+        wrong answer for 3.5 and 3.9, which need Kickstart 3.1 and refuse 3.2
+        - so somebody with both ROMs was handed the one their release cannot
+        use, and then told the build could not go ahead.
+
+        Only a ROM this application chose is replaced. One that was picked by
+        hand is left exactly where it is, and the build says plainly if it
+        will not do.
+        """
+        release = self._os_cd_release()
+        detected = getattr(self, "detected", None)
+        if not release or detected is None or not detected.kickstart:
+            return
+        chosen = self.rom_row.path
+        if chosen and chosen != str(detected.kickstart.path):
+            return                          # theirs, not ours
+        folder = detected.kickstart.path.parent
+        roms = [r for r in kickstart.scan(folder) if r.usable]
+        better = presets.best_rom(roms, release)
+        if better is None or str(better.path) == chosen:
+            return
+        self.rom_row.set_path(str(better.path))
+        self._on_rom_chosen()
+        self._toast(f"Using {better.name} - AmigaOS {release} needs "
+                    f"Kickstart 3.1")
+
     def _os_cd_usable(self) -> bool:
         match = getattr(self, "_os_cd_match", None)
         return bool(match and match.release and match.usable)
@@ -3815,6 +3845,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         match = amigacd.identify(path)
         self._os_cd_match = match if match.release else None
         self.os_cd_details.set_subtitle(self._as_markup(match.label))
+        self._suit_the_rom_to_the_release()
         self._on_boingbags_chosen()
         self._update_summary()
 

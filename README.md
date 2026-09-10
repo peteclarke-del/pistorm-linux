@@ -226,7 +226,7 @@ or install it from the published release and use the desktop entry:
 
 ```
 pipx install --system-site-packages \
-    "git+https://github.com/peteclarke-del/pistorm-linux@v0.8.0"
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.8.1"
 pistorm-imager-cli install-desktop
 ```
 
@@ -431,7 +431,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 735 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 737 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 ```
