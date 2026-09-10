@@ -273,7 +273,8 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
                  progress: Progress, *,
                  timeout: int = DEFAULT_TIMEOUT,
                  work_dir: Path | None = None,
-                 disc_image: str | Path | None = None) -> bool:
+                 disc_image: str | Path | None = None,
+                 trapdoor_to_chip: bool = False) -> bool:
     """Run this pack's Updater against the staged tree.  True if it worked."""
     command = fsuae_command()
     if command is None:
@@ -360,6 +361,12 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
     try:
         config = emulate.fsuae_config(
             machine, boot_on, rom_on,
+            #  The machine as it will really be. emulate.py exists so that the
+            #  emulated Amiga matches the one being built for, and this caller
+            #  was not telling it about the trapdoor - so an A500 update ran
+            #  with half the chip RAM the finished card will have, which is
+            #  exactly the mismatch that module was written to stop.
+            trapdoor_to_chip=trapdoor_to_chip,
             extra={
                 #  The pack itself, as a second drive, so Updater and the
                 #  payload are both reachable from the Amiga side.
@@ -458,7 +465,8 @@ def apply_or_report(bag: boingbag.Bag, archive_root: Path, staged: Path,
                     machine: machines.Machine, kickstart: str | Path,
                     progress: Progress, *, use_emulator: bool = True,
                     timeout: int = DEFAULT_TIMEOUT,
-                    disc_image: str | Path | None = None) -> bool:
+                    disc_image: str | Path | None = None,
+                    trapdoor_to_chip: bool = False) -> bool:
     """Apply a locked pack, or say file by file what could not be applied.
 
     The fallback names the files rather than counting them, because "some
@@ -469,7 +477,8 @@ def apply_or_report(bag: boingbag.Bag, archive_root: Path, staged: Path,
         return True
     if use_emulator and apply_locked(bag, archive_root, staged, machine,
                                      kickstart, progress, timeout=timeout,
-                                     disc_image=disc_image):
+                                     disc_image=disc_image,
+                                     trapdoor_to_chip=trapdoor_to_chip):
         return True
     boingbag.report_skipped(bag, archive_root, progress)
     return False
