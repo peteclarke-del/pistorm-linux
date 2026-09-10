@@ -2721,6 +2721,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         amiga_only = self.amiga_only_row.get_active()
         if getattr(self, "group_kickstart", None) is not None:
             self.group_kickstart.set_visible(not amiga_only)
+        #  RTG is Emu68 drawing on the Pi's HDMI output. With no Emu68 there
+        #  is no Pi in the picture at all, so the Amiga's own video is the
+        #  only answer and offering the others would invite a card set up for
+        #  a screen that cannot exist.
+        if amiga_only:
+            native = list(machines.Display).index(machines.Display.NATIVE)
+            if self.quick_display.get_selected() != native:
+                self.quick_display.set_selected(native)
+        self.quick_display.set_sensitive(not amiga_only)
+        self.quick_display.set_subtitle(
+            "Without Emu68 there is no RTG output, so this is the Amiga's own "
+            "video." if amiga_only else "")
         options = self.stack.get_child_by_name("options")
         if options is not None:
             page = self.stack.get_page(options)
