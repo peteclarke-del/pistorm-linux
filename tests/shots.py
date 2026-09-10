@@ -115,6 +115,12 @@ def on_activate(app: ImagerApplication) -> None:
             settle(450)
             shot(window, name)
 
+        #  The Amiga page carries two groups that matter to a 3.5/3.9 build
+        #  and do not fit above the fold at the usual height.
+        window.stack.set_visible_child_name("amiga")
+        settle(450)
+        shot(window, "10-amigaos-cd", height=1500)
+
         window._choose_export()
         settle(450)
         window.export_source.set_path(str(EXPORT_IMAGE))

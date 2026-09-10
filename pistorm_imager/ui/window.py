@@ -17,7 +17,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from .. import __version__  # noqa: E402
-from ..core import (amigaos, bootcfg, builder, content, devices,  # noqa: E402
+from ..core import (amigacd, amigaos, boingbag, bootcfg,  # noqa: E402
+                    builder, content, devices,
                     distributions,
                     emu68, hdfcheck, jobs, kickstart, machines, packages,
                     prepare, presets, updates)
@@ -43,7 +44,7 @@ PRIMARY_LABELS = [
     "Amiga hard disk image",
 ]
 #  What "Default" can then put on that drive.
-FRESH_SOURCES = ["adf", "none"]
+FRESH_SOURCES = ["adf", "none", "cd"]
 
 MODES = [
     ("Build a new card", builder.BuildMode.FRESH,
@@ -91,6 +92,12 @@ KEPT_ACROSS_QUICK_SETUP = (
     #  The quick page has a source chooser of its own, so these belong to the
     #  Source page alone: applying a fresh layout used to empty it.
     "source_image", "hdf_image", "repair_rdb",
+    #  What is providing the processor, and the CD install, are decided by a
+    #  person rather than by the machine or the layout, so a quick setup has
+    #  no opinion about them and must not throw them away.
+    "accelerator", "accelerator_cpu", "amiga_only",
+    "os_cd", "os_cd_release", "boingbag_archives", "boingbags",
+    "boingbag_emulator",
 )
 
 #  The same for the boot settings.  The machine decides the ones that follow
@@ -930,6 +937,29 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Trapdoor 512K fitted, use it as chip RAM",
             subtitle="A500 and A500+ only")
         group.add(self.quick_trapdoor)
+        #  What is actually executing 68k code.  A PiStorm clears every
+        #  processor requirement AmigaOS has, but this tool can also build a
+        #  drive for a machine that has not got one - so the question has to
+        #  be askable rather than assumed.
+        self.quick_accelerator = Adw.ComboRow(
+            title="Processor",
+            subtitle="AmigaOS 3.5 and 3.9 need a 68020 or better. Emu68 gives "
+                     "a PiStorm a 68040, so a PiStorm can always run them.",
+            model=combo([a.label for a in machines.Accelerator]))
+        self.quick_accelerator.set_selected(
+            list(machines.Accelerator).index(machines.Accelerator.PISTORM))
+        self.quick_accelerator.connect(
+            "notify::selected", lambda *_a: self._on_accelerator_changed())
+        group.add(self.quick_accelerator)
+        self.quick_accelerator_cpu = Adw.ComboRow(
+            title="The accelerator's processor",
+            model=combo([c.label for c in machines.Cpu]))
+        self.quick_accelerator_cpu.set_selected(
+            list(machines.Cpu).index(machines.Cpu.M68030))
+        self.quick_accelerator_cpu.connect(
+            "notify::selected", lambda *_a: self._on_layout_changed())
+        self.quick_accelerator_cpu.set_visible(False)
+        group.add(self.quick_accelerator_cpu)
         #  What the machine is belongs with the machine; the Amiga
         #  page adds this.
         self.group_hardware = group
@@ -969,7 +999,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_system_source = Adw.ComboRow(
             title="Operating system",
             model=combo(["Install Workbench from my floppy images",
-                         "Don't install one - partition only"]))
+                         "Don't install one - partition only",
+                         "Install AmigaOS 3.5 or 3.9 from a CD image"]))
         self.quick_system_source.connect("notify::selected",
                                          lambda *_a: self._on_source_changed())
         group.add(self.quick_system_source)
@@ -1387,6 +1418,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         return machines.workbench_on_rtg(self._display(),
                                          self._prefer_rtg_screen())
 
+    def _on_accelerator_changed(self) -> None:
+        """Only an accelerator has a processor worth asking about.
+
+        A stock machine's is whatever it shipped with, and a PiStorm's is
+        whatever Emu68 provides - neither is a choice, so neither is offered.
+        """
+        chosen = list(machines.Accelerator)[
+            self.quick_accelerator.get_selected()]
+        self.quick_accelerator_cpu.set_visible(
+            chosen is machines.Accelerator.ACCELERATOR)
+        self._on_layout_changed()
+
+    def _accelerator(self) -> machines.Accelerator:
+        return list(machines.Accelerator)[
+            self.quick_accelerator.get_selected()]
+
+    def _accelerator_cpu(self) -> machines.Cpu | None:
+        if self._accelerator() is not machines.Accelerator.ACCELERATOR:
+            return None
+        return list(machines.Cpu)[self.quick_accelerator_cpu.get_selected()]
+
     def _on_display_changed(self) -> None:
         #  Which software suits the card follows the screen it is watched on,
         #  and nothing rebuilt the list when that changed: choosing a display
@@ -1674,6 +1726,17 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  asking about it alone meant a card that needs the disks and has
         #  none said nothing at all - and built, unbootable. What decides it
         #  is what the setup needs, which is known before any folder is.
+        #  A CD carries the whole operating system, so a build taking one
+        #  wants no floppies at all - and asking for them anyway is what kept
+        #  Apply switched off with a 3.9 disc chosen and nothing missing.
+        if self._system_source() == "cd":
+            if not config.os_cd:
+                missing.append("an AmigaOS 3.5 or 3.9 CD image")
+            elif not self._os_cd_usable():
+                missing.append("a CD image this recognises as AmigaOS 3.5 "
+                               "or 3.9")
+            return missing
+
         needs_disks = (config.install_amigaos
                        or self._system_source() == "adf"
                        or self._imported_needs_floppies())
@@ -1916,6 +1979,55 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.os_group.add(self.os_disks)
         page.add(self.os_group)
 
+        #  3.5 and 3.9 were sold on CD, so they are a source of their own
+        #  rather than another release in the floppy list.
+        group = Adw.PreferencesGroup(
+            title="AmigaOS 3.5 or 3.9 from CD",
+            description="These two releases came on CD. Point at the disc "
+                        "image and the whole system is installed from it, in "
+                        "the order the disc's own installer uses. Both need a "
+                        "68020 or better and a Kickstart 3.1 (V40) ROM.")
+        self.os_cd_row = FileRow("AmigaOS CD image (.iso)",
+                                 filters=[("CD images", ["*.iso", "*.ISO"])],
+                                 on_change=lambda _p: self._on_os_cd_chosen())
+        group.add(self.os_cd_row)
+        self.os_cd_details = Adw.ActionRow(title="Disc", subtitle="No CD selected")
+        self.os_cd_details.set_sensitive(False)
+        group.add(self.os_cd_details)
+        self.boingbag_row = FileRow(
+            "BoingBag archives folder", folder=True,
+            subtitle="The update packs, as downloaded (.lha). Every pack that "
+                     "belongs to the chosen release is applied, oldest first.",
+            on_change=lambda _p: self._on_boingbags_chosen())
+        group.add(self.boingbag_row)
+        self.boingbag_found = Adw.ActionRow(title="Updates found",
+                                            subtitle="No folder selected")
+        self.boingbag_found.set_sensitive(False)
+        group.add(self.boingbag_found)
+        self.boingbag_community = Adw.SwitchRow(
+            #  Escaped: these titles go through Pango markup, and a bare
+            #  ampersand makes it refuse the whole string.
+            title="Include BoingBags 3 &amp; 4",
+            subtitle="A community release that supersedes much of BoingBags 1 "
+                     "and 2 and adds LBA48 large-disk support. It changes core "
+                     "components, so turn it off for a stock 3.9.")
+        self.boingbag_community.set_active(True)
+        self.boingbag_community.connect("notify::active",
+                                        lambda *_a: self._update_summary())
+        group.add(self.boingbag_community)
+        self.boingbag_emulator = Adw.SwitchRow(
+            title="Apply locked updates with FS-UAE",
+            subtitle="BoingBags 1 and 2 for 3.9 keep their system fixes in an "
+                     "encrypted archive only their own Updater can open. With "
+                     "FS-UAE installed it is run here; without it those fixes "
+                     "are listed as left out.")
+        self.boingbag_emulator.set_active(True)
+        self.boingbag_emulator.connect("notify::active",
+                                       lambda *_a: self._update_summary())
+        group.add(self.boingbag_emulator)
+        self.os_cd_group = group
+        page.add(group)
+
         return page
 
 
@@ -2099,6 +2211,20 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.boot_only_row.connect("notify::active",
                                    lambda *_a: self._boot_only_changed())
         self.boot_only_group.add(self.boot_only_row)
+        #  The mirror of it: drives and no boot partition.  A real accelerator
+        #  with an IDE or SCSI controller reads a Rigid Disk Block at block 0
+        #  and knows nothing about an MBR, so a card for one carries no
+        #  partition table at all - the RDB is the partition table.
+        self.amiga_only_row = Adw.SwitchRow(
+            title="Amiga drives only, no Emu68 boot partition",
+            subtitle="For a real accelerator with an IDE or SCSI interface "
+                     "rather than a PiStorm. The Rigid Disk Block starts at "
+                     "block 0, where the controller looks for it, and there "
+                     "is no FAT32 partition and no Emu68.")
+        self.amiga_only_row.set_active(False)
+        self.amiga_only_row.connect("notify::active",
+                                    lambda *_a: self._amiga_only_changed())
+        self.boot_only_group.add(self.amiga_only_row)
         page.add(self.boot_only_group)
 
         self.partition_group = Adw.PreferencesGroup(
@@ -2138,6 +2264,7 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _page_options(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
+        self.page_options = page
 
         group = Adw.PreferencesGroup(
             title="Display",
@@ -2552,6 +2679,65 @@ class ImagerWindow(Adw.ApplicationWindow):
         for row in (self.variant_row, self.variant_hint, self.release_row,
                     self.local_zip_row):
             row.set_visible(install)
+
+        #  Emu68 is what the rest of the card hangs off, and it is answered on
+        #  the Source page - a page *before* the Storage one that used to rule
+        #  it. So the decision runs this way round: Emu68 decides which of the
+        #  two storage shapes can be asked for, not the other way about.
+        #
+        #    Emu68 on   - "Emu68 only, no Amiga drive" makes sense;
+        #                 "Amiga drives only, no Emu68" contradicts it.
+        #    Emu68 off  - the reverse.
+        #
+        #  A switch that contradicts one already made is turned off as well as
+        #  disabled, so nothing is carried into the build that the page is no
+        #  longer offering.
+        wants_emu68 = self.install_emu_row.get_active()
+        if not wants_emu68 and self.boot_only_row.get_active():
+            self.boot_only_row.set_active(False)
+        if wants_emu68 and self.amiga_only_row.get_active():
+            self.amiga_only_row.set_active(False)
+        self.boot_only_row.set_sensitive(wants_emu68)
+        self.amiga_only_row.set_sensitive(not wants_emu68)
+        self.boot_only_row.set_subtitle(
+            "For a machine whose storage is elsewhere. The rest of the card "
+            "is left unclaimed rather than formatted, so nothing asks to be "
+            "initialised."
+            if wants_emu68 else
+            "Needs Emu68: a boot partition with no Emu68 on it and no Amiga "
+            "drive either would be an empty card.")
+        self.amiga_only_row.set_subtitle(
+            "For a real accelerator with an IDE or SCSI interface rather than "
+            "a PiStorm. The Rigid Disk Block starts at block 0, where the "
+            "controller looks for it, and there is no FAT32 partition."
+            if not wants_emu68 else
+            "Turn off \u201cInstall Emu68\u201d on the Source page first - "
+            "Emu68 needs the boot partition this would remove.")
+
+        #  With no boot partition there is nowhere to put a Kickstart, a
+        #  config.txt or a cmdline.txt, so the settings that only exist there
+        #  are taken off the window rather than left to be filled in and
+        #  silently dropped.
+        amiga_only = self.amiga_only_row.get_active()
+        if getattr(self, "group_kickstart", None) is not None:
+            self.group_kickstart.set_visible(not amiga_only)
+        #  RTG is Emu68 drawing on the Pi's HDMI output. With no Emu68 there
+        #  is no Pi in the picture at all, so the Amiga's own video is the
+        #  only answer and offering the others would invite a card set up for
+        #  a screen that cannot exist.
+        if amiga_only:
+            native = list(machines.Display).index(machines.Display.NATIVE)
+            if self.quick_display.get_selected() != native:
+                self.quick_display.set_selected(native)
+        self.quick_display.set_sensitive(not amiga_only)
+        self.quick_display.set_subtitle(
+            "Without Emu68 there is no RTG output, so this is the Amiga's own "
+            "video." if amiga_only else "")
+        options = self.stack.get_child_by_name("options")
+        if options is not None:
+            page = self.stack.get_page(options)
+            if page is not None and self._customising:
+                page.set_visible(not amiga_only)
         self.device_group.set_visible(self._writing_to_device())
         self.file_group.set_visible(not self._writing_to_device())
         self.file_group.set_title("Amiga hard disk image" if making_hdf
@@ -2566,7 +2752,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.file_size_row.set_title(
             "Drive size" if making_hdf
             else "Image size - 32GB as cards are sold, 32GiB binary")
-        self.boot_group.set_visible(partitions_ours and not making_hdf)
+        #  No boot partition means no size to choose for one.
+        self.boot_group.set_visible(partitions_ours and not making_hdf
+                                    and not self.amiga_only_row.get_active())
         self._update_summary()
 
     def _on_variant_changed(self) -> None:
@@ -2642,7 +2830,21 @@ class ImagerWindow(Adw.ApplicationWindow):
             widget = getattr(self, group, None)
             if widget is not None:
                 widget.set_visible(not only)
+        #  Nothing here has to reach across to the other switch: Emu68
+        #  allows one or the other, never both, and _sync_visibility is the
+        #  single place that decides which.
         self._update_summary()
+
+    def _amiga_only_changed(self) -> None:
+        """Drives and no boot partition, which decides Emu68 with it.
+
+        Emu68 lives on the FAT32 boot partition, so a card without one cannot
+        carry it and a card with one is not worth building without it. Rather
+        than let the two disagree, the Emu68 switch follows this one and says
+        why it cannot be operated - a switch that can only produce a card that
+        does not boot is worse than no switch.
+        """
+        self._sync_visibility()
 
     def _add_partition(self, spec: builder.AmigaPartitionSpec | None = None) -> None:
         if len(self.partition_rows) >= 10:
@@ -3556,6 +3758,87 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------- config gather
 
+    @staticmethod
+    def _as_markup(text: str) -> str:
+        """Escape text that is about to become a row's title or subtitle.
+
+        Adwaita rows take Pango markup, so an ampersand in a label is not
+        text - it starts an entity, GTK refuses the whole string, and the row
+        keeps whatever it said before.  That is how "Updates found" went on
+        reading "No folder selected" with a folder plainly selected: the pack
+        is called "BoingBags 3 & 4".
+        """
+        return GLib.markup_escape_text(text)
+
+    def _os_cd_usable(self) -> bool:
+        match = getattr(self, "_os_cd_match", None)
+        return bool(match and match.release and match.usable)
+
+    def _os_cd_release(self) -> str:
+        match = getattr(self, "_os_cd_match", None)
+        return match.release.key if match and match.release else ""
+
+    def _boingbag_archives(self) -> list[str]:
+        """Every .lha in the chosen folder, for the builder to sort out.
+
+        Which packs are in which archive is the builder's question, not this
+        one's: BB1-4.lha holds three of them and BoingBag39-1.lha holds one.
+        """
+        folder = self.boingbag_row.path
+        if not folder or not Path(folder).is_dir():
+            return []
+        return sorted(str(item) for item in Path(folder).glob("*.lha"))
+
+    def _chosen_boingbags(self) -> list[str]:
+        """The packs to apply, for the release that was chosen.
+
+        Empty would mean "every pack that is on by default", which is not the
+        same thing once the community pack has a switch of its own - so the
+        list is always explicit.
+        """
+        release = self._os_cd_release()
+        if not release:
+            return []
+        wanted = []
+        for bag in boingbag.for_release(release):
+            if bag.official or self.boingbag_community.get_active():
+                wanted.append(bag.key)
+        return wanted
+
+    def _on_os_cd_chosen(self) -> None:
+        path = self.os_cd_row.path
+        self._os_cd_match = None
+        if not path or not Path(path).is_file():
+            self.os_cd_details.set_subtitle("No CD selected")
+            self._update_summary()
+            return
+        match = amigacd.identify(path)
+        self._os_cd_match = match if match.release else None
+        self.os_cd_details.set_subtitle(self._as_markup(match.label))
+        self._on_boingbags_chosen()
+        self._update_summary()
+
+    def _on_boingbags_chosen(self) -> None:
+        archives = self._boingbag_archives()
+        release = self._os_cd_release()
+        if not archives:
+            self.boingbag_found.set_subtitle(
+                "No folder selected" if not self.boingbag_row.path
+                else "No .lha archives in that folder")
+            self._update_summary()
+            return
+        if not release:
+            self.boingbag_found.set_subtitle(self._as_markup(
+                f"{len(archives)} archive(s) - choose a CD to say which "
+                f"release they belong to"))
+            self._update_summary()
+            return
+        names = [bag.label for bag in boingbag.for_release(release)]
+        self.boingbag_found.set_subtitle(self._as_markup(
+            f"{len(archives)} archive(s) for AmigaOS {release}: "
+            + ", ".join(names)))
+        self._update_summary()
+
     def gather(self) -> builder.BuildConfig:
         mode = self._mode()
         if self._writing_to_device():
@@ -3645,6 +3928,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             patch_display=self.patch_display_row.get_active(),
             boot_size=boot_size,
             boot_only=self.boot_only_row.get_active(),
+            amiga_only=self.amiga_only_row.get_active(),
             #  The rows are kept while the switch is on, so the layout
             #  survives being asked a different question - but they must not
             #  reach a card that is not going to have them.
@@ -3663,6 +3947,20 @@ class ImagerWindow(Adw.ApplicationWindow):
                                   or self._imported_needs_floppies())),
             adf_folder=self.adf_row.path,
             adf_version=self._selected_adf_version(),
+            #  Everything the CD group decides, read from the widgets that
+            #  decide it.  A control that is on screen and does not reach the
+            #  card is worse than no control, so these are set here - where
+            #  the card is actually written from - and not only where a quick
+            #  setup is assembled.
+            os_cd=(self.os_cd_row.path
+                   if self._system_source() == "cd" else ""),
+            os_cd_release=self._os_cd_release(),
+            boingbag_archives=self._boingbag_archives(),
+            boingbags=self._chosen_boingbags(),
+            boingbag_emulator=self.boingbag_emulator.get_active(),
+            accelerator=self._accelerator().value,
+            accelerator_cpu=(self._accelerator_cpu().value
+                             if self._accelerator_cpu() else ""),
             amiga_volume_name=self.volume_row.get_text().strip() or "Workbench",
             #  The software chosen on the Amiga page.  These only used to be
             #  set by the quick setup, so ticking a package and pressing Write
@@ -3697,6 +3995,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             off_desktop=sorted(
                 where for where, row in getattr(self, "desktop_rows", {}).items()
                 if not row.get_active()),
+            machine_key=self._machine().key,
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
@@ -3892,6 +4191,18 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._remember_session()
         return False
 
+    def _where_the_card_goes(self) -> str:
+        """What to do with the card that was just written."""
+        if self.amiga_only_row.get_active():
+            return ("Eject the card and put it on the Amiga's own IDE or "
+                    "SCSI controller - it carries no boot partition, so a "
+                    "PiStorm cannot start from it.")
+        if self.boot_only_row.get_active():
+            return ("Eject the card and put it in your PiStorm. It carries "
+                    "Emu68 and the Kickstart; the Amiga's drives are on your "
+                    "own storage.")
+        return "Eject the card and put it in your PiStorm."
+
     def _finished(self, success: bool, message: str) -> bool:
         self._remember_session()
         self.cancel_button.set_visible(False)
@@ -3900,7 +4211,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         if success:
             self.step_label.set_text("Finished - the card is ready")
             self._set_fraction(1.0)
-            self._append_log("Done. Eject the card and put it in your PiStorm.")
+            #  Where the card goes depends on what was built.  An
+            #  Amiga-drives-only card has no boot partition and no Emu68, so
+            #  a PiStorm cannot boot it at all - it is for the machine's own
+            #  IDE or SCSI controller. Saying otherwise sends somebody to fit
+            #  a card that was never going to work in that slot.
+            self._append_log("Done. " + self._where_the_card_goes())
             self._toast("Card written successfully")
         else:
             self.step_label.set_text("Failed")
@@ -3931,6 +4247,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             "kickstart": self.rom_row.path,
             "kickstart_key": self.rom_key_row.path,
             "adf_folder": self.adf_row.path,
+            "boingbag_folder": self.boingbag_row.path,
             "trapdoor": self.quick_trapdoor.get_active(),
             "system_size": self.quick_system.get_text(),
             "boot_size": self.boot_size_row.get_text(),
@@ -3970,6 +4287,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.rom_row.set_path(state.get("kickstart", ""))
             self.rom_key_row.set_path(state.get("kickstart_key", ""))
             self.adf_row.set_path(state.get("adf_folder", ""))
+            self.boingbag_row.set_path(state.get("boingbag_folder", ""))
             self.quick_trapdoor.set_active(bool(state.get("trapdoor")))
             for row, key in ((self.quick_system, "system_size"),
                              (self.boot_size_row, "boot_size")):
@@ -4215,6 +4533,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.repair_row.set_active(config.repair_rdb)
         self.local_zip_row.set_path(config.emu68_archive)
         self.rom_row.set_path(config.kickstart_path)
+        #  What is providing the processor, and the CD install.  A loaded
+        #  setup that could not put these back would come up claiming a
+        #  PiStorm whatever it was saved as.
+        for index, accelerator in enumerate(machines.Accelerator):
+            if accelerator.value == config.accelerator:
+                self.quick_accelerator.set_selected(index)
+        if config.accelerator_cpu:
+            for index, cpu in enumerate(machines.Cpu):
+                if cpu.value == config.accelerator_cpu:
+                    self.quick_accelerator_cpu.set_selected(index)
+        self._on_accelerator_changed()
+        self.os_cd_row.set_path(config.os_cd)
+        self.boingbag_emulator.set_active(config.boingbag_emulator)
+        #  The community pack is a switch rather than a name in the list, so
+        #  it is read back from whether the list carries it.
+        if config.boingbags:
+            self.boingbag_community.set_active(
+                any(not boingbag.BAGS_BY_KEY[key].official
+                    for key in config.boingbags
+                    if key in boingbag.BAGS_BY_KEY))
+        self._on_os_cd_chosen()
         self.rom_key_row.set_path(config.kickstart_key)
         self.volume_row.set_text(config.amiga_volume_name)
         self.adf_row.set_path(config.adf_folder)
@@ -4273,6 +4612,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.patch_display_row.set_active(config.patch_display)
         self.expand_row.set_active(config.expand_to_fill)
         self.boot_only_row.set_active(config.boot_only)
+        self.amiga_only_row.set_active(config.amiga_only)
+        self._amiga_only_changed()
         self._boot_only_changed()
         for row in list(self.extra_rows):
             self.expand_group.remove(row)

@@ -277,12 +277,29 @@ def _describe_imported_drive(path: str) -> tuple[list[str], bool]:
 
 def describe(config: builder.BuildConfig, detected: Detected) -> str:
     """A plain account of what the build will actually put on the card."""
-    lines = [f"Boot partition: {human_size(config.boot_size)} FAT32 with Emu68"]
-    if config.kickstart_path:
+    if getattr(config, "amiga_only", False):
+        #  No boot partition and no MBR: the card is Amiga drives and nothing
+        #  else, which is what a real accelerator's IDE controller reads.
+        lines = ["No boot partition: the Rigid Disk Block starts at block 0, "
+                 "for an Amiga IDE or SCSI controller rather than Emu68"]
+    else:
+        carries = "FAT32 with Emu68" if config.install_emu68 else \
+            "FAT32, without Emu68 - only what is put on it below"
+        lines = [f"Boot partition: {human_size(config.boot_size)} {carries}"]
+    if getattr(config, "amiga_only", False):
+        pass                    # nothing here maps a ROM; the machine has its own
+    elif config.kickstart_path:
         name = detected.kickstart.name if detected.kickstart else "Kickstart"
         lines.append(f"Kickstart: {name}")
-    else:
+    elif config.install_emu68:
         lines.append("Kickstart: none found - Emu68 will not start without one")
+    else:
+        #  Emu68 is not being installed, but the boot partition is still
+        #  written and whatever Emu68 is already on the card will look for a
+        #  ROM there. So this is a note about what is not being replaced,
+        #  not a claim that nothing needs one.
+        lines.append("Kickstart: none being written - whatever is already on "
+                     "the card's boot partition is left alone")
 
     #  Two of the three tasks do not use the partition list at all: the drive
     #  comes out of the image, with its own layout. Walking the list anyway
@@ -322,6 +339,10 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
                      if spec.content_hdf_partition else "")
             content = f"copied from {Path(spec.content_hdf).name}{where}"
             filled_system |= spec.bootable
+        elif spec.bootable and config.os_cd:
+            content = (f"AmigaOS installed from "
+                       f"{Path(config.os_cd).name}")
+            filled_system = True
         elif spec.bootable and config.install_amigaos:
             content = (f"AmigaOS {config.adf_version} installed from your "
                        f"floppy images")
@@ -535,6 +556,7 @@ SYSTEM_SOURCE_LABELS = {
     "pimiga": "PiMiga's ready-made system (AmigaOS 3.9, Scalos)",
     "adf": "Workbench installed from your floppy images",
     "none": "none - the drive is left for HDToolBox on the Amiga",
+    "cd": "AmigaOS installed from its CD image",
 }
 
 
@@ -558,7 +580,20 @@ def describe_machine_setup(config: builder.BuildConfig,
     if config.install_amigaos and source != "adf":
         described += ", with Workbench from your floppy images filling in " \
                      "what it does not carry"
-    lines = [f"{machine.label} with {machine.board_label}",
+    #  What is actually providing the processor.  Naming the PiStorm board on
+    #  a machine set to a plain accelerator described hardware that is not
+    #  there, in the first line of the plan.
+    accelerator = machines.Accelerator(getattr(config, "accelerator",
+                                               "pistorm"))
+    if accelerator is machines.Accelerator.PISTORM:
+        fitted = machine.board_label
+    elif accelerator is machines.Accelerator.ACCELERATOR:
+        cpu = getattr(config, "accelerator_cpu", "")
+        fitted = (f"an accelerator ({machines.Cpu(cpu).label})" if cpu
+                  else "an accelerator")
+    else:
+        fitted = f"its own {machine.stock_cpu.label}"
+    lines = [f"{machine.label} with {fitted}",
              f"Display: {display.label}",
              f"System: {described}"]
     if display.has_choice_of_screen:
@@ -568,8 +603,13 @@ def describe_machine_setup(config: builder.BuildConfig,
                         "a native screen on the Amiga's own video output"))
     lines.append("")
     lines.append(describe(config, detected))
+    #  Emu68's options are written to cmdline.txt on the FAT32 boot
+    #  partition, so a card that has no boot partition has nowhere to put
+    #  them and they will not reach the machine.  Listing them anyway
+    #  promised settings that were never going to be written - the same
+    #  fault as claiming Emu68 itself would be there.
     cmdline = config.boot_options.cmdline()
-    if cmdline:
+    if cmdline and not getattr(config, "amiga_only", False):
         lines.append(f"Emu68 options: {cmdline}")
     lines.append("")
     for note in machines.advice(machine, display):

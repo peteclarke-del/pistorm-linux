@@ -98,7 +98,110 @@ Along the way it will:
 * install AmigaOS from ADFs, recognising each disk by the **volume name inside
   it** rather than its file name, and keeping the whole set to one release (a
   2.0 Extras drawer on a 3.1 system is a broken install, and collections
-  routinely hold several releases side by side).
+  routinely hold several releases side by side);
+* install **AmigaOS 3.5 and 3.9 from their CD images**, with their BoingBags
+  on top - described below.
+
+## AmigaOS 3.5 and 3.9
+
+Both were sold on CD rather than floppy, so they are a source of their own
+rather than another release in the ADF list. Point at the `.iso` and the whole
+system is installed from it.
+
+![The AmigaOS CD group on the Amiga page](docs/images/10-amigaos-cd.png)
+
+### The layout comes from the disc, not from guesswork
+
+Every source and destination is read out of the installer script each disc
+carries - `OS-Version3.5/OS3.5Install` and `OS-Version3.9/OS3.9Install`, which
+are plain Installer text. That matters because several of them are not the
+obvious answer, and a wrong destination makes a system that *looks* installed:
+`Extras/Backdrops` goes to `Prefs/Presets/Backdrops` and not to `Backdrops`,
+and the printer and keymap sets are lifted out of the Workbench tree's own
+`Storage` and copied again into `Devs`.
+
+### Neither release is one tree, and the two discs differ
+
+| | 3.5 disc | 3.9 disc |
+| --- | --- | --- |
+| 3.1 base | `OS-Version3.1/Workbench3.1` + `Extras3.1` | not needed |
+| 3.5 | `OS-Version3.5/Workbench` - a *delta* | `Workbench3.5` - complete |
+| 3.9 | - | `Workbench3.9`, over the 3.5 tree |
+
+The 3.5 disc's own Workbench tree has no `S`, no `WBStartup` and no `Rexxc`,
+because it was meant to land on an existing Workbench 3.1 - which that disc
+also supplies. Copy it alone and the drive has no Startup-Sequence at all.
+
+The layering is resolved on a staging tree on Linux and the volume written once
+from it. That is not tidiness: this project's volume writer creates files and
+never overwrites them, so whatever lands first wins. Copying 3.5 and then 3.9
+straight onto a volume would keep the *3.5* file every time both discs carry the
+same name - which is every important file on the disc, and exactly backwards.
+
+### Two extensions, because the two discs need different ones
+
+Names are read from Joliet where there is one, then a Rock Ridge `NM` entry,
+then the plain ISO name. The 3.5 disc answers through Joliet; the 3.9 disc
+through Rock Ridge, and getting that wrong is not cosmetic. Its plain ISO names
+are upper case, so a reader that stopped there would put `AMIDOCK` and
+`DEFICONS` in WBStartup - Workbench draws an icon's label from the file name, so
+the desktop would shout, and every startup line and tool type this project
+retargets would be matched against a spelling that was never on the disc.
+
+### The BoingBags
+
+The update packs are applied on top, oldest first, and they are not all the
+same shape:
+
+| Pack | What it is | Applied by |
+| --- | --- | --- |
+| BoingBag 3.5-1, 3.5-2 | plain trees | copying |
+| BoingBag 3.9-3&4 | 995 plain files, community | copying |
+| BoingBag 3.9-1, 3.9-2 | fixes inside an encrypted archive | its own Updater |
+
+BoingBags 1 and 2 for 3.9 keep every system file they fix in `AmigaOS-Update`,
+a ZIP in which every entry is encrypted; the password lives inside Haage &
+Partner's `Updater`, and their installer simply runs
+`C/Updater AmigaOS-Update <target>`. So this project runs **their** tool rather
+than trying to open their archive: the staged tree is mounted as a directory
+drive in FS-UAE and `Updater` writes its results straight back into it.
+
+Two things about that were found by watching a run rather than by reasoning
+about it. `Updater` will not do anything until it has seen the disc - it asks
+for "volume AmigaOS3.9 in any drive" - so the CD is laid out as a directory and
+that drive is *labelled* `AmigaOS3.9`; no CD emulation is involved, which
+matters because CacheCDFS is itself on the disc. And XAD, which it depacks with,
+refuses to write over a file that already exists, so the files the payload
+carries are moved aside first - and **moved, not deleted**: put back if the run
+does not finish, because an update that fails half way would otherwise leave the
+system missing the files it was meant to improve.
+
+Where FS-UAE is not installed, the files that are in the clear are still applied
+and the build names, file by file, the fixes it could not make. "Some fixes were
+skipped" is not something anyone can act on; the list is what tells you whether
+the thing you are chasing is in it.
+
+### The processor, and the Kickstart
+
+Both releases need a 68020 or better and a Kickstart 3.1 (V40). The machine
+profiles now carry a processor, and it distinguishes three cases: a stock
+machine, a stock machine with an accelerator fitted, and a PiStorm - where Emu68
+replaces the processor with a 68040-class core.
+
+```
+a500   stock       KS V40: needs MC68020 or better, has MC68000   refused
+a500   accelerator KS V40: allowed
+a500   pistorm     KS V40: allowed
+a500   pistorm     KS V37: needs Kickstart 3.1 (V40), ROM is V37  refused
+a1200  stock       KS V47: needs Kickstart 3.1 (V40), ROM is V47  refused
+```
+
+A PiStorm clears the processor requirement on every machine, so that check can
+only ever refuse a stock machine or an under-specified accelerator. It is
+recorded anyway: the requirement belongs to AmigaOS rather than to today's
+accelerator, and the reason a release is offered or refused should be stated
+where the decision is made rather than left implicit in the fact that nothing
+currently violates it.
 
 ## Requirements
 
@@ -123,7 +226,7 @@ or install it from the published release and use the desktop entry:
 
 ```
 pipx install --system-site-packages \
-    "git+https://github.com/peteclarke-del/pistorm-linux@v0.7.0"
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.8.0"
 pistorm-imager-cli install-desktop
 ```
 
@@ -296,7 +399,12 @@ pistorm_imager/
     pfs3.py      PFS3: reads real volumes, creates and fills new ones
     compat.py    automatic emulator-to-PiStorm fixes (RTG driver, startup)
     amigainfo.py Workbench .info icons, enough to retarget tool types
-    machines.py  target machine profiles: chipset, board, Kickstart, display
+    machines.py  target machine profiles: chipset, processor, board,
+                 Kickstart, display
+    iso9660.py   reading CD images: ISO 9660 with Joliet and Rock Ridge
+    amigacd.py   installing AmigaOS 3.5 and 3.9 from their CDs
+    boingbag.py  the update packs for 3.5 and 3.9
+    bbupdate.py  running a locked update's own Updater under FS-UAE
     emulate.py   turns a machine profile into an FS-UAE configuration
     export.py    lifting the Amiga drives back out of a card, one file each
     presets.py   turns a machine and a source into a complete build
@@ -323,7 +431,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 673 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 735 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 ```

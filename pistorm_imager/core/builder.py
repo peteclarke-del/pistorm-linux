@@ -127,6 +127,11 @@ class BuildConfig:
     #  be used. Distinct from an empty partition, which still takes the rest
     #  of the card and still appears on the desktop asking to be initialised.
     boot_only: bool = False
+    #  The mirror of boot_only: Amiga drives and no Emu68 boot partition at
+    #  all.  A real accelerator with an IDE interface reads a Rigid Disk Block
+    #  at block 0 and knows nothing about an MBR, so a card for one carries no
+    #  partition table - the RDB *is* the partition table.
+    amiga_only: bool = False
     amiga_partitions: list[AmigaPartitionSpec] = dataclasses.field(
         default_factory=lambda: [AmigaPartitionSpec("DH0", None, "PFS3", True, 0)])
     pfs3_binary: str = ""              # optional pfs3aio to embed in the RDB
@@ -172,6 +177,31 @@ class BuildConfig:
     adf_folder: str = ""
     adf_version: str = ""              # "" means "work it out from the disks"
     amiga_volume_name: str = "Workbench"
+
+    #  Installing AmigaOS 3.5 or 3.9 from its CD image.  These two releases
+    #  were sold on CD rather than floppy, so they are a separate source from
+    #  ``adf_folder`` rather than another version of it.
+    os_cd: str = ""                    # the .iso to install from
+    os_cd_release: str = ""            # "3.5" or "3.9"; "" means read the disc
+    #  The BoingBag archives to apply on top, and which of the packs in them
+    #  to use.  Empty means every pack the archives hold that is on by default.
+    boingbag_archives: list[str] = dataclasses.field(default_factory=list)
+    boingbags: list[str] = dataclasses.field(default_factory=list)
+    #  Whether a locked pack may be applied by running its own Updater under
+    #  FS-UAE.  Off leaves those fixes out, and the build says which.
+    boingbag_emulator: bool = True
+
+    #  What is providing the processor.  A PiStorm always clears AmigaOS's
+    #  processor requirements, but the machine model has to be able to say so
+    #  rather than have it assumed - and a stock 68000 machine cannot run 3.5
+    #  or 3.9 at all.
+    accelerator: str = "pistorm"       # a machines.Accelerator value
+    accelerator_cpu: str = ""          # a machines.Cpu value, when fitted
+    #  Which Amiga the card is for.  The chipset alone cannot answer this, and
+    #  two things now need the machine itself: whether its processor can run
+    #  AmigaOS 3.5 or 3.9, and which of a BoingBag's per-machine drivers to
+    #  install - an A1200's IDE driver on an A500 would be inventing hardware.
+    machine_key: str = ""
 
     #  Boot configuration
     boot_options: bootcfg.BootOptions = dataclasses.field(
@@ -272,6 +302,7 @@ class BuildConfig:
             if not (package.rtg_only and package.essential):
                 continue
             if self.rtg_display and package.key not in keys \
+                    and not self.os_cd \
                     and not any(p.content_hdf or p.content_folder
                                 for p in self.amiga_partitions if p.bootable):
                 said.append(
@@ -283,7 +314,8 @@ class BuildConfig:
             said.append(
                 "Workbench is set to open on the RTG screen, and this card "
                 "has no RTG display configured.")
-        if not self.install_amigaos and not filled and not self.boot_only \
+        if not self.install_amigaos and not filled and not self.os_cd \
+                and not self.boot_only \
                 and self.mode is BuildMode.FRESH:
             said.append(
                 "Nothing is being put on the Amiga drives: no Workbench, no "
@@ -381,6 +413,16 @@ class BuildConfig:
         if self.mode is BuildMode.FRESH:
             if self.boot_size < 64 * MIB and not self.output_hdf:
                 problems.append("The boot partition must be at least 64 MiB.")
+            if self.amiga_only and self.boot_only:
+                problems.append(
+                    "A card cannot be both Emu68 only and Amiga drives only.")
+            if self.amiga_only and self.install_emu68:
+                problems.append(
+                    "Emu68 needs a boot partition, and an Amiga-drives-only "
+                    "card has none.")
+            if self.amiga_only and not self.amiga_partitions:
+                problems.append(
+                    "An Amiga-drives-only card needs at least one drive.")
             if self.boot_only and self.output_hdf:
                 problems.append(
                     "A bare Amiga hard disk image is the Amiga drive on its "
@@ -395,13 +437,13 @@ class BuildConfig:
             #  Everything has to fit the card that was asked for. Nothing
             #  checked, so a layout larger than the image was accepted and
             #  the drives were simply laid out past the end of it.
-            overhead = 0 if self.output_hdf else (
+            overhead = 0 if (self.output_hdf or self.amiga_only) else (
                 (DEFAULT_BOOT_START * SECTOR) + self.boot_size)
             fixed = sum(p.size or 0 for p in self.amiga_partitions)
             flexible = any(p.size is None for p in self.amiga_partitions)
             if overhead + fixed > self.image_size:
                 over = overhead + fixed - self.image_size
-                with_boot = ("" if self.output_hdf else
+                with_boot = ("" if (self.output_hdf or self.amiga_only) else
                              f", which with the {human_size(self.boot_size)} "
                              f"boot partition")
                 problems.append(
@@ -446,6 +488,15 @@ class BuildConfig:
                 problems.append(
                     f"{spec.name} is set to {spec.dostype}; content can only be "
                     f"written to an FFS or PFS3 partition.")
+        if self.os_cd:
+            if self.mode is not BuildMode.FRESH:
+                problems.append(
+                    "AmigaOS can only be installed when building a new card.")
+            elif not Path(self.os_cd).is_file():
+                problems.append(f"CD image not found: {self.os_cd}")
+        for archive in self.boingbag_archives:
+            if not Path(archive).is_file():
+                problems.append(f"BoingBag archive not found: {archive}")
         if self.install_amigaos:
             if self.mode is not BuildMode.FRESH:
                 problems.append(
@@ -2181,8 +2232,22 @@ def _write_partition_table(handle, config: BuildConfig, total_size: int,
     says it is - Emu68 and a Kickstart, with the storage left to whatever the
     Amiga already has.
     """
-    progress.step("Creating the partition table")
     total_sectors = total_size // SECTOR
+    if config.amiga_only:
+        #  No MBR at all.  An Amiga IDE controller reads a Rigid Disk Block at
+        #  block 0; a DOS partition table there is not something it looks for,
+        #  and the RDB has to start where it expects it.  So the whole device
+        #  is the Amiga partition and nothing precedes it.
+        progress.step("Laying the card out for an Amiga controller")
+        progress.log("No MBR: the Rigid Disk Block starts at block 0, which is "
+                     "where an Amiga IDE or SCSI controller looks for it.")
+        progress.log(f"Amiga drives: {human_size(total_size)}, the whole card")
+        #  Wipe anything at the head that a controller might read instead.
+        handle.seek(0)
+        handle.write(b"\0" * (DEFAULT_BOOT_START * SECTOR))
+        return None, mbr.MbrPartition(0, 0x00, mbr.TYPE_AMIGA, 0, total_sectors)
+
+    progress.step("Creating the partition table")
     boot_start = DEFAULT_BOOT_START
     boot_sectors = align_up(config.boot_size, MIB) // SECTOR
     amiga_start = align_up(boot_start + boot_sectors, MIB // SECTOR)
@@ -2780,6 +2845,125 @@ def _expand(handle, config: BuildConfig, target_size: int, progress: Progress) -
 # ------------------------------------------------------------------- entry
 
 
+def _prepare_os_cd(config: BuildConfig, workdir: Path,
+                   progress: Progress) -> BuildConfig:
+    """Stage AmigaOS 3.5 or 3.9 from its CD, with its BoingBags on top.
+
+    The result is a directory tree that looks exactly like the finished system
+    drive, and it is handed to the rest of the build as the boot partition's
+    content.  Everything is layered here, on Linux, rather than on the Amiga
+    volume: the volume writer creates files and never overwrites them, so the
+    last copy has to be the winner *before* anything is written.
+    """
+    from . import amigacd, machines                           # noqa: PLC0415
+
+    match = amigacd.identify(config.os_cd)
+    if match.release is None:
+        raise RuntimeError(
+            f"{Path(config.os_cd).name} is not an AmigaOS 3.5 or 3.9 CD "
+            f"(its volume is \"{match.volume_name}\").")
+    if not match.usable:
+        missing = ", ".join(layer.label for layer in match.missing
+                            if layer.required)
+        raise RuntimeError(
+            f"{Path(config.os_cd).name} is missing {missing}, which an install "
+            f"cannot be built without.")
+
+    machine = machines.MACHINES_BY_KEY.get(config.machine_key or "a1200",
+                                           machines.MACHINES_BY_KEY["a1200"])
+    accelerator = machines.Accelerator(config.accelerator)
+    card_cpu = machines.Cpu(config.accelerator_cpu) \
+        if config.accelerator_cpu else None
+    rom_version = None
+    if config.kickstart_path and Path(config.kickstart_path).is_file():
+        info = kickstart.identify(config.kickstart_path, config.kickstart_key)
+        rom_version = info.version
+    problems = amigacd.requirements(match.release, machine, accelerator,
+                                    card_cpu=card_cpu,
+                                    kickstart_version=rom_version)
+    if problems:
+        raise RuntimeError(" ".join(problems))
+
+    progress.step(f"Installing {match.release.label} from "
+                  f"{Path(config.os_cd).name}")
+    staged = workdir / "amigaos"
+    files = amigacd.stage(match, staged, progress)
+    progress.log(f"{files} files staged from the CD")
+
+    _apply_boingbags(config, match.release, staged, machine, accelerator,
+                     card_cpu, progress)
+
+    #  The staged tree becomes the bootable partition's content.  A partition
+    #  that already has content keeps it: somebody who pointed a drive at an
+    #  image and *also* chose a CD meant both, and the CD is the base.
+    partitions = []
+    placed = False
+    for spec in config.amiga_partitions:
+        if not placed and spec.bootable and not spec.content_folder \
+                and not spec.content_hdf:
+            partitions.append(dataclasses.replace(spec,
+                                                  content_folder=str(staged)))
+            placed = True
+        else:
+            partitions.append(spec)
+    if not placed:
+        raise RuntimeError(
+            "There is no empty bootable partition for the CD install to go on.")
+    return dataclasses.replace(config, amiga_partitions=partitions,
+                               system_source="cd")
+
+
+def _apply_boingbags(config: BuildConfig, release, staged: Path,
+                     machine: machines.Machine,
+                     accelerator: machines.Accelerator,
+                     card_cpu, progress: Progress) -> None:
+    """Lay the update packs over the staged system, oldest first."""
+    from . import bbupdate, boingbag, packages                # noqa: PLC0415
+    from . import machines                                    # noqa: PLC0415
+
+    if not config.boingbag_archives:
+        return
+    wanted = set(config.boingbags)
+    cpu = machine.cpu_fitted(accelerator, card_cpu)
+    #  Emu68 has an FPU unless the card is booted with its "nofpu" switch,
+    #  which this imager does not write - so the builds that want one are the
+    #  right ones to install.
+    has_fpu = True
+
+    unpacked: list[Path] = []
+    for archive in config.boingbag_archives:
+        where = packages.unpack(Path(archive), progress)
+        if where is None:
+            progress.log(f"WARNING: {Path(archive).name} could not be unpacked, "
+                         f"so its updates are not on this card")
+            continue
+        unpacked.append(where)
+
+    for bag in boingbag.for_release(release.key):
+        if wanted and bag.key not in wanted:
+            continue
+        if not wanted and not bag.default_on:
+            continue
+        root = next((found for found in
+                     (boingbag.find_root(where, bag) for where in unpacked)
+                     if found is not None), None)
+        if root is None:
+            continue
+        progress.step(f"Applying {bag.label}")
+        written = boingbag.stage(bag, root, staged, machine, cpu, has_fpu,
+                                 progress)
+        progress.log(f"  {written} files from {bag.label}")
+        if boingbag.is_locked(root, bag):
+            bbupdate.apply_or_report(
+                bag, root, staged, machine, config.kickstart_path, progress,
+                use_emulator=config.boingbag_emulator,
+                #  The disc itself: its Updater checks for the CD it is an
+                #  update for before it will apply anything, so a run without
+                #  it sits at "Please insert volume AmigaOS3.9" until it
+                #  times out.
+                disc_image=config.os_cd)
+
+
 def run_build(config: BuildConfig, progress: Progress) -> None:
     """Build the card, saying plainly when the card itself is what failed."""
     try:
@@ -2833,6 +3017,12 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
         emu68_root: Path | None = None
         if config.install_emu68:
             emu68_files, emu68_root = _prepare_emu68(config, workdir, progress)
+        #  A CD install becomes an ordinary folder of content, so everything
+        #  that already happens to a filled drive - the compatibility pass, the
+        #  startup editing, the icons, the packages laid on top - happens to it
+        #  too, rather than needing a second version of all of that.
+        if config.os_cd:
+            config = _prepare_os_cd(config, workdir, progress)
 
         create_size = target_size if (config.mode in (BuildMode.FRESH, BuildMode.HDF)
                                       and not config.target_is_device) else None
@@ -2851,18 +3041,25 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
             if config.mode in (BuildMode.FRESH, BuildMode.HDF):
                 boot_part, amiga_part = _write_partition_table(
                     handle, config, target_size, progress)
+                #  An Amiga-drives-only card has no boot partition to make or
+                #  copy, so the whole FAT32 pass is skipped rather than made
+                #  to cope with a partition that is not there.
 
-                progress.step("Creating the FAT32 boot partition")
-                boot_image = _make_boot_filesystem(boot_part.size_bytes, workdir, progress)
-                with open(boot_image, "r+b") as boot_handle:
-                    fs = Fat32(boot_handle)
-                    _populate_boot(fs, config, emu68_files, emu68_root, progress)
-                    boot_handle.flush()
-                    os.fsync(boot_handle.fileno())
-                progress.step("Copying the boot partition onto the card")
-                with open(boot_image, "rb") as boot_handle:
-                    handle.seek(boot_part.start_bytes)
-                    copy_stream(boot_handle, handle, boot_part.size_bytes, progress)
+                if boot_part is not None:
+                    progress.step("Creating the FAT32 boot partition")
+                    boot_image = _make_boot_filesystem(boot_part.size_bytes,
+                                                       workdir, progress)
+                    with open(boot_image, "r+b") as boot_handle:
+                        fs = Fat32(boot_handle)
+                        _populate_boot(fs, config, emu68_files, emu68_root,
+                                       progress)
+                        boot_handle.flush()
+                        os.fsync(boot_handle.fileno())
+                    progress.step("Copying the boot partition onto the card")
+                    with open(boot_image, "rb") as boot_handle:
+                        handle.seek(boot_part.start_bytes)
+                        copy_stream(boot_handle, handle, boot_part.size_bytes,
+                                    progress)
 
                 if amiga_part is None:
                     #  Boot-only: there is no Amiga drive on this card, so
