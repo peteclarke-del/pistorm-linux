@@ -178,7 +178,13 @@ def best_rom(roms: list[kickstart.RomInfo],
     known, a matching Kickstart is preferred - Workbench 3.1 belongs with
     Kickstart 3.1, not with 3.2.
     """
-    wanted = {"3.1": (40, 68), "3.0": (39, 106), "3.2": (47, 96)}.get(os_version)
+    #  AmigaOS 3.5 and 3.9 are the strict ones: they need Kickstart 3.1 and
+    #  will not run on 3.2, so a 47.x ROM is not merely a worse answer for
+    #  them but a refusal. Without a release to go on the last tiebreak below
+    #  prefers the *highest* version, which picks exactly the ROM they cannot
+    #  use - so saying which release this is for matters here.
+    wanted = {"3.1": (40, 68), "3.0": (39, 106), "3.2": (47, 96),
+              "3.5": (40, 68), "3.9": (40, 68)}.get(os_version)
 
     def score(rom: kickstart.RomInfo) -> tuple:
         return (
