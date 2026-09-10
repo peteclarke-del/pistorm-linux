@@ -600,8 +600,13 @@ def describe_machine_setup(config: builder.BuildConfig,
                         "a native screen on the Amiga's own video output"))
     lines.append("")
     lines.append(describe(config, detected))
+    #  Emu68's options are written to cmdline.txt on the FAT32 boot
+    #  partition, so a card that has no boot partition has nowhere to put
+    #  them and they will not reach the machine.  Listing them anyway
+    #  promised settings that were never going to be written - the same
+    #  fault as claiming Emu68 itself would be there.
     cmdline = config.boot_options.cmdline()
-    if cmdline:
+    if cmdline and not getattr(config, "amiga_only", False):
         lines.append(f"Emu68 options: {cmdline}")
     lines.append("")
     for note in machines.advice(machine, display):
