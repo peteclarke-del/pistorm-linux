@@ -650,6 +650,76 @@ class ApplyingALockedUpdate(unittest.TestCase):
         finally:
             shutil.rmtree(staged, ignore_errors=True)
 
+    def test_the_build_tells_the_emulator_about_the_trapdoor(self):
+        """emulate.py exists so the emulated machine matches the real one.
+
+        The update pass was not passing the trapdoor choice, so an A500 ran
+        its update with half the chip RAM the finished card will have - the
+        very mismatch that module was written to stop.
+        """
+        from pistorm_imager.core import bootcfg, builder, machines  # noqa: PLC0415
+        seen = {}
+
+        def remember(bag, archive_root, staged, machine, kickstart, progress,
+                     **kwargs):
+            seen.update(kwargs)
+            return True
+
+        bag = boingbag.BAGS_BY_KEY["3.9-1"]
+        packs = Path(tempfile.mkdtemp(prefix="pistorm-trapdoor-"))
+        root = packs / bag.root
+        (root / "Locale").mkdir(parents=True)
+        (root / "Locale" / "afile").write_bytes(b"x")
+
+        config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target="/tmp/trap.img",
+            os_cd="/tmp/AmigaOS39.iso", boingbag_archives=["/tmp/pack.lha"],
+            boingbags=[bag.key], machine_key="a500",
+            boot_options=bootcfg.BootOptions(
+                extra_cmdline="move_slow_to_chip"))
+
+        from pistorm_imager.core import packages                   # noqa: PLC0415
+        original = (bbupdate.apply_or_report, boingbag.is_locked, packages.unpack)
+        try:
+            packages.unpack = lambda archive, progress: packs
+            bbupdate.apply_or_report = remember
+            boingbag.is_locked = lambda archive_root, bag: True
+            builder._apply_boingbags(
+                config, amigacd.RELEASES_BY_KEY["3.9"],
+                Path(tempfile.mkdtemp(prefix="pistorm-trapstage-")),
+                MACHINES_BY_KEY["a500"], machines.Accelerator.PISTORM, None,
+                Progress())
+        finally:
+            (bbupdate.apply_or_report, boingbag.is_locked,
+             packages.unpack) = original
+            shutil.rmtree(packs, ignore_errors=True)
+
+        self.assertTrue(seen.get("trapdoor_to_chip"),
+                        f"the trapdoor choice did not reach the run: {seen}")
+        #  And the emulated machine really does get the extra chip RAM.
+        from pistorm_imager.core import emulate                    # noqa: PLC0415
+        machine = MACHINES_BY_KEY["a500"]
+        self.assertGreater(emulate.chip_memory_kb(machine, True),
+                           emulate.chip_memory_kb(machine, False))
+
+    def test_a_release_that_needs_kickstart_31_is_given_one(self):
+        """Detection runs before any CD is named, so it has no release to go
+        on and prefers the newest ROM it can see - which for 3.5 and 3.9 is
+        the one they refuse."""
+        from pistorm_imager.core import kickstart, presets          # noqa: PLC0415
+
+        def rom(version, revision, name):
+            return kickstart.RomInfo(Path(name), 524288, version, revision,
+                                     f"Kickstart {version}.{revision}",
+                                     True, False, False, "", True, "")
+
+        roms = [rom(40, 68, "ks40.68.rom"), rom(47, 96, "ks47.96.rom")]
+        #  The fixture bites: with nothing said, the wrong one wins.
+        self.assertEqual(presets.best_rom(roms).revision, 96)
+        for release in ("3.5", "3.9"):
+            self.assertEqual(presets.best_rom(roms, release).revision, 68,
+                             f"AmigaOS {release} needs Kickstart 3.1")
+
     def test_a_confined_emulator_cannot_see_the_usual_places(self):
         """A snap sees neither /tmp nor the hidden parts of the home."""
         self.assertFalse(bbupdate._reachable(Path("/tmp/anything"), Path("/")))
