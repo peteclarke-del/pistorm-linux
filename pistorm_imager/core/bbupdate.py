@@ -263,6 +263,14 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
         return False
     if not bag.locked_payloads:
         return True
+    if disc_image is None or not Path(disc_image).is_file():
+        #  Refused rather than attempted.  Updater asks for the disc before it
+        #  does anything, so a run without one can only sit at a requester
+        #  until the timeout - minutes of waiting to reach a failure that was
+        #  knowable at the start.
+        progress.log(f"  {bag.label}: the CD it updates is needed to apply it, "
+                     f"and none was given")
+        return False
 
     staged = Path(staged)
     work_dir = Path(work_dir) if work_dir is not None else work_area()
