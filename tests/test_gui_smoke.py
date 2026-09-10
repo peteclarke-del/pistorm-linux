@@ -295,6 +295,26 @@ def on_activate(app: ImagerApplication) -> None:
               and options_page.get_visible(),
               "and brings back everything that lives on the boot partition")
 
+        #  What to do with the finished card depends on what was built. An
+        #  Amiga-drives-only card cannot boot in a PiStorm at all, so telling
+        #  somebody to put it in one sends them to fit a card that was never
+        #  going to work in that slot.
+        window.install_emu_row.set_active(False)
+        window._sync_visibility()
+        window.amiga_only_row.set_active(True)
+        drives_only = window._where_the_card_goes()
+        check("IDE or SCSI" in drives_only and "cannot start" in drives_only,
+              f"a drives-only card is not sent to a PiStorm: {drives_only!r}")
+        window.install_emu_row.set_active(True)
+        window._sync_visibility()
+        window.boot_only_row.set_active(True)
+        boot_only = window._where_the_card_goes()
+        check("PiStorm" in boot_only and "own storage" in boot_only,
+              f"a boot-only card says where its drives are: {boot_only!r}")
+        window.boot_only_row.set_active(False)
+        check(window._where_the_card_goes() == "Eject the card and put it in "
+              "your PiStorm.", "and an ordinary card reads as it always did")
+
         #  The community pack is separable, so the two states have to differ.
         window.os_cd_row.set_path("")
         with_none = window.gather().boingbags
