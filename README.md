@@ -254,6 +254,44 @@ running `./run.sh` from a checkout finds the icon without installing anything.
 desktop that caches its application grid - GNOME does - may still need a log
 out and back in before the icon appears.
 
+## Updating PiStorm Imager
+
+Open **About** from the menu and press **Check for Application Updates**, under
+the version. The menu item of the same name does both: it opens About and
+presses the button, so there is one check and one place its answer is shown.
+Nothing is sent until one of them is used.
+
+The check makes one request, to GitHub's API, for the release this repository
+marks as the latest. GitHub never marks a draft or a prerelease that way, so
+neither is offered. The release's tag, `vX.Y.Z`, is compared with the version
+About shows, which is the one in `pistorm_imager/__init__.py`. The answer
+appears under the button:
+
+- `PiStorm Imager 0.8.1 is the newest version` when no later release has been
+  published.
+- The newer version and the one you have, how this copy is updated, and an
+  **Open Release Page** button that opens the release on GitHub.
+- `Could not check for a newer version`, followed by the reason, when GitHub
+  could not be reached, refused the request or sent something that is not a
+  release. That is never reported as being up to date. Try again later: GitHub
+  answers 60 requests an hour from one address without an account.
+
+A release publishes no package, only its tag, so the application does not
+download or install anything, and it never runs git or pipx itself. It says how
+the copy in front of you is updated:
+
+| This copy | Update it in a terminal with |
+| --- | --- |
+| A git checkout, started with `./run.sh` | `git -C <the checkout> pull` |
+| Installed with pipx, as [Running it](#running-it) describes | `pipx install --force --system-site-packages "git+https://github.com/peteclarke-del/pistorm-linux@vX.Y.Z"` |
+| Anything else | Nothing is suggested: install the new release the way this copy was installed. |
+
+`--force` lets pipx replace the copy it already has, and
+`--system-site-packages` is needed for the reason given above. Neither command
+touches the saved setup in `~/.config/pistorm-imager` or the downloads in
+`~/.cache/pistorm-imager`, and the desktop entry that `install-desktop` wrote
+keeps working because the command it runs keeps its name.
+
 ## The window
 
 It opens on a choice of what to do, and nothing else, because a choice with a
@@ -345,14 +383,15 @@ button names the task too - it says `Export` here rather than `Write card`.
 | **Load settings…** | Reads one back into the window. |
 | **Forget saved setup** | Puts the window back to how it opens, discarding the session it remembered. |
 | **Inspect the target** | Shows the partitions and the Rigid Disk Block of the chosen card or image. |
-| **Check for updates…** | Asks GitHub for this project's releases and says what it found. |
-| **About** | Version and licence. |
+| **Check for Application Updates…** | Opens About and presses its Check for Application Updates button. |
+| **About** | Version, licence, and the Check for Application Updates button. |
 
-**Check for updates…** is asked for rather than done at startup: a tool that
-prepares a card should not reach out to the internet unless someone has asked it
-a question. No network, a changed API or a repository with no releases yet are
-all reported as the question going unanswered, because none of them mean
-anything is wrong with the copy in front of you.
+**Check for Application Updates** is asked for rather than done at startup: a
+tool that prepares a card should not reach out to the internet unless someone
+has asked it a question. No network, a refused request or a repository with no
+releases yet are all reported as the question going unanswered, with the
+reason, because none of them mean anything is wrong with the copy in front of
+you. [Updating PiStorm Imager](#updating-pistorm-imager) has the details.
 
 
 ## Privileges
@@ -431,7 +470,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 737 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 752 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 ```
