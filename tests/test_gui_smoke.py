@@ -193,6 +193,162 @@ def check(condition: bool, message: str) -> None:
         failures.append(message)
 
 
+def wait_for(condition, what: str, seconds: float = 5.0) -> bool:
+    """Run the main loop until ``condition`` holds, for work done on a thread."""
+    import time                                             # noqa: PLC0415
+    context = GLib.MainContext.default()
+    deadline = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() > deadline:
+            check(False, f"timed out waiting for {what}")
+            return False
+        context.iteration(False)
+        time.sleep(0.01)
+    return True
+
+
+def settle(seconds: float) -> None:
+    """Run the main loop for a while, for an animation that has no signal."""
+    import time                                             # noqa: PLC0415
+    deadline = time.monotonic() + seconds
+    wait_for(lambda: time.monotonic() > deadline, "the main loop", seconds + 5)
+
+
+def _check_application_updates(window) -> None:
+    """Check for Application Updates, in the About dialog, without GitHub.
+
+    The check is replaced by one that answers what each case needs; the
+    buttons, the messages and the menu item are the real ones.
+    """
+    from unittest import mock                               # noqa: PLC0415
+
+    from pistorm_imager import APPLICATION_NAME, __version__  # noqa: PLC0415
+    from pistorm_imager.core import updates                 # noqa: PLC0415
+    from pistorm_imager.ui import app_updater               # noqa: PLC0415
+
+    newer = updates.Release("99.0.0", "v99.0.0",
+                            f"{updates.RELEASES_PAGE}/tag/v99.0.0")
+    answers: list = []
+    asked: list[int] = []
+
+    def answer():
+        asked.append(1)
+        reply = answers.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    checkout = updates.Installation("checkout", Path("/home/me/pistorm-linux"))
+    window.app_updater = app_updater.AppUpdater(check=answer, where=checkout)
+    updater = window.app_updater
+
+    def controls_in(about):
+        found, stack = [], [about]
+        while stack:
+            widget = stack.pop()
+            if isinstance(widget, app_updater.AppUpdateControls):
+                found.append(widget)
+            child = widget.get_first_child()
+            while child is not None:
+                stack.append(child)
+                child = child.get_next_sibling()
+        return found
+
+    def open_about():
+        window.activate_action("win.about", None)
+        #  A dialog that has not finished appearing ignores force_close().
+        wait_for(lambda: window.about_dialog.get_mapped(), "the About dialog")
+        settle(0.3)
+        found = controls_in(window.about_dialog)
+        check(len(found) == 1,
+              f"the About dialog has one set of update controls ({len(found)})")
+        return found[0] if found else None
+
+    def close_about():
+        window.about_dialog.force_close()
+        wait_for(lambda: window.get_visible_dialog() is None,
+                 "the About dialog to close")
+        check(not updater._listeners,
+              "a closed About dialog stops following the update check")
+
+    controls = open_about()
+    if controls is None:
+        return
+    version = controls.get_prev_sibling()
+    check(version is not None and version.has_css_class("app-version")
+          and version.get_label() == __version__,
+          "the update button sits under the version the About dialog shows")
+    check(controls.button.get_label() == "_Check for Application Updates",
+          f"the button says Check for Application Updates "
+          f"({controls.button.get_label()!r})")
+    check(not controls.status.get_visible(), "nothing is said before a check")
+    check(asked == [], "nothing is asked of GitHub until the button is pressed")
+
+    answers.append(None)
+    controls.button.emit("clicked")
+    wait_for(lambda: updater.state.phase == "current", "the newest-version answer")
+    check(controls.status.get_text()
+          == f"{APPLICATION_NAME} {__version__} is the newest version",
+          f"an up-to-date copy says so ({controls.status.get_text()!r})")
+    check(controls.button.get_label() == "_Check for Application Updates",
+          "and the button checks again")
+
+    answers.append(updates.UpdateError(
+        "api.github.com could not be reached: timed out."))
+    controls.button.emit("clicked")
+    wait_for(lambda: updater.state.phase == "failed", "the failed check")
+    said = controls.status.get_text()
+    check(said == "Could not check for a newer version: "
+                  "api.github.com could not be reached: timed out.",
+          f"a failed check gives the reason ({said!r})")
+    check("newest" not in said, "and never claims this is the newest version")
+
+    answers.append(newer)
+    controls.button.emit("clicked")
+    check(updater.state.phase == "checking"
+          and controls.button.get_label() == "Checking"
+          and not controls.button.get_sensitive(),
+          "the button is off while GitHub is asked")
+    updater.check()
+    wait_for(lambda: updater.state.phase == "available", "the newer release")
+    check(len(asked) == 3, f"a second press while checking asks nothing ({len(asked)})")
+    said = controls.status.get_text()
+    check(said.startswith(f"{APPLICATION_NAME} 99.0.0 is available. "
+                          f"You have version {__version__}."),
+          f"a newer release is named with the running version ({said!r})")
+    check(said.endswith("Update it in a terminal with: "
+                        "git -C /home/me/pistorm-linux pull"),
+          f"and a checkout is told how to update itself ({said!r})")
+    check(controls.button.get_label() == "Open Release _Page",
+          f"the button opens the release page ({controls.button.get_label()!r})")
+    with mock.patch.object(app_updater, "open_uri") as opened:
+        controls.button.emit("clicked")
+    check(opened.call_args is not None and opened.call_args.args[1] == newer.url,
+          "which is the page of the newer release")
+    check(len(asked) == 3, "opening the page asks GitHub nothing more")
+    close_about()
+
+    controls = open_about()
+    check(controls is not None
+          and controls.status.get_text().startswith(f"{APPLICATION_NAME} 99.0.0"),
+          "the answer is still there when the About dialog is opened again")
+    close_about()
+
+    #  The menu item is the same check, made in the About dialog.
+    answers.append(None)
+    window.activate_action("win.check-updates", None)
+    wait_for(lambda: window.about_dialog.get_mapped(), "the About dialog")
+    settle(0.3)
+    found = controls_in(window.about_dialog)
+    check(len(found) == 1 and window.get_visible_dialog() is window.about_dialog,
+          "Check for Application Updates in the menu opens the About dialog")
+    wait_for(lambda: updater.state.phase == "current", "the menu's check")
+    check(len(asked) == 4 and found
+          and found[0].status.get_text().endswith("is the newest version"),
+          "and checks there, once")
+    close_about()
+
+
 def on_activate(app: ImagerApplication) -> None:
     try:
         window = app.window
@@ -1616,13 +1772,7 @@ def on_activate(app: ImagerApplication) -> None:
             check(window.lookup_action(name) is not None,
                   f"menu action {name} exists")
 
-        #  The answer is shown without asking GitHub anything in a test.
-        from pistorm_imager.core import updates as _u  # noqa: PLC0415
-        window._updates_answered(None)
-        window._updates_answered(_u.Release("v0.0.1", "Ancient", "old", "u"))
-        window._updates_answered(_u.Release("v99.0.0", "Future",
-                                            "It flies now", "u"))
-        check(True, "every update answer renders without error")
+        _check_application_updates(window)
 
         hdf_index = next(i for i, m in enumerate(MODES)
                          if m[1] is builder.BuildMode.HDF)

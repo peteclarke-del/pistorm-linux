@@ -16,15 +16,16 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from .. import __version__  # noqa: E402
+from .. import APPLICATION_NAME, __version__  # noqa: E402
 from ..core import (amigacd, amigaos, boingbag, bootcfg,  # noqa: E402
                     builder, content, devices,
                     distributions,
                     emu68, hdfcheck, jobs, kickstart, machines, packages,
-                    prepare, presets, updates)
+                    prepare, presets)
 from ..core.util import (GIB, Progress, describe_size,  # noqa: E402
                          exact_size_text, human_size,  # noqa: E402
                          parse_size)
+from .app_updater import AppUpdateControls, AppUpdater, attach_to_about  # noqa: E402
 from .widgets import FileRow, SaveRow, combo, show_full_value  # noqa: E402
 
 SELECT_CARD = "Select a card…"
@@ -442,7 +443,7 @@ def _version(pair) -> str:
 
 class ImagerWindow(Adw.ApplicationWindow):
     def __init__(self, application: Adw.Application):
-        super().__init__(application=application, title="PiStorm Imager",
+        super().__init__(application=application, title=APPLICATION_NAME,
                          default_width=880, default_height=760)
         #  Widgets on later pages do not exist while earlier pages are being
         #  built, and building a page can fire change callbacks.  Nothing reads
@@ -453,6 +454,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.worker: threading.Thread | None = None
         self.process: subprocess.Popen | None = None
         self.cancel_flag = threading.Event()
+        #  One for the life of the window, so the answer to a check is still
+        #  there when the About dialog is opened again.
+        self.app_updater = AppUpdater()
+        self.about_dialog: Adw.AboutDialog | None = None
 
         self.toasts = Adw.ToastOverlay()
         self.set_content(self.toasts)
@@ -511,7 +516,8 @@ class ImagerWindow(Adw.ApplicationWindow):
                    ("Load settings…", "load-settings", self._on_load_settings),
                    ("Forget saved setup", "forget-session", self._on_forget_session),
                    ("Inspect the target", "inspect-target", self._on_inspect),
-                   ("Check for updates…", "check-updates", self._on_check_updates),
+                   ("Check for Application Updates…", "check-updates",
+                    self._on_check_updates),
                    ("About", "about", self._on_about))
         model = Gio.Menu()
         for label, name, handler in entries:
@@ -820,7 +826,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 Gdk.Display.get_default()).has_icon("pistorm-imager"):
             icon.set_from_icon_name("drive-harddisk-symbolic")
         hero.append(icon)
-        title = Gtk.Label(label="PiStorm Imager")
+        title = Gtk.Label(label=APPLICATION_NAME)
         title.add_css_class("title-1")
         hero.append(title)
         strap = Gtk.Label(
@@ -4489,53 +4495,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         dialog.save(self, None, done)
 
     def _on_check_updates(self, _button) -> None:
-        """Ask GitHub whether there is a newer release, off the UI thread."""
-        self._toast("Checking for updates…")
-
-        def work() -> None:
-            release = updates.latest()
-            GLib.idle_add(self._updates_answered, release)
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _updates_answered(self, release) -> None:
-        if release is None:
-            self._update_dialog(
-                "Could not check for updates",
-                "GitHub could not be reached, or it has no published releases "
-                "yet. Nothing is wrong with this copy - the question simply "
-                "could not be answered.", None)
-            return False
-        if not updates.is_newer(release.tag):
-            self._update_dialog(
-                "No newer version available",
-                f"This is version {__version__}, and {release.name} is the "
-                f"newest release. You are up to date.", None)
-            return False
-        notes = release.notes or "No release notes were published."
-        if len(notes) > 2000:
-            notes = notes[:2000].rstrip() + "\n\n(continues on GitHub)"
-        self._update_dialog(
-            f"{release.name} is available",
-            f"You have version {__version__}.\n\n{notes}", release.url)
-        return False
-
-    def _update_dialog(self, heading: str, body: str, url: str | None) -> None:
-        dialog = Adw.AlertDialog(heading=heading, body=body)
-        dialog.add_response("close", "Close")
-        if url:
-            dialog.add_response("open", "Go to GitHub")
-            dialog.set_response_appearance("open",
-                                           Adw.ResponseAppearance.SUGGESTED)
-            dialog.connect("response", lambda _d, name, link=url:
-                           Gtk.UriLauncher(uri=link).launch(self, None, None)
-                           if name == "open" else None)
-        dialog.set_default_response("close")
-        dialog.present(self)
+        """Open the About dialog and check there, so there is one check."""
+        self._on_about(None)
+        self.app_updater.check()
 
     def _on_about(self, _button) -> None:
         about = Adw.AboutDialog(
-            application_name="PiStorm Imager",
+            application_name=APPLICATION_NAME,
             application_icon="drive-removable-media",
             developer_name="PiStorm Imager for Linux",
             version=__version__,
@@ -4544,6 +4510,10 @@ class ImagerWindow(Adw.ApplicationWindow):
                       "the boot partition of a card you already have."),
             license_type=Gtk.License.GPL_3_0,
         )
+        controls = AppUpdateControls(self.app_updater)
+        attach_to_about(about, controls)
+        about.connect("closed", lambda _dialog: controls.detach())
+        self.about_dialog = about
         about.present(self)
 
     # ------------------------------------------------------ applying config
