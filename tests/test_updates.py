@@ -1,11 +1,17 @@
 """Deciding whether a newer release of this tool has been published."""
+import contextlib
+import io
+import json
 import sys
+import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager import __version__  # noqa: E402
+from pistorm_imager import APPLICATION_NAME, __version__  # noqa: E402
 from pistorm_imager.core import updates  # noqa: E402
 
 
@@ -14,76 +20,195 @@ class TestVersions(unittest.TestCase):
         self.assertEqual(updates.parse_version("v1.2.3"), (1, 2, 3))
         self.assertEqual(updates.parse_version("0.2.0"), (0, 2, 0))
 
-    def test_a_tag_with_no_numbers_sorts_as_nothing(self):
-        self.assertEqual(updates.parse_version("nightly"), ())
-        self.assertEqual(updates.parse_version(""), ())
+    def test_only_a_vX_Y_Z_tag_is_a_version(self):
+        """The releases are tagged vX.Y.Z; anything else is not one of them."""
+        for tag in ("nightly", "", "v1.0", "0.3", "v1.2.3-beta", "v1.2.3.4", "release-1.2.3"):
+            self.assertIsNone(updates.parse_version(tag), tag)
 
     def test_newer_and_older(self):
         self.assertTrue(updates.is_newer("0.3.0", "0.2.0"))
-        self.assertTrue(updates.is_newer("v1.0", "0.9.9"))
+        self.assertTrue(updates.is_newer("v1.0.0", "0.9.9"))
+        self.assertTrue(updates.is_newer("v0.10.0", "0.9.0"))
         self.assertFalse(updates.is_newer("0.1.0", "0.2.0"))
 
     def test_the_same_version_is_not_newer(self):
         self.assertFalse(updates.is_newer("0.2.0", "0.2.0"))
         self.assertFalse(updates.is_newer("v0.2.0", "0.2.0"))
 
-    def test_a_shorter_tag_compares_by_value_not_length(self):
-        """0.3 and 0.3.0 are the same version, written two ways."""
-        self.assertFalse(updates.is_newer("0.3", "0.3.0"))
-        self.assertFalse(updates.is_newer("0.3.0", "0.3"))
-
     def test_an_unparseable_tag_never_claims_to_be_newer(self):
         """Better to say nothing than to announce an update that is not one."""
         self.assertFalse(updates.is_newer("latest"))
         self.assertFalse(updates.is_newer(""))
+        self.assertFalse(updates.is_newer("v99.0"))
 
     def test_it_compares_against_this_build_by_default(self):
         self.assertFalse(updates.is_newer(__version__))
+        self.assertFalse(updates.is_newer(f"v{__version__}"))
 
     def test_the_repository_it_asks_about(self):
-        self.assertIn("pistorm-linux", updates.RELEASES_API)
-        self.assertTrue(updates.RELEASES_PAGE.startswith("https://github.com/"))
+        self.assertEqual(updates.REPO, "peteclarke-del/pistorm-linux")
+        self.assertEqual(updates.LATEST_URL,
+                         "https://api.github.com/repos/peteclarke-del/pistorm-linux"
+                         "/releases/latest")
+        self.assertEqual(updates.RELEASES_PAGE,
+                         "https://github.com/peteclarke-del/pistorm-linux/releases")
 
 
-class TestLatest(unittest.TestCase):
-    """The answer when the question cannot be answered."""
+#  A reply from GitHub for a release later than this one.
+NEWER = {"tag_name": "v99.0.0", "name": "v99.0.0 - it flies now",
+         "html_url": "https://github.com/peteclarke-del/pistorm-linux/releases/tag/v99.0.0"}
 
-    def call_with(self, payload):
-        import contextlib, io, json as _json  # noqa: PLC0415
-        original = updates.urllib.request.urlopen
+
+class TestCheck(unittest.TestCase):
+    """What a reply from GitHub is taken to mean."""
+
+    def check_with(self, reply, current=__version__):
+        asked = []
+
+        def fetch(url):
+            asked.append(url)
+            return reply
+
+        return updates.check(current, fetch=fetch), asked
+
+    def test_it_asks_for_the_release_marked_latest(self):
+        """GitHub never marks a draft or a prerelease as the latest release."""
+        _found, asked = self.check_with(NEWER)
+        self.assertEqual(asked, [updates.LATEST_URL])
+
+    def test_a_newer_release_is_offered(self):
+        found, _asked = self.check_with(NEWER)
+        self.assertEqual(found, updates.Release("99.0.0", "v99.0.0", NEWER["html_url"]))
+        self.assertEqual(found.name, f"{APPLICATION_NAME} 99.0.0")
+
+    def test_this_version_and_older_ones_are_not(self):
+        self.assertIsNone(self.check_with({"tag_name": f"v{__version__}"})[0])
+        self.assertIsNone(self.check_with({"tag_name": "v0.0.1"})[0])
+
+    def test_a_release_without_a_page_points_at_the_list(self):
+        found, _asked = self.check_with({"tag_name": "v99.0.0"})
+        self.assertEqual(found.url, updates.RELEASES_PAGE)
+
+    def test_no_release_at_all_is_an_error_not_an_answer(self):
+        with self.assertRaisesRegex(updates.UpdateError, "No release has been published"):
+            self.check_with(None)
+
+    def test_a_latest_release_with_a_stray_tag_is_an_error(self):
+        with self.assertRaisesRegex(updates.UpdateError, "nightly, is not tagged"):
+            self.check_with({"tag_name": "nightly"})
+
+
+class TestFetchLatest(unittest.TestCase):
+    """The answer when the question cannot be answered is the reason."""
+
+    def fetch_with(self, reply=None, error=None):
+        requests = []
 
         @contextlib.contextmanager
-        def fake(*_a, **_k):
-            yield io.BytesIO(_json.dumps(payload).encode())
+        def fake(request, timeout=None):
+            requests.append(request)
+            if error is not None:
+                raise error
+            yield io.BytesIO(reply if isinstance(reply, bytes) else json.dumps(reply).encode())
 
-        updates.urllib.request.urlopen = fake
-        try:
-            return updates.latest()
-        finally:
-            updates.urllib.request.urlopen = original
+        with mock.patch.object(updates.urllib.request, "urlopen", fake):
+            found = updates.fetch_latest()
+        return found, requests
 
-    def test_the_newest_published_release_wins(self):
-        found = self.call_with([
-            {"tag_name": "v0.1.0", "name": "First", "body": "a"},
-            {"tag_name": "v0.9.0", "name": "Newest", "body": "b"},
-            {"tag_name": "v0.5.0", "name": "Middle", "body": "c"},
-        ])
-        self.assertEqual(found.tag, "v0.9.0")
-        self.assertEqual(found.name, "Newest")
+    def http_error(self, code, body=b""):
+        return urllib.error.HTTPError(updates.LATEST_URL, code, "reply", {}, io.BytesIO(body))
 
-    def test_drafts_and_prereleases_are_ignored(self):
-        found = self.call_with([
-            {"tag_name": "v0.1.0", "name": "Real", "body": ""},
-            {"tag_name": "v9.0.0", "name": "Draft", "draft": True},
-            {"tag_name": "v8.0.0", "name": "Beta", "prerelease": True},
-        ])
-        self.assertEqual(found.tag, "v0.1.0")
+    def test_the_request_names_the_tool(self):
+        found, requests = self.fetch_with({"tag_name": "v1.0.0"})
+        self.assertEqual(found, {"tag_name": "v1.0.0"})
+        self.assertEqual(requests[0].full_url, updates.LATEST_URL)
+        self.assertEqual(requests[0].get_header("User-agent"), "pistorm-imager")
+        self.assertEqual(requests[0].get_header("Accept"), "application/vnd.github+json")
 
-    def test_a_repository_with_no_releases_answers_nothing(self):
-        self.assertIsNone(self.call_with([]))
+    def test_no_published_release_is_none(self):
+        self.assertIsNone(self.fetch_with(error=self.http_error(404))[0])
 
-    def test_an_unexpected_payload_answers_nothing(self):
-        self.assertIsNone(self.call_with({"message": "Not Found"}))
+    def test_a_refusal_gives_githubs_reason(self):
+        body = json.dumps({"message": "API rate limit exceeded"}).encode()
+        with self.assertRaisesRegex(updates.UpdateError,
+                                    r"HTTP 403: API rate limit exceeded"):
+            self.fetch_with(error=self.http_error(403, body))
+
+    def test_no_network_says_so(self):
+        error = urllib.error.URLError("Temporary failure in name resolution")
+        with self.assertRaisesRegex(updates.UpdateError,
+                                    "api.github.com could not be reached: Temporary"):
+            self.fetch_with(error=error)
+
+    def test_a_timeout_says_so(self):
+        with self.assertRaisesRegex(updates.UpdateError, "could not be reached: timed out"):
+            self.fetch_with(error=TimeoutError())
+
+    def test_an_unreadable_reply_says_so(self):
+        with self.assertRaisesRegex(updates.UpdateError, "could not be read"):
+            self.fetch_with(b"<html>")
+
+    def test_a_reply_that_is_not_a_release_says_so(self):
+        for reply in ([], {"message": "Not Found"}):
+            with self.assertRaisesRegex(updates.UpdateError, "did not send a release"):
+                self.fetch_with(reply)
+
+
+class TestHowToUpdate(unittest.TestCase):
+    """A release publishes no package, so the answer is how this copy is updated."""
+
+    RELEASE = updates.Release("99.0.0", "v99.0.0", updates.RELEASES_PAGE)
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="pistorm-update-test-"))
+        self.package = self.root / "tree" / "pistorm_imager"
+        self.package.mkdir(parents=True)
+        self.prefix = self.root / "prefix"
+        self.prefix.mkdir()
+
+    def test_this_repository_is_a_checkout(self):
+        found = updates.installation()
+        self.assertEqual(found, updates.Installation("checkout", updates.PACKAGE_DIR.parent))
+
+    def test_a_checkout_is_updated_with_git(self):
+        (self.package.parent / ".git").mkdir()
+        where = updates.installation(self.package, str(self.prefix))
+        self.assertEqual(where, updates.Installation("checkout", self.package.parent))
+        text = updates.how_to_update(self.RELEASE, where)
+        self.assertIn("runs from a git checkout", text)
+        self.assertTrue(text.endswith(f"git -C {self.package.parent} pull"), text)
+
+    def test_a_linked_worktree_is_a_checkout_too(self):
+        (self.package.parent / ".git").write_text("gitdir: elsewhere\n")
+        where = updates.installation(self.package, str(self.prefix))
+        self.assertEqual(where.kind, "checkout")
+
+    def test_a_folder_with_a_space_is_quoted(self):
+        where = updates.Installation("checkout", Path("/home/me/Personal Projects/pistorm"))
+        self.assertEqual(updates.update_command(self.RELEASE, where),
+                         "git -C '/home/me/Personal Projects/pistorm' pull")
+
+    def test_a_pipx_install_is_updated_with_pipx_from_the_new_tag(self):
+        (self.prefix / "pipx_metadata.json").write_text("{}")
+        where = updates.installation(self.package, str(self.prefix))
+        self.assertEqual(where, updates.Installation("pipx"))
+        text = updates.how_to_update(self.RELEASE, where)
+        self.assertIn("installed with pipx", text)
+        self.assertTrue(text.endswith(
+            "pipx install --force --system-site-packages "
+            "git+https://github.com/peteclarke-del/pistorm-linux@v99.0.0"), text)
+
+    def test_anything_else_is_sent_to_the_release_page(self):
+        where = updates.installation(self.package, str(self.prefix))
+        self.assertEqual(where, updates.Installation("other"))
+        self.assertEqual(updates.update_command(self.RELEASE, where), "")
+        self.assertIn("release page", updates.how_to_update(self.RELEASE, where))
+
+    def test_the_readme_install_command_is_the_one_pipx_is_given(self):
+        """The command shown for a pipx copy is the README's, with --force."""
+        readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+        self.assertIn(f'"{updates.INSTALL_SOURCE}@v', readme)
+        self.assertIn("pipx install --system-site-packages", readme)
 
 
 class EveryCacheKnowsWhereItCameFrom(unittest.TestCase):
