@@ -979,6 +979,90 @@ def on_activate(app: ImagerApplication) -> None:
 
         for row in rows.values():
             row.set_active(False)
+
+        #  AGA-PISTORM: an add-on that goes onto the boot partition rather
+        #  than onto an Amiga drive. Its own instructions ask for a Windows PC
+        #  for this step. The machine and the Emu68 build are already what it
+        #  wants from the USB checks above; what is left is the chip RAM,
+        #  which is the requirement a real machine actually fails.
+        print()
+        print("AGA-PISTORM, and the boot partition it goes onto")
+        from pistorm_imager.core import bootaddon as _bootaddon
+        addons = [a for a in _bootaddon.CATALOGUE if a.writable_boot]
+        if not addons:
+            check(False, "no boot add-on needs a writable boot partition")
+        else:
+            addon = addons[0]
+            row = window.addon_rows[addon.key]
+            #  A stand-in download where the tool looks, so the row can say
+            #  where the archive it would use is rather than how to get one.
+            from test_bootaddon import make_download
+            store = SCRATCH / "addon-store"
+            store.mkdir(exist_ok=True)
+            make_download(store)
+            real_roots = _bootaddon.search_roots
+            _bootaddon.search_roots = lambda extra=None: [store]
+            try:
+                sizes = window._chip_ram_choices
+                window.quick_chip_ram.set_selected(sizes.index(512))
+                window._on_chip_ram_changed()
+                pump()
+                check(not row.get_sensitive(),
+                      "an unexpanded A500 has not the chip RAM for it")
+                check("chip RAM" in row.get_subtitle(),
+                      f"and the row says so: {row.get_subtitle()}")
+
+                window.quick_chip_ram.set_selected(sizes.index(2048))
+                window._on_chip_ram_changed()
+                pump()
+                check(row.get_sensitive(),
+                      "with a 2 MB Agnus it is on offer")
+                check("will be taken from" in row.get_subtitle(),
+                      f"and names the archive it found: {row.get_subtitle()}")
+
+                #  The switch this holds on is the one that lets the Amiga
+                #  write to the partition it was installed onto. Without it
+                #  the add-on's own installer fails at its last step, on the
+                #  Amiga, long after this tool has stopped watching.
+                window.unit0_row.set_active(False)
+                pump()
+                row.set_active(True)
+                pump()
+                check(window.unit0_row.get_active(),
+                      "choosing it makes the boot partition writable")
+                check(not window.unit0_row.get_sensitive(),
+                      "and holds that switch there while it lasts")
+                config = window.gather()
+                check(config.boot_addons == [addon.key],
+                      f"the add-on reaches the build ({config.boot_addons})")
+                check(config.chip_ram == 2048,
+                      f"and the chip RAM with it ({config.chip_ram})")
+                check(config.boot_options.sd_unit0_rw,
+                      "and so does the switch it held on")
+                check("sd.unit0=rw" in config.boot_options.cmdline(),
+                      f"which is a word on the command line: "
+                      f"{config.boot_options.cmdline()}")
+
+                row.set_active(False)
+                pump()
+                check(window.unit0_row.get_sensitive(),
+                      "turning it off gives the switch back")
+                check(window.gather().boot_addons == [],
+                      "and nothing is installed")
+
+                #  A machine that already has AGA does not want AGA emulated.
+                for index, machine in enumerate(machines.MACHINES):
+                    if machine.key == "a1200":
+                        window.quick_machine.set_selected(index)
+                window._on_machine_changed()
+                pump()
+                check(not row.get_sensitive(),
+                      "an A1200 already has AGA, so it is refused there")
+                check("AGA" in row.get_subtitle(),
+                      f"and says why: {row.get_subtitle()}")
+            finally:
+                _bootaddon.search_roots = real_roots
+
         window.release_row.set_selected(was_release)
         window.quick_machine.set_selected(was_machine)
         window._on_machine_changed()

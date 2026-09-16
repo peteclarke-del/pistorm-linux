@@ -34,13 +34,17 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from . import (amigafs, amigainfo, amigaos, bootcfg, compat, content, devices,
-               emu68, hdfcheck, imgsrc, kickstart, mbr, packages, pfs3,
-               postwrite, rdb)
+from . import (amigafs, amigainfo, amigaos, bootaddon, bootcfg, compat,
+               content, devices, emu68, hdfcheck, imgsrc, kickstart, mbr,
+               packages, pfs3, postwrite, rdb)
 from .fat32 import Fat32
 from .util import (MIB, Progress, align_up, copy_stream, human_size,
                    require_tool, run)
+
+if TYPE_CHECKING:                       # the machine profiles are imported
+    from . import machines              # lazily; this is for the annotations
 
 SECTOR = 512
 #  Below this a 'use the remaining space' drive is not worth
@@ -214,6 +218,15 @@ class BuildConfig:
     #  AddUSBHardware line in S:User-Startup, and whether config.txt turns the
     #  onboard OTG socket into a host port.
     usb_port: str = ""
+    #  How much chip RAM the machine has, in KB; 0 means the model's stock
+    #  figure. The chipset's own memory, which an Agnus decides the size of -
+    #  so it is a fact about somebody's machine, not something derivable.
+    chip_ram: int = 0
+    #  Add-ons installed onto the Emu68 boot partition rather than onto an
+    #  Amiga drive, as bootaddon keys. Each is finished on the Amiga by its
+    #  own installer; what happens here is the step its instructions ask a
+    #  Windows PC for.
+    boot_addons: list[str] = dataclasses.field(default_factory=list)
 
     #  Boot configuration
     boot_options: bootcfg.BootOptions = dataclasses.field(
@@ -413,6 +426,44 @@ class BuildConfig:
         card_cpu = (machines.Cpu(self.accelerator_cpu)
                     if self.accelerator_cpu else None)
         return self.machine().cpu_fitted(accelerator, card_cpu)
+
+    def chip_ram_fitted(self) -> int:
+        """How much chip RAM this card is being built for, in KB."""
+        return self.machine().chip_ram_fitted(self.chip_ram)
+
+    def chosen_addons(self) -> list["bootaddon.BootAddon"]:
+        """The boot-partition add-ons asked for that can actually be had.
+
+        Filtered here rather than trusted: a saved job can name one that the
+        machine it is loaded against cannot take, and writing a kernel's
+        drawer onto a card it is not for is worse than leaving it out.
+        """
+        from . import machines                              # noqa: PLC0415
+        accelerator = machines.Accelerator(self.accelerator or "pistorm")
+        out = []
+        for key in self.boot_addons:
+            addon = bootaddon.CATALOGUE_BY_KEY.get(key)
+            if addon is None:
+                continue
+            if addon.suits(self.machine(), accelerator=accelerator,
+                           pi=self.pi(), chip_ram=self.chip_ram_fitted(),
+                           emu68_tag=self.release_tag):
+                out.append(addon)
+        return out
+
+    def needs_writable_boot(self) -> bool:
+        """Whether the Amiga has to be able to write to the boot partition.
+
+        An add-on installed here is finished by its own installer *on the
+        Amiga*, and that installer writes to the partition it is reading from.
+        Emu68 1.1 mounts it read-only unless the command line says otherwise,
+        so without this the last step of the installation fails - on the
+        Amiga, long after this tool has stopped watching.
+
+        Asked here rather than set in the interface alone, so a build driven
+        from the command line or a saved job gets it too.
+        """
+        return any(addon.writable_boot for addon in self.chosen_addons())
 
     def usb_socket(self) -> "machines.UsbPort | None":
         """Which USB path the Amiga is being given, or None when there is none.
@@ -730,6 +781,16 @@ def _populate_boot(fs: Fat32, config: BuildConfig, emu68_files: list[Path],
     """Write Emu68, the Kickstart and the configuration onto the boot partition."""
     options = dataclasses.replace(config.boot_options)
 
+    #  An add-on that is finished by its own installer on the Amiga needs to
+    #  be able to write to the partition it was installed onto. The interface
+    #  shows this switch on and held there while such an add-on is chosen; it
+    #  is applied here as well so a build from the command line or a saved job
+    #  cannot go out without it.
+    if config.needs_writable_boot() and not options.sd_unit0_rw:
+        options.sd_unit0_rw = True
+        progress.log("The boot partition is made writable from the Amiga, "
+                     "which the add-on's own installer needs")
+
     if emu68_files:
         progress.step("Copying Emu68 to the boot partition")
         template: bootcfg.ConfigTxt | None = None
@@ -793,7 +854,51 @@ def _populate_boot(fs: Fat32, config: BuildConfig, emu68_files: list[Path],
             fs.write_file(path.name, path)
             progress.log(f"Extra file: {path.name}")
 
+    _install_boot_addons(fs, config, progress)
+
     fs.flush()
+
+
+def _install_boot_addons(fs: Fat32, config: BuildConfig,
+                         progress: Progress) -> None:
+    """Put the chosen boot-partition add-ons onto the card.
+
+    Last, and after config.txt has been written, because the first thing an
+    add-on does is take a copy of it - and a backup made before this build
+    had finished writing the file would be a copy of somebody else's card.
+    """
+    addons = config.chosen_addons()
+    if not addons:
+        return
+    for addon in addons:
+        progress.step(f"Installing {addon.label} onto the boot partition")
+        archive = bootaddon.find_archive(addon)
+        if archive is None:
+            #  Not fatal. The card is a perfectly good card without it, and
+            #  stopping a build that has already partitioned and filled a
+            #  drive because an optional extra was not to hand would be a
+            #  poor trade.
+            progress.log(
+                f"  {addon.label} was not found. Download it from "
+                f"{addon.home} and put the archive in "
+                f"{packages.cache_dir()}, then build again. Left out.")
+            continue
+        progress.log(f"  from {archive.name} "
+                     f"({human_size(archive.stat().st_size)})")
+        unpacked = packages.unpack(archive, progress)
+        if unpacked is None:
+            progress.log(f"  {addon.label}: the archive could not be "
+                         f"unpacked, so it is left out")
+            continue
+        try:
+            bootaddon.install(fs, addon, unpacked, progress)
+        except ValueError as error:
+            progress.log(f"  {error}")
+            continue
+        progress.log(f"  {addon.label} is on the boot partition. Finish it on "
+                     f"the Amiga: open the boot partition, open the "
+                     f"{addon.drawer} drawer, double-click Install, then "
+                     f"power the machine off and on.")
 
 
 def _build_rdb(config: BuildConfig, partition_blocks: int,
@@ -2995,7 +3100,6 @@ def _apply_boingbags(config: BuildConfig, release, staged: Path,
                      card_cpu, progress: Progress) -> None:
     """Lay the update packs over the staged system, oldest first."""
     from . import bbupdate, boingbag, packages                # noqa: PLC0415
-    from . import machines                                    # noqa: PLC0415
 
     if not config.boingbag_archives:
         return
