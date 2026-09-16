@@ -325,8 +325,8 @@ decisions are made.
 | --- | --- |
 | **Source** | The task - the five listed under [What it does](#what-it-does) - and where the Amiga system comes from: a new drive, a PiMiga installation, or a hard disk image. |
 | **Storage** | The size of the system drive, whether the rest of the card becomes a PFS3 work drive, whether the card carries an Amiga drive at all, and the Amiga partitions themselves. |
-| **Amiga** | Which Amiga the card is for, how you look at it, the Kickstart ROM, and the Workbench floppy images. |
-| **Packages** | The optional software, fetched from its publisher rather than taken from a drive you happen to have. |
+| **Amiga** | Which Amiga the card is for, which Raspberry Pi is on its PiStorm board, how you look at it, the Kickstart ROM, and the Workbench floppy images. |
+| **Packages** | The optional software, fetched from its publisher rather than taken from a drive you happen to have - and, where something chosen needs one, [which USB socket](#which-socket-and-the-two-files-that-have-to-agree) the Amiga is given. |
 | **Options** | HDMI output, the Raspberry Pi's own settings, and the Emu68 switches that end up in `cmdline.txt`. |
 | **Target** | Where the result goes, how big the boot partition is, and **what this will build**. |
 
@@ -447,7 +447,8 @@ pistorm_imager/
     emulate.py   turns a machine profile into an FS-UAE configuration
     export.py    lifting the Amiga drives back out of a card, one file each
     presets.py   turns a machine and a source into a complete build
-    packages.py  optional software taken from a system you already have
+    packages.py  the optional software catalogue, fetched from each
+                 publisher and cached between builds
     content.py   what a games or demos tree is divided into, and what runs here
     distributions.py  recognising a prepared system and what it expects
     postwrite.py adapting a prepared system after it has been written
@@ -470,7 +471,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 752 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 781 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 ```
@@ -1358,9 +1359,14 @@ agree with perfectly:
 
 A Workbench installed from the original floppies is exactly what shipped in
 1994: no archiver, no installer, and no idea what WHDLoad is. The pieces most
-people add next are offered as a catalogue of 48 packages, grouped as System,
-Updates and patches, Look and feel, Speed, Networking, Music and pictures, and
-Handy extras.
+people add next are offered as a catalogue of 51 packages, grouped as System,
+Updates and patches, Look and feel, Speed, Networking, Music and pictures,
+Handy extras, and Raspberry Pi hardware.
+
+That last group is not like the others. Everything else in the catalogue cares
+about the Amiga - its chipset, its screen, its processor - while [USB](#usb-on-the-amiga)
+cares about which Raspberry Pi is on the board and which Emu68 is booting it,
+so it is asked and refused on different grounds.
 
 Every one of them comes **from whoever publishes it** - Aminet, or the project
 that makes it - and is cached under `~/.cache/pistorm-imager/packages`, so a
@@ -3036,6 +3042,131 @@ there, and stages the rest in `Storage/Install/Roadshow`. Two details matter:
   `DEVS:NetInterfaces/vlink` naming `vlink.device`, which is what a PiStorm
   has, and asks for DHCP. Without it `AddNetInterface` has nothing to bring
   up and the stack installs but never runs.
+
+## USB on the Amiga
+
+A PiStorm card can give the Amiga real USB: keyboards, mice, memory sticks,
+network adapters, audio, printers and MIDI. It takes two pieces that are
+useless apart, and the imager offers them as one choice on the packages page,
+in a group of their own called **Raspberry Pi hardware**.
+
+- **[Poseidon](https://github.com/rondoval/poseidon-backport)** is the stack -
+  the USB stack originally written for AmigaOS, developed in AROS for the
+  seventeen years since, and brought back to 68k. Twenty-nine class drivers and
+  the Trident control panel. It ships **no host controller driver at all**.
+- **[xhci.device](https://github.com/rondoval/emu68-driver-stack)**, from the
+  Emu68 driver stack, is the half that talks to the hardware. It brings
+  `gic400.library` and `bcmpcie.library` with it, and `lspci`, which is how
+  anybody answers "is the controller even being seen?" without guessing.
+
+Ticking the stack brings the driver, and MUI, which Trident's window is built
+from. Both are off by default: the driver's own authors warn that data
+corruption is possible in edge cases, so this is not something to turn on and
+then put the only copy of something on a memory stick.
+
+### Which Raspberry Pi is on the board
+
+Nothing on a card used to depend on this. The boot partition carries a device
+tree for every model Emu68 supports and the firmware picks its own, so a card
+built for one Pi boots on another and the question was never worth asking.
+
+The USB controller is on the Pi, and a Pi 3 has not got one anything here can
+drive - its USB is a DWC OTG controller on the SoC, not xHCI. So the model is
+asked for on the Amiga page, beside the machine, and the software that needs
+one is refused where the answer says there is none, with the row saying which
+Pi it wanted rather than leaving a tick box that does nothing.
+
+**Where there is a choice, the default is the Pi without xHCI.** Guessing the
+newer Pi would offer USB to a card that cannot have it. A stated Pi 4 is one
+keystroke away; a USB stack that enumerates nothing is not. The board settles it
+where the board can: a PiStorm16 in an A600 is a Compute Module carrier and is
+offered nothing else.
+
+The driver also needs **Emu68 1.1 or newer**, which is what maps the PCIe window
+the controller lives behind. 1.1 is still a pre-release, so the newest *stable*
+build refuses it - and says so. That gate is softer than the Pi one: a card
+built from a local zip or an already-unpacked folder carries no version for
+anything to read, and refusing what cannot be checked would hide the software
+from everybody building that way.
+
+### Which socket, and the two files that have to agree
+
+`xhci.device` numbers its units by path rather than by socket. Unit 0 is the
+Pi's onboard OTG port; units 1 and up are the PCIe controllers, indexed from 1.
+On a stock Pi 4B that makes **unit 1** the VL805 behind the four USB-A
+sockets - which is where anybody would actually plug a keyboard in, and *not*
+what the driver's own default of 0 would attach.
+
+So the card has to be told which socket, and that one answer decides two things
+written into two different files:
+
+- the unit number on the `C:AddUSBHardware` line in `S:User-Startup`, and
+- whether `config.txt` gets `otg_mode=1`, without which the OTG socket is not a
+  host port at all and will never enumerate anything.
+
+Setting one and not the other is precisely the shape of mistake this project
+has been bitten by twice, so both come from the same widget, read in `gather()`
+where the card is actually written from. The socket row only appears when
+something chosen actually needs the answer - found by looking at the catalogue
+for a startup line carrying the placeholder, not by naming a package - and a
+card with no USB stack on it is never quietly told to reconfigure its socket.
+
+### A placeholder the hardware fills, and what happens when it cannot
+
+A startup line could already carry a `{placeholder}` filled from the files a
+package's own archive shipped; that is what stops Birdie being started with no
+patterns and opening its about window on every boot. The USB line needs the
+other kind - a value no archive and no catalogue can know, because it is a fact
+about somebody's hardware and their choice.
+
+The rule is the same one Birdie taught: **a line that cannot be filled in is
+not written at all.** A `C:AddUSBHardware` with a gap where the unit should be
+would run, succeed at nothing, and say so to nobody - the software would land,
+Workbench would show it, and it would never have been started. Where the card
+cannot answer, the build says so in the plan before anything is written.
+
+### An archive that wraps itself in a drawer
+
+Poseidon unpacks as a single drawer holding its contents, named after the
+release: `Poseidon-6.1-040`. Writing that into the catalogue's paths would tie
+the entry to one version and one processor and break silently at the next -
+every item logging "is not in the archive" and the card going out with the
+software missing, which is exactly what the first attempt at this did. So a
+path that is not at the top of an archive is looked for inside the one drawer
+there, when there is exactly one. It can only turn a failure into a file and
+can never move one that was already found.
+
+### One archive per processor
+
+Poseidon is published as three builds - 020, 040 and 060 - rather than one
+archive holding all three. The catalogue records all three and the machine
+picks, instead of the one URL that can be reached today being written in as
+though it were the package.
+
+That choice cannot be wrong today: everything that can reach this software runs
+on Emu68, which is a 68040-class core. The rule is still that the processor
+decides, and encoding only today's accident would lose it.
+
+### Proving it, rather than tracing it
+
+Both halves were read back off a written card rather than reasoned about. A
+real build with Workbench installed from the floppy images carries
+`Libs/poseidon.library`, `Devs/USBHardware/xhci.device`, `gic400.library`,
+`bcmpcie.library`, all twenty-nine classes in `Classes/USB`, the five commands
+in `C`, Trident and its sounds, the PSD datatype and its icon, and `USBEject`
+in `WBStartup` - with
+
+```
+C:PsdStackLoader >NIL:
+C:AddUSBHardware >NIL: xhci.device 0
+C:AddUSBClasses >NIL:
+```
+
+in `S:User-Startup`, and `otg_mode=1` in the `config.txt` on the FAT32 boot
+partition beside it. The window itself is driven in `tests/test_gui_smoke.py`:
+a Pi 3 refuses the stack, a Pi 4 offers it, changing the socket moves the unit
+number and the `config.txt` line together, and turning the stack off takes both
+away again.
 
 ## Two outputs at once
 
