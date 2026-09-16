@@ -325,9 +325,9 @@ decisions are made.
 | --- | --- |
 | **Source** | The task - the five listed under [What it does](#what-it-does) - and where the Amiga system comes from: a new drive, a PiMiga installation, or a hard disk image. |
 | **Storage** | The size of the system drive, whether the rest of the card becomes a PFS3 work drive, whether the card carries an Amiga drive at all, and the Amiga partitions themselves. |
-| **Amiga** | Which Amiga the card is for, which Raspberry Pi is on its PiStorm board, how you look at it, the Kickstart ROM, and the Workbench floppy images. |
+| **Amiga** | Which Amiga the card is for, which Raspberry Pi is on its PiStorm board, how much chip RAM is fitted, how you look at it, the Kickstart ROM, and the Workbench floppy images. |
 | **Packages** | The optional software, fetched from its publisher rather than taken from a drive you happen to have - and, where something chosen needs one, [which USB socket](#which-socket-and-the-two-files-that-have-to-agree) the Amiga is given. |
-| **Options** | HDMI output, the Raspberry Pi's own settings, and the Emu68 switches that end up in `cmdline.txt`. |
+| **Options** | HDMI output, the Raspberry Pi's own settings, the [boot partition add-ons](#add-ons-that-go-onto-the-boot-partition), and the Emu68 switches that end up in `cmdline.txt`. |
 | **Target** | Where the result goes, how big the boot partition is, and **what this will build**. |
 
 ![The Source page: the task, and where the system comes from](docs/images/03-source.png)
@@ -433,13 +433,15 @@ pistorm_imager/
     emu68.py     GitHub releases, asset naming, Raspberry Pi firmware
     kickstart.py ROM identification, Cloanto decryption, byte-swap repair
     bootcfg.py   config.txt / cmdline.txt editing
+    bootaddon.py add-ons installed onto the Emu68 boot partition rather
+                 than onto an Amiga drive
     imgsrc.py    streaming readers for .img/.xz/.gz/.zip/.7z sources
     hdfcheck.py  PiStorm compatibility analysis and RDB repair
     pfs3.py      PFS3: reads real volumes, creates and fills new ones
     compat.py    automatic emulator-to-PiStorm fixes (RTG driver, startup)
     amigainfo.py Workbench .info icons, enough to retarget tool types
     machines.py  target machine profiles: chipset, processor, board,
-                 Kickstart, display
+                 Raspberry Pi, chip RAM, Kickstart, display
     iso9660.py   reading CD images: ISO 9660 with Joliet and Rock Ridge
     amigacd.py   installing AmigaOS 3.5 and 3.9 from their CDs
     boingbag.py  the update packs for 3.5 and 3.9
@@ -471,7 +473,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 781 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 809 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 ```
@@ -3167,6 +3169,113 @@ partition beside it. The window itself is driven in `tests/test_gui_smoke.py`:
 a Pi 3 refuses the stack, a Pi 4 offers it, changing the socket moves the unit
 number and the `config.txt` line together, and turning the stack off takes both
 away again.
+
+## Add-ons that go onto the boot partition
+
+Everything under [Software to add](#software-to-add) goes onto an Amiga drive
+and is software the Amiga runs. There is another kind: something that belongs
+on the **FAT32 boot partition**, beside the Emu68 kernel and `config.txt`, and
+is finished on the Amiga afterwards by its own installer. Those are on the
+Options page, under **Boot partition add-ons**.
+
+The first of them is
+**[AGA-PISTORM](https://astair86.itch.io/aga-pistorm-10-experimental-prototype)**,
+which lets an OCS or ECS machine run AGA WHDLoad games - the ones written for
+the A1200 and A4000. The Pi emulates Alice, Lisa and Paula on a spare core
+while a game runs and hands the chipset back when it quits.
+
+### Why this is here at all: step 1 is a Windows batch file
+
+Its instructions have two steps, and the first of them is `SD-Setup.cmd`. That
+script finds the card's boot partition, backs up `config.txt`, makes the
+partition writable from the Amiga, adds the Emu68 overlays the card is missing
+and copies the add-on's drawer onto it.
+
+Every one of those is something this tool already does to every card it writes,
+and a Linux user currently has to find a Windows PC to have them done. So it
+does them:
+
+| `SD-Setup.cmd` | Here |
+| --- | --- |
+| Finds the boot partition and asks before changing anything | The build owns the boot partition already |
+| Backs up `config.txt` as `config.txt.pre-aga` | Taken **after** the build has written the final `config.txt`, so the backup is of this card and not of somebody else's - and only once, so a second run never overwrites the copy you would put back |
+| Makes the partition writable from the Amiga | `sd.unit0=rw`, which is already a switch here. Choosing the add-on holds it on and says why |
+| Adds the Emu68 overlays the card is missing | Only the missing ones. The card's own came with the Emu68 release it was built from and are what its kernel was built against |
+| Copies the add-on's drawer onto the card | The drawer whole, and its `.info` - without the icon the drawer cannot be opened from Workbench, which is the whole of step 2 |
+
+### What it deliberately does not do
+
+Step 2 - installing the kernel, its `config.txt` line, the replacement RTG
+driver, the WHDLoad hooks and the Workbench menu - is the add-on's own
+`Install`, run on the Amiga, and it stays there. It checks the machine it is
+running on, asks two questions this tool cannot answer for it (whether there is
+a Framethrower, whether the Agnus is PAL or NTSC) and backs up everything it
+replaces.
+
+Doing that from Linux would mean reimplementing an installer whose author tests
+it and this does not, against a Workbench this tool may not have built. That is
+how an imager introduces exactly the incompatibility it exists to avoid, so the
+build says what to do instead:
+
+> AGA-PISTORM is on the boot partition. Finish it on the Amiga: open the boot
+> partition, open the AGA-Pistorm drawer, double-click Install, then power the
+> machine off and on.
+
+A Ctrl-Amiga-Amiga reset is not enough - a new kernel only loads at power-on.
+
+### Nothing here is downloaded
+
+It is published on itch.io as "name your own price", and that page will not
+serve a file to anything but a browser. So the archive is one **you** have, and
+it is *found* - in `samples/`, in `~/Amiga`, or in the package cache, the same
+places the tool already looks for a Kickstart or a PFS3 handler. What is not
+done is fetching a login page and caching it as though it were the archive,
+which is the same rule [Roadshow](#every-package-names-its-source) follows.
+
+The file name carries the version and the machines it supports, and both have
+changed once already, so it is matched on the part that has not and the newest
+one wins. The drawer inside is found **by name**, at whatever depth: today it
+is at `Amiga/AGA-Pistorm` with the Windows script beside it and a source tree
+in another drawer, and that arrangement is the publisher's rather than
+anything to build on.
+
+### What the card has to be
+
+Each of these is a refusal rather than a preference, and the row says which one
+it was rather than leaving a switch greyed out to be guessed at.
+
+| | |
+| --- | --- |
+| **OCS or ECS** | AGA emulation on a machine that has AGA is pointless, so an A1200 is refused. |
+| **A PiStorm** | It is an Emu68 kernel. |
+| **1 MB of chip RAM** | The requirement a real machine actually fails: an unexpanded A500 has 512K. |
+| **Emu68 1.1 or newer** | Its kernel is built from 1.1.0-beta.1, and 1.0.7 has no overlays drawer at all. Softer than the rest - a build from a local zip carries no version for anything to read. |
+
+### Chip RAM, which nothing needed until now
+
+Chip RAM is the chipset's own memory and an Agnus decides how much of it there
+can be: an unexpanded A500 has 512K, an A500+ and an A600 have a megabyte, and
+the same A500 board with an ACE2B has two. Nothing on a card depended on that
+until an add-on that emulates a chipset did, so the machine now carries the
+sizes it can have and the Amiga page asks - only where there is more than one
+answer.
+
+It is deliberately **not** tied to the trapdoor switch. Emu68's
+`move_slow_to_chip` makes the Amiga see a megabyte, but whether that satisfies
+software that wants the chipset itself to address it is untested here, and
+saying it does would be [the kind of confident guess this project has been
+wrong with before](#the-fpu-and-a-wrong-answer-held-for-a-long-time).
+
+### Things that are true and cannot be checked from here
+
+The add-on says them, so the build does too rather than pretending to have
+verified them: a Raspberry Pi 4 on a classic PiStorm needs the EPM240
+longer-hold CPLD firmware flashed to the board, which is a hardware job; the
+Amiga side expects CaffeineOS with its WHDLoad setup; only WHDLoad games switch
+to the emulated chipset, so anything started from Workbench or from an ADF runs
+on the Amiga's own and looks wrong; and it is experimental, which its author
+says plainly - one tested machine, and graphical glitches in some games. Back
+the card's boot partition up first.
 
 ## Two outputs at once
 
