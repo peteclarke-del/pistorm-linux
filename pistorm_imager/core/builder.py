@@ -202,6 +202,18 @@ class BuildConfig:
     #  AmigaOS 3.5 or 3.9, and which of a BoingBag's per-machine drivers to
     #  install - an A1200's IDE driver on an A500 would be inventing hardware.
     machine_key: str = ""
+    #  Which Raspberry Pi is on the PiStorm board, as a machines.Pi value.
+    #  Empty means the board's default. Nothing else on a card depends on it -
+    #  the boot partition carries a device tree for every model - but the USB
+    #  controller does: a Pi 3 has no xHCI, so software that drives one cannot
+    #  honestly be offered until this has been answered.
+    pi_model: str = ""
+    #  Which of the Pi's USB paths the Amiga is given, as a machines.UsbPort
+    #  value; empty means none, which is every card with no USB stack on it.
+    #  It decides two things that must agree: the unit number on the
+    #  AddUSBHardware line in S:User-Startup, and whether config.txt turns the
+    #  onboard OTG socket into a host port.
+    usb_port: str = ""
 
     #  Boot configuration
     boot_options: bootcfg.BootOptions = dataclasses.field(
@@ -352,7 +364,8 @@ class BuildConfig:
             if not package.download.manual:
                 continue
             try:
-                here = packages.cache_dir() / package.download.filename
+                here = (packages.cache_dir()
+                        / package.archive(self.cpu()).filename)
                 if here.is_file() and here.stat().st_size:
                     continue
             except OSError:
@@ -363,7 +376,66 @@ class BuildConfig:
                 f"{', '.join(by_hand)} cannot be downloaded here - its "
                 f"publisher serves it only to a browser - so put the archive "
                 f"in {packages.cache_dir()} first, or it will be left out.")
+        #  A startup line carries placeholders the hardware fills in - which
+        #  USB socket the card was built for, and anything of that kind added
+        #  later. Where the card cannot answer one, the line is not written at
+        #  all, which is right and which nobody would otherwise notice: the
+        #  software lands, Workbench shows it, and it was never started.
+        settings = self.startup_settings()
+        unstarted = []
+        for key in sorted(keys):
+            package = packages.CATALOGUE_BY_KEY.get(key)
+            if package is None or not package.startup or package.startup_files:
+                continue
+            if packages.complete_startup(package, [], settings) is None:
+                unstarted.append(package.label)
+        if unstarted:
+            said.append(
+                f"{', '.join(unstarted)} would be installed but not started: "
+                f"its startup line needs a setting this card has not got, so "
+                f"the line is left out rather than written with a gap in it.")
         return said
+
+    def machine(self) -> "machines.Machine":
+        """The Amiga this card is for, defaulting the way the rest of the tool does."""
+        from . import machines                              # noqa: PLC0415
+        return machines.MACHINES_BY_KEY.get(self.machine_key or "a1200",
+                                            machines.MACHINES_BY_KEY["a1200"])
+
+    def pi(self) -> "machines.Pi":
+        """The Raspberry Pi on the board."""
+        return self.machine().pi_fitted(self.pi_model)
+
+    def cpu(self) -> "machines.Cpu":
+        """The processor that will actually run this card."""
+        from . import machines                              # noqa: PLC0415
+        accelerator = machines.Accelerator(self.accelerator or "pistorm")
+        card_cpu = (machines.Cpu(self.accelerator_cpu)
+                    if self.accelerator_cpu else None)
+        return self.machine().cpu_fitted(accelerator, card_cpu)
+
+    def usb_socket(self) -> "machines.UsbPort | None":
+        """Which USB path the Amiga is being given, or None when there is none.
+
+        Answered from the Pi as well as from the choice: a socket the board
+        has not got is no socket at all, and honouring it would put a unit
+        number on the startup line that enumerates nothing.
+        """
+        from . import machines                              # noqa: PLC0415
+        available = machines.usb_ports(self.pi())
+        for port in available:
+            if port.value == self.usb_port:
+                return port
+        return None
+
+    def startup_settings(self) -> dict[str, str]:
+        """The startup-line placeholders the hardware fills in.
+
+        Empty for whatever the card cannot answer, which is the point: a line
+        whose placeholder has no value is not written at all.
+        """
+        port = self.usb_socket()
+        return {} if port is None else {packages.USB_UNIT: str(port.unit)}
 
     def brings_a_system_from_elsewhere(self) -> bool:
         """Whether a system somebody else set up is going onto this card.
@@ -1049,16 +1121,19 @@ def _package_startup_lines(config: "BuildConfig", boot: str = "",
                              f"drive's own boot, so no line is added for it")
             continue
         theirs = [pair for pair, whose in (credit or {}).items() if whose == key]
-        filled = packages.complete_startup(package, theirs)
+        filled = packages.complete_startup(package, theirs,
+                                           config.startup_settings())
         if filled is None:
             #  Only where the files really are missing. A line left with its
             #  placeholder unfilled is what put an about window on the desktop
             #  at every boot, so nothing is written rather than something that
             #  runs the program wrongly.
             if progress is not None:
-                progress.log(f"  {package.label} needs files from its own "
-                             f"archive on its startup line and none were "
-                             f"installed, so it is not started")
+                why = ("needs files from its own archive on its startup line "
+                       "and none were installed"
+                       if package.startup_files
+                       else "has a startup line this card cannot fill in")
+                progress.log(f"  {package.label} {why}, so it is not started")
             continue
         lines += filled
     return lines
@@ -1438,7 +1513,8 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     progress.step("Adding the software you chose")
     by_package = packages.overlays_by_package(
         config.package_keys, chipset=chipset, display=display,
-        progress=progress)
+        progress=progress, pi=config.pi(), cpu=config.cpu(),
+        emu68_tag=config.release_tag)
     resolved = [pair for _key, pairs in by_package for pair in pairs]
     if credit is not None:
         for key, pairs in by_package:

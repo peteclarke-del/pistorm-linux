@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager.core import builder, emu68, jobs, machines, presets  # noqa: E402
+from pistorm_imager.core import (bootcfg, builder, emu68, jobs,  # noqa: E402
+                                 machines, presets)
 from pistorm_imager.core.util import GIB, MIB  # noqa: E402
 
 Display = machines.Display
@@ -752,18 +753,25 @@ class EveryOptionTheMachineDecidesReachesTheCard(unittest.TestCase):
         passed = self.gather_keywords()
         default = bootcfg.BootOptions()
         dropped = {}
+        #  Every input boot_options() takes, not merely the ones it took when
+        #  this test was written: the USB socket was added afterwards, and it
+        #  decides a config.txt line of its own. A loop that did not vary it
+        #  would have passed while otg_mode never reached a single card.
+        sockets = [None] + list(machines.UsbPort)
         for machine in machines.MACHINES:
             for display in machines.Display:
                 for trapdoor in (False, True):
-                    decided = machines.boot_options(
-                        machine, display, trapdoor_to_chip=trapdoor)
-                    for field in dataclasses.fields(decided):
-                        value = getattr(decided, field.name)
-                        if field.name in passed:
-                            continue
-                        if value != getattr(default, field.name):
-                            dropped.setdefault(field.name, set()).add(
-                                f"{machine.key}/{display.name}")
+                    for socket in sockets:
+                        decided = machines.boot_options(
+                            machine, display, trapdoor_to_chip=trapdoor,
+                            usb_port=socket)
+                        for field in dataclasses.fields(decided):
+                            value = getattr(decided, field.name)
+                            if field.name in passed:
+                                continue
+                            if value != getattr(default, field.name):
+                                dropped.setdefault(field.name, set()).add(
+                                    f"{machine.key}/{display.name}")
         self.assertEqual(
             dropped, {},
             "gather() drops settings the machine decides, so a card written "
@@ -833,3 +841,93 @@ class TheEmulatorIsToldWhatTheCardWasBuiltFor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class WhichRaspberryPiIsOnTheBoard(unittest.TestCase):
+    """The board decides which Pi is possible; the Pi decides what USB there is.
+
+    Nothing on a card used to depend on this - the boot partition carries a
+    device tree for every model and the firmware picks its own - so the
+    question was never asked.  A USB host controller is on the Pi, so it has
+    to be.
+    """
+
+    def test_every_machine_offers_at_least_one(self):
+        for machine in machines.MACHINES:
+            with self.subTest(machine.key):
+                self.assertTrue(machine.pi_models)
+                self.assertIs(machine.default_pi, machine.pi_models[0])
+
+    def test_a_compute_module_carrier_offers_nothing_else(self):
+        #  The PiStorm16 in an A600 is a CM4 carrier; offering a Pi 3A+ for it
+        #  would be offering hardware that cannot be fitted.
+        a600 = machines.MACHINES_BY_KEY["a600"]
+        self.assertEqual(a600.pi_models, (machines.Pi.CM4,))
+
+    def test_where_there_is_a_choice_the_default_has_no_xhci(self):
+        #  Deliberate.  Guessing the newer Pi would offer USB to a card that
+        #  cannot have it, and a stated Pi 4 is one keystroke away - a USB
+        #  stack that enumerates nothing is not.
+        for machine in machines.MACHINES:
+            if len(machine.pi_models) > 1:
+                with self.subTest(machine.key):
+                    self.assertFalse(machine.default_pi.has_xhci)
+
+    def test_a_pi_the_board_cannot_take_falls_back_to_its_default(self):
+        a600 = machines.MACHINES_BY_KEY["a600"]
+        self.assertIs(a600.pi_fitted(machines.Pi.PI3.value), machines.Pi.CM4)
+        a500 = machines.MACHINES_BY_KEY["a500"]
+        self.assertIs(a500.pi_fitted(machines.Pi.PI4.value), machines.Pi.PI4)
+        self.assertIs(a500.pi_fitted(""), a500.default_pi)
+
+
+class WhichUsbSocketTheAmigaIsGiven(unittest.TestCase):
+    """The driver numbers its units by path, not by socket.
+
+    Unit 0 is the Pi's onboard OTG port and units 1 and up are the PCIe
+    controllers, so on a stock Pi 4B the four USB-A sockets - where anybody
+    would actually plug a keyboard in - are unit 1.  Taking the driver's own
+    default of 0 would attach the stack to a socket nobody uses, and the card
+    would look installed and find nothing.
+    """
+
+    def test_the_usb_a_sockets_are_unit_one(self):
+        self.assertEqual(machines.UsbPort.VL805.unit, 1)
+
+    def test_the_otg_port_is_unit_zero_and_needs_a_config_line(self):
+        self.assertEqual(machines.UsbPort.OTG.unit, 0)
+        self.assertTrue(machines.UsbPort.OTG.needs_otg_mode)
+        self.assertFalse(machines.UsbPort.VL805.needs_otg_mode)
+
+    def test_a_pi_4_offers_both_and_the_useful_one_first(self):
+        self.assertEqual(machines.usb_ports(machines.Pi.PI4),
+                         (machines.UsbPort.VL805, machines.UsbPort.OTG))
+
+    def test_a_compute_module_has_only_its_own(self):
+        #  A CM4 has unit 1 only if somebody has attached a PCIe xHCI card to
+        #  the carrier, which nothing here can see.
+        self.assertEqual(machines.usb_ports(machines.Pi.CM4),
+                         (machines.UsbPort.OTG,))
+
+    def test_a_pi_3_offers_none(self):
+        self.assertEqual(machines.usb_ports(machines.Pi.PI3), ())
+        self.assertFalse(machines.Pi.PI3.has_xhci)
+
+    def test_the_otg_port_turns_into_a_host_port_in_config_txt(self):
+        machine = machines.MACHINES_BY_KEY["a500"]
+        options = machines.boot_options(machine, machines.Display.RTG_HDMI,
+                                        usb_port=machines.UsbPort.OTG)
+        text = options.apply_config(bootcfg.ConfigTxt("")).text()
+        self.assertIn("otg_mode=1", text)
+
+    def test_nothing_touches_it_otherwise(self):
+        #  A line that changes what the hardware does, written onto a card
+        #  with no USB stack on it, is the kind nobody would ever look for.
+        machine = machines.MACHINES_BY_KEY["a500"]
+        for port in (None, machines.UsbPort.VL805):
+            with self.subTest(port):
+                options = machines.boot_options(
+                    machine, machines.Display.RTG_HDMI, usb_port=port)
+                self.assertIsNone(options.otg_mode)
+                self.assertNotIn(
+                    "otg_mode", options.apply_config(bootcfg.ConfigTxt("")).text())
