@@ -99,6 +99,10 @@ KEPT_ACROSS_QUICK_SETUP = (
     "accelerator", "accelerator_cpu", "amiga_only",
     "os_cd", "os_cd_release", "boingbag_archives", "boingbags",
     "boingbag_emulator",
+    #  Which Raspberry Pi is plugged into the board, and which of its USB
+    #  sockets the Amiga was given, are facts about somebody's hardware and
+    #  their choice. A quick setup knows the Amiga, not the Pi.
+    "pi_model", "usb_port",
 )
 
 #  The same for the boot settings.  The machine decides the ones that follow
@@ -107,6 +111,9 @@ KEPT_BOOT_OPTIONS = (
     "overclock", "cm4_external_antenna", "swap_df0_with_df1", "sd_unit0_rw",
     "hdmi_force_hotplug", "boot_delay", "gpu_mem", "total_mem", "limit_2g",
     "z2_ram_size", "unicam_extra",
+    #  Follows the USB socket, which the quick setup keeps, so the line that
+    #  makes that socket work has to be kept with it.
+    "otg_mode",
 )
 
 
@@ -726,6 +733,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         detected = getattr(self, "detected", None)
         wants = "adf" if (detected and detected.adf_folder) else "none"
         self.quick_system_source.set_selected(FRESH_SOURCES.index(wants))
+        #  The folder that decision was made on, into the row the build
+        #  actually reads.  These had come apart: the choice was made from
+        #  ``detected.adf_folder`` and nothing put that folder anywhere, so
+        #  with Workbench disks sitting in samples/ a basic card selected
+        #  "install from my floppy images" and then refused to go on, asking
+        #  for a folder of Workbench floppy images it had already found.
+        #  Only when the row is empty, so a folder chosen by hand stands.
+        if wants == "adf" and not self.adf_row.path:
+            self.adf_row.set_path(str(detected.adf_folder))
+            self._scan_adfs()
         self.image_row.set_path("")
         self.quick_hdf.set_path("")
         self.quick_pimiga.set_path("")
@@ -921,6 +938,19 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_machine_hint = Adw.ActionRow(title="", subtitle="")
         self.quick_machine_hint.set_sensitive(False)
         group.add(self.quick_machine_hint)
+        #  Which Pi is on the board.  Nothing on a card used to depend on it -
+        #  the boot partition carries a device tree for every model - so the
+        #  question was never asked.  The USB controller is on the Pi, and a
+        #  Pi 3 has none that anything here can drive, so software that uses
+        #  one cannot be offered until this has been answered.
+        self.quick_pi = Adw.ComboRow(
+            title="Raspberry Pi on the board",
+            subtitle="Only USB depends on this; everything else on the card "
+                     "boots on any of them.",
+            model=combo([pi.label for pi in machines.MACHINES[0].pi_models]))
+        self.quick_pi.connect("notify::selected",
+                              lambda *_a: self._on_pi_changed())
+        group.add(self.quick_pi)
         self.quick_display = Adw.ComboRow(
             title="How you look at it",
             model=combo([d.label for d in machines.Display]))
@@ -1434,7 +1464,51 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.quick_accelerator.get_selected()]
         self.quick_accelerator_cpu.set_visible(
             chosen is machines.Accelerator.ACCELERATOR)
+        #  No PiStorm, no Raspberry Pi, and nothing that needs one.
+        self.quick_pi.set_visible(chosen is machines.Accelerator.PISTORM)
+        self._refresh_packages()
         self._on_layout_changed()
+
+    def _pi(self) -> machines.Pi:
+        """The Raspberry Pi on the board, as the rows currently say."""
+        choices = getattr(self, "_pi_choices", None) or self._machine().pi_models
+        index = min(self.quick_pi.get_selected(), len(choices) - 1)
+        return choices[max(index, 0)]
+
+    def _refresh_pi_choices(self) -> None:
+        """Offer the Pis this board takes, keeping the one already chosen.
+
+        The board decides the list - a PiStorm16 is a Compute Module carrier
+        and has no other option - so the list is rebuilt whenever the model
+        changes.  A choice that survives the change is kept: changing the
+        Amiga is not a statement about which Pi is plugged into it.
+        """
+        wanted = getattr(self, "_pi_choices", None)
+        wanted = (wanted[self.quick_pi.get_selected()]
+                  if wanted and self.quick_pi.get_selected() < len(wanted)
+                  else None)
+        self._pi_choices = list(self._machine().pi_models)
+        was, self._ready = self._ready, False
+        try:
+            self.quick_pi.set_model(
+                combo([pi.label for pi in self._pi_choices]))
+            self.quick_pi.set_selected(
+                self._pi_choices.index(wanted) if wanted in self._pi_choices
+                else 0)
+        finally:
+            self._ready = was
+        #  With no PiStorm there is no Pi to ask about.
+        self.quick_pi.set_visible(
+            self._accelerator() is machines.Accelerator.PISTORM)
+
+    def _on_pi_changed(self) -> None:
+        if not self._ready:
+            return
+        #  Which software is on offer follows the Pi as well as the chipset
+        #  and the screen, so the list has to be rebuilt - and the USB socket
+        #  question only exists on a Pi that has more than one.
+        self._refresh_packages()
+        self._update_summary()
 
     def _accelerator(self) -> machines.Accelerator:
         return list(machines.Accelerator)[
@@ -1464,6 +1538,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  Which content categories are worth copying follows the machine,
         #  and so does which software suits its chipset.
         self._refresh_categories()
+        #  The board decides which Raspberry Pi is even possible, so the Pi
+        #  list is rebuilt before the software list that depends on it.
+        self._refresh_pi_choices()
         self._refresh_packages()
         #  Keep the Source page's board in step with the model.
         for index, variant in enumerate(emu68.VARIANTS):
@@ -1908,6 +1985,11 @@ class ImagerWindow(Adw.ApplicationWindow):
 
         self.release_row = Adw.ComboRow(title="Emu68 version",
                                         model=combo(["Loading releases…"]))
+        #  Some software names the oldest Emu68 it works with, so which build
+        #  is chosen decides what is on offer - and the list arrives from
+        #  GitHub after the window is up, so this fires then too.
+        self.release_row.connect("notify::selected",
+                                 lambda *_a: self._refresh_packages())
         group.add(self.release_row)
         self.local_zip_row = FileRow(
             "Use a local Emu68 zip instead",
@@ -2182,6 +2264,29 @@ class ImagerWindow(Adw.ApplicationWindow):
                 group.add(row)
             self.package_groups.append(group)
             page.add(group)
+
+        #  Which USB socket the Amiga is given.  The driver numbers its units
+        #  by path rather than by socket - unit 0 is the Pi's onboard OTG port
+        #  and the four USB-A sockets on a Pi 4B are unit 1 - so leaving it at
+        #  the driver's own default would attach the stack to a socket nobody
+        #  plugs anything into.  It appears only when something chosen needs
+        #  the answer, which is found by looking at the catalogue.
+        self.usb_group = Adw.PreferencesGroup(
+            title="USB",
+            description="Which of the Pi's USB paths the Amiga is given. "
+                        "This is written into the startup line that attaches "
+                        "the stack, and the OTG port also needs a config.txt "
+                        "line to become a host port at all - both are set for "
+                        "you from this.")
+        self.usb_port_row = Adw.ComboRow(title="Plug USB devices into",
+                                         model=combo(["No USB stack chosen"]))
+        self.usb_port_row.connect("notify::selected",
+                                  lambda *_a: self._update_summary())
+        self.usb_group.add(self.usb_port_row)
+        self.usb_group.set_visible(False)
+        self.package_groups.append(self.usb_group)
+        page.add(self.usb_group)
+
         #  The defaults are set row by row above, which never goes through the
         #  toggle, so what they need has to be ticked once they all exist.
         self._tick_what_is_needed()
@@ -2906,7 +3011,13 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  ssid_row, not wifi_ssid: there is no such widget, so pressing
             #  the button raised AttributeError inside the signal handler and
             #  did nothing at all, quietly.
-            networking=bool(self.ssid_row.get_text().strip())))
+            networking=bool(self.ssid_row.get_text().strip()),
+            #  The Raspberry Pi side of the setup, so a suggestion cannot
+            #  offer software the board cannot run.
+            pi=self._pi(),
+            cpu=self._machine().cpu_fitted(self._accelerator(),
+                                           self._accelerator_cpu()),
+            emu68_tag=self._release_tag()))
         #  A whole set arriving at once is the suggestion being taken, not a
         #  person weighing one package against another; asking about each
         #  clash inside it would be a queue of dialogs answering nothing.
@@ -3339,14 +3450,34 @@ class ImagerWindow(Adw.ApplicationWindow):
             return
         display = self._display()
         chipset = self._machine().chipset
+        pi = self._pi()
+        cpu = self._machine().cpu_fitted(self._accelerator(),
+                                         self._accelerator_cpu())
+        tag = self._release_tag()
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
-            fits = package.suits(chipset, display)
+            fits = package.suits(chipset, display, pi=pi, cpu=cpu,
+                                 emu68_tag=tag)
             note = package.description
             if not fits and package.rtg_only:
                 note += "  -  only useful with an RTG display."
             elif not fits and package.native_only:
                 note += "  -  only useful on the Amiga's own screen."
+            #  Said before the chipset, because on a card refused for both
+            #  reasons the Raspberry Pi is the one the user can do something
+            #  about: the Amiga is what it is, the Pi and the Emu68 build are
+            #  chosen here.
+            elif not fits and package.pi_models \
+                    and pi not in package.pi_models:
+                wanted = " or ".join(model.label
+                                     for model in package.pi_models)
+                note += (f"  -  needs {wanted} on the board; this card is "
+                         f"being built for {pi.label}.")
+            elif not fits and package.min_emu68 \
+                    and not emu68.at_least(tag or "", package.min_emu68):
+                version = ".".join(str(part) for part in package.min_emu68)
+                note += (f"  -  needs Emu68 {version} or newer; choose one on "
+                         f"the Source page.")
             elif not fits:
                 note += "  -  not a fit for this chipset."
             else:
@@ -3386,7 +3517,64 @@ class ImagerWindow(Adw.ApplicationWindow):
                 if not fits:
                     row.set_active(False)
             row.set_subtitle(GLib.markup_escape_text(note))
+        self._refresh_usb()
         self._on_layout_changed()
+
+    def _release_tag(self) -> str:
+        """The Emu68 release the card will be built from, where one is known.
+
+        Empty when the list has not arrived yet, or when the build is coming
+        from a local zip or an unpacked folder - neither of which carries a
+        version for anything to read.
+        """
+        choices = getattr(self, "_release_choices", [])
+        if not choices or self.local_zip_row.path:
+            return ""
+        index = min(self.release_row.get_selected(), len(choices) - 1)
+        return choices[max(index, 0)].tag
+
+    def _usb_ports(self) -> list[machines.UsbPort]:
+        """The USB sockets this card could be pointed at."""
+        return list(machines.usb_ports(self._pi()))
+
+    def _usb_port(self) -> machines.UsbPort | None:
+        """The socket the card is being built for, or None when there is none.
+
+        None whenever no chosen software needs one, so a card with no USB
+        stack on it is not quietly told to turn its OTG socket into a host
+        port - a config.txt line that changes what the hardware does, written
+        for no reason at all.
+        """
+        ports = self._usb_ports()
+        if not ports or not packages.wants_setting(self._chosen_packages(),
+                                                   packages.USB_UNIT):
+            return None
+        index = min(self.usb_port_row.get_selected(), len(ports) - 1)
+        return ports[max(index, 0)]
+
+    def _refresh_usb(self) -> None:
+        """Offer the sockets this Pi has, and only where something needs one."""
+        ports = self._usb_ports()
+        wanted = packages.wants_setting(self._chosen_packages(),
+                                        packages.USB_UNIT)
+        self.usb_group.set_visible(bool(ports) and wanted)
+        if not ports:
+            return
+        labels = [port.label for port in ports]
+        if labels != getattr(self, "_usb_labels", None):
+            was, self._ready = self._ready, False
+            try:
+                self.usb_port_row.set_model(combo(labels))
+                self.usb_port_row.set_selected(0)
+            finally:
+                self._ready = was
+            self._usb_labels = labels
+        port = self._usb_port()
+        self.usb_port_row.set_subtitle(
+            "config.txt is given otg_mode=1 so this socket becomes a host "
+            "port." if port is not None and port.needs_otg_mode
+            else "The four USB-A sockets are unit 1 of the driver, which is "
+                 "what the startup line will say.")
 
     def _needed_by_active(self, key: str, ignoring: str = "") -> bool:
         """Whether anything still switched on requires this package."""
@@ -3451,6 +3639,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         finally:
             self._settling_packages = False
         self._on_layout_changed()
+        #  A question only worth asking when something that needs the answer
+        #  is on, so it appears and disappears with the tick that wants it.
+        self._refresh_usb()
         #  After the settling, never during it: what the drive already
         #  carries follows from the final set of packages, not from each
         #  intermediate state as dependencies are switched on and off.
@@ -3890,12 +4081,24 @@ class ImagerWindow(Adw.ApplicationWindow):
         overclock = {0: None, 1: True, 2: False}[self.overclock_row.get_selected()]
         antenna = {0: None, 1: True, 2: False}[self.antenna_row.get_selected()]
         vc4 = int(self.vc4_row.get_value())
+        #  The USB socket decides two things that have to agree, and they are
+        #  written in two different files: the unit number on the
+        #  AddUSBHardware line in S:User-Startup, and whether config.txt turns
+        #  the onboard OTG socket into a host port. Setting one and not the
+        #  other is the shape of mistake this whole page is careful about, so
+        #  both come from here, from the same widget.
+        usb_port = self._usb_port()
 
         options = bootcfg.BootOptions(
             hdmi_group=hdmi[1], hdmi_mode=hdmi[2],
             hdmi_automatic=hdmi[1] is None,
             overclock=overclock,
             cm4_external_antenna=antenna,
+            #  None, not False, where there is no USB: leaving the key alone
+            #  keeps whatever the Emu68 release shipped, which is what every
+            #  other untouched setting on this page does.
+            otg_mode=(True if usb_port is not None and usb_port.needs_otg_mode
+                      else None),
             vc4_mem=vc4 or None,
             vbr_move=self.vbr_row.get_active(),
             chip_slowdown=self.slowdown_row.get_active(),
@@ -4033,6 +4236,12 @@ class ImagerWindow(Adw.ApplicationWindow):
                 where for where, row in getattr(self, "desktop_rows", {}).items()
                 if not row.get_active()),
             machine_key=self._machine().key,
+            #  Which Raspberry Pi is on the board, and which of its USB
+            #  sockets the Amiga was given. Both are read from the widgets
+            #  that decide them, here, where the card is actually written
+            #  from - not only where a quick setup is assembled.
+            pi_model=self._pi().value,
+            usb_port=usb_port.value if usb_port is not None else "",
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
@@ -4633,7 +4842,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_card_size.set_text(exact_size_text(config.image_size))
         if not config.target_is_device:
             self.file_row.set_path(config.target)
+        #  Before the software, which is offered on the strength of it: a
+        #  loaded setup whose Pi came back last would have had its USB
+        #  choices refused while the list was being rebuilt.
+        self._restore_pi(config)
         self._restore_package_choices(config)
+        self._restore_usb_port(config)
         #  The list of Emu68 builds is fetched from GitHub in the background,
         #  so the one this setup was built against may not be offered yet.
         self._wanted_release = config.release_tag or ""
@@ -4651,7 +4865,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         self.apply(config, keep_partitions=True)
         self.apply_interface_state(state)
+        self._restore_pi(config)
         self._restore_package_choices(config)
+        self._restore_usb_port(config)
         self._restore_board(config)
 
     def _restore_board(self, config: builder.BuildConfig) -> None:
@@ -4665,6 +4881,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         for index, variant in enumerate(emu68.VARIANTS):
             if variant.key == config.variant:
                 self.variant_row.set_selected(index)
+                return
+
+    def _restore_pi(self, config: builder.BuildConfig) -> None:
+        """Put the Raspberry Pi back before anything that depends on it."""
+        self._refresh_pi_choices()
+        choices = getattr(self, "_pi_choices", [])
+        for index, pi in enumerate(choices):
+            if pi.value == config.pi_model:
+                self.quick_pi.set_selected(index)
+                return
+
+    def _restore_usb_port(self, config: builder.BuildConfig) -> None:
+        """Put the USB socket back, after the software that asks for one.
+
+        The row only exists while something needs it, and its list is the
+        sockets this Pi has - so this runs last, once both are settled.
+        """
+        self._refresh_usb()
+        for index, port in enumerate(self._usb_ports()):
+            if port.value == config.usb_port:
+                self.usb_port_row.set_selected(index)
                 return
 
     def _restore_package_choices(self, config: builder.BuildConfig) -> None:

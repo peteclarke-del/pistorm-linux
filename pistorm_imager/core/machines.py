@@ -89,6 +89,101 @@ class Accelerator(enum.Enum):
 PISTORM_CPU = Cpu.M68040
 
 
+class Pi(enum.Enum):
+    """Which Raspberry Pi is on the PiStorm board.
+
+    Nothing on a card used to depend on this.  The boot partition carries a
+    device tree for every model Emu68 supports and the firmware picks its own,
+    so a card built for one Pi booted on another - and the question was
+    therefore never worth asking.
+
+    USB changed that.  ``xhci.device`` drives an xHCI host controller, and a
+    Pi 3 has none: its USB is a DWC OTG controller on the SoC, reached through
+    an interface no driver here speaks.  So the Pi has to be *stated* before
+    USB can honestly be offered, rather than assumed - offering a USB stack to
+    a machine that cannot have one is the failure this project guards against
+    hardest, because the card then looks as though the choice was honoured.
+    """
+
+    PI3 = "pi3"                 # Raspberry Pi 3A+ / 3B+ / Zero 2 W
+    PI4 = "pi4"                 # Raspberry Pi 4B / 400
+    CM4 = "cm4"                 # Compute Module 4
+
+    @property
+    def label(self) -> str:
+        return {
+            Pi.PI3: "Raspberry Pi 3A+ or 3B+",
+            Pi.PI4: "Raspberry Pi 4B or 400",
+            Pi.CM4: "Compute Module 4",
+        }[self]
+
+    @property
+    def has_xhci(self) -> bool:
+        """Whether this Pi has an xHCI USB host controller at all.
+
+        The Pi 4 and the CM4 have two paths to one: the SoC's own OTG port,
+        and - on a Pi 4B - a VL805 xHCI controller on PCIe behind the four
+        USB-A sockets.  A Pi 3 has neither.
+        """
+        return self in (Pi.PI4, Pi.CM4)
+
+
+class UsbPort(enum.Enum):
+    """Which of the Pi's USB paths the Amiga is given.
+
+    ``xhci.device`` numbers its units by path rather than by socket: unit 0 is
+    the SoC's onboard OTG port and units 1 and up are the PCIe controllers,
+    indexed from 1.  On a stock Pi 4B that makes unit 1 the VL805 behind the
+    four USB-A sockets - which is where anybody would actually plug a keyboard
+    in, and *not* what a default of unit 0 would attach.
+    """
+
+    VL805 = "vl805"             # the four USB-A sockets on a Pi 4B, unit 1
+    OTG = "otg"                 # the onboard OTG port, unit 0
+
+    @property
+    def label(self) -> str:
+        return {
+            UsbPort.VL805: "The four USB-A sockets",
+            UsbPort.OTG: "The onboard OTG port (USB-C on a Pi 4B)",
+        }[self]
+
+    @property
+    def unit(self) -> int:
+        """The ``xhci.device`` unit number this port is.
+
+        Read by whatever writes the ``AddUSBHardware`` line, so the number and
+        the socket it means are stated once, here, rather than written into a
+        startup line in the catalogue where nothing could check it.
+        """
+        return {UsbPort.VL805: 1, UsbPort.OTG: 0}[self]
+
+    @property
+    def needs_otg_mode(self) -> bool:
+        """Whether ``otg_mode=1`` has to go into config.txt for this port.
+
+        The OTG port is not a host port until the firmware is told to make it
+        one.  Choosing it and not writing that line gives a card with a USB
+        stack attached to a socket that will never enumerate anything.
+        """
+        return self is UsbPort.OTG
+
+
+def usb_ports(pi: Pi) -> tuple[UsbPort, ...]:
+    """The USB paths this Pi can offer the Amiga, best first.
+
+    A Pi 4B has both, and the four USB-A sockets are the obvious answer, so
+    they come first.  A CM4 has only the OTG port unless somebody has attached
+    a PCIe xHCI card to the carrier board, which is not something this tool
+    can see - so it offers what the module itself has.
+    """
+    if pi is Pi.PI4:
+        return (UsbPort.VL805, UsbPort.OTG)
+    if pi is Pi.CM4:
+        return (UsbPort.OTG,)
+    return ()
+
+
 class Display(enum.Enum):
     """How the machine is actually being looked at."""
 
@@ -137,6 +232,17 @@ class Machine:
     #  Kickstarts that suit this machine, best first, as (version, revision).
     kickstarts: tuple[tuple[int, int], ...]
     trapdoor_ram: bool = False       # the A500's 512K expansion at 0xC00000
+    #  Which Raspberry Pi the board takes, best first - the first is what the
+    #  model is assumed to have until somebody says otherwise.  The board
+    #  decides this, not the Amiga: a PiStorm16 is a Compute Module carrier
+    #  and has no other option, while a classic PiStorm or a PiStorm32-lite
+    #  takes whichever Pi was to hand.
+    #
+    #  The default is deliberately the Pi with no xHCI where there is a
+    #  choice.  Guessing the newer Pi would offer USB to a card that cannot
+    #  have it, and a stated Pi 4 is one keystroke away; a USB stack that
+    #  enumerates nothing is not.
+    pi_models: tuple[Pi, ...] = (Pi.PI3, Pi.PI4)
     notes: str = ""
     #  The processor the machine left the factory with.  What is actually
     #  executing depends on what has been fitted since, which is why this is
@@ -146,6 +252,24 @@ class Machine:
     @property
     def aga(self) -> bool:
         return self.chipset is Chipset.AGA
+
+    @property
+    def default_pi(self) -> Pi:
+        """The Pi this model is assumed to have until somebody says otherwise."""
+        return self.pi_models[0]
+
+    def pi_fitted(self, chosen: str = "") -> Pi:
+        """The Pi that is actually on the board.
+
+        ``chosen`` is what the user said, as a :class:`Pi` value; anything the
+        board cannot take falls back to its default rather than being honoured
+        silently, because a PiStorm16 reported as carrying a Pi 3 would refuse
+        USB on a Compute Module that has it.
+        """
+        for pi in self.pi_models:
+            if pi.value == chosen:
+                return pi
+        return self.default_pi
 
     def cpu_fitted(self, accelerator: Accelerator,
                    card_cpu: Cpu | None = None) -> Cpu:
@@ -185,7 +309,7 @@ MACHINES: list[Machine] = [
             ((40, 68), (40, 63), (37, 175)), trapdoor_ram=True,
             notes="ECS chipset; otherwise identical to an A500 for our purposes."),
     Machine("a600", "Amiga 600", Chipset.ECS, "pistorm32lite", "PiStorm16",
-            ((40, 68), (40, 63)),
+            ((40, 68), (40, 63)), pi_models=(Pi.CM4,),
             notes="PiStorm16 is the board for the A600 and uses a Compute "
                   "Module 4. It shares Emu68's build with the PiStorm32-lite."),
     Machine("a1000", "Amiga 1000", Chipset.OCS, "pistorm", "PiStorm (classic)",
@@ -198,13 +322,14 @@ MACHINES: list[Machine] = [
                   "when setting the Zorro RAM size."),
     Machine("a1200", "Amiga 1200", Chipset.AGA, "pistorm32lite",
             "PiStorm32-lite", ((40, 68), (47, 111), (47, 96)),
-            stock_cpu=Cpu.M68020,
+            stock_cpu=Cpu.M68020, pi_models=(Pi.PI3, Pi.PI4, Pi.CM4),
             notes="AGA, and the only model here that can show 256-colour "
                   "native screen modes. The only one that shipped with a "
                   "68020, so the only one that could run AmigaOS 3.5 or 3.9 "
                   "without an accelerator."),
     Machine("raspi", "Raspberry Pi on its own", Chipset.NONE, "raspi",
             "No PiStorm", ((40, 68),), stock_cpu=PISTORM_CPU,
+            pi_models=(Pi.PI3, Pi.PI4, Pi.CM4),
             notes="Emu68 with no Amiga hardware at all: no chipset, so RTG on "
                   "HDMI is the only display."),
 ]
@@ -300,9 +425,23 @@ def wants_slow_ram(machine: Machine) -> bool:
 
 def boot_options(machine: Machine, display: Display,
                  hdmi: tuple[int | None, int | None] = (None, None),
-                 trapdoor_to_chip: bool = False) -> bootcfg.BootOptions:
-    """The Emu68 settings that follow from the hardware and the display."""
+                 trapdoor_to_chip: bool = False,
+                 usb_port: "UsbPort | None" = None) -> bootcfg.BootOptions:
+    """The Emu68 settings that follow from the hardware and the display.
+
+    ``usb_port`` is the USB path the Amiga is being given, or ``None`` when no
+    USB stack is going on the card.  It is asked for here rather than left to
+    whatever builds the boot options, because the OTG port needs a config.txt
+    line to become a host port at all - and an option set in one code path and
+    not in the other is the defect this function exists to prevent.
+    """
     options = bootcfg.BootOptions()
+
+    #  Only when USB is actually being installed.  otg_mode=1 changes what the
+    #  Pi's USB-C socket is for, and writing it on a card with no USB stack
+    #  would be changing the hardware's behaviour to no purpose.
+    if usb_port is not None and usb_port.needs_otg_mode:
+        options.otg_mode = True
 
     #  Software written for OCS/ECS machines often busy-waits on the chipset,
     #  which a JIT runs straight past.

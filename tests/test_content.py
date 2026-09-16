@@ -290,7 +290,7 @@ class Dependencies(unittest.TestCase):
         #  overwrite a file that is already there, so a second copy would end
         #  the build rather than merely waste time.
         real = packages.fetch
-        packages.fetch = lambda package, progress: [
+        packages.fetch = lambda package, progress, cpu=None: [
             ("/nowhere/codesets.library", "Libs"),
             (f"/nowhere/{package.key}", f"Internet/{package.key}")]
         try:
@@ -3323,11 +3323,16 @@ class StartupLinesAreNeitherWrongNorRepeated(unittest.TestCase):
         A placeholder nobody declared would be passed to the program as a
         literal argument, which is the same silent kind of wrong as no argument
         at all.
+
+        Two kinds are declarable: one the *archive* fills, named by
+        ``startup_files``, and one the *hardware* fills, named in
+        ``packages`` itself because nothing near the catalogue can know it.
         """
         from pistorm_imager.core import packages                 # noqa: PLC0415
+        hardware = {packages.USB_UNIT}
         for package in packages.CATALOGUE:
-            declared = ({package.startup_files[0]}
-                        if package.startup_files else set())
+            declared = hardware | ({package.startup_files[0]}
+                                   if package.startup_files else set())
             for line in package.startup:
                 with self.subTest(package=package.key):
                     self.assertEqual(set(re.findall(r"{([^}]*)}", line)) - declared,
@@ -5170,3 +5175,230 @@ class AnInstallerForSomethingAlreadyInstalled(unittest.TestCase):
         (made / "Install-Thing").unlink()
         self.assertEqual(packages.redundant_installers(
             self.package, [(str(made), "Programs/Thing")]), {})
+
+
+class WhatTheRaspberryPiSideDecides(unittest.TestCase):
+    """USB is the first thing on a card that depends on the Pi, not the Amiga.
+
+    Everything else the imager installs cares about the chipset, the screen
+    or the processor.  A USB host controller is on the Raspberry Pi, so three
+    new questions decide whether the software is worth offering at all: which
+    Pi is on the board, which Emu68 is booting it, and - as ever - what is
+    executing 68k code.
+
+    Each of those is a *refusal* rather than a preference, which is why they
+    are tested here: a package offered where it cannot work is the failure
+    this project guards against hardest, because the card then looks as
+    though the choice was honoured.
+    """
+
+    def usb(self) -> packages.Package:
+        """Whatever in the catalogue needs a USB socket, found not named."""
+        found = [p for p in packages.CATALOGUE
+                 if packages.USB_UNIT in " ".join(p.startup)]
+        self.assertEqual(len(found), 1,
+                         "one package attaches the USB stack; adjust this "
+                         "test if that stops being true")
+        return found[0]
+
+    def fits(self, **hardware) -> bool:
+        settings = dict(pi=machines.Pi.PI4, cpu=machines.Cpu.M68040,
+                        emu68_tag="v1.1.0-beta.1")
+        settings.update(hardware)
+        return self.usb().suits(machines.Chipset.OCS,
+                                machines.Display.RTG_HDMI, **settings)
+
+    def test_a_pi_with_an_xhci_controller_can_have_it(self):
+        self.assertTrue(self.fits())
+        self.assertTrue(self.fits(pi=machines.Pi.CM4))
+
+    def test_a_pi_3_cannot(self):
+        #  Its USB is a DWC OTG controller on the SoC, which nothing in this
+        #  catalogue drives - so the software is refused rather than shipped
+        #  to enumerate nothing.
+        self.assertFalse(self.fits(pi=machines.Pi.PI3))
+
+    def test_an_unanswered_question_is_not_permission(self):
+        #  A caller that has not been told which Pi it is cannot honestly
+        #  offer software that only works on some of them.
+        self.assertFalse(self.fits(pi=None))
+
+    def test_an_emu68_too_old_to_reach_the_controller_refuses_it(self):
+        #  1.1 is what maps the PCIe window the controller lives behind.
+        self.assertFalse(self.fits(emu68_tag="v1.0.7"))
+        self.assertTrue(self.fits(emu68_tag="v1.1.0-alpha.1"))
+
+    def test_a_version_nobody_can_read_is_allowed_through(self):
+        #  A build from a local zip or an unpacked folder carries no tag. The
+        #  alternative - refusing what cannot be checked - would hide the
+        #  software from everybody building that way.
+        self.assertTrue(self.fits(emu68_tag=""))
+        self.assertTrue(self.fits(emu68_tag=None))
+
+    def test_the_suggestion_never_offers_it_where_it_cannot_work(self):
+        key = self.usb().key
+        for machine in machines.MACHINES:
+            for pi in machines.Pi:
+                offered = packages.suggested(
+                    machine, machines.Display.RTG_HDMI, pi=pi,
+                    emu68_tag="v1.1.0-beta.1")
+                if not pi.has_xhci:
+                    self.assertNotIn(key, offered,
+                                     f"{machine.key} with {pi.value}")
+
+    def test_it_brings_the_driver_and_the_toolkit_with_it(self):
+        #  The stack is half of a pair - it ships no host controller driver
+        #  at all - and its control panel is a MUI application.
+        needed = packages.expand([self.usb().key])
+        self.assertIn(self.usb().key, needed)
+        drivers = [key for key in needed
+                   if any(destination.lower().startswith("devs/usbhardware")
+                          for _inside, destination
+                          in (packages.CATALOGUE_BY_KEY[key].download.items
+                              if packages.CATALOGUE_BY_KEY[key].download
+                              else ()))]
+        self.assertTrue(drivers, f"nothing installs a host controller: {needed}")
+        self.assertLess(needed.index(drivers[0]), needed.index(self.usb().key),
+                        "the driver has to be on the card before the stack "
+                        "that opens it")
+
+
+class TheProcessorChoosesTheArchive(unittest.TestCase):
+    """Some publishers build one archive per processor, not one holding three.
+
+    The catalogue records all of them and the machine picks, rather than the
+    URL for the one processor that can reach the software today being written
+    in as though it were the package.  Everything that can reach these
+    archives runs on Emu68, which is a 68040-class core, so that choice cannot
+    be wrong today - but the rule is that the processor decides, and encoding
+    only today's accident would lose it.
+    """
+
+    def per_cpu(self) -> list[packages.Package]:
+        return [p for p in packages.CATALOGUE
+                if p.download and p.download.per_cpu]
+
+    def test_there_is_one_and_it_covers_the_processors_it_claims(self):
+        for package in self.per_cpu():
+            with self.subTest(package.key):
+                for value, path in package.download.per_cpu:
+                    machines.Cpu(value)          # raises if it is not one
+                    self.assertTrue(path.startswith("http"), path)
+
+    def test_a_pistorm_gets_the_build_emu68_can_run(self):
+        for package in self.per_cpu():
+            with self.subTest(package.key):
+                chosen = package.archive(machines.PISTORM_CPU)
+                self.assertEqual(chosen.path,
+                                 dict(package.download.per_cpu)[
+                                     machines.PISTORM_CPU.value])
+
+    def test_each_processor_gets_its_own(self):
+        for package in self.per_cpu():
+            names = {cpu: package.archive(cpu).filename
+                     for cpu, _path in
+                     ((machines.Cpu(value), path)
+                      for value, path in package.download.per_cpu)}
+            with self.subTest(package.key):
+                self.assertEqual(len(set(names.values())), len(names), names)
+
+    def test_a_processor_nobody_builds_for_falls_back_to_the_oldest(self):
+        #  The oldest build is the one that runs anywhere, so an answer this
+        #  does not have is the conservative one rather than no archive.
+        for package in self.per_cpu():
+            with self.subTest(package.key):
+                self.assertEqual(package.archive(None).path,
+                                 package.download.per_cpu[0][1])
+
+
+class AnArchiveThatWrapsItselfInADrawer(unittest.TestCase):
+    """Some archives unpack as one drawer holding their contents.
+
+    The drawer is usually named after the release - ``Poseidon-6.1-040`` - so
+    writing it into the catalogue's paths would tie the entry to one version
+    and one processor and break silently at the next: every item would log
+    "is not in the archive" and the card would go out with the software
+    missing, which is exactly what the first attempt at this did.
+    """
+
+    def archive(self, *paths: str) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="pistorm-wrap-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for path in paths:
+            made = root / path
+            made.parent.mkdir(parents=True, exist_ok=True)
+            made.write_text("x")
+        return root
+
+    def test_a_path_is_found_inside_the_one_drawer(self):
+        root = self.archive("Poseidon-6.1-040/Libs/poseidon.library")
+        found = packages.inside_archive(root, "Libs/poseidon.library")
+        self.assertTrue(found.exists())
+        self.assertEqual(found.parent.parent.name, "Poseidon-6.1-040")
+
+    def test_a_path_at_the_top_is_never_moved(self):
+        #  This may only turn "not in the archive" into a file. An archive
+        #  with a drawer of the same name at both levels keeps the behaviour
+        #  it always had.
+        root = self.archive("Libs/thing.library",
+                            "Wrapper/Libs/thing.library")
+        found = packages.inside_archive(root, "Libs/thing.library")
+        self.assertEqual(found, root / "Libs/thing.library")
+
+    def test_several_drawers_are_left_alone(self):
+        root = self.archive("One/x", "Two/y")
+        found = packages.inside_archive(root, "Libs/nothing")
+        self.assertEqual(found, root / "Libs/nothing")
+        self.assertFalse(found.exists())
+
+
+class ASettingOnlyTheHardwareKnows(unittest.TestCase):
+    """A startup line can carry a value no archive and no catalogue can supply.
+
+    ``AddUSBHardware`` needs a unit number, and which unit is a fact about
+    which socket somebody chose on which Raspberry Pi.  The same rule Birdie
+    taught applies: a line that cannot be filled in is not written at all,
+    because a command that runs, succeeds at nothing and says so to nobody is
+    worse than no command.
+    """
+
+    def usb(self) -> packages.Package:
+        found = [p for p in packages.CATALOGUE
+                 if packages.USB_UNIT in " ".join(p.startup)]
+        return found[0]
+
+    def test_the_line_is_filled_in_from_the_setting(self):
+        lines = packages.complete_startup(self.usb(), [],
+                                          {packages.USB_UNIT: "1"})
+        self.assertTrue(any(line.rstrip().endswith(" 1") for line in lines),
+                        lines)
+        self.assertFalse(any("{" in line for line in lines), lines)
+
+    def test_without_it_no_line_is_written_at_all(self):
+        self.assertIsNone(packages.complete_startup(self.usb(), []))
+        self.assertIsNone(packages.complete_startup(self.usb(), [], {}))
+
+    def test_the_question_is_only_asked_where_something_needs_it(self):
+        self.assertTrue(packages.wants_setting([self.usb().key],
+                                               packages.USB_UNIT))
+        others = [p.key for p in packages.CATALOGUE
+                  if packages.USB_UNIT not in " ".join(p.startup)
+                  and self.usb().key not in p.requires]
+        self.assertFalse(packages.wants_setting(others, packages.USB_UNIT))
+
+    def test_a_card_that_cannot_answer_says_so_before_it_is_written(self):
+        #  Silently leaving the line out is right and would be invisible: the
+        #  software lands, Workbench shows it, and it was never started.
+        from pistorm_imager.core import builder                  # noqa: PLC0415
+        config = builder.BuildConfig(target="/tmp/x", machine_key="a500",
+                                     pi_model="pi3",      # no xHCI at all
+                                     package_keys=[self.usb().key])
+        said = " ".join(config.concerns())
+        self.assertIn(self.usb().label, said)
+        self.assertIn("not started", said)
+        self.assertEqual(
+            builder._package_startup_lines(config, credit={}),
+            [line for line in
+             builder._package_startup_lines(config, credit={})
+             if "AddUSBHardware" not in line],
+            "a line with a gap in it must never be written")
