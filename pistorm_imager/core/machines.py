@@ -222,6 +222,16 @@ class Display(enum.Enum):
         return self.uses_rtg and self.uses_native
 
 
+def chip_ram_label(kilobytes: int) -> str:
+    """How much chip RAM, said the way an Amiga owner says it."""
+    if kilobytes <= 0:
+        return "no Amiga chipset"
+    if kilobytes < 1024:
+        return f"{kilobytes}K"
+    whole = kilobytes // 1024
+    return f"{whole} MB"
+
+
 @dataclasses.dataclass(frozen=True)
 class Machine:
     key: str
@@ -243,6 +253,18 @@ class Machine:
     #  have it, and a stated Pi 4 is one keystroke away; a USB stack that
     #  enumerates nothing is not.
     pi_models: tuple[Pi, ...] = (Pi.PI3, Pi.PI4)
+    #  Chip RAM in KB, the sizes this model can have, stock first.  Chip RAM
+    #  is the chipset's own memory and an Agnus decides how much of it there
+    #  can be, so an unexpanded A500 has 512K and an A500+ has a megabyte.
+    #
+    #  Nothing needed this until an add-on that emulates a chipset did: AGA
+    #  wants a megabyte and an unexpanded A500 has not got one, which is a
+    #  requirement a real machine really fails.  Deliberately *not* tied to
+    #  the trapdoor switch: Emu68's ``move_slow_to_chip`` makes the Amiga see
+    #  a megabyte, but whether that satisfies software which wants the chipset
+    #  itself to address it is untested here, and claiming it does would be
+    #  the kind of confident guess this project has been wrong with before.
+    chip_ram_options: tuple[int, ...] = (512, 1024, 2048)
     notes: str = ""
     #  The processor the machine left the factory with.  What is actually
     #  executing depends on what has been fitted since, which is why this is
@@ -252,6 +274,19 @@ class Machine:
     @property
     def aga(self) -> bool:
         return self.chipset is Chipset.AGA
+
+    @property
+    def stock_chip_ram(self) -> int:
+        """What the machine left the factory with, in KB."""
+        return self.chip_ram_options[0]
+
+    def chip_ram_fitted(self, chosen: int = 0) -> int:
+        """How much chip RAM the machine actually has, in KB.
+
+        ``chosen`` is what the user said; anything this model cannot have
+        falls back to the stock figure rather than being honoured silently.
+        """
+        return chosen if chosen in self.chip_ram_options else self.stock_chip_ram
 
     @property
     def default_pi(self) -> Pi:
@@ -307,13 +342,15 @@ MACHINES: list[Machine] = [
                   "copying and which screen modes exist."),
     Machine("a500plus", "Amiga 500+", Chipset.ECS, "pistorm", "PiStorm (classic)",
             ((40, 68), (40, 63), (37, 175)), trapdoor_ram=True,
+            chip_ram_options=(1024, 2048),
             notes="ECS chipset; otherwise identical to an A500 for our purposes."),
     Machine("a600", "Amiga 600", Chipset.ECS, "pistorm32lite", "PiStorm16",
             ((40, 68), (40, 63)), pi_models=(Pi.CM4,),
+            chip_ram_options=(1024, 2048),
             notes="PiStorm16 is the board for the A600 and uses a Compute "
                   "Module 4. It shares Emu68's build with the PiStorm32-lite."),
     Machine("a1000", "Amiga 1000", Chipset.OCS, "pistorm", "PiStorm (classic)",
-            ((40, 68), (40, 63)),
+            ((40, 68), (40, 63)), chip_ram_options=(256, 512),
             notes="OCS, and the machine has no Kickstart ROM of its own, so a "
                   "mapped Kickstart is essential."),
     Machine("a2000", "Amiga 2000", Chipset.ECS, "pistorm", "PiStorm (classic)",
@@ -323,13 +360,14 @@ MACHINES: list[Machine] = [
     Machine("a1200", "Amiga 1200", Chipset.AGA, "pistorm32lite",
             "PiStorm32-lite", ((40, 68), (47, 111), (47, 96)),
             stock_cpu=Cpu.M68020, pi_models=(Pi.PI3, Pi.PI4, Pi.CM4),
+            chip_ram_options=(2048,),
             notes="AGA, and the only model here that can show 256-colour "
                   "native screen modes. The only one that shipped with a "
                   "68020, so the only one that could run AmigaOS 3.5 or 3.9 "
                   "without an accelerator."),
     Machine("raspi", "Raspberry Pi on its own", Chipset.NONE, "raspi",
             "No PiStorm", ((40, 68),), stock_cpu=PISTORM_CPU,
-            pi_models=(Pi.PI3, Pi.PI4, Pi.CM4),
+            pi_models=(Pi.PI3, Pi.PI4, Pi.CM4), chip_ram_options=(0,),
             notes="Emu68 with no Amiga hardware at all: no chipset, so RTG on "
                   "HDMI is the only display."),
 ]

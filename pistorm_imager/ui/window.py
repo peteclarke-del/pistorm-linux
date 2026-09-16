@@ -17,7 +17,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from .. import APPLICATION_NAME, __version__  # noqa: E402
-from ..core import (amigacd, amigaos, boingbag, bootcfg,  # noqa: E402
+from ..core import (amigacd, amigaos, boingbag, bootaddon, bootcfg,  # noqa: E402
                     builder, content, devices,
                     distributions,
                     emu68, hdfcheck, jobs, kickstart, machines, packages,
@@ -99,10 +99,11 @@ KEPT_ACROSS_QUICK_SETUP = (
     "accelerator", "accelerator_cpu", "amiga_only",
     "os_cd", "os_cd_release", "boingbag_archives", "boingbags",
     "boingbag_emulator",
-    #  Which Raspberry Pi is plugged into the board, and which of its USB
-    #  sockets the Amiga was given, are facts about somebody's hardware and
-    #  their choice. A quick setup knows the Amiga, not the Pi.
-    "pi_model", "usb_port",
+    #  Which Raspberry Pi is plugged into the board, which of its USB sockets
+    #  the Amiga was given, how much chip RAM is fitted and what is going onto
+    #  the boot partition are facts about somebody's hardware and their
+    #  choice. A quick setup knows the Amiga, not what has been added to it.
+    "pi_model", "usb_port", "chip_ram", "boot_addons",
 )
 
 #  The same for the boot settings.  The machine decides the ones that follow
@@ -973,6 +974,19 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Trapdoor 512K fitted, use it as chip RAM",
             subtitle="A500 and A500+ only")
         group.add(self.quick_trapdoor)
+        #  How much chip RAM the Agnus can address.  Nothing needed this until
+        #  an add-on that emulates a chipset did, and it is a fact about
+        #  somebody's machine rather than anything derivable: an unexpanded
+        #  A500 has 512K and the same board with an ACE2B has two megabytes.
+        self.quick_chip_ram = Adw.ComboRow(
+            title="Chip RAM fitted",
+            subtitle="What the Agnus can address. Only the AGA add-on cares "
+                     "about this; leave it alone unless you have upgraded it.",
+            model=combo([machines.chip_ram_label(k)
+                         for k in machines.MACHINES[0].chip_ram_options]))
+        self.quick_chip_ram.connect("notify::selected",
+                                    lambda *_a: self._on_chip_ram_changed())
+        group.add(self.quick_chip_ram)
         #  What is actually executing 68k code.  A PiStorm clears every
         #  processor requirement AmigaOS has, but this tool can also build a
         #  drive for a machine that has not got one - so the question has to
@@ -1501,6 +1515,44 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_pi.set_visible(
             self._accelerator() is machines.Accelerator.PISTORM)
 
+    def _chip_ram(self) -> int:
+        """The chip RAM the rows currently say this machine has, in KB."""
+        options = (getattr(self, "_chip_ram_choices", None)
+                   or list(self._machine().chip_ram_options))
+        index = min(self.quick_chip_ram.get_selected(), len(options) - 1)
+        return options[max(index, 0)]
+
+    def _refresh_chip_ram_choices(self) -> None:
+        """Offer what this model's Agnus can be, keeping the answer given.
+
+        An answer that survives the change is kept - moving from an A500 to an
+        A500+ is not a statement that the memory came out - and one the new
+        model cannot have falls back to its stock figure.
+        """
+        wanted = getattr(self, "_chip_ram_choices", None)
+        wanted = (wanted[self.quick_chip_ram.get_selected()]
+                  if wanted and self.quick_chip_ram.get_selected() < len(wanted)
+                  else None)
+        self._chip_ram_choices = list(self._machine().chip_ram_options)
+        was, self._ready = self._ready, False
+        try:
+            self.quick_chip_ram.set_model(
+                combo([machines.chip_ram_label(k)
+                       for k in self._chip_ram_choices]))
+            self.quick_chip_ram.set_selected(
+                self._chip_ram_choices.index(wanted)
+                if wanted in self._chip_ram_choices else 0)
+        finally:
+            self._ready = was
+        #  A machine with one possible size is not being asked anything.
+        self.quick_chip_ram.set_visible(len(self._chip_ram_choices) > 1)
+
+    def _on_chip_ram_changed(self) -> None:
+        if not self._ready:
+            return
+        self._refresh_boot_addons()
+        self._update_summary()
+
     def _on_pi_changed(self) -> None:
         if not self._ready:
             return
@@ -1508,6 +1560,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  and the screen, so the list has to be rebuilt - and the USB socket
         #  question only exists on a Pi that has more than one.
         self._refresh_packages()
+        self._refresh_boot_addons()
         self._update_summary()
 
     def _accelerator(self) -> machines.Accelerator:
@@ -1541,7 +1594,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  The board decides which Raspberry Pi is even possible, so the Pi
         #  list is rebuilt before the software list that depends on it.
         self._refresh_pi_choices()
+        self._refresh_chip_ram_choices()
         self._refresh_packages()
+        self._refresh_boot_addons()
         #  Keep the Source page's board in step with the model.
         for index, variant in enumerate(emu68.VARIANTS):
             if variant.key == machine.board:
@@ -2399,6 +2454,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.antenna_row)
         page.add(group)
 
+        #  Add-ons that go onto the boot partition beside the Emu68 kernel
+        #  rather than onto an Amiga drive.  On the Options page, with the
+        #  rest of what the boot partition carries, and not on the Packages
+        #  page, which is about the software the Amiga runs.
+        self.addon_group = Adw.PreferencesGroup(
+            title="Boot partition add-ons",
+            description="Installed beside the Emu68 kernel. Each is finished "
+                        "on the Amiga by its own installer; what happens here "
+                        "is the step whose instructions ask for a Windows PC. "
+                        "Nothing here is downloaded - put the archive where "
+                        "you keep your other Amiga material and it is found.")
+        self.addon_rows: dict[str, Adw.SwitchRow] = {}
+        for addon in bootaddon.CATALOGUE:
+            row = Adw.SwitchRow(title=addon.label,
+                                subtitle=addon.description)
+            row.connect("notify::active",
+                        lambda *_a, key=addon.key: self._on_addon_toggled(key))
+            self.addon_rows[addon.key] = row
+            self.addon_group.add(row)
+        page.add(self.addon_group)
+
         group = Adw.PreferencesGroup(
             title="Emu68 options",
             description="Written to cmdline.txt. See the Emu68 documentation for the "
@@ -2435,9 +2511,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.blitwait_row)
         self.swapdf_row = Adw.SwitchRow(title="Swap DF0: with DF1:")
         group.add(self.swapdf_row)
+        #  Kept, because an add-on can hold this switch on and has to be able
+        #  to give the row its own words back afterwards.
+        self._unit0_subtitle = ("Exposes the partition table and boot "
+                                "partition read/write")
         self.unit0_row = Adw.SwitchRow(
             title="Allow the Amiga to write to the whole SD card",
-            subtitle="Exposes the partition table and boot partition read/write")
+            subtitle=self._unit0_subtitle)
         group.add(self.unit0_row)
         self.extra_row = Adw.EntryRow(title="Additional cmdline.txt options")
         group.add(self.extra_row)
@@ -3520,6 +3600,82 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._refresh_usb()
         self._on_layout_changed()
 
+    def _chosen_addons(self) -> list[str]:
+        return [key for key, row in getattr(self, "addon_rows", {}).items()
+                if row.get_active()]
+
+    def _addons_need_writable_boot(self) -> bool:
+        """Whether anything chosen needs the Amiga to write to the boot partition."""
+        return any(bootaddon.CATALOGUE_BY_KEY[key].writable_boot
+                   for key in self._chosen_addons()
+                   if key in bootaddon.CATALOGUE_BY_KEY)
+
+    def _on_addon_toggled(self, _key: str) -> None:
+        if getattr(self, "_settling_addons", False):
+            return
+        self._refresh_boot_addons()
+        self._update_summary()
+
+    def _refresh_boot_addons(self) -> None:
+        """Offer what this card can actually take, and say why when it cannot.
+
+        A switch that is simply greyed out is a question. The reason is known
+        exactly here - the chipset, the Pi, the chip RAM, the Emu68 build - so
+        it is given, in the row, rather than left to be guessed at.
+        """
+        if not getattr(self, "addon_rows", None):
+            return
+        machine = self._machine()
+        accelerator = self._accelerator()
+        pi = self._pi()
+        chip_ram = self._chip_ram()
+        tag = self._release_tag()
+        for key, row in self.addon_rows.items():
+            addon = bootaddon.CATALOGUE_BY_KEY[key]
+            why = addon.refusal(machine, accelerator=accelerator, pi=pi,
+                                chip_ram=chip_ram, emu68_tag=tag)
+            note = addon.description
+            if why:
+                note = f"{addon.label} {why}  -  {note}"
+            else:
+                #  Where the archive is, or where to get one. Said before the
+                #  build rather than in the log afterwards, which is the rule
+                #  the manual packages already follow.
+                found = bootaddon.find_archive(addon)
+                note += (f"  -  will be taken from {found.name}."
+                         if found is not None else
+                         f"  -  no archive found. Download it from "
+                         f"{addon.home} and put it in "
+                         f"{packages.cache_dir()}, or anywhere this tool "
+                         f"looks for Amiga material.")
+            row.set_subtitle(GLib.markup_escape_text(note))
+            was = getattr(self, "_settling_addons", False)
+            self._settling_addons = True
+            try:
+                row.set_sensitive(not why)
+                if why:
+                    row.set_active(False)
+            finally:
+                self._settling_addons = was
+
+        #  The boot partition has to be writable from the Amiga for an
+        #  add-on's own installer to finish, so that switch comes on with it
+        #  and is held there - the same way a display that needs Picasso96
+        #  holds Picasso96 on. The switch still tells the truth, and gather()
+        #  still reads the switch.
+        needed = self._addons_need_writable_boot()
+        if needed:
+            was, self._ready = self._ready, False
+            try:
+                self.unit0_row.set_active(True)
+            finally:
+                self._ready = was
+        self.unit0_row.set_sensitive(not needed)
+        self.unit0_row.set_subtitle(
+            "Held on by the boot partition add-on you chose: its installer "
+            "runs on the Amiga and writes to this partition."
+            if needed else self._unit0_subtitle)
+
     def _release_tag(self) -> str:
         """The Emu68 release the card will be built from, where one is known.
 
@@ -4105,6 +4261,10 @@ class ImagerWindow(Adw.ApplicationWindow):
             dbf_slowdown=self.dbf_row.get_active(),
             blitwait=self.blitwait_row.get_active(),
             swap_df0_with_df1=self.swapdf_row.get_active(),
+            #  The switch, which an add-on holds on while it is chosen - so
+            #  reading the switch is reading the answer either way. The builder
+            #  applies the same rule, for a build driven from a saved job or
+            #  the command line where there is no switch at all.
             sd_unit0_rw=self.unit0_row.get_active(),
             #  No switch decides this - the machine does - and it was set only
             #  where a quick setup was assembled, never here, where the card
@@ -4242,6 +4402,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  from - not only where a quick setup is assembled.
             pi_model=self._pi().value,
             usb_port=usb_port.value if usb_port is not None else "",
+            #  How much chip RAM the machine has, and what is going onto the
+            #  boot partition beside the kernel. Read from the widgets that
+            #  decide them, here, where the card is written from.
+            chip_ram=self._chip_ram(),
+            boot_addons=self._chosen_addons(),
             package_chipset=self._machine().chipset.value,
             package_display=self._display().value,
             #  The display choice lives on the Quick setup page but decides
@@ -4846,8 +5011,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  loaded setup whose Pi came back last would have had its USB
         #  choices refused while the list was being rebuilt.
         self._restore_pi(config)
+        self._restore_chip_ram(config)
         self._restore_package_choices(config)
         self._restore_usb_port(config)
+        self._restore_boot_addons(config)
         #  The list of Emu68 builds is fetched from GitHub in the background,
         #  so the one this setup was built against may not be offered yet.
         self._wanted_release = config.release_tag or ""
@@ -4866,8 +5033,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.apply(config, keep_partitions=True)
         self.apply_interface_state(state)
         self._restore_pi(config)
+        self._restore_chip_ram(config)
         self._restore_package_choices(config)
         self._restore_usb_port(config)
+        self._restore_boot_addons(config)
         self._restore_board(config)
 
     def _restore_board(self, config: builder.BuildConfig) -> None:
@@ -4891,6 +5060,32 @@ class ImagerWindow(Adw.ApplicationWindow):
             if pi.value == config.pi_model:
                 self.quick_pi.set_selected(index)
                 return
+
+    def _restore_chip_ram(self, config: builder.BuildConfig) -> None:
+        """Put the chip RAM back, before anything that is gated on it."""
+        self._refresh_chip_ram_choices()
+        choices = getattr(self, "_chip_ram_choices", [])
+        if config.chip_ram in choices:
+            self.quick_chip_ram.set_selected(choices.index(config.chip_ram))
+
+    def _restore_boot_addons(self, config: builder.BuildConfig) -> None:
+        """Put the boot-partition add-ons back, after what gates them.
+
+        Which are on offer follows the machine, the Pi, the chip RAM and the
+        Emu68 build, so this runs once all four are settled - a switch put
+        back before them would be cleared by the refresh that followed.
+        """
+        self._refresh_boot_addons()
+        wanted = set(config.boot_addons)
+        was = getattr(self, "_settling_addons", False)
+        self._settling_addons = True
+        try:
+            for key, row in getattr(self, "addon_rows", {}).items():
+                if row.get_sensitive():
+                    row.set_active(key in wanted)
+        finally:
+            self._settling_addons = was
+        self._refresh_boot_addons()
 
     def _restore_usb_port(self, config: builder.BuildConfig) -> None:
         """Put the USB socket back, after the software that asks for one.
