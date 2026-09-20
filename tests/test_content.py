@@ -640,6 +640,36 @@ class ANetworkStackThatCanBeInstalled(unittest.TestCase):
         self.assertIn("staged", " ".join(log.lines))
 
 
+class AnArchiveThatCannotBeFetchedNamesOneThatCan(unittest.TestCase):
+    """A card with no TCP/IP stack is a card where no networking works.
+
+    Being told that the one thing standing in the way is a download somebody
+    else's publisher will not serve is only half the news, now that something
+    else on the list does the same job and can simply be fetched. The
+    alternative is found by the job it does, not by naming it, so the rule
+    holds for whatever pair the catalogue grows next.
+    """
+
+    def test_the_alternative_is_offered_when_the_archive_is_missing(self):
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, True)
+        log = _Recorder()
+        with unittest.mock.patch.object(packages, "cache_dir", lambda: empty):
+            packages.overlays_by_package(["roadshow"], progress=log)
+        said = " ".join(log.lines)
+        self.assertIn("could not be fetched", said)
+        self.assertIn(packages.CATALOGUE_BY_KEY["lwip"].label, said)
+
+    def test_nothing_is_offered_where_the_archive_arrives(self):
+        #  The suggestion belongs to the failure, not to the package.
+        log = _Recorder()
+        with unittest.mock.patch.object(packages, "fetch",
+                                        lambda package, *_a, **_k:
+                                        [("/nowhere/thing", "Libs")]):
+            packages.overlays_by_package(["roadshow"], progress=log)
+        self.assertNotIn("does the same job", " ".join(log.lines))
+
+
 class TheRaspberryPisOwnEthernetSocket(unittest.TestCase):
     """A Pi 4 and a CM4 have a gigabit socket the Amiga could not reach.
 
