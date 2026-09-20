@@ -112,11 +112,103 @@ class ConfigTxt:
         if not found:
             self.lines.append(wanted)
 
+    def set_overlay(self, name: str, params: tuple[str, ...] = ()) -> None:
+        """Load a device tree overlay, with its parameters on the same line.
+
+        Emu68 1.1 takes its settings this way rather than from cmdline.txt.
+        An existing line for the same overlay is rewritten in place and a
+        commented-out example revived, exactly as :meth:`set` does for an
+        ordinary key: the config.txt that ships with Emu68 carries the unicam
+        overlay as a commented example, and reviving it keeps the author's
+        comment above it with the setting it explains.
+        """
+        wanted = ",".join([name, *params])
+        pattern = rf"^(\s*)(#\s*)?dtoverlay\s*=\s*{re.escape(name)}(,.*)?$"
+        live, commented = [], []
+        for index, line in enumerate(self.lines):
+            if re.match(pattern, line):
+                (commented if re.match(r"^\s*#", line) else live).append(index)
+        if live:
+            self.lines[live[0]] = f"dtoverlay={wanted}"
+            for index in live[1:]:
+                self.lines[index] = "#" + self.lines[index].lstrip("#")
+        elif commented:
+            self.lines[commented[0]] = f"dtoverlay={wanted}"
+        else:
+            self.lines.append(f"dtoverlay={wanted}")
+
+    def anchor_overlay_params(self) -> None:
+        """Make sure a ``dtparam=`` line belongs to the overlay it names.
+
+        ``dtparam=`` applies to *the last overlay loaded*, so a ``dtparam=ant2``
+        written for the Pi's own base overlay would silently become a parameter
+        of whichever overlay this tool loaded before it - the CM4's external
+        aerial turning into a parameter the unicam overlay has never heard of.
+        Emu68's own config.txt shows the remedy: a bare ``dtoverlay=`` line
+        re-references the base overlay, and that is what goes in front.
+        """
+        for index, line in enumerate(list(self.lines)):
+            if not re.match(r"^\s*dtparam\s*=\s*ant[12]\s*$", line):
+                continue
+            previous = index - 1
+            while previous >= 0 and not self.lines[previous].strip():
+                previous -= 1
+            if previous >= 0 and re.match(r"^\s*dtoverlay\s*=\s*$",
+                                          self.lines[previous]):
+                return
+            self.lines.insert(index, "dtoverlay=")
+            return
+
     def text(self) -> str:
         return "\n".join(self.lines).rstrip() + "\n"
 
     def to_bytes(self) -> bytes:
         return self.text().encode("utf-8")
+
+
+#  The Raspberry Pi models each SD/eMMC overlay is for.  Emu68 ships two
+#  drivers for the same job and one overlay each: ``brcm-sdhc.device`` on the
+#  Pi 3 and Zero 2, ``brcm-emmc.device`` on the Pi 4 and CM4.  Naming them here
+#  rather than in the builder keeps the fact with the file that writes it.
+SD_OVERLAYS = {"pi3": "sdhc", "pi4": "emmc", "cm4": "emmc"}
+
+
+def sd_overlay_for(pi_model: str) -> str:
+    """Which SD card overlay drives this Pi, or "" when nobody has said."""
+    return SD_OVERLAYS.get(pi_model.strip().lower(), "")
+
+
+#  Settings that Emu68 1.1 took out of cmdline.txt and gave to a device tree
+#  overlay.  These are not merely deprecated: the words are gone from the 1.1
+#  kernel, so a card written with them is a card where the setting does
+#  nothing and nothing says so.  Each entry names the overlay that carries the
+#  setting now and the cmdline words it replaces.
+#
+#  Both halves of the decision are read from this one table - the overlay line
+#  that gets written, and the words that get left out of cmdline.txt - because
+#  a setting written in both forms, or in neither, is exactly the failure the
+#  table exists to prevent.
+MOVED_TO_OVERLAYS = {
+    #  field on BootOptions -> (overlay, cmdline words it replaces)
+    "unicam": ("unicam", ("unicam.boot", "unicam.smooth")),
+    "z2_ram_size": ("z2ram", ("z2_ram_size",)),
+    "sd_unit0_rw": ("", ("sd.unit0",)),          # the Pi decides which overlay
+    "vbr_move": ("emu68", ("vbr_move",)),
+}
+
+
+def unicam_overlay_params(extra: str) -> list[str]:
+    """Framethrower extras written as overlay parameters.
+
+    The same settings are spelled ``unicam.w=640`` on a cmdline and ``w=640``
+    on an overlay line.  A setting typed in either spelling is carried across
+    rather than refused, because the person typing it is reading whichever of
+    Emu68's two eras of documentation they happened to find.
+    """
+    out = []
+    for word in extra.split():
+        out.append(word[len("unicam."):] if word.startswith("unicam.") else word)
+    return out
 
 
 @dataclasses.dataclass
@@ -168,7 +260,60 @@ class BootOptions:
     unicam_extra: str = ""
     extra_cmdline: str = ""
 
-    def apply_config(self, config: ConfigTxt) -> ConfigTxt:
+    def overlay_handles(self, field: str, available: frozenset[str] = frozenset(),
+                        sd_overlay: str = "") -> bool:
+        """Whether this release takes ``field`` as an overlay parameter.
+
+        Answering yes means two things at once and they must not come apart:
+        the overlay line is written, and the cmdline words for the same setting
+        are left out.
+        """
+        overlay, _words = MOVED_TO_OVERLAYS[field]
+        if overlay:
+            return overlay in available
+        #  The SD card driver, whose overlay depends on which Pi is fitted.
+        wanted = [sd_overlay] if sd_overlay else sorted(set(SD_OVERLAYS.values()))
+        return any(name in available for name in wanted)
+
+    def overlay_lines(self, available: frozenset[str] = frozenset(),
+                      sd_overlay: str = "") -> list[tuple[str, tuple[str, ...]]]:
+        """The ``dtoverlay=`` lines this setup needs, as (name, parameters).
+
+        Only the settings that have somewhere to go are here.  Everything else
+        stays in cmdline.txt, which the 1.1 kernel still reads: ``vc4.mem``,
+        ``limit_2g``, ``swap_df0_with_df1``, ``chip_slowdown``, ``dbf_slowdown``,
+        ``blitwait``, ``enable_c0_slow`` and ``move_slow_to_chip`` are all still
+        in it, and moving working settings for the sake of tidiness would be a
+        change with a risk and no gain.
+        """
+        lines: list[tuple[str, tuple[str, ...]]] = []
+        if self.unicam and self.overlay_handles("unicam", available, sd_overlay):
+            params = ["boot"]
+            if self.unicam_smooth:
+                params.append("smooth")
+            params += unicam_overlay_params(self.unicam_extra)
+            lines.append(("unicam", tuple(params)))
+        if (self.z2_ram_size is not None
+                and self.overlay_handles("z2_ram_size", available, sd_overlay)):
+            lines.append(("z2ram", (f"size={self.z2_ram_size}",)))
+        if self.sd_unit0_rw and self.overlay_handles("sd_unit0_rw", available,
+                                                     sd_overlay):
+            #  With no Pi named, every SD overlay the release ships is written.
+            #  One of them is for the driver this board actually runs and the
+            #  other is for a driver that is not there to read it; the setting
+            #  reaching the card matters more than the tidier line.
+            wanted = ([sd_overlay] if sd_overlay
+                      else sorted(set(SD_OVERLAYS.values())))
+            for name in wanted:
+                if name in available:
+                    lines.append((name, ("unit0=rw",)))
+        if self.vbr_move and self.overlay_handles("vbr_move", available, sd_overlay):
+            lines.append(("emu68", ("vbr_move",)))
+        return lines
+
+    def apply_config(self, config: ConfigTxt, *,
+                     overlays: frozenset[str] = frozenset(),
+                     sd_overlay: str = "") -> ConfigTxt:
         if self.kernel:
             config.set("kernel", self.kernel)
         if self.boot_delay is not None:
@@ -203,17 +348,29 @@ class BootOptions:
                        comment="Kickstart ROM mapped by Emu68 (maprom)")
         else:
             config.comment_out("initramfs")
+        lines = self.overlay_lines(overlays, sd_overlay)
+        if lines:
+            #  Before the first overlay of ours goes in, make sure the aerial
+            #  parameter cannot be captured by it.
+            config.anchor_overlay_params()
+        for name, params in lines:
+            config.set_overlay(name, params)
         return config
 
-    def cmdline(self) -> str:
+    def cmdline(self, *, overlays: frozenset[str] = frozenset(),
+                sd_overlay: str = "") -> str:
+        """The cmdline.txt line, leaving out whatever the overlays now carry."""
+        def moved(field: str) -> bool:
+            return self.overlay_handles(field, overlays, sd_overlay)
+
         parts: list[str] = []
         if self.vc4_mem is not None:
             parts.append(f"vc4.mem={self.vc4_mem}")
-        if self.vbr_move:
+        if self.vbr_move and not moved("vbr_move"):
             parts.append("vbr_move")
         if self.limit_2g:
             parts.append("limit_2g")
-        if self.z2_ram_size is not None:
+        if self.z2_ram_size is not None and not moved("z2_ram_size"):
             parts.append(f"z2_ram_size={self.z2_ram_size}")
         if self.swap_df0_with_df1:
             parts.append("swap_df0_with_df1")
@@ -225,9 +382,9 @@ class BootOptions:
             parts.append("blitwait")
         if self.enable_slow_ram:
             parts += ["enable_c0_slow", "enable_c8_slow", "enable_d0_slow"]
-        if self.sd_unit0_rw:
+        if self.sd_unit0_rw and not moved("sd_unit0_rw"):
             parts.append("sd.unit0=rw")
-        if self.unicam:
+        if self.unicam and not moved("unicam"):
             parts.append("unicam.boot")
             if self.unicam_smooth:
                 parts.append("unicam.smooth")

@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import urllib.error
 import urllib.request
 import zipfile
@@ -207,6 +208,36 @@ def use_cache(path: str | Path) -> None:
     _CACHE = wanted if wanted.is_dir() else None
 
 
+#  The release this build is installing, when it is installing one.  Emu68 1.1
+#  began publishing ``VideoCore.card`` as a release asset of its own, and that
+#  copy is newer than the one inside Emu68-tools - 1.5 against 1.3 at the time
+#  of writing - so the RTG driver that goes onto a card should come from the
+#  release the card boots rather than from a tools archive with its own
+#  release schedule.
+#
+#  Kept here beside the cache for the same reason that is: the code that needs
+#  it is several layers away from the code that resolves it, and threading a
+#  release object through every one of them to reach the compatibility pass
+#  would put the fact in a dozen signatures that have no other use for it.
+_RELEASE: "Release | None" = None
+
+
+def use_release(release: "Release | None") -> None:
+    """Remember the Emu68 release this build installs, for what rides with it."""
+    global _RELEASE                                          # noqa: PLW0603
+    _RELEASE = release
+
+
+def release_in_use() -> "Release | None":
+    """The release being installed, or ``None`` when Emu68 is not being installed.
+
+    ``None`` is a real answer: a card can be updated without reinstalling
+    Emu68, and a build can be made from a local zip, and in neither case is
+    there a release for anything to take a file out of.
+    """
+    return _RELEASE
+
+
 def cache_dir() -> Path:
     if _CACHE is not None:
         return _CACHE
@@ -334,3 +365,102 @@ def has_variant(release: Release, variant_key: str) -> bool:
         return True
     except LookupError:
         return False
+
+
+#  ------------------------------------------------------------------ overlays
+#
+#  Emu68 1.1 moved its settings out of cmdline.txt and into device tree
+#  overlays, and says so in its own ``overlays/overlays.md``: "Starting with
+#  Emu68 1.1 the use of cmdline.txt for adjusting Emu68 parameters is
+#  obsolete."  Several switches went further than obsolete - ``unicam.boot``,
+#  ``unicam.smooth``, ``vbr_move``, ``z2_ram_size`` and ``sd.unit0`` are not in
+#  the 1.1 kernel at all, so a card written with them says nothing and does
+#  nothing.  Which form to write is therefore not a matter of taste.
+#
+#  The release is asked what it carries rather than what it is called.  A
+#  build can be made from a zip on disk or an already-unpacked folder, neither
+#  of which has a tag for anything to read, and a tag is the wrong question
+#  anyway: what decides the answer is whether the overlay files are there to
+#  be loaded.
+
+OVERLAY_SUFFIX = ".dtbo"
+
+
+def overlays_in(files) -> frozenset[str]:
+    """The device tree overlays an unpacked release ships, without extensions.
+
+    ``files`` is anything iterable of paths - the list :func:`extract` returns,
+    or a directory listing read back off a card.
+    """
+    names = set()
+    for item in files:
+        name = getattr(item, "name", str(item))
+        if name.lower().endswith(OVERLAY_SUFFIX):
+            names.add(name[:-len(OVERLAY_SUFFIX)])
+    return frozenset(names)
+
+
+def overlay_path(files, name: str) -> Path | None:
+    """The file behind an overlay name, when the release's files are to hand."""
+    wanted = (name + OVERLAY_SUFFIX).lower()
+    for item in files:
+        path = Path(item)
+        if path.name.lower() == wanted:
+            return path
+    return None
+
+
+#  Flattened device tree constants.  Only enough of the format to read the
+#  parameter names out of a compiled overlay is implemented here.
+_FDT_MAGIC = 0xD00DFEED
+_FDT_BEGIN_NODE, _FDT_END_NODE, _FDT_PROP, _FDT_NOP, _FDT_END = 1, 2, 3, 4, 9
+
+
+def overlay_parameters(path: Path) -> frozenset[str]:
+    """The parameter names a compiled overlay accepts, read out of the file.
+
+    A parameter spelled wrongly does nothing at all and says nothing about it -
+    which is exactly how ``enable_c0_slow`` went missing from every card this
+    tool wrote.  The overlay itself lists the names it answers to, in its
+    ``__overrides__`` node, so they can be checked rather than remembered.
+
+    An unreadable or unexpected file returns no names, which the caller reads
+    as "cannot check" rather than as "wrong".
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return frozenset()
+    if len(data) < 40 or struct.unpack_from(">I", data, 0)[0] != _FDT_MAGIC:
+        return frozenset()
+    struct_off, strings_off = struct.unpack_from(">II", data, 8)
+    names: set[str] = set()
+    depth, in_overrides = 0, 0
+    offset = struct_off
+    while offset + 4 <= len(data):
+        token = struct.unpack_from(">I", data, offset)[0]
+        offset += 4
+        if token == _FDT_BEGIN_NODE:
+            end = data.index(b"\0", offset)
+            node = data[offset:end].decode("utf-8", errors="replace")
+            offset = (end + 4) & ~3
+            depth += 1
+            if node == "__overrides__":
+                in_overrides = depth
+        elif token == _FDT_END_NODE:
+            if in_overrides == depth:
+                in_overrides = 0
+            depth -= 1
+        elif token == _FDT_PROP:
+            length, name_off = struct.unpack_from(">II", data, offset)
+            offset += 8
+            if in_overrides:
+                start = strings_off + name_off
+                end = data.index(b"\0", start)
+                names.add(data[start:end].decode("utf-8", errors="replace"))
+            offset = (offset + length + 3) & ~3
+        elif token == _FDT_NOP:
+            continue
+        else:                       # FDT_END, or something unrecognised
+            break
+    return frozenset(names)

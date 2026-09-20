@@ -755,6 +755,9 @@ def _prepare_emu68(config: BuildConfig, workdir: Path,
                 raise RuntimeError("no stable Emu68 release found for this board")
         progress.log(f"Emu68 {match.display()} for "
                      f"{emu68.VARIANTS_BY_KEY[config.variant].label}")
+        #  So that whatever else ships with a release - the RTG driver, today -
+        #  is taken from the same release the card is about to boot.
+        emu68.use_release(match)
         archive = emu68.get_release_archive(match, config.variant, progress)
 
     progress.step("Unpacking Emu68")
@@ -774,6 +777,47 @@ def _make_boot_filesystem(size: int, workdir: Path, progress: Progress) -> Path:
         handle.truncate(size)
     run(["mkfs.vfat", "-F", "32", "-n", "EMU68BOOT", str(boot)], log=progress.log)
     return boot
+
+
+def _card_overlays(fs: Fat32) -> frozenset[str]:
+    """The device tree overlays already on a card, for a build that keeps them.
+
+    Updating a card without reinstalling Emu68 leaves the kernel where it is,
+    so which era of settings that kernel reads has to be asked of the card
+    rather than of a release that is not being downloaded.
+    """
+    try:
+        return emu68.overlays_in(entry.name for entry in fs.listdir("overlays"))
+    except Exception:                        # noqa: BLE001 - no overlays there
+        return frozenset()
+
+
+def _check_overlay_parameters(options: bootcfg.BootOptions,
+                              emu68_files: list[Path],
+                              overlays: frozenset[str], sd_overlay: str,
+                              progress: Progress) -> None:
+    """Check every overlay parameter against the overlay that has to accept it.
+
+    A parameter spelled wrongly is not refused by anything: the firmware
+    passes it on, the overlay ignores it, and the card boots without the
+    setting and without a word about it.  Each overlay lists the names it
+    answers to inside itself, so the spelling can be checked against the file
+    that will be asked to honour it instead of against anybody's memory.
+    """
+    for name, params in options.overlay_lines(overlays, sd_overlay):
+        path = emu68.overlay_path(emu68_files, name)
+        if path is None:
+            continue
+        accepted = emu68.overlay_parameters(path)
+        if not accepted:                     # unreadable: cannot check
+            continue
+        for param in params:
+            key = param.split("=", 1)[0]
+            if key not in accepted:
+                progress.log(
+                    f"WARNING: the {name} overlay in this Emu68 release does "
+                    f"not take a {key!r} parameter, so that setting would do "
+                    f"nothing; it is written anyway, unchanged")
 
 
 def _populate_boot(fs: Fat32, config: BuildConfig, emu68_files: list[Path],
@@ -831,11 +875,24 @@ def _populate_boot(fs: Fat32, config: BuildConfig, emu68_files: list[Path],
         options.kickstart_file = config.kickstart_name
 
     progress.step("Writing the boot configuration")
-    options.apply_config(template)
+    #  Which of the two eras of Emu68 settings this card is being written for.
+    #  Asked of the release itself rather than of its version: Emu68 1.1 moved
+    #  several settings out of cmdline.txt into device tree overlays and took
+    #  the old words out of the kernel, and a build can be made from a local
+    #  zip or an unpacked folder that carries no version for anything to read.
+    overlays = emu68.overlays_in(emu68_files) if emu68_files else _card_overlays(fs)
+    sd_overlay = bootcfg.sd_overlay_for(config.pi_model)
+    if overlays:
+        _check_overlay_parameters(options, emu68_files, overlays, sd_overlay,
+                                  progress)
+
+    options.apply_config(template, overlays=overlays, sd_overlay=sd_overlay)
     fs.write_bytes("config.txt", template.to_bytes())
     progress.log("config.txt written")
+    for name, params in options.overlay_lines(overlays, sd_overlay):
+        progress.log("config.txt: dtoverlay=" + ",".join([name, *params]))
 
-    cmdline = options.cmdline()
+    cmdline = options.cmdline(overlays=overlays, sd_overlay=sd_overlay)
     if cmdline:
         fs.write_bytes("cmdline.txt", (cmdline + "\n").encode("utf-8"))
         progress.log(f"cmdline.txt: {cmdline}")
