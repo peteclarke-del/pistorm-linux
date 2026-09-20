@@ -290,7 +290,7 @@ class Dependencies(unittest.TestCase):
         #  overwrite a file that is already there, so a second copy would end
         #  the build rather than merely waste time.
         real = packages.fetch
-        packages.fetch = lambda package, progress, cpu=None: [
+        packages.fetch = lambda package, progress, cpu=None, chosen=(): [
             ("/nowhere/codesets.library", "Libs"),
             (f"/nowhere/{package.key}", f"Internet/{package.key}")]
         try:
@@ -640,6 +640,172 @@ class ANetworkStackThatCanBeInstalled(unittest.TestCase):
         self.assertIn("staged", " ".join(log.lines))
 
 
+class TheRaspberryPisOwnEthernetSocket(unittest.TestCase):
+    """A Pi 4 and a CM4 have a gigabit socket the Amiga could not reach.
+
+    The driver for it rides in the same archive as the USB host controller
+    driver, which this tool was already downloading for the USB stack, so the
+    wired network cost one more entry in the catalogue.
+    """
+
+    def setUp(self):
+        self.package = packages.CATALOGUE_BY_KEY["genet"]
+
+    def test_it_is_the_sana_two_driver_that_is_installed(self):
+        """The archive carries two builds of the same driver under one name.
+
+        The zero-copy netdev build can only be opened by the stack bundled
+        with it, and on an official Emu68 it is *slower* than this one: its
+        speed comes from cache extensions that are not in Emu68 upstream. The
+        classic SANA-II build works with Roadshow, AmiTCP, Miami and the
+        bundled stack alike, which is why it is the one taken.
+        """
+        sources = [inside for inside, _dest in self.package.download.items]
+        driver = [s for s in sources if s.endswith("genet.device")]
+        self.assertEqual(driver, ["Storage/DEVS/Networks/genet.device"])
+
+    def test_it_asks_for_the_hardware_that_decides_it(self):
+        #  The socket is on the Pi, and only two of the three have this one.
+        for model, expected in ((machines.Pi.PI4, True),
+                                (machines.Pi.CM4, True),
+                                (machines.Pi.PI3, False),
+                                (None, False)):
+            with self.subTest(model):
+                self.assertEqual(
+                    self.package.suits(machines.Chipset.AGA,
+                                       machines.Display.RTG_HDMI, pi=model,
+                                       emu68_tag="v1.1.0-beta.1"),
+                    expected)
+
+    def test_and_the_emu68_that_can_reach_it(self):
+        self.assertEqual(self.package.min_emu68, (1, 1))
+        self.assertFalse(self.package.suits(
+            machines.Chipset.AGA, machines.Display.RTG_HDMI,
+            pi=machines.Pi.PI4, emu68_tag="v1.0.7"))
+
+    def test_it_describes_itself_to_whatever_stack_is_installed(self):
+        written = self.package.download.write
+        self.assertEqual([item.name for item in written], ["genet"])
+        text = written[0].text
+        #  The keys the driver's own documentation gives. Roadshow reads this
+        #  spelling, and so does the bundled stack, which takes Roadshow
+        #  interface files unchanged.
+        self.assertIn("device=genet.device", text)
+        self.assertIn("configure=dhcp", text)
+
+
+class TwoNetworkCardsAndAStackThatCarriesOne(unittest.TestCase):
+    """Roadshow brings up every interface it is given; the bundled stack does not.
+
+    With one interface file per card, the bundled stack brings up whichever it
+    reads first and skips the other without a word - so which network the
+    Amiga joined would be decided by the order of a drawer.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self.tmp.name) / "cache"
+        self.cache.mkdir()
+        self.addCleanup(self.tmp.cleanup)
+        patch = unittest.mock.patch.object(packages, "cache_dir",
+                                           lambda: self.cache)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def written(self, chosen):
+        log = _Recorder()
+        pairs = packages._written(packages.CATALOGUE_BY_KEY["wifipi"],
+                                 log, chosen)
+        return [d + "/" + Path(s).name for s, d in pairs], " ".join(log.lines)
+
+    def test_both_are_described_on_a_stack_that_brings_up_both(self):
+        names, _said = self.written(["wifipi", "genet", "roadshow"])
+        self.assertIn("Devs/NetInterfaces/wifipi", names)
+
+    def test_the_wireless_one_gives_way_to_the_wire_on_the_other_stack(self):
+        names, said = self.written(["wifipi", "genet", "lwip"])
+        self.assertNotIn("Devs/NetInterfaces/wifipi", names)
+        #  And says why, because a file quietly not written is the very thing
+        #  that keeps going wrong here.
+        self.assertIn("one interface at a time", said)
+
+    def test_with_no_wired_socket_the_wireless_one_is_still_described(self):
+        names, _said = self.written(["wifipi", "lwip"])
+        self.assertIn("Devs/NetInterfaces/wifipi", names)
+
+
+class AStackThatCanActuallyBeFetched(unittest.TestCase):
+    """Roadshow's demo has to be downloaded by hand and cuts every session at
+    fifteen minutes. lwip-amiga is free, fetched with everything else, and
+    installs the same bsdsocket.library the software here opens."""
+
+    def setUp(self):
+        self.package = packages.CATALOGUE_BY_KEY["lwip"]
+
+    def test_it_is_an_alternative_to_roadshow_rather_than_a_companion(self):
+        #  It replaces bsdsocket.library and eight commands in C:, and there
+        #  is no undo.
+        other = packages.CATALOGUE_BY_KEY["roadshow"]
+        self.assertTrue(self.package.role)
+        self.assertEqual(self.package.role, other.role)
+
+    def test_it_installs_the_library_everything_else_opens(self):
+        placed = dict(self.package.download.items)
+        self.assertEqual(placed["LIBS/bsdsocket.library"], "Libs")
+
+    def test_the_settings_file_lands_under_the_name_the_stack_looks_for(self):
+        #  The archive ships it as a .default, which the stack never reads.
+        inside, destination, name = self.package.download.rename[0]
+        self.assertEqual(inside, "ENVARC/netstack.prefs.default")
+        self.assertEqual((destination, name),
+                         ("Prefs/Env-Archive", "netstack.prefs"))
+
+    def test_the_boot_line_is_the_one_its_own_installer_writes(self):
+        script = next(item for item in self.package.download.write
+                      if item.name == "Network-Startup")
+        self.assertIn("C:AddNetInterface DEVS:NetInterfaces/~(#?.info) QUIET",
+                      script.text)
+        self.assertEqual(script.destination, "S")
+        #  And something has to run it.
+        self.assertIn("   Execute S:Network-Startup", self.package.startup)
+
+
+class SolidStateStorageOnThePciExpressSocket(unittest.TestCase):
+    """The CM4 brings the Pi's PCIe lane out where a drive can be put on it.
+
+    A Pi 4 spends the same lane on its own USB controller, so there is nowhere
+    to attach one - which is why this is the one package here offered to a
+    single Raspberry Pi model.
+    """
+
+    def setUp(self):
+        self.package = packages.CATALOGUE_BY_KEY["nvme"]
+
+    def test_only_the_compute_module_is_offered_it(self):
+        for model, expected in ((machines.Pi.CM4, True),
+                                (machines.Pi.PI4, False),
+                                (machines.Pi.PI3, False),
+                                (None, False)):
+            with self.subTest(model):
+                self.assertEqual(
+                    self.package.suits(machines.Chipset.AGA,
+                                       machines.Display.RTG_HDMI, pi=model,
+                                       emu68_tag="v1.1.0-beta.1"),
+                    expected)
+
+    def test_the_bus_it_is_found_on_comes_with_it(self):
+        #  Without the PCIe library there is nothing to find the drive on, and
+        #  without the interrupt library nothing to hear it answer.
+        placed = dict(self.package.download.items)
+        self.assertEqual(placed["LIBS/bcmpcie.library"], "Libs")
+        self.assertEqual(placed["LIBS/gic400.library"], "Libs")
+
+    def test_it_says_that_it_is_experimental(self):
+        #  Its own authors warn about data loss, and a storage driver that
+        #  might lose data must not be offered as though it were finished.
+        self.assertIn("Experimental", self.package.note)
+
+
 class RoadshowsRealLayout(unittest.TestCase):
     """The archive is an installer distribution, not a Workbench disk."""
 
@@ -698,8 +864,15 @@ class RoadshowsRealLayout(unittest.TestCase):
         self.assertIn("   Execute S:Network-Startup", self.package.startup)
 
     def test_an_interface_for_this_machine_is_written(self):
-        """Every template in the archive is for other people's hardware."""
-        pairs = packages._written(self.package, _Recorder())
+        """Every template in the archive is for other people's hardware.
+
+        The file describing the card is written by the package that installs
+        the card, not by the stack: whichever stack is on the card reads the
+        same drawer, and a machine with two network cards needs a file for
+        each of them.
+        """
+        device = packages.CATALOGUE_BY_KEY["wifipi"]
+        pairs = packages._written(device, _Recorder(), ["wifipi"])
         written = [s for s, d in pairs if d == "Devs/NetInterfaces"]
         self.assertEqual(len(written), 1)
         text = Path(written[0]).read_text()
@@ -1676,7 +1849,7 @@ class TheFpuExplanationWasWrong(unittest.TestCase):
         self.assertNotIn("mcc_guigfx", packages.CATALOGUE_BY_KEY)
 
     def test_igame_is_told_not_to_look_for_it(self):
-        written = {name: text for name, _dest, text
+        written = {item.name: item.text for item
                    in packages.CATALOGUE_BY_KEY["igame"].download.write}
         self.assertIn("igame.prefs", written)
         self.assertIn("no_guigfx=1", written["igame.prefs"])
@@ -3392,7 +3565,7 @@ class TheADFHelperIsClickable(unittest.TestCase):
         #  two things that do nothing, and nothing says so.
         from pistorm_imager.core import packages                 # noqa: PLC0415
         adf = packages.CATALOGUE_BY_KEY["adfdevice"].download
-        written = {name: dest for name, dest, _text in adf.write}
+        written = {item.name: item.destination for item in adf.write}
         self.assertIn("MountADF", written)
         for _inside, dest, icon, tool in adf.retool:
             self.assertEqual(icon, "MountADF.info")
@@ -3404,7 +3577,8 @@ class TheADFHelperIsClickable(unittest.TestCase):
     def test_the_helper_hands_over_to_the_archives_own_script(self):
         from pistorm_imager.core import packages                 # noqa: PLC0415
         adf = packages.CATALOGUE_BY_KEY["adfdevice"]
-        text = next(t for n, _d, t in adf.download.write if n == "MountADF")
+        text = next(item.text for item in adf.download.write
+                    if item.name == "MountADF")
         self.assertIn(".key NAME/F", text.splitlines()[0],
                       "without a .key line <NAME> is never substituted")
         self.assertIn("RequestFile", text)

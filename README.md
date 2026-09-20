@@ -3114,10 +3114,17 @@ there, and stages the rest in `Storage/Install/Roadshow`. Two details matter:
   uses.
 - **The card is given an interface for the machine it is being built for.**
   Every one of the fifty-odd templates in `Storage/NetInterfaces` is for
-  somebody else's hardware - A2065, X-Surf, Ariadne - so the build writes
-  `DEVS:NetInterfaces/vlink` naming `vlink.device`, which is what a PiStorm
-  has, and asks for DHCP. Without it `AddNetInterface` has nothing to bring
-  up and the stack installs but never runs.
+  somebody else's hardware - A2065, X-Surf, Ariadne - so the build writes one
+  naming the device it actually installed, asking for DHCP. Without it
+  `AddNetInterface` has nothing to bring up and the stack installs but never
+  runs.
+
+  That file is written by the package that installs the **card**, not by the
+  one that installs the **stack**. It is a description of a piece of hardware;
+  whichever stack is on the card reads the same drawer, in the same spelling,
+  and a machine with two network cards needs a file for each of them. It used
+  to hang off Roadshow, which meant a card with a network device and a
+  different stack got no interface file at all.
 
 ## USB on the Amiga
 
@@ -3243,6 +3250,82 @@ partition beside it. The window itself is driven in `tests/test_gui_smoke.py`:
 a Pi 3 refuses the stack, a Pi 4 offers it, changing the socket moves the unit
 number and the `config.txt` line together, and turning the stack off takes both
 away again.
+
+## Wired networking, a stack that can be fetched, and NVMe
+
+The archive the xHCI driver comes out of is not a USB archive. It is the
+[emu68 driver stack](https://github.com/rondoval/emu68-driver-stack), and it
+carries four things this tool can install; it was already being downloaded for
+one of them.
+
+### The Pi's own Ethernet socket
+
+`genet.device` gives the Amiga the gigabit socket built into a Raspberry Pi 4
+or CM4 - a cable instead of the WiFi, and any TCP/IP stack talks to it the same
+way. It needs `gic400.library`, which comes with it, and Emu68 1.1, which is
+what maps the memory the controller is reached through. A Pi 3's socket is a
+different controller that nothing here drives, so the package is refused there
+exactly as the USB stack is.
+
+**The archive carries two builds of this driver under one name, and the choice
+is not obvious.** The zero-copy `netdev` build in `DEVS/` is the fast one, but
+only the stack bundled beside it can open it, and on an official Emu68 it is
+*slower* than the classic driver: its speed comes from cache extensions that
+are not in Emu68 upstream, and its own authors measure 104 Mbit/s in against
+698 with them. The classic SANA-II build under `Storage/` works with Roadshow,
+AmiTCP, Miami and the bundled stack alike, so that is the one installed.
+
+### lwip-amiga: a TCP/IP stack that does not have to be fetched by hand
+
+Roadshow is the stack most PiStorm machines run, and the free demo cuts every
+network session at fifteen minutes - and its publisher serves the archive only
+to a browser, so it is the one package here that a person has to download
+themselves. **lwip-amiga** is free, fetched with everything else, and installs
+the same `bsdsocket.library` that the browsers, the FTP clients and the IRC
+clients open. It brings `ping`, `traceroute`, `arp` and the Roadshow status
+commands with it, answers for the machine's name on the local network, and has
+somewhere to put DNS servers of your own - which is the thing Roadshow on this
+card has never had.
+
+It is installed the way its own `Install` script installs it, read rather than
+guessed: the library, the eleven commands, `ENVARC:netstack.prefs` under the
+name the stack looks for rather than the `.default` the archive ships, the
+commented interface template into `Storage/NetInterfaces` where the boot line
+can never pick it up, and `S:Network-Startup` carrying the one line that brings
+up every interface file in the drawer.
+
+The two stacks are declared as one **role**, so ticking both raises the
+question rather than quietly building a card where the second one has replaced
+the first one's library and eight of its commands with no way back.
+
+### Two network cards and a stack that carries one
+
+Roadshow brings up every interface file it is given. The bundled stack carries
+a single interface besides loopback: given two files it brings up whichever it
+reads first and skips the other without a word, so which network the Amiga
+joined would be settled by the order of a drawer.
+
+So a written file can now say what makes it wrong. The WiFi interface file is
+left out when the bundled stack and the wired socket are both on the card - the
+wire being the faster of the two - and the build **says so in the log**, with
+the template for writing one by hand sitting on the card in
+`Storage/NetInterfaces`. A file quietly not written is the exact shape of bug
+this project keeps finding; one that is deliberately not written has to say it
+out loud.
+
+### NVMe on the Compute Module
+
+`nvme.device` puts a PCIe NVMe SSD on the Amiga as ordinary drives: partitions
+with a Rigid Disk Block mount under their own names, and FAT, NTFS and exFAT
+partitions mount too where the handler for them is installed. It needs
+`bcmpcie.library` to find the drive and `gic400.library` to hear it answer,
+both of which come with it, and `nvmeinfo` reports what was found.
+
+This is the one package offered to a single Raspberry Pi model. A Pi 4 spends
+its only PCIe lane on its own USB controller; the CM4 brings that lane out
+where a drive can be attached. Its authors warn that data loss and corruption
+are still possible, and the package says so where it is offered.
+
 
 ## Add-ons that go onto the boot partition
 
