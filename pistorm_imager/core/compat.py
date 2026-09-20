@@ -153,8 +153,28 @@ class Fix:
         return f"{self.kind}: {self.detail}"
 
 
+def videocore_source() -> tuple[str, str]:
+    """Where this build should take the RTG driver from, and what to call it.
+
+    Emu68 publishes ``VideoCore.card`` as a release asset from 1.1 onwards, and
+    that copy runs ahead of the one bundled in Emu68-tools: 1.5 against 1.3 at
+    the time of writing. A card should carry the driver that belongs to the
+    Emu68 it boots, so the release is asked first and the tools archive is the
+    fallback for a release that has no such asset - which is every release
+    before 1.1, and any build not installing Emu68 at all.
+    """
+    release = emu68.release_in_use()
+    if release is not None:
+        asset = next((name for name in release.assets
+                      if name.lower() == EMU68_CARD.lower()), None)
+        if asset is not None:
+            return release.assets[asset][0], f"the Emu68 {release.tag} release"
+    return EMU68_TOOLS_URL, "the Emu68-tools release"
+
+
 def fetch_videocore_card(progress: Progress) -> bytes | None:
     """Get Emu68's RTG driver, from the cache when we already have it."""
+    url, where = videocore_source()
     cache = emu68.cache_dir() / EMU68_CARD
     #  Remember which release it was taken out of. Cached on existence alone,
     #  a card extracted from Emu68-tools v1.1 would be used for ever, however
@@ -162,19 +182,25 @@ def fetch_videocore_card(progress: Progress) -> bytes | None:
     #  cards carrying a 2007 WHDLoad while the archive beside it was current.
     note = cache.with_name(cache.name + ".source")
     if cache.exists() and cache.stat().st_size > 0 \
-            and note.exists() and note.read_text().strip() == EMU68_TOOLS_URL:
+            and note.exists() and note.read_text().strip() == url:
         return cache.read_bytes()
-    archive = emu68.cache_dir() / "Emu68-tools.zip"
     try:
-        emu68.download(EMU68_TOOLS_URL, archive, None, progress)
-        with zipfile.ZipFile(archive) as zf:
-            member = next((n for n in zf.namelist()
-                           if Path(n).name.lower() == EMU68_CARD.lower()), None)
-            if member is None:
-                return None
-            data = zf.read(member)
+        if url.lower().endswith(EMU68_CARD.lower()):
+            #  A release asset: the driver itself, nothing to unpack.
+            data = emu68.download(url, cache.with_suffix(".download"), None,
+                                  progress).read_bytes()
+        else:
+            archive = emu68.cache_dir() / "Emu68-tools.zip"
+            emu68.download(url, archive, None, progress)
+            with zipfile.ZipFile(archive) as zf:
+                member = next((n for n in zf.namelist()
+                               if Path(n).name.lower() == EMU68_CARD.lower()), None)
+                if member is None:
+                    return None
+                data = zf.read(member)
         cache.write_bytes(data)
-        note.write_text(EMU68_TOOLS_URL + "\n")
+        note.write_text(url + "\n")
+        progress.log(f"{EMU68_CARD} taken from {where}")
         return data
     except Exception as error:  # noqa: BLE001 - offline is not fatal
         progress.log(f"Could not obtain {EMU68_CARD}: {error}")

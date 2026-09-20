@@ -344,9 +344,15 @@ class TheCardIsMadeWritableWhateverTheSwitchSaid(_Scratch):
         self.assertEqual(config.chosen_addons(), [])
         self.assertFalse(config.needs_writable_boot())
 
-    def test_it_reaches_the_cmdline_on_a_written_card(self):
+    def test_it_reaches_the_written_card(self):
         #  Read off the card rather than off the configuration: this is the
         #  step that decides whether the Amiga can finish the installation.
+        #
+        #  The add-on needs Emu68 1.1, and 1.1 is where ``sd.unit0=rw`` stopped
+        #  being a cmdline switch: the words are not in that kernel at all. A
+        #  card written the old way booted with the boot partition read-only
+        #  and said nothing about it, and the add-on's own installer - the
+        #  whole reason the switch is held on - had nowhere to write.
         folder = self.scratch()
         make_download(folder)
         target = folder / "card.img"
@@ -368,8 +374,18 @@ class TheCardIsMadeWritableWhateverTheSwitchSaid(_Scratch):
         with open(target, "rb") as handle:
             parts = mbr.read_table(handle)
             fs = fat32.Fat32(handle, parts[0].start_bytes)
-            cmdline = fs.read_bytes("cmdline.txt").decode()
-            self.assertIn("sd.unit0=rw", cmdline)
+            config_txt = fs.read_bytes("config.txt").decode()
+            cmdline = (fs.read_bytes("cmdline.txt").decode()
+                       if fs.exists("cmdline.txt") else "")
+            if fs.exists("overlays/emmc.dtbo"):       # Emu68 1.1 and later
+                self.assertIn("dtoverlay=emmc,unit0=rw", config_txt,
+                              "the boot partition was left read-only: this "
+                              "release takes the setting as an overlay")
+                self.assertNotIn("sd.unit0", cmdline,
+                                 "written twice, once in a form this kernel "
+                                 "does not read")
+            else:
+                self.assertIn("sd.unit0=rw", cmdline)
             addon = bootaddon.CATALOGUE_BY_KEY[self.addon_key()]
             self.assertTrue(fs.exists(f"{addon.drawer}.info"))
             self.assertTrue(fs.exists(

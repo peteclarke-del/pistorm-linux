@@ -2477,8 +2477,11 @@ class ImagerWindow(Adw.ApplicationWindow):
 
         group = Adw.PreferencesGroup(
             title="Emu68 options",
-            description="Written to cmdline.txt. See the Emu68 documentation for the "
-                        "full list.")
+            description="Written to cmdline.txt, or to config.txt as device "
+                        "tree overlays on Emu68 1.1 and later, which is where "
+                        "several of these settings moved. Which form is used "
+                        "follows the release being installed. See the Emu68 "
+                        "documentation for the full list.")
         self.vc4_row = Adw.SpinRow.new_with_range(0, 512, 16)
         self.vc4_row.set_title("Picasso96 video memory (MB)")
         self.vc4_row.set_subtitle("0 leaves the Emu68 default of 16 MB")

@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager.core import amigainfo, builder, compat, mbr, pfs3, rdb  # noqa: E402
+from pistorm_imager.core import amigainfo, builder, compat, emu68, mbr, pfs3, rdb  # noqa: E402
 from pistorm_imager.core.util import MIB, Progress  # noqa: E402
 
 QUIET = Progress()
@@ -730,3 +730,72 @@ class ADistributionsBootScriptGetsTheSoftKickToo(unittest.TestCase):
         self.assertIn("AUTO", out)
         #  ...and before IPrefs, or the ROM copy is already open.
         self.assertLess(out.index("LoadModule AUTO"), out.index("C:IPrefs"))
+
+
+class TheRtgDriverComesFromTheReleaseTheCardBoots(unittest.TestCase):
+    """``VideoCore.card`` is published twice, and the copies are not the same.
+
+    Emu68-tools v1.1 carries VideoCore 1.3; the Emu68 1.1 release publishes
+    VideoCore 1.5 as an asset of its own. A card built to boot Emu68 1.1 was
+    getting the older driver out of the tools archive, because that was the
+    only place this tool knew to look.
+    """
+
+    def setUp(self):
+        self.addCleanup(emu68.use_release, None)
+
+    @staticmethod
+    def release(assets: dict) -> "emu68.Release":
+        return emu68.Release(tag="v1.1.0-beta.1", name="Emu68 1.1 beta.1",
+                             prerelease=True, published="2026-09-01",
+                             assets=assets)
+
+    def test_the_releases_own_copy_is_preferred(self):
+        emu68.use_release(self.release(
+            {"Emu68-pistorm.zip": ("https://example/Emu68-pistorm.zip", 1),
+             "VideoCore.card": ("https://example/VideoCore.card", 25864)}))
+        url, where = compat.videocore_source()
+        self.assertEqual(url, "https://example/VideoCore.card")
+        self.assertIn("v1.1.0-beta.1", where)
+
+    def test_a_release_without_one_falls_back_to_the_tools_archive(self):
+        #  Every release before 1.1: the asset did not exist yet.
+        emu68.use_release(self.release(
+            {"Emu68-pistorm.zip": ("https://example/Emu68-pistorm.zip", 1)}))
+        url, _where = compat.videocore_source()
+        self.assertEqual(url, compat.EMU68_TOOLS_URL)
+
+    def test_and_so_does_a_build_that_is_not_installing_emu68(self):
+        emu68.use_release(None)
+        url, _where = compat.videocore_source()
+        self.assertEqual(url, compat.EMU68_TOOLS_URL)
+
+    def test_a_cached_copy_from_the_other_source_is_not_reused(self):
+        """The staleness guard, which is why the source is written down.
+
+        Cached on existence alone, the 1.3 driver pulled out of the tools
+        archive would go onto every card built afterwards, whichever Emu68
+        that card boots.
+        """
+        cache = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, cache, True)
+        card = cache / compat.EMU68_CARD
+        card.write_bytes(b"the older driver")
+        note = card.with_name(card.name + ".source")
+        note.write_text(compat.EMU68_TOOLS_URL + "\n")
+
+        emu68.use_release(self.release(
+            {"VideoCore.card": ("https://example/VideoCore.card", 25864)}))
+        fetched = []
+
+        def download(url, destination, size, progress):
+            fetched.append(url)
+            destination.write_bytes(b"the newer driver")
+            return destination
+
+        with unittest.mock.patch.object(emu68, "cache_dir", lambda: cache), \
+                unittest.mock.patch.object(emu68, "download", download):
+            data = compat.fetch_videocore_card(QUIET)
+        self.assertEqual(data, b"the newer driver")
+        self.assertEqual(fetched, ["https://example/VideoCore.card"])
+        self.assertEqual(note.read_text().strip(), "https://example/VideoCore.card")
