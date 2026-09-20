@@ -3369,6 +3369,13 @@ The two stacks are declared as one **role**, so ticking both raises the
 question rather than quietly building a card where the second one has replaced
 the first one's library and eight of its commands with no way back.
 
+That role earns its keep a second time. When a package cannot be fetched, the
+build now names anything else that does the same job *and* can be downloaded -
+so a card that would have gone out with no TCP/IP stack, because APC&TCP will
+not serve their archive to anything but a browser, says what to tick instead.
+The alternative is found by the job it does rather than by being named, so the
+rule holds for whatever pair the catalogue grows next.
+
 ### Two network cards and a stack that carries one
 
 Roadshow brings up every interface file it is given. The bundled stack carries
