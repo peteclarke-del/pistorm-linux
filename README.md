@@ -494,6 +494,17 @@ Workbench 3.1 installed from the disks in `samples/`, booted to a
 only check that distinguishes a volume which is genuinely correct from one this
 code merely agrees with itself about.
 
+A card can also be **booted** after it is built, with
+`python3 tests/bootcheck.py card.hdf`. It reads the files back out of the
+card's own Amiga volume, hands them to FS-UAE as a drive, and adds one line to
+the end of `S:User-Startup` so that a boot which reaches the end says so.
+Everything above that line runs exactly as the build wrote it, which is the
+point: several packages add lines to that file and one of them blocks until a
+network interface answers, so "does the machine still get to Workbench" is a
+question worth asking of the card rather than of the code. A card carrying
+lwip-amiga and the wired Ethernet driver reaches the end in about four seconds
+with no network hardware present at all.
+
 Both the ADF reader and the FFS writer were cross-checked against
 [amitools](https://github.com/cnvogelg/amitools): every one of the 153 files on
 the Workbench 3.1 disk extracts byte-identically to `xdftool`, and volumes
@@ -523,7 +534,11 @@ covers the parts every build shares - the MBR, the FAT32 boot partition, the
 Emu68 and firmware payload, `config.txt` and `cmdline.txt`, the `0x76`
 partition, the Rigid Disk Block inside it and the AmigaOS install on top.
 
-**Booted in an emulator:** a card built here from PiMiga - its System drive on a
+**Booted in an emulator:** a Workbench 3.1 card built here from the sample
+floppy images, carrying the lwip-amiga TCP/IP stack and the Pi's Ethernet
+driver, boots in FS-UAE and reaches the end of its `S:User-Startup` - so the
+boot lines those packages add do not hang a machine that has none of the
+hardware they are for. And a card built here from PiMiga - its System drive on a
 multi-gigabyte PFS3 partition - has been lifted out as an `.hdf` and booted in
 FS-UAE, which runs the real PFS3 19.2 handler out of the RDB rather than this
 project's own reader. That is what found and then settled five PFS3 writer bugs
