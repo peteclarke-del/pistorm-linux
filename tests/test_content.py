@@ -290,7 +290,7 @@ class Dependencies(unittest.TestCase):
         #  overwrite a file that is already there, so a second copy would end
         #  the build rather than merely waste time.
         real = packages.fetch
-        packages.fetch = lambda package, progress, cpu=None, chosen=(): [
+        packages.fetch = lambda package, *_a, **_k: [
             ("/nowhere/codesets.library", "Libs"),
             (f"/nowhere/{package.key}", f"Internet/{package.key}")]
         try:
