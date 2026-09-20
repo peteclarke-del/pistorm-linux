@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -462,6 +463,158 @@ class SettingsEmu68MovedIntoOverlays(unittest.TestCase):
         self.assertEqual(lines[aerial - 1], "dtoverlay=",
                          "the aerial parameter is attached to whatever "
                          "overlay happens to precede it")
+
+
+class AKernelFromSomewhereOtherThanTheRelease(unittest.TestCase):
+    """Emu68's JIT has an unmerged change that makes driver transfers cheap.
+
+    It is published as a kernel and nothing else - no firmware, no config.txt,
+    no overlays - so it is not another release to choose instead. It is a
+    kernel laid over an official release, which still supplies the rest of the
+    boot partition.
+    """
+
+    def setUp(self):
+        self.kernel = emu68.KERNELS_BY_KEY["rangeops"]
+
+    def test_it_is_refused_where_it_cannot_be_used(self):
+        for variant, tag, expected in (
+                ("pistorm32lite", "v1.1.0-beta.1", True),
+                ("pistorm", "v1.1.0-beta.1", True),
+                #  No build of it for a bare Raspberry Pi.
+                ("raspi", "v1.1.0-beta.1", False),
+                #  Built against 1.1; the older releases cannot carry it.
+                ("pistorm32lite", "v1.0.7", False)):
+            with self.subTest(f"{variant} {tag}"):
+                self.assertEqual(emu68.kernel_suits(self.kernel, variant, tag),
+                                 expected)
+
+    def test_an_unreadable_version_is_allowed_through(self):
+        #  A local zip or an unpacked folder carries no tag for anything to
+        #  read, and refusing what cannot be checked would hide it from
+        #  everybody building that way.
+        self.assertTrue(emu68.kernel_suits(self.kernel, "pistorm32lite", ""))
+
+    def test_the_version_is_read_out_of_the_kernel_itself(self):
+        """A kernel is chosen by name, and a name proves nothing."""
+        import gzip                                          # noqa: PLC0415
+        path = Path(tempfile.mkdtemp()) / "Emu68-pistorm.gz"
+        path.write_bytes(gzip.compress(
+            b"\x00\x00$VER: Emu68 1.1.0-alpha.2 (28.07.2026) git:e23e328\x00"))
+        self.assertEqual(emu68.kernel_version(path),
+                         "Emu68 1.1.0-alpha.2 (28.07.2026) git:e23e328")
+
+    def test_a_file_with_no_version_in_it_says_so_rather_than_guessing(self):
+        path = Path(tempfile.mkdtemp()) / "Emu68-pistorm.gz"
+        path.write_bytes(b"not a kernel at all")
+        self.assertEqual(emu68.kernel_version(path), "")
+
+    def test_it_keeps_the_name_the_release_gave_the_kernel(self):
+        """``kernel=`` in config.txt names a file, and that file has to be
+        the one that is there."""
+        folder = Path(tempfile.mkdtemp())
+        official = folder / "Emu68-pistorm.gz"
+        official.write_bytes(b"the official kernel")
+        other = folder / "config.txt"
+        other.write_bytes(b"kernel=Emu68-pistorm.gz\n")
+
+        def asset(_kernel, _variant):
+            return ("https://example/Emu68-something-else.gz", 4)
+
+        def download(_url, destination, _size, _progress):
+            destination.write_bytes(b"the forked kernel")
+            return destination
+
+        with unittest.mock.patch.object(emu68, "kernel_asset", asset), \
+                unittest.mock.patch.object(emu68, "download", download):
+            files = emu68.install_kernel(self.kernel, "pistorm32lite",
+                                         [official, other], folder, QUIET)
+        self.assertEqual(official.read_bytes(), b"the forked kernel")
+        self.assertIn(official, files)
+        self.assertFalse((folder / "Emu68-something-else.gz").exists())
+
+    def test_the_build_refuses_a_board_it_has_no_kernel_for(self):
+        #  Substituting another board's kernel produces a card that does not
+        #  boot at all, so this stops rather than carrying on.
+        config = builder.BuildConfig(kernel_key="rangeops", variant="raspi")
+        with self.assertRaises(RuntimeError) as caught:
+            builder._install_chosen_kernel(config, [], Path("/nowhere"), QUIET)
+        self.assertIn("no build for", str(caught.exception))
+
+    def test_the_drivers_follow_the_kernel_and_nothing_else_does(self):
+        """Drivers built against the extensions only run on a kernel that has
+        them, and their own installer refuses any other."""
+        from pistorm_imager.core import packages               # noqa: PLC0415
+        self.assertEqual(
+            builder.BuildConfig(kernel_key="rangeops").driver_flavour(),
+            "rangeops")
+        self.assertEqual(builder.BuildConfig().driver_flavour(), "")
+
+        stack = packages.CATALOGUE_BY_KEY["genet"]
+        self.assertTrue(stack.archive(None, "rangeops").path.endswith(
+            "-rangeops.lha"))
+        self.assertFalse(stack.archive().path.endswith("-rangeops.lha"))
+        #  And a package that has nothing to do with the Raspberry Pi is
+        #  fetched from exactly where it always was.
+        aminet = packages.CATALOGUE_BY_KEY["lha"]
+        self.assertEqual(aminet.archive(None, "rangeops").path,
+                         aminet.archive().path)
+
+
+class SettingsThatOnlyEmu68OneOneHas(unittest.TestCase):
+    """Three settings that arrived with the overlays and have no older form.
+
+    Unlike the settings that *moved*, there is nothing to fall back on here:
+    an older Emu68 cannot be told about them at all. So the build says what it
+    could not honour, rather than writing nothing and leaving the setting
+    looking as though it took - which is the complaint this whole area of the
+    code was built around.
+    """
+
+    MODERN = frozenset({"emu68", "unicam", "z2ram", "sdhc", "emmc", "noscsi",
+                        "ntsc", "pal", "diagnostic"})
+
+    def written(self, **settings) -> str:
+        config = bootcfg.ConfigTxt("")
+        bootcfg.BootOptions(**settings).apply_config(config,
+                                                     overlays=self.MODERN)
+        return config.text()
+
+    def test_the_ide_check_can_be_skipped(self):
+        self.assertIn("dtoverlay=noscsi", self.written(no_ide=True))
+
+    def test_the_video_standard_can_be_stated(self):
+        self.assertIn("dtoverlay=pal", self.written(video_standard="pal"))
+        self.assertIn("dtoverlay=ntsc", self.written(video_standard="ntsc"))
+        #  And is left alone when nobody said, which is the usual answer.
+        self.assertNotIn("dtoverlay=", self.written(video_standard=""))
+
+    def test_a_video_standard_nobody_recognises_is_not_written(self):
+        self.assertNotIn("dtoverlay=", self.written(video_standard="secam"))
+
+    def test_the_jit_cache_size_can_be_set(self):
+        self.assertIn("dtoverlay=emu68,m68k_jit_size=32",
+                      self.written(jit_cache_mb=32))
+
+    def test_two_settings_on_one_overlay_share_a_line(self):
+        """A second ``dtoverlay=emu68`` replaces the first rather than adding
+        to it, so a card asked for both would have come out with one."""
+        written = self.written(jit_cache_mb=32, vbr_move=True)
+        lines = [l for l in written.splitlines() if l.startswith("dtoverlay=emu68")]
+        self.assertEqual(len(lines), 1, written)
+        self.assertIn("vbr_move", lines[0])
+        self.assertIn("m68k_jit_size=32", lines[0])
+
+    def test_an_older_release_is_told_what_it_cannot_honour(self):
+        options = bootcfg.BootOptions(no_ide=True, video_standard="ntsc",
+                                      jit_cache_mb=32)
+        said = options.unsupported(frozenset())
+        self.assertEqual(len(said), 3, said)
+        self.assertEqual(options.unsupported(self.MODERN), [])
+        #  And nothing is written into the cmdline in their place: there is no
+        #  spelling for them there, and inventing one would be a card carrying
+        #  a switch its kernel has never heard of.
+        self.assertEqual(options.cmdline(), "")
 
 
 class ReadingAnOverlaysOwnParameterNames(unittest.TestCase):

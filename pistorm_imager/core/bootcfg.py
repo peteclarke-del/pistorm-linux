@@ -197,6 +197,22 @@ MOVED_TO_OVERLAYS = {
 }
 
 
+#  Settings that exist *only* as overlays, so only Emu68 1.1 and later can be
+#  asked for them at all.  Unlike the table above there is no older spelling
+#  to fall back on: on a release that ships no overlays these cannot be
+#  honoured, and the build says so rather than writing nothing and leaving the
+#  setting looking as though it took.
+OVERLAY_ONLY = {
+    #  field -> (overlay, how to describe it when it cannot be honoured)
+    "no_ide": ("noscsi", "skipping the check for an IDE hard disk"),
+    #  The overlay is named by the value: "pal" or "ntsc".
+    "video_standard": ("", "telling AmigaOS which video standard the machine is"),
+    "jit_cache_mb": ("emu68", "the size of the JIT cache"),
+}
+
+VIDEO_STANDARDS = ("", "pal", "ntsc")
+
+
 def unicam_overlay_params(extra: str) -> list[str]:
     """Framethrower extras written as overlay parameters.
 
@@ -257,6 +273,19 @@ class BootOptions:
     sd_unit0_rw: bool = False
     unicam: bool = False
     unicam_smooth: bool = False
+    #  Emu68 1.1 settings, which have no cmdline spelling at all - see
+    #  OVERLAY_ONLY above.
+    #
+    #  Shadow the IDE registers, so AmigaOS stops looking for a hard disk on
+    #  a machine that has not got one. On an A600 or an A1200 with the drive
+    #  taken out, that search is a long wait at every boot.
+    no_ide: bool = False
+    #  Tell AmigaOS the machine is a PAL or an NTSC one. Empty leaves it to
+    #  whatever the Amiga itself says, which is right almost everywhere and
+    #  wrong on a machine whose Agnus disagrees with its owner.
+    video_standard: str = ""
+    #  Megabytes of JIT translation cache.
+    jit_cache_mb: int | None = None
     unicam_extra: str = ""
     extra_cmdline: str = ""
 
@@ -307,9 +336,40 @@ class BootOptions:
             for name in wanted:
                 if name in available:
                     lines.append((name, ("unit0=rw",)))
+        #  Everything the main Emu68 overlay carries goes on one line: a
+        #  second ``dtoverlay=emu68`` would replace the first rather than add
+        #  to it, so a card asked for two of these settings would get one.
+        main: list[str] = []
         if self.vbr_move and self.overlay_handles("vbr_move", available, sd_overlay):
-            lines.append(("emu68", ("vbr_move",)))
+            main.append("vbr_move")
+        if self.jit_cache_mb and "emu68" in available:
+            main.append(f"m68k_jit_size={self.jit_cache_mb}")
+        if main:
+            lines.append(("emu68", tuple(main)))
+        if self.no_ide and "noscsi" in available:
+            lines.append(("noscsi", ()))
+        if self.video_standard in ("pal", "ntsc") \
+                and self.video_standard in available:
+            lines.append((self.video_standard, ()))
         return lines
+
+    def unsupported(self, available: frozenset[str] = frozenset()) -> list[str]:
+        """Settings asked for that this Emu68 release cannot be told about.
+
+        A setting that only exists as an overlay cannot be written any other
+        way, so on an older release it has to be reported rather than dropped:
+        a switch left on screen looking as though it took is worse than one
+        that was never offered.
+        """
+        out = []
+        for field, (overlay, description) in OVERLAY_ONLY.items():
+            value = getattr(self, field)
+            if not value:
+                continue
+            wanted = overlay or str(value)
+            if wanted not in available:
+                out.append(description)
+        return out
 
     def apply_config(self, config: ConfigTxt, *,
                      overlays: frozenset[str] = frozenset(),
