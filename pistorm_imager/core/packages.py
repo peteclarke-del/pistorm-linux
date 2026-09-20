@@ -51,6 +51,17 @@ AMINET = "https://aminet.net/"
 DRIVER_STACK = ("https://github.com/rondoval/emu68-driver-stack/releases/"
                 "download/v2.1.1/emu68-drivers-2.1.1.lha")
 DRIVER_STACK_SOURCE = "https://github.com/rondoval/emu68-driver-stack/releases"
+#  The same release, built against the unmerged JIT cache extensions that the
+#  experimental Emu68 kernel carries. Its drivers do the cache housekeeping
+#  around every transfer the cheap way, which only that kernel offers - and
+#  their own installer refuses to run on a kernel without it, so this build is
+#  taken only when that kernel is the one going onto the card.
+DRIVER_STACK_RANGEOPS = ("https://github.com/rondoval/emu68-driver-stack/"
+                         "releases/download/v2.1.1/"
+                         "emu68-drivers-2.1.1-rangeops.lha")
+#  Kernel flavour -> the build of the stack that belongs with it. The empty
+#  key is an official Emu68, which is nearly every card.
+DRIVER_STACK_BUILDS = {"": DRIVER_STACK, "rangeops": DRIVER_STACK_RANGEOPS}
 USER_AGENT = "pistorm-imager"
 
 
@@ -177,6 +188,20 @@ class Download:
     #  and calling it the package would lose the actual rule, which is that
     #  the processor decides.
     per_cpu: tuple[tuple[str, str], ...] = ()
+
+    def for_kernel(self, flavour: str) -> "Download":
+        """This download, built for the Emu68 kernel the card will run.
+
+        Only the driver stack is published twice this way, and both builds
+        have the same layout inside, so the address is all that changes.
+        Anything else is returned untouched.
+        """
+        if not flavour or self.path not in DRIVER_STACK_BUILDS.values():
+            return self
+        wanted = DRIVER_STACK_BUILDS.get(flavour)
+        if not wanted or wanted == self.path:
+            return self
+        return dataclasses.replace(self, path=wanted)
 
     def for_cpu(self, cpu: Cpu | None) -> "Download":
         """This download with ``path`` set to the build for ``cpu``.
@@ -363,11 +388,12 @@ class Package:
             return False
         return True
 
-    def archive(self, cpu: Cpu | None = None) -> "Download | None":
-        """The download for this processor, where there is one per processor."""
+    def archive(self, cpu: Cpu | None = None,
+                kernel: str = "") -> "Download | None":
+        """The download for this processor and this Emu68 kernel."""
         if self.download is None:
             return None
-        return self.download.for_cpu(cpu)
+        return self.download.for_cpu(cpu).for_kernel(kernel)
 
 
 STAGING = "Storage/Install"          # where self-installing packages land
@@ -1601,9 +1627,10 @@ def _extractor() -> list[str] | None:
 
 
 def download_archive(package: Package, progress: Progress,
-                     cpu: Cpu | None = None) -> Path | None:
+                     cpu: Cpu | None = None,
+                     kernel: str = "") -> Path | None:
     """Fetch a package's archive, reusing the cached copy when there is one."""
-    download = package.archive(cpu)
+    download = package.archive(cpu, kernel)
     if download is None:
         return None
     target = cache_dir() / download.filename
@@ -1847,12 +1874,13 @@ def inside_archive(root: Path, named: str) -> Path:
 
 def fetch(package: Package, progress: Progress,
           cpu: Cpu | None = None,
-          chosen: Iterable[str] = ()) -> list[tuple[str, str]]:
+          chosen: Iterable[str] = (),
+          kernel: str = "") -> list[tuple[str, str]]:
     """Download and unpack one package, as (host path, destination) pairs."""
-    archive = download_archive(package, progress, cpu)
+    archive = download_archive(package, progress, cpu, kernel)
     if archive is None:
         return []
-    download = package.archive(cpu)
+    download = package.archive(cpu, kernel)
     if download.raw:
         return [(str(archive), download.stage)]
     root = unpack(archive, progress)
@@ -2305,7 +2333,8 @@ def overlays_by_package(keys: list[str],
                         allow_download: bool = True,
                         pi: Pi | None = None,
                         cpu: Cpu | None = None,
-                        emu68_tag: str | None = None
+                        emu68_tag: str | None = None,
+                        kernel: str = ""
                         ) -> list[tuple[str, list[tuple[str, str]]]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
@@ -2339,7 +2368,7 @@ def overlays_by_package(keys: list[str],
             continue
         if not allow_download or package.download is None:
             continue
-        fetched = fetch(package, progress, cpu, wanted)
+        fetched = fetch(package, progress, cpu, wanted, kernel)
         if not fetched and progress is not None:
             progress.log(f"  WARNING: {package.label} could not be fetched "
                          f"from {package.download.where}, so it is not on "

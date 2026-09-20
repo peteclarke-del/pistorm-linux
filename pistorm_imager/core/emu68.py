@@ -14,6 +14,7 @@ pattern search so that future renames degrade into a warning rather than a crash
 from __future__ import annotations
 
 import dataclasses
+import gzip
 import json
 import os
 import re
@@ -464,3 +465,137 @@ def overlay_parameters(path: Path) -> frozenset[str]:
         else:                       # FDT_END, or something unrecognised
             break
     return frozenset(names)
+
+
+#  ------------------------------------------------------- kernels from a fork
+#
+#  Emu68's JIT has an unmerged change - "dcache range extensions" - that makes
+#  the cache housekeeping around every hardware transfer cheap. The driver
+#  stack's own measurements put gigabit Ethernet at 104 Mbit/s in on an
+#  official Emu68 and 698 with the extensions, so for anybody using the Pi's
+#  network socket it is the difference between a network card and a fast one.
+#
+#  It is published as a kernel and nothing else: no firmware, no config.txt, no
+#  overlays. So it is not another release to choose instead - it is a kernel
+#  laid over an official release, which still supplies everything else on the
+#  boot partition.
+
+
+@dataclasses.dataclass(frozen=True)
+class Kernel:
+    """An Emu68 kernel published somewhere other than the official release."""
+
+    key: str
+    label: str
+    description: str
+    repo: str
+    tag: str
+    #  Board variant -> the asset carrying that board's kernel.  A board with
+    #  no entry cannot have this kernel at all.
+    assets: dict
+    #  The oldest official release it can be laid over.
+    min_release: tuple
+    #  Which build of the Emu68 driver stack belongs with it, for drivers
+    #  compiled against these extensions.
+    driver_flavour: str = ""
+    notes: tuple = ()
+
+
+KERNELS = [
+    Kernel(
+        key="rangeops",
+        label="Experimental kernel with the dcache extensions",
+        description=(
+            "An unofficial Emu68 build carrying a JIT change that has not "
+            "been merged upstream. It makes the cache housekeeping around "
+            "every hardware transfer cheap, which is what the Raspberry Pi's "
+            "drivers spend their time on: its authors measure the Pi's "
+            "Ethernet socket at 104 Mbit/s on an official Emu68 and 698 with "
+            "this."),
+        repo="rondoval/Emu68",
+        tag="v1.1-alpha-with-rangeops",
+        assets={"pistorm32lite": "Emu68-pistorm.gz",
+                "pistorm": "Emu68-pistorm-classic.gz"},
+        min_release=(1, 1),
+        driver_flavour="rangeops",
+        notes=(
+            "Experimental, and unofficial: it is one person's branch of "
+            "Emu68, not a release of it.",
+            "Only the kernel is replaced. The firmware, the device tree, the "
+            "overlays and config.txt all come from the official release "
+            "chosen beside it.",
+            "There is no bare Raspberry Pi build of it, so it is offered only "
+            "for the PiStorm boards.",
+        ),
+    ),
+]
+
+KERNELS_BY_KEY = {k.key: k for k in KERNELS}
+
+
+def kernel_suits(kernel: Kernel, variant: str, release_tag: str) -> bool:
+    """Whether this kernel can be laid over that release, for that board."""
+    return variant in kernel.assets and at_least(release_tag or "",
+                                                 kernel.min_release)
+
+
+def kernel_asset(kernel: Kernel, variant: str) -> tuple[str, int]:
+    """The download for a board's kernel, asked of the publisher.
+
+    The address is not written down here: the tag is, and the asset is found
+    in the release under it, so a renamed asset is a clear failure rather than
+    a download of something that is not there.
+    """
+    wanted = kernel.assets.get(variant)
+    if wanted is None:
+        raise LookupError(f"{kernel.label} has no build for this board")
+    url = f"https://api.github.com/repos/{kernel.repo}/releases"
+    with _urlopen(url) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    for item in payload:
+        if item.get("tag_name") != kernel.tag:
+            continue
+        for asset in item.get("assets", []):
+            if asset["name"] == wanted:
+                return asset["browser_download_url"], asset["size"]
+    raise LookupError(f"{kernel.tag} has no asset named {wanted}")
+
+
+def kernel_version(path: Path) -> str:
+    """The version string inside a kernel file, read out of the file itself.
+
+    A kernel is chosen by name and a name proves nothing, so the card's log
+    says which Emu68 actually went onto it. The file is gzipped, and small
+    enough to read whole.
+    """
+    try:
+        if path.suffix == ".gz":
+            with gzip.open(path, "rb") as handle:
+                data = handle.read()
+        else:
+            data = path.read_bytes()
+    except OSError:
+        return ""
+    found = re.search(rb"\$VER: (Emu68 [^\x00]{0,60})", data)
+    return found.group(1).decode("utf-8", errors="replace").strip() if found else ""
+
+
+def install_kernel(kernel: Kernel, variant: str, files: list[Path],
+                   destination: Path, progress: Progress) -> list[Path]:
+    """Put a kernel from a fork in place of the one the release shipped.
+
+    The file keeps the release's own name, so ``kernel=`` in config.txt still
+    names the file that is there. Both publishers happen to use the same
+    names today; taking the release's name rather than the asset's means that
+    staying true even if one of them renames.
+    """
+    url, size = kernel_asset(kernel, variant)
+    cached = cache_dir() / f"{kernel.tag}-{Path(url).name}"
+    download(url, cached, size, progress)
+    official = [p for p in files if kernel_name([p]) == p.name]
+    target = destination / (official[0].name if official else Path(url).name)
+    shutil.copyfile(cached, target)
+    version = kernel_version(target)
+    progress.log(f"Kernel replaced with {kernel.label}"
+                 + (f": {version}" if version else ""))
+    return [p for p in files if p != target] + [target]

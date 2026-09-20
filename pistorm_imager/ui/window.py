@@ -87,7 +87,8 @@ ZIP_FILTERS = [("Emu68 release", ["*.zip"])]
 #  the WiFi network, the volume name and the boot switches without a word.
 #  These are the settings the page has no opinion about, and must hand back.
 KEPT_ACROSS_QUICK_SETUP = (
-    "release_tag", "emu68_archive", "install_emu68", "kickstart_key",
+    "release_tag", "kernel_key", "emu68_archive", "install_emu68",
+    "kickstart_key",
     "amiga_volume_name", "wifi_ssid", "wifi_password", "wifi_country",
     "expand_to_fill", "extra_partitions", "boot_only",
     #  The quick page has a source chooser of its own, so these belong to the
@@ -112,6 +113,11 @@ KEPT_BOOT_OPTIONS = (
     "overclock", "cm4_external_antenna", "swap_df0_with_df1", "sd_unit0_rw",
     "hdmi_force_hotplug", "boot_delay", "gpu_mem", "total_mem", "limit_2g",
     "z2_ram_size", "unicam_extra",
+    #  Emu68 1.1 settings. The machine has no opinion about any of them: an
+    #  IDE port with nothing on it, a machine whose Agnus disagrees with its
+    #  owner, and how much cache to give the translator are all things only
+    #  the person in front of it knows.
+    "no_ide", "video_standard", "jit_cache_mb",
     #  Follows the USB socket, which the quick setup keeps, so the line that
     #  makes that socket work has to be kept with it.
     "otg_mode",
@@ -2046,6 +2052,20 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.release_row.connect("notify::selected",
                                  lambda *_a: self._refresh_packages())
         group.add(self.release_row)
+        #  A kernel published outside the official release. It replaces only
+        #  the kernel: the firmware, the device tree, the overlays and
+        #  config.txt all still come from the release chosen above, which is
+        #  why this is a row beside that one rather than an entry in it.
+        self.kernel_row = Adw.ComboRow(
+            title="Emu68 kernel",
+            model=combo(["The one in the release above"]
+                        + [k.label for k in emu68.KERNELS]))
+        self.kernel_row.connect("notify::selected",
+                                lambda *_a: self._on_kernel_changed())
+        group.add(self.kernel_row)
+        self.kernel_hint = Adw.ActionRow(title="", subtitle="")
+        self.kernel_hint.set_sensitive(False)
+        group.add(self.kernel_hint)
         self.local_zip_row = FileRow(
             "Use a local Emu68 zip instead",
             "Leave empty to download the version chosen above",
@@ -2053,6 +2073,48 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.local_zip_row)
         page.add(group)
         return page
+
+    def _chosen_kernel(self) -> "emu68.Kernel | None":
+        index = self.kernel_row.get_selected() - 1
+        if 0 <= index < len(emu68.KERNELS):
+            return emu68.KERNELS[index]
+        return None
+
+    def _on_kernel_changed(self) -> None:
+        """Say what the chosen kernel is, and refuse one that cannot be used.
+
+        A kernel from a fork is published for some boards and not others, and
+        is built against an Emu68 too new for the older releases. Leaving it
+        selected where it cannot be laid down would be a card built from the
+        release's own kernel with the row still saying otherwise.
+        """
+        kernel = self._chosen_kernel()
+        if kernel is None:
+            self.kernel_hint.set_subtitle(
+                "The official Emu68 kernel, which is what almost every card "
+                "wants.")
+            self._refresh_packages()
+            return
+        variant = emu68.VARIANTS[min(self.variant_row.get_selected(),
+                                     len(emu68.VARIANTS) - 1)].key
+        tag = self._release_tag()
+        lines = [kernel.description]
+        if not emu68.kernel_suits(kernel, variant, tag):
+            if variant not in kernel.assets:
+                lines.append("There is no build of it for this board, so the "
+                             "release's own kernel will be used.")
+            else:
+                version = ".".join(str(part) for part in kernel.min_release)
+                lines.append(f"It needs Emu68 {version} or newer above it, so "
+                             f"the release's own kernel will be used.")
+            self.kernel_row.set_selected(0)
+            self.kernel_hint.set_subtitle("  ".join(lines))
+            return
+        lines.append("The rest of the boot partition still comes from the "
+                     "release chosen above.")
+        lines += list(kernel.notes)
+        self.kernel_hint.set_subtitle("  ".join(lines))
+        self._refresh_packages()
 
     def _page_amiga(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
@@ -2525,6 +2587,32 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.extra_row = Adw.EntryRow(title="Additional cmdline.txt options")
         group.add(self.extra_row)
         page.add(group)
+
+        #  Settings Emu68 only gained in 1.1, and only as device tree
+        #  overlays: there is no older spelling for them, so on an older
+        #  release they cannot be written at all. The rows say so and are held
+        #  off rather than being left looking as though they took.
+        self.overlay_group = Adw.PreferencesGroup(
+            title="Emu68 1.1 options",
+            description="Settings that arrived with Emu68 1.1 and exist only "
+                        "as device tree overlays.")
+        self.noide_row = Adw.SwitchRow(
+            title="Skip the check for an IDE hard disk",
+            subtitle="On a machine with no drive on its IDE port, AmigaOS "
+                     "spends a long time at every boot looking for one")
+        self.overlay_group.add(self.noide_row)
+        self.video_row = Adw.ComboRow(
+            title="Video standard",
+            subtitle="What Emu68 tells AmigaOS the machine is, whatever its "
+                     "own Agnus says",
+            model=combo(["As the Amiga reports it", "PAL", "NTSC"]))
+        self.overlay_group.add(self.video_row)
+        self.jit_row = Adw.SpinRow.new_with_range(0, 256, 1)
+        self.jit_row.set_title("JIT cache (MB)")
+        self.jit_row.set_subtitle("0 leaves the Emu68 default")
+        self.jit_row.set_value(0)
+        self.overlay_group.add(self.jit_row)
+        page.add(self.overlay_group)
 
         group = Adw.PreferencesGroup(
             title="WiFi",
@@ -3531,6 +3619,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         if not self._ready:
             return
+        self._refresh_overlay_options()
         display = self._display()
         chipset = self._machine().chipset
         pi = self._pi()
@@ -3678,6 +3767,28 @@ class ImagerWindow(Adw.ApplicationWindow):
             "Held on by the boot partition add-on you chose: its installer "
             "runs on the Amiga and writes to this partition."
             if needed else self._unit0_subtitle)
+
+    def _refresh_overlay_options(self) -> None:
+        """Hold off the settings this Emu68 release has no way to be told.
+
+        They exist only as device tree overlays, so on a release older than
+        1.1 there is nothing to write them into. A switch that cannot reach
+        the card must not be left looking as though it can - that is the whole
+        complaint these pages have been built around.
+        """
+        tag = self._release_tag()
+        #  An unknown release - a local zip, an unpacked folder, or the list
+        #  not arrived yet - is allowed through rather than refused: nothing
+        #  can read a version off it, and the build says what it could not
+        #  honour. It is the same rule the packages page applies.
+        supported = emu68.at_least(tag or "", (1, 1))
+        self.overlay_group.set_sensitive(supported)
+        self.overlay_group.set_description(
+            "Settings that arrived with Emu68 1.1 and exist only as device "
+            "tree overlays." if supported else
+            "These arrived with Emu68 1.1, and there is no way to write them "
+            "for an older release. Choose Emu68 1.1 or newer on the Source "
+            "page to use them.")
 
     def _release_tag(self) -> str:
         """The Emu68 release the card will be built from, where one is known.
@@ -4282,6 +4393,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  pages produced a card with no overlay to drive it.
             unicam=machines.wants_unicam(self._display()),
             unicam_smooth=machines.wants_unicam(self._display()),
+            no_ide=self.noide_row.get_active(),
+            video_standard=bootcfg.VIDEO_STANDARDS[
+                min(self.video_row.get_selected(),
+                    len(bootcfg.VIDEO_STANDARDS) - 1)],
+            jit_cache_mb=int(self.jit_row.get_value()) or None,
             extra_cmdline=self._extra_cmdline(),
         )
 
@@ -4311,6 +4427,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             image_size=image_size,
             variant=emu68.VARIANTS[self.variant_row.get_selected()].key,
             release_tag=release_tag,
+            kernel_key=(self._chosen_kernel().key
+                        if self._chosen_kernel() else ""),
             emu68_archive=self.local_zip_row.path,
             install_emu68=(self.install_emu_row.get_active()
                            and not self._making_hdf()),
@@ -4984,6 +5102,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.blitwait_row.set_active(options.blitwait)
         self.swapdf_row.set_active(options.swap_df0_with_df1)
         self.unit0_row.set_active(options.sd_unit0_rw)
+        self.noide_row.set_active(options.no_ide)
+        standard = (options.video_standard
+                    if options.video_standard in bootcfg.VIDEO_STANDARDS
+                    else "")
+        self.video_row.set_selected(bootcfg.VIDEO_STANDARDS.index(standard))
+        self.jit_row.set_value(options.jit_cache_mb or 0)
         self.extra_row.set_text(options.extra_cmdline)
 
         self.replace_older_row.set_active(config.replace_older_software)
@@ -5022,6 +5146,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  so the one this setup was built against may not be offered yet.
         self._wanted_release = config.release_tag or ""
         self._populate_releases()
+        #  After the releases, because the kernel row checks the chosen
+        #  release before it will stay selected.
+        keys = [k.key for k in emu68.KERNELS]
+        self.kernel_row.set_selected(
+            keys.index(config.kernel_key) + 1
+            if config.kernel_key in keys else 0)
+        self._on_kernel_changed()
         self._ready = was_ready
         self._sync_visibility()
 

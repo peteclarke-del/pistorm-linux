@@ -687,6 +687,77 @@ bug back and watching it fail. The card itself was then built and read back:
 `config.txt` carries the three `dtoverlay=` lines and `cmdline.txt` carries
 only `vc4.mem=64`.
 
+### Three settings that only Emu68 1.1 has
+
+The overlays did not only move settings; they added some. Three are worth a
+control of their own, and they are on the Options page in a group called
+**Emu68 1.1 options**:
+
+| Setting | Overlay | What it is for |
+| --- | --- | --- |
+| Skip the check for an IDE hard disk | `noscsi` | On a machine with nothing on its IDE port, AmigaOS spends a long time at every boot looking for a drive |
+| Video standard | `pal` / `ntsc` | What Emu68 tells AmigaOS the machine is, whatever its own Agnus says |
+| JIT cache (MB) | `emu68,m68k_jit_size=` | How much translation cache the JIT keeps |
+
+These have **no older spelling at all**, so unlike the four that moved there is
+nothing to fall back on: an Emu68 before 1.1 cannot be told about them. The
+group is therefore held off when the chosen release is older, and says why, on
+the same principle as the packages page - a control that cannot reach the card
+must not sit there looking as though it can. Where the release cannot be read
+at all, because the build is coming from a local zip or an unpacked folder, the
+settings are allowed through and the build reports what it could not honour.
+
+One detail the first attempt got wrong: **a second `dtoverlay=emu68` line
+replaces the first rather than adding to it.** Asking for a JIT cache size and
+a vector base move would have written two lines and got one setting. Everything
+the main Emu68 overlay carries now goes onto a single line, and a test asserts
+there is only ever one.
+
+### A kernel from a fork, laid over an official release
+
+Emu68's JIT has an unmerged change - the **dcache range extensions** - that
+makes the cache housekeeping around every hardware transfer cheap. That is
+what the Raspberry Pi's drivers spend their time on, and the numbers are not
+small: the driver stack's own measurements put the Pi's gigabit socket at
+**104 Mbit/s in on an official Emu68 and 698 with the extensions**.
+
+It is published at
+[rondoval/Emu68](https://github.com/rondoval/Emu68/releases/tag/v1.1-alpha-with-rangeops)
+as a kernel and nothing else - no firmware, no device tree, no overlays, no
+`config.txt`. So it is not another release to choose instead of the official
+one; it is a **kernel laid over** one, and that is how the Source page offers
+it: a row under the release, not an entry in it. The release still supplies
+everything else on the boot partition.
+
+Three things follow from that, and each is handled rather than left to the
+person:
+
+- **It is published for some boards and not others.** There is no bare
+  Raspberry Pi build, so choosing it for that board would silently leave the
+  release's own kernel in place; the row refuses instead and says why, and a
+  build driven from a saved job or the command line stops rather than writing
+  a card whose kernel is not the one asked for.
+- **It is built against 1.1**, so it cannot be laid over an older release.
+- **The two halves can be different ages.** The kernel is Emu68 1.1.0-alpha.2
+  (28 July 2026) while the current official release is 1.1.0-beta.1 (1
+  September). The build reads the version string out of *both* kernels - the
+  one the release shipped and the one that replaced it - and says both in the
+  log, so the card's own record shows what is actually on it rather than what
+  was asked for.
+
+The drivers follow the kernel. The emu68 driver stack is published twice, and
+the `-rangeops` build is compiled against these extensions; its own installer
+refuses to run on a kernel without them. So every package that comes out of
+that archive takes the `-rangeops` build **when and only when** this kernel is
+the one going onto the card, and nothing else in the catalogue is affected at
+all.
+
+What is deliberately *not* done is switching `genet.device` to the zero-copy
+`netdev` build that goes with it. That build can only be opened by the bundled
+`lwip-amiga` stack, so choosing it would quietly decide somebody's TCP/IP stack
+for them. The SANA-II driver on this kernel is already far quicker than on an
+official Emu68, and it still works with Roadshow, AmiTCP and Miami.
+
 ### The RTG driver comes from the release the card boots
 
 `VideoCore.card` is published twice. Emu68-tools v1.1 carries VideoCore 1.3
