@@ -2373,6 +2373,24 @@ def overlays_by_package(keys: list[str],
             progress.log(f"  WARNING: {package.label} could not be fetched "
                          f"from {package.download.where}, so it is not on "
                          f"this card")
+            #  Where something else does the same job and *can* be fetched,
+            #  say so. A card with no TCP/IP stack is a card where none of
+            #  the networking software works, and being told that the one
+            #  thing standing in the way is a download somebody else's
+            #  publisher will not serve is only half the news. Found by the
+            #  job the package does rather than by naming it, so it holds for
+            #  whatever pair of alternatives the catalogue grows next.
+            instead = [other.label for other in CATALOGUE
+                       if other.role and other.role == package.role
+                       and other.key != package.key
+                       and other.download is not None
+                       and not other.download.manual
+                       and other.suits(chipset, display, pi=pi, cpu=cpu,
+                                       emu68_tag=emu68_tag)]
+            if instead:
+                progress.log(f"  {' or '.join(instead)} does the same job and "
+                             f"can be downloaded; tick it on the Packages "
+                             f"page instead")
         before = len(out)
         add(fetched)
         #  Only what this package actually contributed: a library two of them
