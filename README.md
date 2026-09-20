@@ -93,8 +93,12 @@ Along the way it will:
 * edit the `config.txt` that ships with your chosen Emu68 release rather than
   generating a new one, so upstream's comments and per-release tuning survive
   and only the keys you actually set are changed;
-* write `cmdline.txt` from the documented Emu68 options (`vc4.mem`, `vbr_move`,
-  `chip_slowdown`, `sd.unit0=rw`, and anything else you type in);
+* write the Emu68 options in the form the release you chose actually reads:
+  `cmdline.txt` for the switches its kernel still takes (`vc4.mem`,
+  `chip_slowdown`, `enable_c0_slow` and the rest), and `config.txt` device tree
+  overlays for the four settings **Emu68 1.1 moved out of `cmdline.txt`**
+  (the Framethrower, Zorro II memory, writing to the whole SD card, and moving
+  the vector base register);
 * install AmigaOS from ADFs, recognising each disk by the **volume name inside
   it** rather than its file name, and keeping the whole set to one release (a
   2.0 Extras drawer on a 3.1 system is a broken install, and collections
@@ -327,7 +331,7 @@ decisions are made.
 | **Storage** | The size of the system drive, whether the rest of the card becomes a PFS3 work drive, whether the card carries an Amiga drive at all, and the Amiga partitions themselves. |
 | **Amiga** | Which Amiga the card is for, which Raspberry Pi is on its PiStorm board, how much chip RAM is fitted, how you look at it, the Kickstart ROM, and the Workbench floppy images. |
 | **Packages** | The optional software, fetched from its publisher rather than taken from a drive you happen to have - and, where something chosen needs one, [which USB socket](#which-socket-and-the-two-files-that-have-to-agree) the Amiga is given. |
-| **Options** | HDMI output, the Raspberry Pi's own settings, the [boot partition add-ons](#add-ons-that-go-onto-the-boot-partition), and the Emu68 switches that end up in `cmdline.txt`. |
+| **Options** | HDMI output, the Raspberry Pi's own settings, the [boot partition add-ons](#add-ons-that-go-onto-the-boot-partition), and the Emu68 switches, which end up in `cmdline.txt` or, on Emu68 1.1 and later, as [device tree overlays](#emu68-11-moved-four-settings-out-of-cmdlinetxt) in `config.txt`. |
 | **Target** | Where the result goes, how big the boot partition is, and **what this will build**. |
 
 ![The Source page: the task, and where the system comes from](docs/images/03-source.png)
@@ -624,6 +628,76 @@ nothing at all and says nothing about it. `gather()` now asks
 one rule rather than two, and the same card reads:
 
     vc4.mem=64 chip_slowdown dbf_slowdown blitwait enable_c0_slow enable_c8_slow enable_d0_slow move_slow_to_chip
+
+### Emu68 1.1 moved four settings out of `cmdline.txt`
+
+Emu68 1.1 says it in its own `overlays/overlays.md`: "Starting with Emu68 1.1
+the use of cmdline.txt for adjusting Emu68 parameters is obsolete." Settings
+are given to the kernel as device tree overlays now, loaded from `config.txt`:
+
+    dtoverlay=unicam,boot,smooth
+
+Most of the old switches are only obsolete - the 1.1 kernel still reads
+`vc4.mem`, `limit_2g`, `swap_df0_with_df1`, `chip_slowdown`, `dbf_slowdown`,
+`blitwait`, `enable_c0_slow` and `move_slow_to_chip` out of the command line it
+is handed. Four went further than obsolete. The words are **not in the 1.1
+kernel at all**, so a card written with them carries a setting nothing reads
+and nothing reports:
+
+| Setting | Written as, up to 1.0.7 | Written as, from 1.1 | What the old form did on 1.1 |
+| --- | --- | --- | --- |
+| Framethrower / C790 | `unicam.boot unicam.smooth` | `dtoverlay=unicam,boot,smooth` | the chosen display had nothing driving it |
+| Zorro II memory | `z2_ram_size=8` | `dtoverlay=z2ram,size=8` | the memory was never added |
+| Let the Amiga write to the whole card | `sd.unit0=rw` | `dtoverlay=emmc,unit0=rw` (Pi 4, CM4) or `dtoverlay=sdhc,unit0=rw` (Pi 3) | the boot partition stayed read-only, so an add-on's own Amiga installer had nowhere to write |
+| Move the vector base register | `vbr_move` | `dtoverlay=emu68,vbr_move` | the vectors stayed where they were |
+
+This matters now rather than later, because the software that needs Emu68 1.1
+is software people are being offered: the USB stack, the xHCI driver and
+AGA-PISTORM all require it, so ticking any of them steers the build onto
+exactly the release where those four controls went quiet.
+
+**Which form gets written is decided by what the release ships, not by what it
+is called.** A build can be made from a local zip or an already-unpacked
+folder, neither of which carries a version for anything to read, and the
+question that actually matters is whether the overlay files are there to be
+loaded. So the unpacked release is asked for its `overlays/*.dtbo` files, and a
+card being updated without reinstalling Emu68 is asked the same question about
+the overlays already on it.
+
+Two details that are easy to get wrong, and are guarded:
+
+- **`dtparam=` belongs to the last overlay loaded, not to the file.** A
+  `dtparam=ant2` line - the CM4's external aerial - left sitting behind one of
+  our `dtoverlay=` lines silently becomes a parameter of *that* overlay. A bare
+  `dtoverlay=` line re-references the Pi's base overlay, and that is written in
+  front of the aerial before any overlay of ours goes in.
+- **A parameter spelled wrongly does nothing and says nothing about it.** Every
+  overlay lists the names it answers to inside itself, in its `__overrides__`
+  node, so the build reads them out of the `.dtbo` that will be asked to honour
+  the setting and warns when a name is not there. That is the same check that
+  found `enable_c0_slow` sitting next to `move_slow_to_chip` in the kernel
+  binary, done automatically rather than by hand.
+
+The guard against the underlying shape of the bug is an invariant:
+`SettingsEmu68MovedIntoOverlays` reads the table that says which setting moved
+where, and asserts that each one is written in exactly one form - the overlay
+line present *and* the dead words absent on a release with overlays, and the
+reverse on a release without them. It was proved by putting each half of the
+bug back and watching it fail. The card itself was then built and read back:
+`config.txt` carries the three `dtoverlay=` lines and `cmdline.txt` carries
+only `vc4.mem=64`.
+
+### The RTG driver comes from the release the card boots
+
+`VideoCore.card` is published twice. Emu68-tools v1.1 carries VideoCore 1.3
+(30.12.2025); the Emu68 1.1 releases publish VideoCore 1.5 (06.02.2026) as an
+asset of their own. This tool only knew about the tools archive, so a card
+built to boot Emu68 1.1 got the older driver. The release being installed is
+asked first now, and the tools archive is the fallback for a release that has
+no such asset - which is every release before 1.1, and any build that is not
+installing Emu68 at all. The cached copy records which of the two it came
+from, so switching releases does not quietly reuse the other one.
+
 
 ## Why a build takes as long as it does
 
