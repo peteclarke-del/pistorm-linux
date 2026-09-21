@@ -230,7 +230,7 @@ or install it from the published release and use the desktop entry:
 
 ```
 pipx install --system-site-packages \
-    "git+https://github.com/peteclarke-del/pistorm-linux@v0.9.0"
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.10.0"
 pistorm-imager-cli install-desktop
 ```
 
@@ -271,7 +271,7 @@ neither is offered. The release's tag, `vX.Y.Z`, is compared with the version
 About shows, which is the one in `pistorm_imager/__init__.py`. The answer
 appears under the button:
 
-- `PiStorm Imager 0.9.0 is the newest version` when no later release has been
+- `PiStorm Imager 0.10.0 is the newest version` when no later release has been
   published.
 - The newer version and the one you have, how this copy is updated, and an
   **Open Release Page** button that opens the release on GitHub.
