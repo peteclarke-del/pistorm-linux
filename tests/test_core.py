@@ -2,6 +2,7 @@
 
 Run with:  python3 -m unittest discover -s tests -v
 """
+import dataclasses
 import io
 import os
 import struct
@@ -10,11 +11,12 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager.core import bootcfg, builder, fat32, jobs, kickstart, mbr, rdb  # noqa: E402
+from pistorm_imager.core import bootcfg, builder, emu68, fat32, jobs, kickstart, mbr, rdb  # noqa: E402
 from pistorm_imager.core.util import GIB, MIB, Progress, parse_size  # noqa: E402
 
 QUIET = Progress()
@@ -286,6 +288,367 @@ class TestBootConfig(_Scratch):
                                       extra_cmdline="sd.verbose=1")
         self.assertEqual(options.cmdline(),
                          "vc4.mem=64 vbr_move sd.unit0=rw sd.verbose=1")
+
+
+def make_overlay(parameters: tuple[str, ...]) -> bytes:
+    """A compiled device tree overlay that accepts ``parameters``.
+
+    Enough of the flattened format for the reader to walk: a root node holding
+    an ``__overrides__`` node whose properties are the parameter names, which
+    is how a real overlay says what it answers to.
+    """
+    strings = bytearray()
+    offsets = {}
+    for name in parameters:
+        offsets[name] = len(strings)
+        strings += name.encode() + b"\0"
+
+    body = bytearray()
+    body += struct.pack(">I", 1) + b"\0\0\0\0"          # BEGIN_NODE ""
+    body += struct.pack(">I", 1) + b"__overrides__\0\0\0"  # BEGIN_NODE
+    for name in parameters:
+        body += struct.pack(">III", 3, 4, offsets[name]) + b"\0\0\0\1"
+    body += struct.pack(">I", 2)                           # END_NODE
+    body += struct.pack(">I", 2)                           # END_NODE
+    body += struct.pack(">I", 9)                           # END
+
+    header_size = 40
+    struct_off = header_size
+    strings_off = struct_off + len(body)
+    total = strings_off + len(strings)
+    header = struct.pack(">IIIIIIIIII", 0xD00DFEED, total, struct_off,
+                         strings_off, header_size, 17, 16, 0,
+                         len(strings), len(body))
+    return header + bytes(body) + bytes(strings)
+
+
+class SettingsEmu68MovedIntoOverlays(unittest.TestCase):
+    """Emu68 1.1 stopped reading four of the switches this tool writes.
+
+    Its own ``overlays/overlays.md`` puts it plainly: "Starting with Emu68 1.1
+    the use of cmdline.txt for adjusting Emu68 parameters is obsolete". Four
+    went further than obsolete - ``unicam.boot``, ``unicam.smooth``,
+    ``vbr_move``, ``z2_ram_size`` and ``sd.unit0`` are not in the 1.1 kernel at
+    all, which was checked against the kernels themselves rather than the
+    documentation. A card written the old way boots with the Framethrower
+    unused, the Zorro II memory absent and the boot partition read-only, and
+    nothing anywhere says so.
+
+    Which form to write is decided by what the release ships, not by its
+    version: a build can be made from a local zip or an unpacked folder that
+    carries no version for anything to read.
+    """
+
+    MODERN = frozenset({"emu68", "unicam", "z2ram", "sdhc", "emmc", "noscsi",
+                        "ntsc", "pal", "diagnostic"})
+
+    def test_the_framethrower_is_asked_for_as_an_overlay(self):
+        options = bootcfg.BootOptions(unicam=True, unicam_smooth=True)
+        config = bootcfg.ConfigTxt("kernel=Emu68-pistorm.gz\n")
+        options.apply_config(config, overlays=self.MODERN)
+        self.assertIn("dtoverlay=unicam,boot,smooth", config.text())
+        self.assertNotIn("unicam", options.cmdline(overlays=self.MODERN))
+
+    def test_and_as_a_cmdline_switch_on_a_release_without_overlays(self):
+        options = bootcfg.BootOptions(unicam=True, unicam_smooth=True)
+        config = bootcfg.ConfigTxt("kernel=Emu68-pistorm\n")
+        options.apply_config(config)
+        self.assertNotIn("dtoverlay", config.text())
+        self.assertIn("unicam.boot", options.cmdline())
+        self.assertIn("unicam.smooth", options.cmdline())
+
+    def test_framethrower_extras_are_carried_across_in_either_spelling(self):
+        options = bootcfg.BootOptions(unicam=True,
+                                      unicam_extra="unicam.sc=3 asp=1100")
+        config = bootcfg.ConfigTxt("")
+        options.apply_config(config, overlays=self.MODERN)
+        self.assertIn("dtoverlay=unicam,boot,sc=3,asp=1100", config.text())
+
+    def test_the_sd_overlay_follows_the_pi_that_is_fitted(self):
+        #  Two drivers for the same job: brcm-sdhc on a Pi 3, brcm-emmc on a
+        #  Pi 4 or CM4. Writing the wrong one leaves the partition read-only.
+        options = bootcfg.BootOptions(sd_unit0_rw=True)
+        for model, overlay in (("pi3", "sdhc"), ("pi4", "emmc"), ("cm4", "emmc")):
+            with self.subTest(model):
+                config = bootcfg.ConfigTxt("")
+                options.apply_config(config, overlays=self.MODERN,
+                                     sd_overlay=bootcfg.sd_overlay_for(model))
+                self.assertIn(f"dtoverlay={overlay},unit0=rw", config.text())
+
+    def test_with_no_pi_named_every_sd_overlay_is_written(self):
+        #  An unanswered question must not silently drop the setting: one of
+        #  the two is for the driver this board runs and the other is for a
+        #  driver that is not there to read it.
+        config = bootcfg.ConfigTxt("")
+        bootcfg.BootOptions(sd_unit0_rw=True).apply_config(
+            config, overlays=self.MODERN)
+        self.assertIn("dtoverlay=sdhc,unit0=rw", config.text())
+        self.assertIn("dtoverlay=emmc,unit0=rw", config.text())
+
+    def test_zorro_two_memory_and_the_vector_base_move_too(self):
+        options = bootcfg.BootOptions(z2_ram_size=8, vbr_move=True)
+        config = bootcfg.ConfigTxt("")
+        options.apply_config(config, overlays=self.MODERN)
+        self.assertIn("dtoverlay=z2ram,size=8", config.text())
+        self.assertIn("dtoverlay=emu68,vbr_move", config.text())
+
+    def test_what_the_kernel_still_reads_stays_on_the_cmdline(self):
+        """Moving a setting that works would be a risk with nothing to gain.
+
+        These were checked against the 1.1 kernel and its sources: it still
+        takes all of them from the bootargs the firmware hands it.
+        """
+        options = bootcfg.BootOptions(
+            vc4_mem=64, limit_2g=True, swap_df0_with_df1=True,
+            chip_slowdown=True, dbf_slowdown=True, blitwait=True,
+            enable_slow_ram=True)
+        line = options.cmdline(overlays=self.MODERN)
+        for word in ("vc4.mem=64", "limit_2g", "swap_df0_with_df1",
+                     "chip_slowdown", "dbf_slowdown", "blitwait",
+                     "enable_c0_slow", "enable_c8_slow", "enable_d0_slow"):
+            self.assertIn(word, line)
+
+    def test_every_setting_that_moved_is_written_in_exactly_one_form(self):
+        """The guard against the shape of bug that made this class necessary.
+
+        A setting that moved has two halves that must stay together: the
+        overlay line is written *and* the words that used to carry it are left
+        out. Written in both forms, a card carries a switch its kernel does not
+        read; written in neither, the setting is simply lost. The table is read
+        here rather than the fields being listed again, so an entry added to it
+        is covered by this without anybody remembering to come back.
+        """
+        fields = {f.name: f for f in dataclasses.fields(bootcfg.BootOptions)}
+        for name, (_overlay, words) in bootcfg.MOVED_TO_OVERLAYS.items():
+            with self.subTest(name):
+                #  A value that turns the setting on, taken from the field's
+                #  own type rather than from a list kept beside it.
+                field = fields[name]
+                value = True if field.type == "bool" else 8
+                options = bootcfg.BootOptions(**{name: value})
+
+                config = bootcfg.ConfigTxt("")
+                options.apply_config(config, overlays=self.MODERN)
+                written = config.text()
+                self.assertIn("dtoverlay=", written,
+                              f"{name} reached no overlay, so the setting is "
+                              f"lost on Emu68 1.1")
+                modern = options.cmdline(overlays=self.MODERN)
+                for word in words:
+                    self.assertNotIn(word, modern,
+                                     f"{name} was written as {word}, which "
+                                     f"this kernel does not read")
+
+                #  And the other way round, on a release that has no overlays.
+                old_config = bootcfg.ConfigTxt("")
+                options.apply_config(old_config)
+                self.assertNotIn("dtoverlay=", old_config.text())
+                legacy = options.cmdline()
+                self.assertTrue(any(word in legacy for word in words),
+                                f"{name} reached neither the cmdline nor an "
+                                f"overlay on a release that has no overlays")
+
+    def test_the_aerial_cannot_be_captured_by_an_overlay_we_load(self):
+        """``dtparam=`` belongs to the last overlay loaded, not to the file.
+
+        So a ``dtparam=ant2`` left behind our own ``dtoverlay=`` line stops
+        being the CM4's external aerial and becomes a parameter the unicam
+        overlay has never heard of.
+        """
+        config = bootcfg.ConfigTxt("kernel=Emu68-pistorm.gz\n")
+        options = bootcfg.BootOptions(cm4_external_antenna=True, unicam=True)
+        options.apply_config(config, overlays=self.MODERN)
+        lines = [l for l in config.text().splitlines() if l.startswith("dt")]
+        aerial = lines.index("dtparam=ant2")
+        self.assertEqual(lines[aerial - 1], "dtoverlay=",
+                         "the aerial parameter is attached to whatever "
+                         "overlay happens to precede it")
+
+
+class AKernelFromSomewhereOtherThanTheRelease(unittest.TestCase):
+    """Emu68's JIT has an unmerged change that makes driver transfers cheap.
+
+    It is published as a kernel and nothing else - no firmware, no config.txt,
+    no overlays - so it is not another release to choose instead. It is a
+    kernel laid over an official release, which still supplies the rest of the
+    boot partition.
+    """
+
+    def setUp(self):
+        self.kernel = emu68.KERNELS_BY_KEY["rangeops"]
+
+    def test_it_is_refused_where_it_cannot_be_used(self):
+        for variant, tag, expected in (
+                ("pistorm32lite", "v1.1.0-beta.1", True),
+                ("pistorm", "v1.1.0-beta.1", True),
+                #  No build of it for a bare Raspberry Pi.
+                ("raspi", "v1.1.0-beta.1", False),
+                #  Built against 1.1; the older releases cannot carry it.
+                ("pistorm32lite", "v1.0.7", False)):
+            with self.subTest(f"{variant} {tag}"):
+                self.assertEqual(emu68.kernel_suits(self.kernel, variant, tag),
+                                 expected)
+
+    def test_an_unreadable_version_is_allowed_through(self):
+        #  A local zip or an unpacked folder carries no tag for anything to
+        #  read, and refusing what cannot be checked would hide it from
+        #  everybody building that way.
+        self.assertTrue(emu68.kernel_suits(self.kernel, "pistorm32lite", ""))
+
+    def test_the_version_is_read_out_of_the_kernel_itself(self):
+        """A kernel is chosen by name, and a name proves nothing."""
+        import gzip                                          # noqa: PLC0415
+        path = Path(tempfile.mkdtemp()) / "Emu68-pistorm.gz"
+        path.write_bytes(gzip.compress(
+            b"\x00\x00$VER: Emu68 1.1.0-alpha.2 (28.07.2026) git:e23e328\x00"))
+        self.assertEqual(emu68.kernel_version(path),
+                         "Emu68 1.1.0-alpha.2 (28.07.2026) git:e23e328")
+
+    def test_a_file_with_no_version_in_it_says_so_rather_than_guessing(self):
+        path = Path(tempfile.mkdtemp()) / "Emu68-pistorm.gz"
+        path.write_bytes(b"not a kernel at all")
+        self.assertEqual(emu68.kernel_version(path), "")
+
+    def test_it_keeps_the_name_the_release_gave_the_kernel(self):
+        """``kernel=`` in config.txt names a file, and that file has to be
+        the one that is there."""
+        folder = Path(tempfile.mkdtemp())
+        official = folder / "Emu68-pistorm.gz"
+        official.write_bytes(b"the official kernel")
+        other = folder / "config.txt"
+        other.write_bytes(b"kernel=Emu68-pistorm.gz\n")
+
+        def asset(_kernel, _variant):
+            return ("https://example/Emu68-something-else.gz", 4)
+
+        def download(_url, destination, _size, _progress):
+            destination.write_bytes(b"the forked kernel")
+            return destination
+
+        with unittest.mock.patch.object(emu68, "kernel_asset", asset), \
+                unittest.mock.patch.object(emu68, "download", download):
+            files = emu68.install_kernel(self.kernel, "pistorm32lite",
+                                         [official, other], folder, QUIET)
+        self.assertEqual(official.read_bytes(), b"the forked kernel")
+        self.assertIn(official, files)
+        self.assertFalse((folder / "Emu68-something-else.gz").exists())
+
+    def test_the_build_refuses_a_board_it_has_no_kernel_for(self):
+        #  Substituting another board's kernel produces a card that does not
+        #  boot at all, so this stops rather than carrying on.
+        config = builder.BuildConfig(kernel_key="rangeops", variant="raspi")
+        with self.assertRaises(RuntimeError) as caught:
+            builder._install_chosen_kernel(config, [], Path("/nowhere"), QUIET)
+        self.assertIn("no build for", str(caught.exception))
+
+    def test_the_drivers_follow_the_kernel_and_nothing_else_does(self):
+        """Drivers built against the extensions only run on a kernel that has
+        them, and their own installer refuses any other."""
+        from pistorm_imager.core import packages               # noqa: PLC0415
+        self.assertEqual(
+            builder.BuildConfig(kernel_key="rangeops").driver_flavour(),
+            "rangeops")
+        self.assertEqual(builder.BuildConfig().driver_flavour(), "")
+
+        stack = packages.CATALOGUE_BY_KEY["genet"]
+        self.assertTrue(stack.archive(None, "rangeops").path.endswith(
+            "-rangeops.lha"))
+        self.assertFalse(stack.archive().path.endswith("-rangeops.lha"))
+        #  And a package that has nothing to do with the Raspberry Pi is
+        #  fetched from exactly where it always was.
+        aminet = packages.CATALOGUE_BY_KEY["lha"]
+        self.assertEqual(aminet.archive(None, "rangeops").path,
+                         aminet.archive().path)
+
+
+class SettingsThatOnlyEmu68OneOneHas(unittest.TestCase):
+    """Three settings that arrived with the overlays and have no older form.
+
+    Unlike the settings that *moved*, there is nothing to fall back on here:
+    an older Emu68 cannot be told about them at all. So the build says what it
+    could not honour, rather than writing nothing and leaving the setting
+    looking as though it took - which is the complaint this whole area of the
+    code was built around.
+    """
+
+    MODERN = frozenset({"emu68", "unicam", "z2ram", "sdhc", "emmc", "noscsi",
+                        "ntsc", "pal", "diagnostic"})
+
+    def written(self, **settings) -> str:
+        config = bootcfg.ConfigTxt("")
+        bootcfg.BootOptions(**settings).apply_config(config,
+                                                     overlays=self.MODERN)
+        return config.text()
+
+    def test_the_ide_check_can_be_skipped(self):
+        self.assertIn("dtoverlay=noscsi", self.written(no_ide=True))
+
+    def test_the_video_standard_can_be_stated(self):
+        self.assertIn("dtoverlay=pal", self.written(video_standard="pal"))
+        self.assertIn("dtoverlay=ntsc", self.written(video_standard="ntsc"))
+        #  And is left alone when nobody said, which is the usual answer.
+        self.assertNotIn("dtoverlay=", self.written(video_standard=""))
+
+    def test_a_video_standard_nobody_recognises_is_not_written(self):
+        self.assertNotIn("dtoverlay=", self.written(video_standard="secam"))
+
+    def test_the_jit_cache_size_can_be_set(self):
+        self.assertIn("dtoverlay=emu68,m68k_jit_size=32",
+                      self.written(jit_cache_mb=32))
+
+    def test_two_settings_on_one_overlay_share_a_line(self):
+        """A second ``dtoverlay=emu68`` replaces the first rather than adding
+        to it, so a card asked for both would have come out with one."""
+        written = self.written(jit_cache_mb=32, vbr_move=True)
+        lines = [l for l in written.splitlines() if l.startswith("dtoverlay=emu68")]
+        self.assertEqual(len(lines), 1, written)
+        self.assertIn("vbr_move", lines[0])
+        self.assertIn("m68k_jit_size=32", lines[0])
+
+    def test_an_older_release_is_told_what_it_cannot_honour(self):
+        options = bootcfg.BootOptions(no_ide=True, video_standard="ntsc",
+                                      jit_cache_mb=32)
+        said = options.unsupported(frozenset())
+        self.assertEqual(len(said), 3, said)
+        self.assertEqual(options.unsupported(self.MODERN), [])
+        #  And nothing is written into the cmdline in their place: there is no
+        #  spelling for them there, and inventing one would be a card carrying
+        #  a switch its kernel has never heard of.
+        self.assertEqual(options.cmdline(), "")
+
+
+class ReadingAnOverlaysOwnParameterNames(unittest.TestCase):
+    """A parameter spelled wrongly does nothing and says nothing about it.
+
+    Which is how ``enable_c0_slow`` went missing from every card this tool
+    wrote. An overlay lists the names it answers to inside itself, so the
+    spelling can be checked against the file that has to honour it.
+    """
+
+    def test_the_names_are_read_out_of_the_file(self):
+        blob = make_overlay(("boot", "smooth", "sc", "type"))
+        path = Path(tempfile.mkdtemp()) / "unicam.dtbo"
+        path.write_bytes(blob)
+        self.assertEqual(emu68.overlay_parameters(path),
+                         frozenset({"boot", "smooth", "sc", "type"}))
+        self.assertNotIn("smoothe", emu68.overlay_parameters(path))
+
+    def test_a_file_that_is_not_an_overlay_answers_nothing_rather_than_wrongly(self):
+        path = Path(tempfile.mkdtemp()) / "not-an-overlay.dtbo"
+        path.write_bytes(b"this is not a device tree")
+        self.assertEqual(emu68.overlay_parameters(path), frozenset())
+
+    def test_a_release_is_asked_what_overlays_it_ships(self):
+        files = [Path("overlays/unicam.dtbo"), Path("overlays/z2ram.dtbo"),
+                 Path("Emu68-pistorm.gz"), Path("config.txt")]
+        self.assertEqual(emu68.overlays_in(files), frozenset({"unicam", "z2ram"}))
+        self.assertEqual(emu68.overlays_in([Path("Emu68-pistorm")]), frozenset())
+
+    def test_and_the_file_behind_a_name_can_be_found_again(self):
+        files = [Path("overlays/unicam.dtbo"), Path("overlays/z2ram.dtbo")]
+        self.assertEqual(emu68.overlay_path(files, "z2ram"),
+                         Path("overlays/z2ram.dtbo"))
+        self.assertIsNone(emu68.overlay_path(files, "emmc"))
 
 
 class TestKickstart(_Scratch):

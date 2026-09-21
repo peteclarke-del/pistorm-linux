@@ -93,8 +93,12 @@ Along the way it will:
 * edit the `config.txt` that ships with your chosen Emu68 release rather than
   generating a new one, so upstream's comments and per-release tuning survive
   and only the keys you actually set are changed;
-* write `cmdline.txt` from the documented Emu68 options (`vc4.mem`, `vbr_move`,
-  `chip_slowdown`, `sd.unit0=rw`, and anything else you type in);
+* write the Emu68 options in the form the release you chose actually reads:
+  `cmdline.txt` for the switches its kernel still takes (`vc4.mem`,
+  `chip_slowdown`, `enable_c0_slow` and the rest), and `config.txt` device tree
+  overlays for the four settings **Emu68 1.1 moved out of `cmdline.txt`**
+  (the Framethrower, Zorro II memory, writing to the whole SD card, and moving
+  the vector base register);
 * install AmigaOS from ADFs, recognising each disk by the **volume name inside
   it** rather than its file name, and keeping the whole set to one release (a
   2.0 Extras drawer on a 3.1 system is a broken install, and collections
@@ -327,7 +331,7 @@ decisions are made.
 | **Storage** | The size of the system drive, whether the rest of the card becomes a PFS3 work drive, whether the card carries an Amiga drive at all, and the Amiga partitions themselves. |
 | **Amiga** | Which Amiga the card is for, which Raspberry Pi is on its PiStorm board, how much chip RAM is fitted, how you look at it, the Kickstart ROM, and the Workbench floppy images. |
 | **Packages** | The optional software, fetched from its publisher rather than taken from a drive you happen to have - and, where something chosen needs one, [which USB socket](#which-socket-and-the-two-files-that-have-to-agree) the Amiga is given. |
-| **Options** | HDMI output, the Raspberry Pi's own settings, the [boot partition add-ons](#add-ons-that-go-onto-the-boot-partition), and the Emu68 switches that end up in `cmdline.txt`. |
+| **Options** | HDMI output, the Raspberry Pi's own settings, the [boot partition add-ons](#add-ons-that-go-onto-the-boot-partition), and the Emu68 switches, which end up in `cmdline.txt` or, on Emu68 1.1 and later, as [device tree overlays](#emu68-11-moved-four-settings-out-of-cmdlinetxt) in `config.txt`. |
 | **Target** | Where the result goes, how big the boot partition is, and **what this will build**. |
 
 ![The Source page: the task, and where the system comes from](docs/images/03-source.png)
@@ -490,6 +494,17 @@ Workbench 3.1 installed from the disks in `samples/`, booted to a
 only check that distinguishes a volume which is genuinely correct from one this
 code merely agrees with itself about.
 
+A card can also be **booted** after it is built, with
+`python3 tests/bootcheck.py card.hdf`. It reads the files back out of the
+card's own Amiga volume, hands them to FS-UAE as a drive, and adds one line to
+the end of `S:User-Startup` so that a boot which reaches the end says so.
+Everything above that line runs exactly as the build wrote it, which is the
+point: several packages add lines to that file and one of them blocks until a
+network interface answers, so "does the machine still get to Workbench" is a
+question worth asking of the card rather than of the code. A card carrying
+lwip-amiga and the wired Ethernet driver reaches the end in about four seconds
+with no network hardware present at all.
+
 Both the ADF reader and the FFS writer were cross-checked against
 [amitools](https://github.com/cnvogelg/amitools): every one of the 153 files on
 the Workbench 3.1 disk extracts byte-identically to `xdftool`, and volumes
@@ -519,7 +534,11 @@ covers the parts every build shares - the MBR, the FAT32 boot partition, the
 Emu68 and firmware payload, `config.txt` and `cmdline.txt`, the `0x76`
 partition, the Rigid Disk Block inside it and the AmigaOS install on top.
 
-**Booted in an emulator:** a card built here from PiMiga - its System drive on a
+**Booted in an emulator:** a Workbench 3.1 card built here from the sample
+floppy images, carrying the lwip-amiga TCP/IP stack and the Pi's Ethernet
+driver, boots in FS-UAE and reaches the end of its `S:User-Startup` - so the
+boot lines those packages add do not hang a machine that has none of the
+hardware they are for. And a card built here from PiMiga - its System drive on a
 multi-gigabyte PFS3 partition - has been lifted out as an `.hdf` and booted in
 FS-UAE, which runs the real PFS3 19.2 handler out of the RDB rather than this
 project's own reader. That is what found and then settled five PFS3 writer bugs
@@ -624,6 +643,147 @@ nothing at all and says nothing about it. `gather()` now asks
 one rule rather than two, and the same card reads:
 
     vc4.mem=64 chip_slowdown dbf_slowdown blitwait enable_c0_slow enable_c8_slow enable_d0_slow move_slow_to_chip
+
+### Emu68 1.1 moved four settings out of `cmdline.txt`
+
+Emu68 1.1 says it in its own `overlays/overlays.md`: "Starting with Emu68 1.1
+the use of cmdline.txt for adjusting Emu68 parameters is obsolete." Settings
+are given to the kernel as device tree overlays now, loaded from `config.txt`:
+
+    dtoverlay=unicam,boot,smooth
+
+Most of the old switches are only obsolete - the 1.1 kernel still reads
+`vc4.mem`, `limit_2g`, `swap_df0_with_df1`, `chip_slowdown`, `dbf_slowdown`,
+`blitwait`, `enable_c0_slow` and `move_slow_to_chip` out of the command line it
+is handed. Four went further than obsolete. The words are **not in the 1.1
+kernel at all**, so a card written with them carries a setting nothing reads
+and nothing reports:
+
+| Setting | Written as, up to 1.0.7 | Written as, from 1.1 | What the old form did on 1.1 |
+| --- | --- | --- | --- |
+| Framethrower / C790 | `unicam.boot unicam.smooth` | `dtoverlay=unicam,boot,smooth` | the chosen display had nothing driving it |
+| Zorro II memory | `z2_ram_size=8` | `dtoverlay=z2ram,size=8` | the memory was never added |
+| Let the Amiga write to the whole card | `sd.unit0=rw` | `dtoverlay=emmc,unit0=rw` (Pi 4, CM4) or `dtoverlay=sdhc,unit0=rw` (Pi 3) | the boot partition stayed read-only, so an add-on's own Amiga installer had nowhere to write |
+| Move the vector base register | `vbr_move` | `dtoverlay=emu68,vbr_move` | the vectors stayed where they were |
+
+This matters now rather than later, because the software that needs Emu68 1.1
+is software people are being offered: the USB stack, the xHCI driver and
+AGA-PISTORM all require it, so ticking any of them steers the build onto
+exactly the release where those four controls went quiet.
+
+**Which form gets written is decided by what the release ships, not by what it
+is called.** A build can be made from a local zip or an already-unpacked
+folder, neither of which carries a version for anything to read, and the
+question that actually matters is whether the overlay files are there to be
+loaded. So the unpacked release is asked for its `overlays/*.dtbo` files, and a
+card being updated without reinstalling Emu68 is asked the same question about
+the overlays already on it.
+
+Two details that are easy to get wrong, and are guarded:
+
+- **`dtparam=` belongs to the last overlay loaded, not to the file.** A
+  `dtparam=ant2` line - the CM4's external aerial - left sitting behind one of
+  our `dtoverlay=` lines silently becomes a parameter of *that* overlay. A bare
+  `dtoverlay=` line re-references the Pi's base overlay, and that is written in
+  front of the aerial before any overlay of ours goes in.
+- **A parameter spelled wrongly does nothing and says nothing about it.** Every
+  overlay lists the names it answers to inside itself, in its `__overrides__`
+  node, so the build reads them out of the `.dtbo` that will be asked to honour
+  the setting and warns when a name is not there. That is the same check that
+  found `enable_c0_slow` sitting next to `move_slow_to_chip` in the kernel
+  binary, done automatically rather than by hand.
+
+The guard against the underlying shape of the bug is an invariant:
+`SettingsEmu68MovedIntoOverlays` reads the table that says which setting moved
+where, and asserts that each one is written in exactly one form - the overlay
+line present *and* the dead words absent on a release with overlays, and the
+reverse on a release without them. It was proved by putting each half of the
+bug back and watching it fail. The card itself was then built and read back:
+`config.txt` carries the three `dtoverlay=` lines and `cmdline.txt` carries
+only `vc4.mem=64`.
+
+### Three settings that only Emu68 1.1 has
+
+The overlays did not only move settings; they added some. Three are worth a
+control of their own, and they are on the Options page in a group called
+**Emu68 1.1 options**:
+
+| Setting | Overlay | What it is for |
+| --- | --- | --- |
+| Skip the check for an IDE hard disk | `noscsi` | On a machine with nothing on its IDE port, AmigaOS spends a long time at every boot looking for a drive |
+| Video standard | `pal` / `ntsc` | What Emu68 tells AmigaOS the machine is, whatever its own Agnus says |
+| JIT cache (MB) | `emu68,m68k_jit_size=` | How much translation cache the JIT keeps |
+
+These have **no older spelling at all**, so unlike the four that moved there is
+nothing to fall back on: an Emu68 before 1.1 cannot be told about them. The
+group is therefore held off when the chosen release is older, and says why, on
+the same principle as the packages page - a control that cannot reach the card
+must not sit there looking as though it can. Where the release cannot be read
+at all, because the build is coming from a local zip or an unpacked folder, the
+settings are allowed through and the build reports what it could not honour.
+
+One detail the first attempt got wrong: **a second `dtoverlay=emu68` line
+replaces the first rather than adding to it.** Asking for a JIT cache size and
+a vector base move would have written two lines and got one setting. Everything
+the main Emu68 overlay carries now goes onto a single line, and a test asserts
+there is only ever one.
+
+### A kernel from a fork, laid over an official release
+
+Emu68's JIT has an unmerged change - the **dcache range extensions** - that
+makes the cache housekeeping around every hardware transfer cheap. That is
+what the Raspberry Pi's drivers spend their time on, and the numbers are not
+small: the driver stack's own measurements put the Pi's gigabit socket at
+**104 Mbit/s in on an official Emu68 and 698 with the extensions**.
+
+It is published at
+[rondoval/Emu68](https://github.com/rondoval/Emu68/releases/tag/v1.1-alpha-with-rangeops)
+as a kernel and nothing else - no firmware, no device tree, no overlays, no
+`config.txt`. So it is not another release to choose instead of the official
+one; it is a **kernel laid over** one, and that is how the Source page offers
+it: a row under the release, not an entry in it. The release still supplies
+everything else on the boot partition.
+
+Three things follow from that, and each is handled rather than left to the
+person:
+
+- **It is published for some boards and not others.** There is no bare
+  Raspberry Pi build, so choosing it for that board would silently leave the
+  release's own kernel in place; the row refuses instead and says why, and a
+  build driven from a saved job or the command line stops rather than writing
+  a card whose kernel is not the one asked for.
+- **It is built against 1.1**, so it cannot be laid over an older release.
+- **The two halves can be different ages.** The kernel is Emu68 1.1.0-alpha.2
+  (28 July 2026) while the current official release is 1.1.0-beta.1 (1
+  September). The build reads the version string out of *both* kernels - the
+  one the release shipped and the one that replaced it - and says both in the
+  log, so the card's own record shows what is actually on it rather than what
+  was asked for.
+
+The drivers follow the kernel. The emu68 driver stack is published twice, and
+the `-rangeops` build is compiled against these extensions; its own installer
+refuses to run on a kernel without them. So every package that comes out of
+that archive takes the `-rangeops` build **when and only when** this kernel is
+the one going onto the card, and nothing else in the catalogue is affected at
+all.
+
+What is deliberately *not* done is switching `genet.device` to the zero-copy
+`netdev` build that goes with it. That build can only be opened by the bundled
+`lwip-amiga` stack, so choosing it would quietly decide somebody's TCP/IP stack
+for them. The SANA-II driver on this kernel is already far quicker than on an
+official Emu68, and it still works with Roadshow, AmiTCP and Miami.
+
+### The RTG driver comes from the release the card boots
+
+`VideoCore.card` is published twice. Emu68-tools v1.1 carries VideoCore 1.3
+(30.12.2025); the Emu68 1.1 releases publish VideoCore 1.5 (06.02.2026) as an
+asset of their own. This tool only knew about the tools archive, so a card
+built to boot Emu68 1.1 got the older driver. The release being installed is
+asked first now, and the tools archive is the fallback for a release that has
+no such asset - which is every release before 1.1, and any build that is not
+installing Emu68 at all. The cached copy records which of the two it came
+from, so switching releases does not quietly reuse the other one.
+
 
 ## Why a build takes as long as it does
 
@@ -3040,10 +3200,17 @@ there, and stages the rest in `Storage/Install/Roadshow`. Two details matter:
   uses.
 - **The card is given an interface for the machine it is being built for.**
   Every one of the fifty-odd templates in `Storage/NetInterfaces` is for
-  somebody else's hardware - A2065, X-Surf, Ariadne - so the build writes
-  `DEVS:NetInterfaces/vlink` naming `vlink.device`, which is what a PiStorm
-  has, and asks for DHCP. Without it `AddNetInterface` has nothing to bring
-  up and the stack installs but never runs.
+  somebody else's hardware - A2065, X-Surf, Ariadne - so the build writes one
+  naming the device it actually installed, asking for DHCP. Without it
+  `AddNetInterface` has nothing to bring up and the stack installs but never
+  runs.
+
+  That file is written by the package that installs the **card**, not by the
+  one that installs the **stack**. It is a description of a piece of hardware;
+  whichever stack is on the card reads the same drawer, in the same spelling,
+  and a machine with two network cards needs a file for each of them. It used
+  to hang off Roadshow, which meant a card with a network device and a
+  different stack got no interface file at all.
 
 ## USB on the Amiga
 
@@ -3169,6 +3336,89 @@ partition beside it. The window itself is driven in `tests/test_gui_smoke.py`:
 a Pi 3 refuses the stack, a Pi 4 offers it, changing the socket moves the unit
 number and the `config.txt` line together, and turning the stack off takes both
 away again.
+
+## Wired networking, a stack that can be fetched, and NVMe
+
+The archive the xHCI driver comes out of is not a USB archive. It is the
+[emu68 driver stack](https://github.com/rondoval/emu68-driver-stack), and it
+carries four things this tool can install; it was already being downloaded for
+one of them.
+
+### The Pi's own Ethernet socket
+
+`genet.device` gives the Amiga the gigabit socket built into a Raspberry Pi 4
+or CM4 - a cable instead of the WiFi, and any TCP/IP stack talks to it the same
+way. It needs `gic400.library`, which comes with it, and Emu68 1.1, which is
+what maps the memory the controller is reached through. A Pi 3's socket is a
+different controller that nothing here drives, so the package is refused there
+exactly as the USB stack is.
+
+**The archive carries two builds of this driver under one name, and the choice
+is not obvious.** The zero-copy `netdev` build in `DEVS/` is the fast one, but
+only the stack bundled beside it can open it, and on an official Emu68 it is
+*slower* than the classic driver: its speed comes from cache extensions that
+are not in Emu68 upstream, and its own authors measure 104 Mbit/s in against
+698 with them. The classic SANA-II build under `Storage/` works with Roadshow,
+AmiTCP, Miami and the bundled stack alike, so that is the one installed.
+
+### lwip-amiga: a TCP/IP stack that does not have to be fetched by hand
+
+Roadshow is the stack most PiStorm machines run, and the free demo cuts every
+network session at fifteen minutes - and its publisher serves the archive only
+to a browser, so it is the one package here that a person has to download
+themselves. **lwip-amiga** is free, fetched with everything else, and installs
+the same `bsdsocket.library` that the browsers, the FTP clients and the IRC
+clients open. It brings `ping`, `traceroute`, `arp` and the Roadshow status
+commands with it, answers for the machine's name on the local network, and has
+somewhere to put DNS servers of your own - which is the thing Roadshow on this
+card has never had.
+
+It is installed the way its own `Install` script installs it, read rather than
+guessed: the library, the eleven commands, `ENVARC:netstack.prefs` under the
+name the stack looks for rather than the `.default` the archive ships, the
+commented interface template into `Storage/NetInterfaces` where the boot line
+can never pick it up, and `S:Network-Startup` carrying the one line that brings
+up every interface file in the drawer.
+
+The two stacks are declared as one **role**, so ticking both raises the
+question rather than quietly building a card where the second one has replaced
+the first one's library and eight of its commands with no way back.
+
+That role earns its keep a second time. When a package cannot be fetched, the
+build now names anything else that does the same job *and* can be downloaded -
+so a card that would have gone out with no TCP/IP stack, because APC&TCP will
+not serve their archive to anything but a browser, says what to tick instead.
+The alternative is found by the job it does rather than by being named, so the
+rule holds for whatever pair the catalogue grows next.
+
+### Two network cards and a stack that carries one
+
+Roadshow brings up every interface file it is given. The bundled stack carries
+a single interface besides loopback: given two files it brings up whichever it
+reads first and skips the other without a word, so which network the Amiga
+joined would be settled by the order of a drawer.
+
+So a written file can now say what makes it wrong. The WiFi interface file is
+left out when the bundled stack and the wired socket are both on the card - the
+wire being the faster of the two - and the build **says so in the log**, with
+the template for writing one by hand sitting on the card in
+`Storage/NetInterfaces`. A file quietly not written is the exact shape of bug
+this project keeps finding; one that is deliberately not written has to say it
+out loud.
+
+### NVMe on the Compute Module
+
+`nvme.device` puts a PCIe NVMe SSD on the Amiga as ordinary drives: partitions
+with a Rigid Disk Block mount under their own names, and FAT, NTFS and exFAT
+partitions mount too where the handler for them is installed. It needs
+`bcmpcie.library` to find the drive and `gic400.library` to hear it answer,
+both of which come with it, and `nvmeinfo` reports what was found.
+
+This is the one package offered to a single Raspberry Pi model. A Pi 4 spends
+its only PCIe lane on its own USB controller; the CM4 brings that lane out
+where a drive can be attached. Its authors warn that data loss and corruption
+are still possible, and the package says so where it is offered.
+
 
 ## Add-ons that go onto the boot partition
 

@@ -239,10 +239,19 @@ class EveryCacheKnowsWhereItCameFrom(unittest.TestCase):
                       "an unpacked tree must be checked against its archive")
 
     def test_the_rtg_driver_records_which_release_it_came_from(self):
+        """And the driver now has two publishers, which makes it matter more.
+
+        Emu68 publishes ``VideoCore.card`` itself from 1.1 onwards, ahead of
+        the copy inside Emu68-tools, so the cached file has to be checked
+        against the source this build actually resolved rather than against
+        either publisher's address.
+        """
         from pistorm_imager.core import compat                # noqa: PLC0415
         import inspect                                        # noqa: PLC0415
         body = inspect.getsource(compat.fetch_videocore_card)
-        self.assertIn("EMU68_TOOLS_URL", body.split("if cache.exists")[1][:400])
+        reuse = body.split("if cache.exists")[1][:400]
+        self.assertIn("note.read_text().strip() == url", reuse)
+        self.assertIn("url, where = videocore_source()", body)
 
     def test_the_firmware_checks_what_actually_arrived(self):
         from pistorm_imager.core import emu68                 # noqa: PLC0415

@@ -43,6 +43,25 @@ from .machines import Chipset, Cpu, Display, Machine, Pi
 from .util import Progress, human_size
 
 AMINET = "https://aminet.net/"
+
+#  The emu68 driver stack: one archive carrying the Raspberry Pi's USB host
+#  controller, its Ethernet port, NVMe storage and a TCP/IP stack. Written
+#  once so that the packages taking files out of it cannot end up on four
+#  different releases of it, each expecting a layout the others do not have.
+DRIVER_STACK = ("https://github.com/rondoval/emu68-driver-stack/releases/"
+                "download/v2.1.1/emu68-drivers-2.1.1.lha")
+DRIVER_STACK_SOURCE = "https://github.com/rondoval/emu68-driver-stack/releases"
+#  The same release, built against the unmerged JIT cache extensions that the
+#  experimental Emu68 kernel carries. Its drivers do the cache housekeeping
+#  around every transfer the cheap way, which only that kernel offers - and
+#  their own installer refuses to run on a kernel without it, so this build is
+#  taken only when that kernel is the one going onto the card.
+DRIVER_STACK_RANGEOPS = ("https://github.com/rondoval/emu68-driver-stack/"
+                         "releases/download/v2.1.1/"
+                         "emu68-drivers-2.1.1-rangeops.lha")
+#  Kernel flavour -> the build of the stack that belongs with it. The empty
+#  key is an official Emu68, which is nearly every card.
+DRIVER_STACK_BUILDS = {"": DRIVER_STACK, "rangeops": DRIVER_STACK_RANGEOPS}
 USER_AGENT = "pistorm-imager"
 
 
@@ -71,6 +90,32 @@ class Category(enum.Enum):
 SYSTEM_DRAWERS = ("C", "L", "S", "Libs", "Devs", "Prefs", "Locale", "Rexxc",
                   "Classes", "Fonts", "Storage", "System", "Tools",
                   "Utilities", "Expansion")
+
+
+@dataclasses.dataclass(frozen=True)
+class Written:
+    """A file this tool writes itself, rather than taking from an archive.
+
+    ``unless`` names a combination of packages that makes the file wrong to
+    write.  Two network interface files are right on a stack that brings up
+    every interface it is given and wrong on one that carries a single
+    interface: there the stack picks one of them and skips the other without
+    saying so, and which one it picked is decided by the order of the drawer.
+    """
+
+    name: str
+    destination: str
+    text: str
+    unless: tuple[str, ...] = ()
+    #  Said in the log when the file is left out, because a file that is
+    #  silently not written is the thing this project keeps finding.
+    because: str = ""
+
+    def wanted(self, chosen: Iterable[str]) -> bool:
+        if not self.unless:
+            return True
+        installed = set(chosen)
+        return not all(key in installed for key in self.unless)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,10 +150,9 @@ class Download:
     #  meant to be merged into a file the card already has rather than to
     #  replace it.
     skip: tuple[str, ...] = ()
-    #  Files this tool writes itself, as (name, destination, text). An
-    #  archive that ships templates for other people's hardware still needs
-    #  one for the machine being built.
-    write: tuple[tuple[str, str, str], ...] = ()
+    #  Files this tool writes itself.  An archive that ships templates for
+    #  other people's hardware still needs one for the machine being built.
+    write: tuple[Written, ...] = ()
     #  (path inside the archive, destination, name on the card). For an
     #  archive that ships one binary per processor: the card wants the one
     #  its machine has, under the name the icon launches.
@@ -144,6 +188,20 @@ class Download:
     #  and calling it the package would lose the actual rule, which is that
     #  the processor decides.
     per_cpu: tuple[tuple[str, str], ...] = ()
+
+    def for_kernel(self, flavour: str) -> "Download":
+        """This download, built for the Emu68 kernel the card will run.
+
+        Only the driver stack is published twice this way, and both builds
+        have the same layout inside, so the address is all that changes.
+        Anything else is returned untouched.
+        """
+        if not flavour or self.path not in DRIVER_STACK_BUILDS.values():
+            return self
+        wanted = DRIVER_STACK_BUILDS.get(flavour)
+        if not wanted or wanted == self.path:
+            return self
+        return dataclasses.replace(self, path=wanted)
 
     def for_cpu(self, cpu: Cpu | None) -> "Download":
         """This download with ``path`` set to the build for ``cpu``.
@@ -330,11 +388,12 @@ class Package:
             return False
         return True
 
-    def archive(self, cpu: Cpu | None = None) -> "Download | None":
-        """The download for this processor, where there is one per processor."""
+    def archive(self, cpu: Cpu | None = None,
+                kernel: str = "") -> "Download | None":
+        """The download for this processor and this Emu68 kernel."""
         if self.download is None:
             return None
-        return self.download.for_cpu(cpu)
+        return self.download.for_cpu(cpu).for_kernel(kernel)
 
 
 STAGING = "Storage/Install"          # where self-installing packages land
@@ -576,17 +635,17 @@ CATALOGUE: list[Package] = [
             #  not one 68881 transcendental needing a trap the emulator might
             #  not service.  The fix stands on what was observed; the reason
             #  is unestablished.  See the README.
-            write=(("igame.prefs", "Programs/iGame",
-                    "no_guigfx=1\n"
-                    "filter_use_enter=0\n"
-                    "hide_side_panel=0\n"
-                    "start_with_favorites=0\n"
-                    "save_stats_on_exit=0\n"
-                    "no_smart_spaces=0\n"
-                    "titles_from_dirs=1\n"
-                    "hide_screenshots=1\n"
-                    "screenshot_width=320\n"
-                    "screenshot_height=256\n"),)),
+            write=(Written("igame.prefs", "Programs/iGame",
+                         "no_guigfx=1\n"
+                         "filter_use_enter=0\n"
+                         "hide_side_panel=0\n"
+                         "start_with_favorites=0\n"
+                         "save_stats_on_exit=0\n"
+                         "no_smart_spaces=0\n"
+                         "titles_from_dirs=1\n"
+                         "hide_screenshots=1\n"
+                         "screenshot_width=320\n"
+                         "screenshot_height=256\n"),)),
         #  Its window is built from MUI classes that MUI itself does not
         #  carry, so a card with no donor still has everything it opens.
         requires=("mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext"),
@@ -877,7 +936,8 @@ CATALOGUE: list[Package] = [
             #  RequestFile and then hands over to theirs, so it works by
             #  double click - and it is part of this package, not a loose
             #  extra, because it is no use without the device beside it.
-            write=(("MountADF", "Utilities/ADF_Device", MOUNT_ADF_SCRIPT),),
+            write=(Written("MountADF", "Utilities/ADF_Device",
+                           MOUNT_ADF_SCRIPT),),
             #  ...and the icon that makes double clicking it run it. IconX is
             #  Workbench's script runner; the guide's own icon is borrowed
             #  and retargeted, because an invented one would have no image.
@@ -1134,6 +1194,30 @@ CATALOGUE: list[Package] = [
             "v1.1/Emu68-tools.zip",
             (("Emu68-WiFi/Devs/Networks/wifipi.device", "Devs/Networks"),
              ("Emu68-WiFi/Devs/Firmware", "Devs/Firmware")),
+            #  Every interface template a TCP/IP stack ships is for somebody
+            #  else's hardware, so the card gets one describing the device
+            #  installed here. It lives with the device rather than with the
+            #  stack because it is a description of the device: whichever
+            #  stack is on the card reads the same drawer, and a card with two
+            #  network cards needs a file for each of them.
+            write=(Written("wifipi", "Devs/NetInterfaces",
+                           "# Written by the PiStorm imager.\n"
+                           "# The Pi's own WiFi, as installed by the"
+                           " network card package.\n"
+                           "device=wifipi.device\n"
+                           "unit=0\n"
+                           "configure=dhcp\n"
+                           "requiresinitdelay=no\n",
+                           #  A stack that carries one interface at a time,
+                           #  with a wired socket on the same card: it would
+                           #  bring up whichever of the two files it happened
+                           #  to read first and skip the other in silence.
+                           #  The template for writing this one by hand is on
+                           #  the card, in Storage/NetInterfaces.
+                           unless=("lwip", "genet"),
+                           because="the stack installed here carries one "
+                                   "interface at a time and the wired socket "
+                                   "is the faster of the two"),),
             source="the Emu68-tools release"),
         note="Needs the WiFi network filled in on the Amiga page: the driver "
              "reads the same wpa_supplicant.conf the Pi is given.",
@@ -1157,18 +1241,11 @@ CATALOGUE: list[Package] = [
                                  "(Download, then Demoversion)",
                           #  Roadshow's own S/User-Startup is four lines meant
                           #  to be added to the card's, not to replace it.
-                          skip=("S/User-Startup",),
-                          #  Every interface template in the archive is for
-                          #  somebody else's hardware. The card gets one for
-                          #  the device this tool actually installs.
-                          write=(("wifipi", "Devs/NetInterfaces",
-                                  "# Written by the PiStorm imager.\n"
-                                  "# The Pi's own WiFi, as installed by the"
-                                  " network card package.\n"
-                                  "device=wifipi.device\n"
-                                  "unit=0\n"
-                                  "configure=dhcp\n"
-                                  "requiresinitdelay=no\n"),)),
+                          skip=("S/User-Startup",)),
+        #  Two TCP/IP stacks on one card is not a preference: the second one
+        #  replaces the first one's bsdsocket.library and eight of its
+        #  commands, and there is no undo.
+        role="TCP/IP stack",
         #  The lines Roadshow's installer would have added to User-Startup.
         startup=("IF EXISTS S:Network-Startup",
                  "   Execute S:Network-Startup",
@@ -1264,8 +1341,7 @@ CATALOGUE: list[Package] = [
         "stack is the half that talks to Workbench.",
         category=Category.HARDWARE,
         download=Download(
-            "https://github.com/rondoval/emu68-driver-stack/releases/download/"
-            "v2.1.1/emu68-drivers-2.1.1.lha",
+            DRIVER_STACK,
             #  The archive carries two builds of xhci.device under the same
             #  name: the one at DEVS/ speaks Poseidon 6.x's context interface
             #  and the one under Storage/ speaks the older per-transfer one.
@@ -1280,7 +1356,7 @@ CATALOGUE: list[Package] = [
              #  Not required, but it is how anybody answers "is the controller
              #  even being seen?" without guessing.
              ("C/lspci", "C")),
-            source="https://github.com/rondoval/emu68-driver-stack/releases"),
+            source=DRIVER_STACK_SOURCE),
         #  The controller is on the Pi, so which Pi it is decides whether
         #  there is one at all: the Pi 4 and the CM4 have xHCI, a Pi 3 has a
         #  DWC OTG controller that nothing here can drive.
@@ -1355,6 +1431,137 @@ CATALOGUE: list[Package] = [
         note="Off by default: the driver underneath it is experimental.",
         evidence=("Libs/poseidon.library", "C/PsdStackLoader"),
     ),
+    Package(
+        "genet", "The Pi's Ethernet socket as an Amiga network card",
+        "Gigabit Ethernet: the socket on the Raspberry Pi 4 or CM4, handed to "
+        "the Amiga as an ordinary network device. A cable rather than the "
+        "WiFi, and whichever TCP/IP stack is on the card talks to it the same "
+        "way.",
+        category=Category.NETWORK,
+        download=Download(
+            DRIVER_STACK,
+            #  The classic SANA-II driver, which rides in the archive under
+            #  Storage/. The other build in the same archive is the zero-copy
+            #  netdev one, which only the bundled stack can open and which is
+            #  slower than this on an official Emu68 - its speed comes from
+            #  cache extensions that are not in Emu68 upstream.
+            (("Storage/DEVS/Networks/genet.device", "Devs/Networks"),
+             #  The interrupt controller library every driver in this stack
+             #  needs. An Emu68 carrying its own copy uses that one instead,
+             #  and this file is simply never opened.
+             ("LIBS/gic400.library", "Libs"),
+             #  How anybody answers "is it seeing any packets?" without
+             #  guessing.
+             ("Storage/C/genet-stats", "C")),
+            #  The interface file the driver's own documentation gives, with
+            #  its author's tuning left as it was written.
+            write=(Written("genet", "Devs/NetInterfaces",
+                           "# Written by the PiStorm imager.\n"
+                           "# The Pi's own Ethernet socket, as installed by "
+                           "the network card package.\n"
+                           "device=genet.device\n"
+                           "unit=0\n"
+                           "configure=dhcp\n"
+                           "debug=no\n"
+                           "iprequests=512\n"
+                           "writerequests=64\n"
+                           "arprequests=8\n"
+                           "requiresinitdelay=no\n"
+                           "copymode=fast\n"),),
+            source=DRIVER_STACK_SOURCE),
+        #  The socket is on the Pi: a Pi 3 has a 100 Mbit port on a different
+        #  controller that this driver does not drive.
+        pi_models=(Pi.PI4, Pi.CM4),
+        #  1.1 is where Emu68 maps the memory the Ethernet controller is
+        #  reached through.
+        min_emu68=(1, 1),
+        note="Needs a TCP/IP stack, the same as any other network card. On a "
+             "card that also has the Pi's WiFi installed, both are described "
+             "in Devs/NetInterfaces and Roadshow brings up both; the bundled "
+             "stack carries one interface at a time.",
+    ),
+    Package(
+        "lwip", "lwip-amiga (TCP/IP stack)",
+        "A modern TCP/IP stack, and the one stack here that can simply be "
+        "fetched: it installs its own bsdsocket.library, which is what the "
+        "browsers, the FTP clients and the IRC clients open. It brings ping, "
+        "traceroute, arp and the Roadshow status commands with it, answers "
+        "for the machine's name on the local network, and has somewhere to "
+        "put DNS servers of your own.",
+        category=Category.NETWORK,
+        download=Download(
+            DRIVER_STACK,
+            (("LIBS/bsdsocket.library", "Libs"),
+             ("C/AddNetInterface", "C"),
+             ("C/RemoveNetInterface", "C"),
+             ("C/NetShutdown", "C"),
+             ("C/GetNetStatus", "C"),
+             ("C/ShowNetStatus", "C"),
+             ("C/netinfo", "C"),
+             ("C/mdns", "C"),
+             ("C/arp", "C"),
+             ("C/ping", "C"),
+             ("C/traceroute", "C"),
+             ("C/NetLogViewer", "C"),
+             ("C/NetLogViewer.info", "C"),
+             #  The commented template for describing some other Ethernet
+             #  card. Storage is the inactive drawer, so it can never be
+             #  picked up by the boot line that globs Devs/NetInterfaces.
+             ("Storage/NetInterfaces/genet", "Storage/NetInterfaces")),
+            #  The stack-wide settings file, under the name the stack looks
+            #  for rather than the name the archive ships it as.
+            rename=(("ENVARC/netstack.prefs.default", "Prefs/Env-Archive",
+                     "netstack.prefs"),),
+            #  The boot script the archive's own installer writes, word for
+            #  word: every interface file in the drawer, brought up quietly.
+            write=(Written("Network-Startup", "S",
+                           "; $VER: Network-Startup 1.0 (emu68 driver stack)\n"
+                           "; Adds every interface configured in "
+                           "DEVS:NetInterfaces/.\n"
+                           "FailAt 30\n"
+                           "C:AddNetInterface DEVS:NetInterfaces/~(#?.info) "
+                           "QUIET\n"),),
+            source=DRIVER_STACK_SOURCE),
+        #  The same lines the archive's installer offers to add.
+        startup=("IF EXISTS S:Network-Startup",
+                 "   Execute S:Network-Startup",
+                 "EndIF"),
+        role="TCP/IP stack",
+        note="Installing it replaces bsdsocket.library and the Roadshow "
+             "commands of the same name in C:, and there is no undo - going "
+             "back means reinstalling the other stack. It drives Ethernet "
+             "network cards, the Pi's own socket and its WiFi among them, but "
+             "not dial-up. It carries one interface at a time.",
+        evidence=("Libs/bsdsocket.library", "C/AddNetInterface"),
+    ),
+    Package(
+        "nvme", "NVMe solid state drive (nvme.device)",
+        "An NVMe SSD on the Compute Module's PCIe socket, as Amiga drives. "
+        "Partitions with a Rigid Disk Block mount under their own names; "
+        "FAT, NTFS and exFAT partitions mount too where the handler for them "
+        "is installed.",
+        category=Category.HARDWARE,
+        download=Download(
+            DRIVER_STACK,
+            (("DEVS/nvme.device", "Devs"),
+             ("LIBS/gic400.library", "Libs"),
+             #  The PCIe bus itself: without it there is nothing to find the
+             #  drive on.
+             ("LIBS/bcmpcie.library", "Libs"),
+             ("C/nvmeinfo", "C"),
+             ("C/nvmeadm", "C")),
+            source=DRIVER_STACK_SOURCE),
+        #  PCIe is the question. The Pi 4's single lane is spent on its own
+        #  USB controller; the CM4 brings it out where a drive can be put on
+        #  it.
+        pi_models=(Pi.CM4,),
+        min_emu68=(1, 1),
+        needs_cpu=Cpu.M68020,
+        note="Experimental, and its authors say so: data loss and corruption "
+             "are still possible, so keep a backup of anything on it that "
+             "matters. The drive mounts itself when the driver starts; "
+             "nvmeinfo lists what was found.",
+    ),
 
 ]
 
@@ -1420,9 +1627,10 @@ def _extractor() -> list[str] | None:
 
 
 def download_archive(package: Package, progress: Progress,
-                     cpu: Cpu | None = None) -> Path | None:
+                     cpu: Cpu | None = None,
+                     kernel: str = "") -> Path | None:
     """Fetch a package's archive, reusing the cached copy when there is one."""
-    download = package.archive(cpu)
+    download = package.archive(cpu, kernel)
     if download is None:
         return None
     target = cache_dir() / download.filename
@@ -1549,20 +1757,30 @@ def unpack(archive: Path, progress: Progress) -> Path | None:
     return destination
 
 
-def _written(package: Package, progress: Progress) -> list[tuple[str, str]]:
+def _written(package: Package, progress: Progress,
+             chosen: Iterable[str] = ()) -> list[tuple[str, str]]:
     """The files this tool writes itself for a package.
 
     Any download can have them, not only one laid out drawer by drawer: a
     settings file that says which of a program's optional pieces this machine
     can actually use is exactly that sort of thing.
+
+    ``chosen`` is everything being installed, because some of these files only
+    make sense beside something else - a network interface file names a device
+    that has to be on the card for the file to describe anything.
     """
     out: list[tuple[str, str]] = []
-    for name, destination, text in package.download.write:
-        made = cache_dir() / f"{package.key}-written" / destination
+    for item in package.download.write:
+        if not item.wanted(chosen):
+            progress.log(f"  {package.label}: {item.destination}/{item.name} "
+                         f"left out" + (f" - {item.because}" if item.because
+                                        else ""))
+            continue
+        made = cache_dir() / f"{package.key}-written" / item.destination
         made.mkdir(parents=True, exist_ok=True)
-        (made / name).write_text(text)
-        out.append((str(made / name), destination))
-        progress.log(f"  {package.label}: wrote {destination}/{name}")
+        (made / item.name).write_text(item.text)
+        out.append((str(made / item.name), item.destination))
+        progress.log(f"  {package.label}: wrote {item.destination}/{item.name}")
     return out
 
 
@@ -1655,19 +1873,22 @@ def inside_archive(root: Path, named: str) -> Path:
 
 
 def fetch(package: Package, progress: Progress,
-          cpu: Cpu | None = None) -> list[tuple[str, str]]:
+          cpu: Cpu | None = None,
+          chosen: Iterable[str] = (),
+          kernel: str = "") -> list[tuple[str, str]]:
     """Download and unpack one package, as (host path, destination) pairs."""
-    archive = download_archive(package, progress, cpu)
+    archive = download_archive(package, progress, cpu, kernel)
     if archive is None:
         return []
-    download = package.archive(cpu)
+    download = package.archive(cpu, kernel)
     if download.raw:
         return [(str(archive), download.stage)]
     root = unpack(archive, progress)
     if root is None:
         return []
     if download.merge:
-        return _merged(package, root, progress) + _written(package, progress)
+        return (_merged(package, root, progress)
+                + _written(package, progress, chosen))
     #  Placed whole - the archive is the program, and goes where `stage` says.
     #  This used to be chosen on `items` alone, so a package that placed its
     #  files by `rename` or wrote its own returned here instead, and its whole
@@ -1679,7 +1900,7 @@ def fetch(package: Package, progress: Progress,
         source = inner[0] if len(inner) == 1 else root
         whole = [(str(source), download.stage)]
         return whole + _named_icons(package, whole, progress)
-    out: list[tuple[str, str]] = _written(package, progress)
+    out: list[tuple[str, str]] = _written(package, progress, chosen)
     for inside, destination, newname, entries in download.tooltypes:
         source = inside_archive(root, inside)
         if not source.exists():
@@ -2112,7 +2333,8 @@ def overlays_by_package(keys: list[str],
                         allow_download: bool = True,
                         pi: Pi | None = None,
                         cpu: Cpu | None = None,
-                        emu68_tag: str | None = None
+                        emu68_tag: str | None = None,
+                        kernel: str = ""
                         ) -> list[tuple[str, list[tuple[str, str]]]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
@@ -2138,18 +2360,37 @@ def overlays_by_package(keys: list[str],
                 out.append(pair)
 
     by_package: list[tuple[str, list[tuple[str, str]]]] = []
-    for key in expand(keys):
+    wanted = expand(keys)
+    for key in wanted:
         package = CATALOGUE_BY_KEY.get(key)
         if package is None or not package.suits(chipset, display, pi=pi,
                                                 cpu=cpu, emu68_tag=emu68_tag):
             continue
         if not allow_download or package.download is None:
             continue
-        fetched = fetch(package, progress, cpu)
+        fetched = fetch(package, progress, cpu, wanted, kernel)
         if not fetched and progress is not None:
             progress.log(f"  WARNING: {package.label} could not be fetched "
                          f"from {package.download.where}, so it is not on "
                          f"this card")
+            #  Where something else does the same job and *can* be fetched,
+            #  say so. A card with no TCP/IP stack is a card where none of
+            #  the networking software works, and being told that the one
+            #  thing standing in the way is a download somebody else's
+            #  publisher will not serve is only half the news. Found by the
+            #  job the package does rather than by naming it, so it holds for
+            #  whatever pair of alternatives the catalogue grows next.
+            instead = [other.label for other in CATALOGUE
+                       if other.role and other.role == package.role
+                       and other.key != package.key
+                       and other.download is not None
+                       and not other.download.manual
+                       and other.suits(chipset, display, pi=pi, cpu=cpu,
+                                       emu68_tag=emu68_tag)]
+            if instead:
+                progress.log(f"  {' or '.join(instead)} does the same job and "
+                             f"can be downloaded; tick it on the Packages "
+                             f"page instead")
         before = len(out)
         add(fetched)
         #  Only what this package actually contributed: a library two of them
