@@ -97,6 +97,40 @@ class Release:
         return f"{self.name or self.tag}{suffix}"
 
 
+#  A release tag: "v1.1.0-beta.1", "v1.0.7", "v1.0-rc.3".  Only the numbers
+#  before the pre-release suffix are compared, because a requirement written
+#  as "1.1 alpha.1 or later" is satisfied by every 1.1 build there is - the
+#  alphas and betas included, which is all that exists of 1.1 so far.
+_VERSION = re.compile(r"v?(\d+(?:\.\d+)*)")
+
+
+def version_of(tag: str) -> tuple[int, ...]:
+    """The numeric version in a release tag, or ``()`` when there is none.
+
+    An empty tuple means *unknown*, which is a real answer here: a build can
+    be made from a zip on disk or from an already-unpacked folder, and neither
+    carries a tag for anything to read.
+    """
+    found = _VERSION.match(tag.strip())
+    if not found:
+        return ()
+    return tuple(int(part) for part in found.group(1).split("."))
+
+
+def at_least(tag: str, minimum: tuple[int, ...]) -> bool:
+    """Whether ``tag`` names a release at or after ``minimum``.
+
+    An unreadable or absent tag answers ``True``.  The alternative - refusing
+    what cannot be checked - would hide software from anybody building against
+    a local zip, and the build says plainly what it could not verify instead.
+    """
+    version = version_of(tag)
+    if not version:
+        return True
+    padded = version + (0,) * (len(minimum) - len(version))
+    return padded >= minimum
+
+
 def _urlopen(url: str, timeout: int = 30):
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     return urllib.request.urlopen(request, timeout=timeout)

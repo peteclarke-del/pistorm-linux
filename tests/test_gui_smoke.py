@@ -25,7 +25,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402
 
-from pistorm_imager.core import (bootcfg, builder, jobs,  # noqa: E402
+from pistorm_imager.core import (bootcfg, builder, emu68, jobs,  # noqa: E402
                                  machines,
                                  packages as packages_mod)
 from pistorm_imager.ui.window import (FRESH_SOURCES,  # noqa: E402
@@ -855,6 +855,219 @@ def on_activate(app: ImagerApplication) -> None:
         for row in rows.values():
             row.set_active(False)
 
+        #  USB.  The socket a person picks decides two things written into two
+        #  different files - the unit number on the AddUSBHardware line in
+        #  S:User-Startup, and whether config.txt turns the onboard OTG socket
+        #  into a host port - and an option set in one place and not the other
+        #  is the defect this project has been bitten by twice.  So it is
+        #  driven here, through the real window, and read back off what
+        #  gather() actually produces.
+        print()
+        print("USB, and the Raspberry Pi that decides whether it can be had")
+        #  Everything this block disturbs, so the checks after it are looking
+        #  at the window they were written for.
+        was_machine = window.quick_machine.get_selected()
+        was_release = window.release_row.get_selected()
+        for index, machine in enumerate(machines.MACHINES):
+            if machine.key == "a500":
+                window.quick_machine.set_selected(index)
+        window._on_machine_changed()
+        pump()
+
+        #  A Pi that could host the driver, so the only thing left to refuse
+        #  it is the Emu68 build - which is what the next few checks are
+        #  about. Asking about the version on a Pi 3 would read the Pi's
+        #  refusal and call it the version's.
+        pi_choices = window._pi_choices
+        window.quick_pi.set_selected(pi_choices.index(machines.Pi.PI4))
+        window._on_pi_changed()
+        pump()
+
+        #  The USB driver needs Emu68 1.1, which is what maps the PCIe window
+        #  where the controller lives.  1.1 is still a pre-release, so the
+        #  newest *stable* build refuses it - and says so rather than leaving
+        #  a dead tick box.
+        choices = list(getattr(window, "_release_choices", []))
+
+        def choose_release(wanted) -> str:
+            for index, release in enumerate(choices):
+                if wanted(release.tag):
+                    window.release_row.set_selected(index)
+                    pump()
+                    return release.tag
+            return ""
+
+        older = choose_release(lambda tag: not emu68.at_least(tag, (1, 1)))
+        if older:
+            check(not rows["poseidon"].get_sensitive(),
+                  f"Emu68 {older} cannot reach the controller, so USB is refused")
+            check("Emu68 1.1" in rows["poseidon"].get_subtitle(),
+                  f"and says which build it wants: "
+                  f"{rows['poseidon'].get_subtitle()}")
+        newer = choose_release(lambda tag: emu68.at_least(tag, (1, 1)))
+        check(bool(newer) or not choices,
+              f"an Emu68 that can drive it is on offer ({newer or 'offline'})")
+
+        window.quick_pi.set_selected(pi_choices.index(machines.Pi.PI3))
+        window._on_pi_changed()
+        pump()
+        check(not rows["poseidon"].get_sensitive(),
+              "a Pi 3 has no xHCI controller, so the USB stack is refused")
+        check("Raspberry Pi 4B" in rows["poseidon"].get_subtitle(),
+              f"and says which Pi it wants: {rows['poseidon'].get_subtitle()}")
+        check(not window.usb_group.get_visible(),
+              "and no socket is asked about, there being none")
+
+        window.quick_pi.set_selected(pi_choices.index(machines.Pi.PI4))
+        window._on_pi_changed()
+        pump()
+        check(rows["poseidon"].get_sensitive(),
+              "a Pi 4B has one, so the USB stack is on offer")
+        rows["poseidon"].set_active(True)
+        pump()
+        check(rows["xhcidriver"].get_active(),
+              "ticking the stack brings the host controller driver with it")
+        check(rows["mui"].get_active(),
+              "and MUI, without which Trident opens no window")
+        check(window.usb_group.get_visible(),
+              "and now the socket is worth asking about")
+
+        config = window.gather()
+        check(config.pi_model == machines.Pi.PI4.value,
+              f"the Pi reaches the build ({config.pi_model!r})")
+        check(config.usb_port == machines.UsbPort.VL805.value,
+              f"and the socket, defaulting to the USB-A ones "
+              f"({config.usb_port!r})")
+        check(config.boot_options.otg_mode is None,
+              "the USB-A sockets need nothing adding to config.txt")
+        lines = builder._package_startup_lines(config, credit={})
+        check(any("xhci.device 1" in line for line in lines),
+              f"and the startup line attaches unit 1, which is what those "
+              f"sockets are: {[l for l in lines if 'xhci' in l]}")
+
+        sockets = window._usb_ports()
+        window.usb_port_row.set_selected(sockets.index(machines.UsbPort.OTG))
+        pump()
+        config = window.gather()
+        check(config.usb_port == machines.UsbPort.OTG.value,
+              f"choosing the OTG port reaches the build ({config.usb_port!r})")
+        check(config.boot_options.otg_mode is True,
+              "and config.txt is told to make it a host port")
+        text = config.boot_options.apply_config(bootcfg.ConfigTxt("")).text()
+        check("otg_mode=1" in text,
+              f"which is a line in the file, not merely a field: {text!r}")
+        lines = builder._package_startup_lines(config, credit={})
+        check(any("xhci.device 0" in line for line in lines),
+              f"and the startup line moves to unit 0 with it: "
+              f"{[l for l in lines if 'xhci' in l]}")
+
+        #  The mirror of it.  A card with no USB stack must not have its
+        #  socket quietly reconfigured, and a line in config.txt that changes
+        #  what the hardware does is exactly the kind nobody would look for.
+        rows["poseidon"].set_active(False)
+        pump()
+        config = window.gather()
+        check(config.boot_options.otg_mode is None,
+              "with no USB stack the OTG socket is left as the release had it")
+        check(config.usb_port == "",
+              f"and no socket is claimed ({config.usb_port!r})")
+        check(not window.usb_group.get_visible(),
+              "and the question goes away with the software that asked it")
+        check(not any("AddUSBHardware" in line for line in
+                      builder._package_startup_lines(config, credit={})),
+              "and nothing attaches a stack that is not there")
+
+        for row in rows.values():
+            row.set_active(False)
+
+        #  AGA-PISTORM: an add-on that goes onto the boot partition rather
+        #  than onto an Amiga drive. Its own instructions ask for a Windows PC
+        #  for this step. The machine and the Emu68 build are already what it
+        #  wants from the USB checks above; what is left is the chip RAM,
+        #  which is the requirement a real machine actually fails.
+        print()
+        print("AGA-PISTORM, and the boot partition it goes onto")
+        from pistorm_imager.core import bootaddon as _bootaddon
+        addons = [a for a in _bootaddon.CATALOGUE if a.writable_boot]
+        if not addons:
+            check(False, "no boot add-on needs a writable boot partition")
+        else:
+            addon = addons[0]
+            row = window.addon_rows[addon.key]
+            #  A stand-in download where the tool looks, so the row can say
+            #  where the archive it would use is rather than how to get one.
+            from test_bootaddon import make_download
+            store = SCRATCH / "addon-store"
+            store.mkdir(exist_ok=True)
+            make_download(store)
+            real_roots = _bootaddon.search_roots
+            _bootaddon.search_roots = lambda extra=None: [store]
+            try:
+                sizes = window._chip_ram_choices
+                window.quick_chip_ram.set_selected(sizes.index(512))
+                window._on_chip_ram_changed()
+                pump()
+                check(not row.get_sensitive(),
+                      "an unexpanded A500 has not the chip RAM for it")
+                check("chip RAM" in row.get_subtitle(),
+                      f"and the row says so: {row.get_subtitle()}")
+
+                window.quick_chip_ram.set_selected(sizes.index(2048))
+                window._on_chip_ram_changed()
+                pump()
+                check(row.get_sensitive(),
+                      "with a 2 MB Agnus it is on offer")
+                check("will be taken from" in row.get_subtitle(),
+                      f"and names the archive it found: {row.get_subtitle()}")
+
+                #  The switch this holds on is the one that lets the Amiga
+                #  write to the partition it was installed onto. Without it
+                #  the add-on's own installer fails at its last step, on the
+                #  Amiga, long after this tool has stopped watching.
+                window.unit0_row.set_active(False)
+                pump()
+                row.set_active(True)
+                pump()
+                check(window.unit0_row.get_active(),
+                      "choosing it makes the boot partition writable")
+                check(not window.unit0_row.get_sensitive(),
+                      "and holds that switch there while it lasts")
+                config = window.gather()
+                check(config.boot_addons == [addon.key],
+                      f"the add-on reaches the build ({config.boot_addons})")
+                check(config.chip_ram == 2048,
+                      f"and the chip RAM with it ({config.chip_ram})")
+                check(config.boot_options.sd_unit0_rw,
+                      "and so does the switch it held on")
+                check("sd.unit0=rw" in config.boot_options.cmdline(),
+                      f"which is a word on the command line: "
+                      f"{config.boot_options.cmdline()}")
+
+                row.set_active(False)
+                pump()
+                check(window.unit0_row.get_sensitive(),
+                      "turning it off gives the switch back")
+                check(window.gather().boot_addons == [],
+                      "and nothing is installed")
+
+                #  A machine that already has AGA does not want AGA emulated.
+                for index, machine in enumerate(machines.MACHINES):
+                    if machine.key == "a1200":
+                        window.quick_machine.set_selected(index)
+                window._on_machine_changed()
+                pump()
+                check(not row.get_sensitive(),
+                      "an A1200 already has AGA, so it is refused there")
+                check("AGA" in row.get_subtitle(),
+                      f"and says why: {row.get_subtitle()}")
+            finally:
+                _bootaddon.search_roots = real_roots
+
+        window.release_row.set_selected(was_release)
+        window.quick_machine.set_selected(was_machine)
+        window._on_machine_changed()
+        pump()
+
         #  A size typed for a card is a guess, and "125G" means 125 GiB - nine
         #  gigabytes more than a card sold as 125 GB. When a card is in front
         #  of us its capacity is known, so it is used and the box is closed.
@@ -1558,6 +1771,13 @@ def on_activate(app: ImagerApplication) -> None:
         window.releases = [_e.Release(                # as if the list had loaded
             tag="v1.0.7", name="1.0.7", prerelease=False, published="2024-01-01",
             assets=[f"v1.0.7-Emu68-{v.key}.zip" for v in _e.VARIANTS])]
+        #  The disks are identified on a thread, and a basic card now fills
+        #  the folder row from what was found rather than leaving it empty -
+        #  so this waits for the scan the way a person does, rather than
+        #  asking before the answer is in.
+        if window.adf_row.path:
+            wait_for(lambda: getattr(window, "_adf_disks", None),
+                     "the Workbench disks to be identified")
         window._update_summary()
         check(not window.write_button.get_sensitive(),
               "Write is off until the setup is applied")

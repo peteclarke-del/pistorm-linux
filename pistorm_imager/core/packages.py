@@ -39,7 +39,7 @@ from pathlib import Path
 
 from . import amigainfo
 from .compat import EMU68_BOARD
-from .machines import Chipset, Display, Machine
+from .machines import Chipset, Cpu, Display, Machine, Pi
 from .util import Progress, human_size
 
 AMINET = "https://aminet.net/"
@@ -56,6 +56,12 @@ class Category(enum.Enum):
     NETWORK = "Networking"
     MEDIA = "Music and pictures"
     EXTRAS = "Handy extras"
+    #  Software that drives hardware on the Raspberry Pi itself rather than
+    #  anything the Amiga shipped with.  It is a category of its own because
+    #  what makes it suitable is a different question from the rest: not the
+    #  chipset or the screen, but which Pi is on the board and which Emu68 is
+    #  booting it.
+    HARDWARE = "Raspberry Pi hardware"
 
 
 #  Drawers an archive may carry that belong somewhere definite on the card.
@@ -127,6 +133,31 @@ class Download:
     #  through the Pi's device tree. So the guess failed and the boot said
     #  "Could not create graphics board context for 'Picasso96'".
     tooltypes: tuple[tuple[str, str, str, tuple[str, ...]], ...] = ()
+    #  Publishers who build one archive per processor rather than one archive
+    #  holding several binaries, as ``(a machines.Cpu value, the path)``.  The
+    #  ``rename`` field above covers the other shape - one archive, a binary
+    #  per CPU inside it - and this covers this one.
+    #
+    #  Recorded even where only one entry can ever be chosen.  Everything that
+    #  can reach these archives runs on Emu68, which is a 68040-class core, so
+    #  the 68040 build is the answer every time today; writing that one URL in
+    #  and calling it the package would lose the actual rule, which is that
+    #  the processor decides.
+    per_cpu: tuple[tuple[str, str], ...] = ()
+
+    def for_cpu(self, cpu: Cpu | None) -> "Download":
+        """This download with ``path`` set to the build for ``cpu``.
+
+        Falls back to the first entry, which is the oldest processor the
+        publisher builds for and therefore the one that runs anywhere.
+        """
+        if not self.per_cpu:
+            return self
+        wanted = cpu.value if cpu is not None else ""
+        for value, path in self.per_cpu:
+            if value == wanted:
+                return dataclasses.replace(self, path=path)
+        return dataclasses.replace(self, path=self.per_cpu[0][1])
 
     @property
     def url(self) -> str:
@@ -243,6 +274,22 @@ class Package:
     #  Used to describe what an image brings, so the description follows the
     #  catalogue rather than a second list that has to be kept level with it.
     evidence: tuple[str, ...] = ()
+    #  Raspberry Pi models this can work on; empty means any, which is every
+    #  package that talks to the Amiga rather than to the Pi.  A package that
+    #  names them is refused outright where the Pi is not one of them, and
+    #  refused as well where nobody has said which Pi it is: an unanswered
+    #  question is not permission.
+    pi_models: tuple[Pi, ...] = ()
+    #  The oldest Emu68 this works with, as (major, minor).  Unlike the Pi,
+    #  this is a soft gate - a card can be built from a local zip or a folder
+    #  that carries no version for anything to read - so an unknown version is
+    #  allowed through and reported rather than refused.
+    min_emu68: tuple[int, ...] = ()
+    #  The processor this needs.  Everything that can reach the packages which
+    #  set it runs on Emu68, so it cannot refuse a real configuration today;
+    #  it is here because it is the actual requirement, and the day a profile
+    #  appears that does not satisfy it the rule is already written down.
+    needs_cpu: Cpu | None = None
 
     @property
     def manual(self) -> bool:
@@ -254,7 +301,18 @@ class Package:
     def downloadable(self) -> bool:
         return self.download is not None
 
-    def suits(self, chipset: Chipset, display: Display) -> bool:
+    def suits(self, chipset: Chipset, display: Display, *,
+              pi: Pi | None = None, cpu: Cpu | None = None,
+              emu68_tag: str | None = None) -> bool:
+        """Whether this package is worth having on the card being built.
+
+        The three keyword arguments describe the Raspberry Pi side of the
+        setup and default to "nobody said".  That default refuses anything
+        naming ``pi_models`` on purpose: a caller that has not been told which
+        Pi is on the board cannot honestly offer software that only works on
+        some of them.
+        """
+        from . import emu68 as emu68_module                   # noqa: PLC0415
         if self.rtg_only and not display.uses_rtg:
             return False
         if self.native_only and not display.uses_native:
@@ -262,10 +320,37 @@ class Package:
         if self.chipsets and chipset not in self.chipsets:
             if not (self.or_rtg and display.uses_rtg):
                 return False
+        if self.pi_models and pi not in self.pi_models:
+            return False
+        if self.needs_cpu is not None and cpu is not None \
+                and not cpu.at_least(self.needs_cpu):
+            return False
+        if self.min_emu68 and not emu68_module.at_least(emu68_tag or "",
+                                                        self.min_emu68):
+            return False
         return True
+
+    def archive(self, cpu: Cpu | None = None) -> "Download | None":
+        """The download for this processor, where there is one per processor."""
+        if self.download is None:
+            return None
+        return self.download.for_cpu(cpu)
 
 
 STAGING = "Storage/Install"          # where self-installing packages land
+
+#  A ``{name}`` in a startup line, to be filled in before it is written.
+PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+#  Placeholders the *hardware* fills rather than the archive.  A startup line
+#  can only be written once these are known, and they are known nowhere near
+#  the catalogue - so they are named here and supplied by whoever builds the
+#  card.
+#
+#  ``usb_unit`` is the one that exists: which unit of the USB host controller
+#  the stack is attached to, which is a fact about the socket the user chose
+#  and not about anything in the archive.
+USB_UNIT = "usb_unit"
 
 
 MOUNT_ADF_SCRIPT = '.key NAME/F\n;\n; MountADF - choose a disk image and mount it as a floppy drive.\n;\n; Written by the PiStorm imager. Double click it and it asks for the file,\n; or pass one:  Execute SYS:Utilities/ADF_Device/MountADF <file>.adf\n; Either way it hands the job to the ADF Device\'s own Insert.script, which\n; asks which unit, mounts it if it is not mounted, and tells DOS the disk\n; has changed - after which AD0: is on Workbench like any other floppy.\n;\nIF "<NAME>" EQ ""\n  RequestFile >ENV:PiStormADF TITLE "Choose a disk image to mount" PATTERN "#?.adf" NOICONS\n  IF EXISTS ENV:PiStormADF\n    IF NOT "$PiStormADF" EQ ""\n      Execute SYS:Utilities/ADF_Device/Insert.script $PiStormADF\n    ENDIF\n    Delete >NIL: ENV:PiStormADF\n  ENDIF\nELSE\n  Execute SYS:Utilities/ADF_Device/Insert.script <NAME>\nENDIF\n'
@@ -1171,6 +1256,106 @@ CATALOGUE: list[Package] = [
         requires=("mui",),
     ),
 
+    # ------------------------------------------- Raspberry Pi hardware
+    Package(
+        "xhcidriver", "USB host controller driver (xhci.device)",
+        "Gives the Amiga the Raspberry Pi's own USB controller. Does nothing "
+        "on its own - it is the half that talks to the hardware, and the USB "
+        "stack is the half that talks to Workbench.",
+        category=Category.HARDWARE,
+        download=Download(
+            "https://github.com/rondoval/emu68-driver-stack/releases/download/"
+            "v2.1.1/emu68-drivers-2.1.1.lha",
+            #  The archive carries two builds of xhci.device under the same
+            #  name: the one at DEVS/ speaks Poseidon 6.x's context interface
+            #  and the one under Storage/ speaks the older per-transfer one.
+            #  They cannot coexist - the file name is the same - and the stack
+            #  installed here is 6.x, so it is the DEVS/ one that goes on.
+            (("DEVS/USBHardware/xhci.device", "Devs/USBHardware"),
+             #  gic400.library is the interrupt controller every driver in
+             #  this stack needs, and bcmpcie.library is the PCIe bus - which
+             #  xhci.device needs for any unit above 0, the VL805 included.
+             ("LIBS/gic400.library", "Libs"),
+             ("LIBS/bcmpcie.library", "Libs"),
+             #  Not required, but it is how anybody answers "is the controller
+             #  even being seen?" without guessing.
+             ("C/lspci", "C")),
+            source="https://github.com/rondoval/emu68-driver-stack/releases"),
+        #  The controller is on the Pi, so which Pi it is decides whether
+        #  there is one at all: the Pi 4 and the CM4 have xHCI, a Pi 3 has a
+        #  DWC OTG controller that nothing here can drive.
+        pi_models=(Pi.PI4, Pi.CM4),
+        #  1.1 is what maps the PCIe window into the lower 4 GB, without which
+        #  the VL805 cannot be reached.
+        min_emu68=(1, 1),
+        needs_cpu=Cpu.M68020,
+        #  Nobody wants a host controller driver for its own sake; it is here
+        #  because the USB stack cannot work without one.
+        support_only=True,
+        note="Experimental: its own authors warn that data corruption is "
+             "possible in edge cases, so do not put anything irreplaceable on "
+             "a USB drive.",
+    ),
+    Package(
+        "poseidon", "USB stack (Poseidon)",
+        "USB on the Amiga: keyboards, mice, memory sticks, network adapters, "
+        "audio, printers and MIDI, with the Trident control panel to see them "
+        "in. Twenty-nine class drivers, brought back to 68k from the version "
+        "that has been developed in AROS since.",
+        category=Category.HARDWARE,
+        download=Download(
+            #  Filled in from ``per_cpu`` below; the publisher builds one
+            #  archive per processor rather than one archive holding three.
+            "",
+            (("Libs/poseidon.library", "Libs"),
+             ("Classes/USB", "Classes/USB"),
+             ("C", "C"),
+             ("Prefs/Trident", "Prefs"),
+             ("Prefs/Trident.info", "Prefs"),
+             ("Prefs/Presets/Poseidon", "Prefs/Presets/Poseidon"),
+             #  Lets datatypes.library recognise a saved Poseidon preferences
+             #  file, and gives it an icon where DefIcons is running.
+             ("Devs/DataTypes/PSD", "Devs/DataTypes"),
+             ("Icons/def_PSD.info", "Prefs/Env-Archive/Sys"),
+             #  The safe-eject menu. A USB drive pulled out with a write still
+             #  buffered loses the write, so this is not an ornament.
+             ("WBStartup/USBEject", "WBStartup"),
+             ("WBStartup/USBEject.info", "WBStartup")),
+            #  The translations are deliberately left out: their drawers are
+            #  named in the languages they are for - "espanol", "francais" -
+            #  and those names do not survive the trip onto an Amiga file
+            #  system intact. Trident speaks English without them.
+            per_cpu=(
+                (Cpu.M68020.value,
+                 "https://github.com/rondoval/poseidon-backport/releases/"
+                 "download/v6.1/Poseidon-6.1-020.lha"),
+                (Cpu.M68040.value,
+                 "https://github.com/rondoval/poseidon-backport/releases/"
+                 "download/v6.1/Poseidon-6.1-040.lha"),
+                (Cpu.M68060.value,
+                 "https://github.com/rondoval/poseidon-backport/releases/"
+                 "download/v6.1/Poseidon-6.1-060.lha"),
+            ),
+            source="https://github.com/rondoval/poseidon-backport/releases"),
+        #  Exactly what the archive's own Installer writes, with the unit
+        #  number left for the build to fill in: which socket the card was
+        #  built for is a fact about the Pi and the person's choice, and
+        #  nothing in this catalogue can know it. A line that reached the card
+        #  with {usb_unit} still in it would attach the stack to nothing, so
+        #  complete_startup() writes none of them rather than that.
+        startup=("C:PsdStackLoader >NIL:",
+                 "C:AddUSBHardware >NIL: xhci.device {" + USB_UNIT + "}",
+                 "C:AddUSBClasses >NIL:"),
+        #  Trident is a MUI application; without MUI the stack still runs and
+        #  the control panel does not open.
+        requires=("mui", "xhcidriver"),
+        pi_models=(Pi.PI4, Pi.CM4),
+        min_emu68=(1, 1),
+        needs_cpu=Cpu.M68020,
+        note="Off by default: the driver underneath it is experimental.",
+        evidence=("Libs/poseidon.library", "C/PsdStackLoader"),
+    ),
+
 ]
 
 CATALOGUE_BY_KEY = {p.key: p for p in CATALOGUE}
@@ -1200,6 +1385,20 @@ def expand(keys: Iterable[str]) -> list[str]:
     return out
 
 
+def wants_setting(keys: Iterable[str], name: str) -> bool:
+    """Whether anything chosen has a startup line the hardware must fill in.
+
+    Asked rather than assumed, so the question a card has to answer - which
+    USB socket, here - is put only where something actually needs the answer,
+    and is found by looking at the catalogue rather than by naming a package.
+    """
+    marker = "{" + name + "}"
+    return any(marker in line
+               for key in expand(list(keys))
+               for line in (CATALOGUE_BY_KEY[key].startup
+                            if key in CATALOGUE_BY_KEY else ()))
+
+
 def in_category(category: Category) -> list[Package]:
     return [p for p in CATALOGUE if p.category is category]
 
@@ -1220,11 +1419,13 @@ def _extractor() -> list[str] | None:
     return None
 
 
-def download_archive(package: Package, progress: Progress) -> Path | None:
+def download_archive(package: Package, progress: Progress,
+                     cpu: Cpu | None = None) -> Path | None:
     """Fetch a package's archive, reusing the cached copy when there is one."""
-    if package.download is None:
+    download = package.archive(cpu)
+    if download is None:
         return None
-    target = cache_dir() / package.download.filename
+    target = cache_dir() / download.filename
     #  The cache is keyed on the file name, and two publishers can use the
     #  same one: moving WHDLoad from Aminet to its author's site changed
     #  nothing at all, because both serve "WHDLoad_usr.lha" - so cards went
@@ -1233,21 +1434,21 @@ def download_archive(package: Package, progress: Progress) -> Path | None:
     note = target.with_name(target.name + ".source")
     if target.exists() and target.stat().st_size:
         came_from = note.read_text().strip() if note.exists() else ""
-        if came_from == package.download.url or package.download.manual:
+        if came_from == download.url or download.manual:
             progress.log(f"  {package.label}: using cached "
                          f"{target.name} ({human_size(target.stat().st_size)})")
             return target
         progress.log(f"  {package.label}: the cached {target.name} came from "
                      f"{came_from or 'somewhere unrecorded'}, so it is being "
                      f"fetched again")
-    if package.download.manual:
+    if download.manual:
         progress.log(f"  {package.label}: {target.name} is not in the cache, "
                      f"and it cannot be downloaded automatically. Fetch it "
-                     f"from {package.download.source} and put it in "
+                     f"from {download.source} and put it in "
                      f"{cache_dir()}, then build again. Skipped.")
         return None
-    progress.log(f"  {package.label}: downloading {package.download.url}")
-    request = urllib.request.Request(package.download.url,
+    progress.log(f"  {package.label}: downloading {download.url}")
+    request = urllib.request.Request(download.url,
                                      headers={"User-Agent": USER_AGENT})
     temporary = target.with_suffix(target.suffix + ".part")
     try:
@@ -1270,7 +1471,7 @@ def download_archive(package: Package, progress: Progress) -> Path | None:
         progress.log(f"  {package.label}: download failed ({error}), skipped")
         return None
     temporary.replace(target)
-    note.write_text(package.download.url + "\n")
+    note.write_text(download.url + "\n")
     progress.log(f"  {package.label}: {human_size(target.stat().st_size)}")
     return target
 
@@ -1431,17 +1632,40 @@ def _drawer(drawer: Path, target: str,
             if f"{target}/{entry.name}".lower() not in skip]
 
 
-def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
+def inside_archive(root: Path, named: str) -> Path:
+    """Where ``named`` really is, when an archive wraps itself in a drawer.
+
+    Most archives unpack as their own contents; some unpack as a single
+    drawer holding them, and that drawer is often named after the release -
+    ``Poseidon-6.1-040`` - so writing it into the catalogue would tie the
+    entry to one version and one processor and break at the next.
+
+    Only consulted when the path is not there at the top, so an archive that
+    happens to have a drawer of the same name at both levels keeps the
+    behaviour it always had: this can turn "not in the archive" into a file,
+    and can never move one that was already found.
+    """
+    here = root / named
+    if here.exists():
+        return here
+    drawers = [entry for entry in root.iterdir() if entry.is_dir()]
+    if len(drawers) == 1:
+        return drawers[0] / named
+    return here
+
+
+def fetch(package: Package, progress: Progress,
+          cpu: Cpu | None = None) -> list[tuple[str, str]]:
     """Download and unpack one package, as (host path, destination) pairs."""
-    archive = download_archive(package, progress)
+    archive = download_archive(package, progress, cpu)
     if archive is None:
         return []
-    if package.download.raw:
-        return [(str(archive), package.download.stage)]
+    download = package.archive(cpu)
+    if download.raw:
+        return [(str(archive), download.stage)]
     root = unpack(archive, progress)
     if root is None:
         return []
-    download = package.download
     if download.merge:
         return _merged(package, root, progress) + _written(package, progress)
     #  Placed whole - the archive is the program, and goes where `stage` says.
@@ -1457,7 +1681,7 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
         return whole + _named_icons(package, whole, progress)
     out: list[tuple[str, str]] = _written(package, progress)
     for inside, destination, newname, entries in download.tooltypes:
-        source = root / inside
+        source = inside_archive(root, inside)
         if not source.exists():
             progress.log(f"  {package.label}: {inside} is not in the archive")
             continue
@@ -1480,7 +1704,7 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
         progress.log(f"  {package.label}: {newname} set to "
                      f"{', '.join(entries)}")
     for inside, destination, newname, tool in download.retool:
-        source = root / inside
+        source = inside_archive(root, inside)
         if not source.exists():
             progress.log(f"  {package.label}: {inside} is not in the archive")
             continue
@@ -1497,7 +1721,7 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
         out.append((str(staged / newname), destination))
         progress.log(f"  {package.label}: {newname} set to open with {tool}")
     for inside, destination, newname in download.rename:
-        source = root / inside
+        source = inside_archive(root, inside)
         if not source.exists():
             progress.log(f"  {package.label}: {inside} is not in the archive")
             continue
@@ -1508,7 +1732,7 @@ def fetch(package: Package, progress: Progress) -> list[tuple[str, str]]:
         progress.log(f"  {package.label}: {Path(inside).name} installed as "
                      f"{destination}/{newname}")
     for inside, destination in download.items:
-        path = root / inside
+        path = inside_archive(root, inside)
         if path.exists():
             out.append((str(path), destination))
         else:
@@ -1674,22 +1898,37 @@ def installed_names(package: Package,
 
 
 def complete_startup(package: Package,
-                     pairs: Iterable[tuple[str, str]]) -> list[str] | None:
-    """``package``'s startup lines with their placeholder filled in.
+                     pairs: Iterable[tuple[str, str]],
+                     settings: dict[str, str] | None = None
+                     ) -> list[str] | None:
+    """``package``'s startup lines with their placeholders filled in.
 
-    ``None`` when the files it needs are not on the card, because the line
-    must then not be written at all: Birdie started with no patterns opens its
-    about window, which is worse than Birdie not being started.
+    ``None`` when any placeholder cannot be filled, because the lines must
+    then not be written at all: Birdie started with no patterns opens its
+    about window, which is worse than Birdie not being started, and a
+    ``AddUSBHardware`` line missing its unit number is the same shape of
+    mistake - a command that runs, succeeds at nothing and says so to nobody.
+
+    ``settings`` carries the values the hardware decides rather than the
+    archive: which USB socket the card was built for, and anything of that
+    kind added later.
     """
-    if not package.startup_files:
-        return list(package.startup)
-    placeholder, drawer, _limit = package.startup_files
-    names = installed_names(package, pairs)
-    if not names:
-        return None
-    arguments = " ".join(f'"SYS:{drawer}/{name}"' for name in names)
-    return [line.replace("{" + placeholder + "}", arguments)
-            for line in package.startup]
+    values = dict(settings or {})
+    if package.startup_files:
+        placeholder, drawer, _limit = package.startup_files
+        names = installed_names(package, pairs)
+        if not names:
+            return None
+        values[placeholder] = " ".join(f'"SYS:{drawer}/{name}"'
+                                       for name in names)
+    filled: list[str] = []
+    for line in package.startup:
+        done = PLACEHOLDER.sub(
+            lambda found: values.get(found.group(1), found.group(0)), line)
+        if PLACEHOLDER.search(done):
+            return None
+        filled.append(done)
+    return filled
 
 
 #  How an archive marks which processor a binary is for: a suffix on the end
@@ -1790,9 +2029,9 @@ def redundant_installers(package: Package,
 
 # -------------------------------------------------------------- choosing
 
-def suits(key: str, chipset: Chipset, display: Display) -> bool:
+def suits(key: str, chipset: Chipset, display: Display, **hardware) -> bool:
     package = CATALOGUE_BY_KEY.get(key)
-    return package is not None and package.suits(chipset, display)
+    return package is not None and package.suits(chipset, display, **hardware)
 
 
 HUNK_HEADER = b"\x00\x00\x03\xf3"
@@ -1870,7 +2109,10 @@ def overlays_by_package(keys: list[str],
                         chipset: Chipset = Chipset.AGA,
                         display: Display | None = None,
                         progress: Progress | None = None,
-                        allow_download: bool = True
+                        allow_download: bool = True,
+                        pi: Pi | None = None,
+                        cpu: Cpu | None = None,
+                        emu68_tag: str | None = None
                         ) -> list[tuple[str, list[tuple[str, str]]]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
@@ -1898,11 +2140,12 @@ def overlays_by_package(keys: list[str],
     by_package: list[tuple[str, list[tuple[str, str]]]] = []
     for key in expand(keys):
         package = CATALOGUE_BY_KEY.get(key)
-        if package is None or not package.suits(chipset, display):
+        if package is None or not package.suits(chipset, display, pi=pi,
+                                                cpu=cpu, emu68_tag=emu68_tag):
             continue
         if not allow_download or package.download is None:
             continue
-        fetched = fetch(package, progress)
+        fetched = fetch(package, progress, cpu)
         if not fetched and progress is not None:
             progress.log(f"  WARNING: {package.label} could not be fetched "
                          f"from {package.download.where}, so it is not on "
@@ -1918,7 +2161,9 @@ def overlays_by_package(keys: list[str],
 
 
 def suggested(machine: Machine, display: Display, *,
-              networking: bool = False) -> list[str]:
+              networking: bool = False, pi: Pi | None = None,
+              cpu: Cpu | None = None, emu68_tag: str | None = None
+              ) -> list[str]:
     """A sensible set for this machine and this screen.
 
     Nothing is listed here.  Every package says for itself whether it is
@@ -1956,4 +2201,5 @@ def suggested(machine: Machine, display: Display, *,
             if p.default
             and not p.support_only              # arrives via ``requires``
             and (networking or p.category is not Category.NETWORK)
-            and p.suits(machine.chipset, display)]
+            and p.suits(machine.chipset, display, pi=pi, cpu=cpu,
+                        emu68_tag=emu68_tag)]

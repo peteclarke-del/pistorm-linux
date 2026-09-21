@@ -142,6 +142,10 @@ class BootOptions:
     total_mem: int | None = None               # MB
     overclock: bool | None = None
     cm4_external_antenna: bool | None = None
+    #  Turn the Pi's onboard OTG socket into a host port.  Only meaningful
+    #  where a USB stack is installed and pointed at unit 0 of xhci.device;
+    #  without it that unit enumerates nothing at all.
+    otg_mode: bool | None = None
     #  cmdline.txt options (see Emu68 docs/Options.md)
     vc4_mem: int | None = None                 # MB reported to Picasso96
     vbr_move: bool = False
@@ -191,6 +195,9 @@ class BootOptions:
                 config.set("arm_freq", "1800")
         if self.cm4_external_antenna is not None:
             config.set_antenna(self.cm4_external_antenna)
+        if self.otg_mode is not None:
+            config.set("otg_mode", "1" if self.otg_mode else "0",
+                       comment="Host mode on the onboard USB OTG port")
         if self.kickstart_file:
             config.set("initramfs", self.kickstart_file, separator=" ",
                        comment="Kickstart ROM mapped by Emu68 (maprom)")
