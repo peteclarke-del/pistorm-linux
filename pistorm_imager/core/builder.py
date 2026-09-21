@@ -114,6 +114,9 @@ class BuildConfig:
     #  Emu68
     variant: str = "pistorm32lite"
     release_tag: str = ""              # empty means "the newest stable release"
+    #  A kernel published outside the official release, laid over it. Empty is
+    #  the official kernel, which is what nearly every card wants.
+    kernel_key: str = ""
     emu68_archive: str = ""            # a local zip instead of downloading
     emu68_prepared_dir: str = ""       # already-unpacked files (see below)
     install_emu68: bool = True
@@ -414,6 +417,15 @@ class BuildConfig:
         from . import machines                              # noqa: PLC0415
         return machines.MACHINES_BY_KEY.get(self.machine_key or "a1200",
                                             machines.MACHINES_BY_KEY["a1200"])
+
+    def driver_flavour(self) -> str:
+        """Which build of the Emu68 driver stack this card's kernel wants.
+
+        Drivers compiled against the unmerged cache extensions only work on a
+        kernel that has them, so this follows the kernel and nothing else.
+        """
+        kernel = emu68.KERNELS_BY_KEY.get(self.kernel_key)
+        return kernel.driver_flavour if kernel else ""
 
     def pi(self) -> "machines.Pi":
         """The Raspberry Pi on the board."""
@@ -755,6 +767,9 @@ def _prepare_emu68(config: BuildConfig, workdir: Path,
                 raise RuntimeError("no stable Emu68 release found for this board")
         progress.log(f"Emu68 {match.display()} for "
                      f"{emu68.VARIANTS_BY_KEY[config.variant].label}")
+        #  So that whatever else ships with a release - the RTG driver, today -
+        #  is taken from the same release the card is about to boot.
+        emu68.use_release(match)
         archive = emu68.get_release_archive(match, config.variant, progress)
 
     progress.step("Unpacking Emu68")
@@ -763,7 +778,43 @@ def _prepare_emu68(config: BuildConfig, workdir: Path,
         progress.step("Downloading Raspberry Pi boot firmware")
         progress.log("This Emu68 release does not bundle the Raspberry Pi firmware.")
         files += emu68.fetch_firmware(unpacked, progress)
+    if config.kernel_key:
+        files = _install_chosen_kernel(config, files, unpacked, progress)
     return files, unpacked
+
+
+def _install_chosen_kernel(config: BuildConfig, files: list[Path],
+                           unpacked: Path, progress: Progress) -> list[Path]:
+    """Lay a kernel from a fork over the release that supplies the rest.
+
+    Everything else on the boot partition - the firmware, the device tree, the
+    overlays and config.txt - still comes from the official release, which is
+    why this is a kernel rather than a release of its own.
+    """
+    kernel = emu68.KERNELS_BY_KEY.get(config.kernel_key)
+    if kernel is None:
+        progress.log(f"WARNING: no kernel called {config.kernel_key!r} is "
+                     f"known, so the release's own kernel is being used")
+        return files
+    if config.variant not in kernel.assets:
+        #  Refused rather than substituted: writing the wrong board's kernel
+        #  produces a card that does not boot at all.
+        raise RuntimeError(
+            f"{kernel.label} has no build for "
+            f"{emu68.VARIANTS_BY_KEY[config.variant].label}")
+    progress.step("Installing the chosen Emu68 kernel")
+    before = next((emu68.kernel_version(p) for p in files
+                   if emu68.kernel_name([p]) == p.name), "")
+    files = emu68.install_kernel(kernel, config.variant, files, unpacked,
+                                 progress)
+    after = next((emu68.kernel_version(p) for p in files
+                  if emu68.kernel_name([p]) == p.name), "")
+    #  The two halves of the boot partition can be different ages, and which
+    #  is older is worth saying rather than leaving to be discovered.
+    if before and after and before != after:
+        progress.log(f"The rest of the boot partition comes from {before}, "
+                     f"and the kernel is {after}")
+    return files
 
 
 def _make_boot_filesystem(size: int, workdir: Path, progress: Progress) -> Path:
@@ -774,6 +825,47 @@ def _make_boot_filesystem(size: int, workdir: Path, progress: Progress) -> Path:
         handle.truncate(size)
     run(["mkfs.vfat", "-F", "32", "-n", "EMU68BOOT", str(boot)], log=progress.log)
     return boot
+
+
+def _card_overlays(fs: Fat32) -> frozenset[str]:
+    """The device tree overlays already on a card, for a build that keeps them.
+
+    Updating a card without reinstalling Emu68 leaves the kernel where it is,
+    so which era of settings that kernel reads has to be asked of the card
+    rather than of a release that is not being downloaded.
+    """
+    try:
+        return emu68.overlays_in(entry.name for entry in fs.listdir("overlays"))
+    except Exception:                        # noqa: BLE001 - no overlays there
+        return frozenset()
+
+
+def _check_overlay_parameters(options: bootcfg.BootOptions,
+                              emu68_files: list[Path],
+                              overlays: frozenset[str], sd_overlay: str,
+                              progress: Progress) -> None:
+    """Check every overlay parameter against the overlay that has to accept it.
+
+    A parameter spelled wrongly is not refused by anything: the firmware
+    passes it on, the overlay ignores it, and the card boots without the
+    setting and without a word about it.  Each overlay lists the names it
+    answers to inside itself, so the spelling can be checked against the file
+    that will be asked to honour it instead of against anybody's memory.
+    """
+    for name, params in options.overlay_lines(overlays, sd_overlay):
+        path = emu68.overlay_path(emu68_files, name)
+        if path is None:
+            continue
+        accepted = emu68.overlay_parameters(path)
+        if not accepted:                     # unreadable: cannot check
+            continue
+        for param in params:
+            key = param.split("=", 1)[0]
+            if key not in accepted:
+                progress.log(
+                    f"WARNING: the {name} overlay in this Emu68 release does "
+                    f"not take a {key!r} parameter, so that setting would do "
+                    f"nothing; it is written anyway, unchanged")
 
 
 def _populate_boot(fs: Fat32, config: BuildConfig, emu68_files: list[Path],
@@ -831,11 +923,31 @@ def _populate_boot(fs: Fat32, config: BuildConfig, emu68_files: list[Path],
         options.kickstart_file = config.kickstart_name
 
     progress.step("Writing the boot configuration")
-    options.apply_config(template)
+    #  Which of the two eras of Emu68 settings this card is being written for.
+    #  Asked of the release itself rather than of its version: Emu68 1.1 moved
+    #  several settings out of cmdline.txt into device tree overlays and took
+    #  the old words out of the kernel, and a build can be made from a local
+    #  zip or an unpacked folder that carries no version for anything to read.
+    overlays = emu68.overlays_in(emu68_files) if emu68_files else _card_overlays(fs)
+    sd_overlay = bootcfg.sd_overlay_for(config.pi_model)
+    if overlays:
+        _check_overlay_parameters(options, emu68_files, overlays, sd_overlay,
+                                  progress)
+    #  Some settings have no older spelling to fall back on, so an older Emu68
+    #  cannot be told about them at all. Said plainly here: a setting that was
+    #  asked for and cannot be honoured must not look as though it took.
+    for description in options.unsupported(overlays):
+        progress.log(f"WARNING: this Emu68 release has no overlay for "
+                     f"{description}, so that setting is not on this card; "
+                     f"Emu68 1.1 or later is needed for it")
+
+    options.apply_config(template, overlays=overlays, sd_overlay=sd_overlay)
     fs.write_bytes("config.txt", template.to_bytes())
     progress.log("config.txt written")
+    for name, params in options.overlay_lines(overlays, sd_overlay):
+        progress.log("config.txt: dtoverlay=" + ",".join([name, *params]))
 
-    cmdline = options.cmdline()
+    cmdline = options.cmdline(overlays=overlays, sd_overlay=sd_overlay)
     if cmdline:
         fs.write_bytes("cmdline.txt", (cmdline + "\n").encode("utf-8"))
         progress.log(f"cmdline.txt: {cmdline}")
@@ -1619,7 +1731,7 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     by_package = packages.overlays_by_package(
         config.package_keys, chipset=chipset, display=display,
         progress=progress, pi=config.pi(), cpu=config.cpu(),
-        emu68_tag=config.release_tag)
+        emu68_tag=config.release_tag, kernel=config.driver_flavour())
     resolved = [pair for _key, pairs in by_package for pair in pairs]
     if credit is not None:
         for key, pairs in by_package:
