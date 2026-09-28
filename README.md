@@ -212,10 +212,17 @@ a1200  pistorm            Kickstart 3.1 (40.68)          boots to Workbench 3.2
 a1200  pistorm            Kickstart 3.2 (47.96)          boots to Workbench 3.2
 a1200  pistorm            none chosen: the disc's 3.2,
                           with GlowIcons                 boots to Workbench 3.2
+a500   pistorm            the disc's 3.2 for the A500,
+                          A600 and A2000                 boots to Workbench 3.2
+a500   pistorm            the disc's 3.2 for the A1200   boots to Workbench 3.2
 a500   68030 accelerator  Kickstart 3.1 (40.68)          boots to Workbench 3.2
 ```
 
-The two PiStorm cards were booted as a 68020, because an emulated 68040 has no
+The A500 card was booted as an A600 as well, with both ROMs, and started each
+time. So the ROM a card for those machines is given does start 3.2 on them -
+in an emulator, which is the Amiga without Emu68.
+
+The PiStorm cards were booted as a 68020, because an emulated 68040 has no
 Emu68 to bring its library and stops at the check above. That a real PiStorm
 passes it rests on Emu68 answering to `68040.library`, which was read out of
 its kernel rather than seen on hardware.
@@ -678,9 +685,10 @@ multi-gigabyte PFS3 partition - has been lifted out as an `.hdf` and booted in
 FS-UAE, which runs the real PFS3 19.2 handler out of the RDB rather than this
 project's own reader. That is what found and then settled five PFS3 writer bugs
 that were silent at build time and fatal at mount. And AmigaOS 3.2 installed
-from its CD boots to Workbench in FS-UAE four ways: for an A1200 PiStorm on
-Kickstart 3.1, on Kickstart 3.2 and on the disc's own ROM with GlowIcons, and
-for an A500 with a 68030 accelerator on Kickstart 3.1.
+from its CD boots to Workbench in FS-UAE six ways: for an A1200 PiStorm on
+Kickstart 3.1, on Kickstart 3.2 and on the disc's own ROM with GlowIcons, for
+an A500 PiStorm on each of the two 3.2 ROMs the disc could give it, and for an
+A500 with a 68030 accelerator on Kickstart 3.1.
 
 **Also verified on hardware, since:** cards built from a ClassicWB drive with
 the optional software installed, on a four-partition layout (a system drive,
@@ -696,8 +704,9 @@ machine: that Emu68's own `68040.library` satisfies the boot script's processor
 check, and that `LoadModule` - which a Kickstart 3.1 needs in order to start
 3.2 - survives the reboot it performs under Emu68. A Kickstart 3.2, which is
 what a PiStorm card is given from the disc, does not use `LoadModule` at all.
-Nor has the 3.2 ROM the disc carries for the A500, A600 and A2000 been booted
-under Emu68; the A1200's has, in an emulator.
+Nor has any 3.2 ROM been started by Emu68 itself: the one the disc carries for
+the A500, A600 and A2000 and the one for the A1200 both boot in an emulator,
+which says the ROM suits the machine and nothing about Emu68.
 
 **Also not tried on hardware:** the RTG and dual-output display handling,
 including the switcher scripts, which needs a monitor on the Pi's HDMI rather
