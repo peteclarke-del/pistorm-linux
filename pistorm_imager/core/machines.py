@@ -270,6 +270,11 @@ class Machine:
     #  executing depends on what has been fitted since, which is why this is
     #  the stock figure and ``cpu_fitted`` below answers the real question.
     stock_cpu: Cpu = Cpu.M68000
+    #  What AmigaOS's own ``AmigaModel`` command calls this machine, which is
+    #  how a release names the files it keeps per model - AmigaOS 3.2's
+    #  Kickstart modules are on a disk called ``ModulesA500_3.2``.  Several
+    #  machines share one: to AmigaOS an A1000 and an A500+ are both an A500.
+    amiga_model: str = "A500"
 
     @property
     def aga(self) -> bool:
@@ -346,7 +351,7 @@ MACHINES: list[Machine] = [
             notes="ECS chipset; otherwise identical to an A500 for our purposes."),
     Machine("a600", "Amiga 600", Chipset.ECS, "pistorm32lite", "PiStorm16",
             ((40, 68), (40, 63)), pi_models=(Pi.CM4,),
-            chip_ram_options=(1024, 2048),
+            chip_ram_options=(1024, 2048), amiga_model="A600",
             notes="PiStorm16 is the board for the A600 and uses a Compute "
                   "Module 4. It shares Emu68's build with the PiStorm32-lite."),
     Machine("a1000", "Amiga 1000", Chipset.OCS, "pistorm", "PiStorm (classic)",
@@ -354,13 +359,13 @@ MACHINES: list[Machine] = [
             notes="OCS, and the machine has no Kickstart ROM of its own, so a "
                   "mapped Kickstart is essential."),
     Machine("a2000", "Amiga 2000", Chipset.ECS, "pistorm", "PiStorm (classic)",
-            ((40, 68), (40, 63)),
+            ((40, 68), (40, 63)), amiga_model="A2000",
             notes="Zorro II slots are present, so leave room for other cards "
                   "when setting the Zorro RAM size."),
     Machine("a1200", "Amiga 1200", Chipset.AGA, "pistorm32lite",
             "PiStorm32-lite", ((40, 68), (47, 111), (47, 96)),
             stock_cpu=Cpu.M68020, pi_models=(Pi.PI3, Pi.PI4, Pi.CM4),
-            chip_ram_options=(2048,),
+            chip_ram_options=(2048,), amiga_model="A1200",
             notes="AGA, and the only model here that can show 256-colour "
                   "native screen modes. The only one that shipped with a "
                   "68020, so the only one that could run AmigaOS 3.5 or 3.9 "
@@ -368,6 +373,9 @@ MACHINES: list[Machine] = [
     Machine("raspi", "Raspberry Pi on its own", Chipset.NONE, "raspi",
             "No PiStorm", ((40, 68),), stock_cpu=PISTORM_CPU,
             pi_models=(Pi.PI3, Pi.PI4, Pi.CM4), chip_ram_options=(0,),
+            #  No Amiga at all, so the model is whichever one its Kickstart
+            #  was written for.
+            amiga_model="A1200",
             notes="Emu68 with no Amiga hardware at all: no chipset, so RTG on "
                   "HDMI is the only display."),
 ]
