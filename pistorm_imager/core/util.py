@@ -218,3 +218,107 @@ def copy_stream(src, dst, total: int | None, progress: Progress,
         if total:
             progress.fraction(done / total)
     return done
+
+
+LZW_MAGIC = b"\x1f\x9d"
+
+
+def unlzw(data: bytes) -> bytes:
+    """Expand a Unix ``compress`` (``.Z``) stream.
+
+    AmigaOS 3.2 ships its catalogs, help files and some fonts this way, and
+    its Installer expands them as it copies.  Python has no reader for the
+    format, and shelling out to ``uncompress`` would make a card depend on
+    what happens to be installed on the machine building it.
+
+    The one thing about the format that is not obvious: codes are written in
+    groups of eight, so whenever the code width changes - or the table is
+    cleared - the rest of the current group is padding and has to be skipped.
+    """
+    if len(data) < 3 or data[:2] != LZW_MAGIC:
+        raise ValueError("not a compress (.Z) stream")
+    flags = data[2]
+    if flags & 0x60:
+        raise ValueError("unknown compress flags")
+    maximum = flags & 0x1F
+    if not 9 <= maximum <= 16:
+        raise ValueError(f"compress code width {maximum} is out of range")
+    if maximum == 9:
+        maximum = 10                 # 9 is written for 10, as compress does
+    block = bool(flags & 0x80)
+    end = 256 if block else 255
+    if len(data) == 3:
+        return b""
+    if len(data) == 4:
+        raise ValueError("compress stream ended in the middle of a code")
+
+    bits, mask = 9, 0x1FF
+    buffer = data[3] | (data[4] << 8)
+    final = previous = buffer & mask
+    buffer >>= bits
+    left = 16 - bits
+    if previous > 255:
+        raise ValueError("compress stream starts with a code, not a byte")
+    out = bytearray([final])
+    prefix = [0] * 65536
+    suffix = [0] * 65536
+    mark, position, length = 3, 5, len(data)
+
+    while position < length:
+        if end >= mask and bits < maximum:
+            skip = (position - mark) % bits
+            if skip:
+                skip = bits - skip
+                if skip >= length - position:
+                    break
+                position += skip
+            buffer = left = 0
+            mark = position
+            bits += 1
+            mask = (mask << 1) | 1
+        buffer += data[position] << left
+        position += 1
+        left += 8
+        if left < bits:
+            if position == length:
+                raise ValueError(
+                    "compress stream ended in the middle of a code")
+            buffer += data[position] << left
+            position += 1
+            left += 8
+        code = buffer & mask
+        buffer >>= bits
+        left -= bits
+
+        if code == 256 and block:
+            skip = (position - mark) % bits
+            if skip:
+                skip = bits - skip
+                if skip > length - position:
+                    break
+                position += skip
+            buffer = left = 0
+            mark = position
+            bits, mask, end = 9, 0x1FF, 255
+            continue
+
+        this = code
+        stack = bytearray()
+        if code > end:
+            if code != end + 1 or previous > end:
+                raise ValueError("compress stream holds an invalid code")
+            stack.append(final)
+            code = previous
+        while code >= 256:
+            stack.append(suffix[code])
+            code = prefix[code]
+        stack.append(code)
+        final = code
+        if end < mask:
+            end += 1
+            prefix[end] = previous
+            suffix[end] = final
+        previous = this
+        stack.reverse()
+        out += stack
+    return bytes(out)

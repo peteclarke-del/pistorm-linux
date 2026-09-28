@@ -36,6 +36,9 @@ from pistorm_imager.core import rdb  # noqa: E402
 OUT = ROOT / "docs" / "images"
 SCRATCH = Path(tempfile.mkdtemp(prefix="pistorm-shots-"))
 EXPORT_IMAGE = SCRATCH / "card-backup.img"
+#  The disc the CD picture is taken with: a real AmigaOS 3.2 CD where this
+#  machine has one, so the figures in the picture are the real ones.
+REAL_CD = Path("/media") / Path.home().name / "18TB" / "AmigaOS3.2CD.iso"
 
 WIDTH = 900
 HEIGHT = 760
@@ -61,6 +64,21 @@ def make_export_image() -> None:
     with open(EXPORT_IMAGE, "wb") as handle:
         handle.truncate(total)
         table.write(handle, 0)
+
+
+def cd_image() -> Path | None:
+    """An AmigaOS 3.2 disc to show: the real one, or a stand-in shaped like it."""
+    if REAL_CD.is_file():
+        return REAL_CD
+    sys.path.insert(0, str(ROOT / "tests"))
+    import test_amigacd                                     # noqa: PLC0415
+    from pistorm_imager.core import amigacd                 # noqa: PLC0415
+    if not test_amigacd.HAVE_GENISOIMAGE:
+        return None
+    release = amigacd.RELEASES_BY_KEY["3.2"]
+    return test_amigacd.make_iso(
+        test_amigacd.make_disc_tree(release, SCRATCH / "cd"),
+        SCRATCH / "AmigaOS3.2CD.iso", rock_ridge=True, volume=release.volume)
 
 
 def settle(milliseconds: int = 400) -> None:
@@ -115,17 +133,32 @@ def on_activate(app: ImagerApplication) -> None:
             settle(450)
             shot(window, name)
 
-        #  The Amiga page carries two groups that matter to a 3.5/3.9 build
-        #  and do not fit above the fold at the usual height.
-        window.stack.set_visible_child_name("amiga")
-        settle(450)
-        shot(window, "10-amigaos-cd", height=1500)
-
         window._choose_export()
         settle(450)
         window.export_source.set_path(str(EXPORT_IMAGE))
         settle(900)
         shot(window, "09-export-drives")
+
+        #  Last, because choosing a disc changes the Kickstart and says so,
+        #  and neither belongs in any picture but this one.
+        window._choose_basic()
+        settle(450)
+        window._set_customising(True)
+        settle(450)
+        #  The Amiga page carries two groups that matter to a build from CD
+        #  and do not fit above the fold at the usual height.  Taken with a
+        #  disc chosen, because what the page says about a disc is the point:
+        #  the release it was read as, the question it asks, and the Kickstart
+        #  it brings.
+        window.stack.set_visible_child_name("amiga")
+        disc = cd_image()
+        if disc is not None:
+            window.os_cd_row.set_path(str(disc))
+            window._on_os_cd_chosen()
+        #  Long enough for the notice that the Kickstart changed to go.
+        settle(7000)
+        shot(window, "10-amigaos-cd", height=1700)
+
     except Exception:                             # noqa: BLE001 - report and quit
         import traceback
         traceback.print_exc()
