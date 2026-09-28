@@ -27,4 +27,9 @@ dump (`[!]`) is preferred over a modified one where both are present.
 Rigid Disk Block already contains a PFS3 handler, so you may not need to find
 one separately.
 
+An AmigaOS 3.2, 3.5 or 3.9 CD image is not looked for here: it is chosen in the
+window, on the Amiga page, and can live wherever you keep it. A 3.2 disc brings
+Kickstart ROMs of its own, which a PiStorm card is given when no other has been
+chosen.
+
 The tests that use these files skip when they are absent.
