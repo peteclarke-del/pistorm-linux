@@ -1490,6 +1490,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_pi.set_visible(chosen is machines.Accelerator.PISTORM)
         self._refresh_packages()
         self._on_layout_changed()
+        #  Whether a disc's Kickstart is any use depends on what loads it.
+        self._suit_the_rom_to_the_release()
 
     def _pi(self) -> machines.Pi:
         """The Raspberry Pi on the board, as the rows currently say."""
@@ -4274,15 +4276,41 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         release = self._os_cd_release()
         detected = getattr(self, "detected", None)
-        if not release or detected is None or not detected.kickstart:
+        found = detected.kickstart if detected is not None else None
+        if not release or not hasattr(self, "rom_row"):
             return
         chosen = self.rom_row.path
-        if chosen and chosen != str(detected.kickstart.path):
+        ours = {str(found.path)} if found else set()
+        ours.add(getattr(self, "_rom_from_disc", ""))
+        if chosen and chosen not in ours:
             return                          # theirs, not ours
-        folder = detected.kickstart.path.parent
-        roms = [r for r in kickstart.scan(folder) if r.usable]
+        #  A disc that carries a Kickstart of its own is the better answer
+        #  wherever the Kickstart is a file - which is a PiStorm, where Emu68
+        #  loads it.  A machine running from the chip on its board has the
+        #  ROM it has, and is not offered one it would have to be fitted with.
+        carried = None
+        if self._accelerator() is machines.Accelerator.PISTORM:
+            carried = amigacd.kickstart_on_disc(
+                self._os_cd_match, self._machine(),
+                emu68.cache_dir() / "kickstart")
+        if carried is not None:
+            self._rom_from_disc = str(carried.path)
+            if chosen != self._rom_from_disc:
+                self.rom_row.set_path(self._rom_from_disc)
+                self._on_rom_chosen()
+                self._toast(f"Using {carried.name}, from the disc")
+            return
+        roms = [r for r in kickstart.scan(found.path.parent) if r.usable] \
+            if found is not None else []
         better = presets.best_rom(roms, release)
-        if better is None or str(better.path) == chosen:
+        if better is None:
+            #  Nothing to put in its place, but a disc's Kickstart that no
+            #  longer applies must not stay as though it did.
+            if chosen and chosen == getattr(self, "_rom_from_disc", ""):
+                self.rom_row.set_path("")
+                self._on_rom_chosen()
+            return
+        if str(better.path) == chosen:
             return
         self.rom_row.set_path(str(better.path))
         self._on_rom_chosen()
@@ -5093,8 +5121,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                     self.quick_accelerator_cpu.set_selected(index)
         self._on_accelerator_changed()
         self.os_cd_row.set_path(config.os_cd)
-        for key, row in self.os_cd_options.items():
-            row.set_active(key in config.os_cd_options)
+        if config.os_cd_options is not None:
+            for key, row in self.os_cd_options.items():
+                row.set_active(key in config.os_cd_options)
         self.boingbag_emulator.set_active(config.boingbag_emulator)
         #  The community pack is a switch rather than a name in the list, so
         #  it is read back from whether the list carries it.

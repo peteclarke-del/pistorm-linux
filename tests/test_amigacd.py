@@ -127,6 +127,9 @@ def make_disc_tree(release, tree: Path, floppies: dict | None = None) -> Path:
         found.setdefault(name, {}).update(files)
     for name, files in found.items():
         make_floppy(tree / name, Path(name).stem, files)
+    if release.roms:
+        for name in ("kicka1200.rom", "kickCDTVa1000a500a2000a600.rom"):
+            write(tree / release.roms / name, rom(47, 96))
     return tree
 
 
@@ -382,6 +385,8 @@ class AmigaOs32IsFloppiesOnADisc(unittest.TestCase):
             "ADF/GlowIcons3.2.adf": {"Prefs.info": b"in colour",
                                      "Trashcan.info": b"for no trashcan"},
         })
+        #  Named for the A2000 too, and not a Kickstart at all.
+        write(tree / "ROM" / "a2000-extended.rom", b"\0" * (256 * 1024))
         cls.disc = make_iso(tree, cls.scratch / "os32.iso", rock_ridge=True,
                             volume=cls.release.volume)
         cls.match = amigacd.identify(cls.disc)
@@ -469,8 +474,10 @@ class AmigaOs32IsFloppiesOnADisc(unittest.TestCase):
         for cpu in (Cpu.M68030, Cpu.M68040, Cpu.M68060):
             self.assertTrue((self.stage(real_cpu=cpu) / library).exists(), cpu)
 
-    def test_glowicons_are_a_question_and_the_answer_is_no(self):
-        plain = self.stage()
+    def test_glowicons_are_a_question_and_the_answer_is_yes(self):
+        self.assertEqual((self.stage() / "Prefs.info").read_bytes(),
+                         b"in colour", "with nobody asked")
+        plain = self.stage(options=[])
         self.assertEqual((plain / "Prefs.info").read_bytes(),
                          b"in four colours")
         self.assertTrue(amigacd._Staging(plain).find("Disk.info"))
@@ -487,9 +494,11 @@ class AmigaOs32IsFloppiesOnADisc(unittest.TestCase):
 
     def test_icons_are_put_where_the_script_puts_them(self):
         import struct                                          # noqa: PLC0415
-        data = (self.stage() / "Devs.info").read_bytes()
+        """Only the four-colour icons: the GlowIcons disk brings its own."""
+        plain = self.stage(options=[])
+        data = (plain / "Devs.info").read_bytes()
         self.assertEqual(struct.unpack_from(">ii", data, 58), (270, 4))
-        data = (self.stage() / "Storage.info").read_bytes()
+        data = (plain / "Storage.info").read_bytes()
         self.assertEqual(struct.unpack_from(">ii", data, 58), (270, 38))
         self.assertEqual(struct.unpack_from(">hhhh", data, 78),
                          (480, 77, 110, 199))
@@ -520,6 +529,83 @@ class AmigaOs32IsFloppiesOnADisc(unittest.TestCase):
                         if path.lower().endswith(amigaos.SIDECAR_SUFFIX)]
         self.assertEqual(sidecars, [])
 
+    def test_the_disc_gives_each_machine_the_kickstart_written_for_it(self):
+        into = Path(tempfile.mkdtemp(dir=self.scratch))
+        for machine, name in (("a1200", "kicka1200.rom"),
+                              ("a500", "kickCDTVa1000a500a2000a600.rom"),
+                              ("a600", "kickCDTVa1000a500a2000a600.rom")):
+            found = amigacd.kickstart_on_disc(
+                self.match, MACHINES_BY_KEY[machine], into)
+            self.assertIsNotNone(found, machine)
+            self.assertTrue(found.path.name.endswith(name), found.path.name)
+            self.assertEqual(found.version, 47)
+
+    def test_something_in_the_rom_drawer_that_is_no_kickstart_is_passed(self):
+        """The real disc keeps the CDTV's extended ROM beside them."""
+        into = Path(tempfile.mkdtemp(dir=self.scratch))
+        found = amigacd.kickstart_on_disc(
+            self.match, MACHINES_BY_KEY["a2000"], into)
+        self.assertTrue(found.path.name.endswith(
+            "kickCDTVa1000a500a2000a600.rom"), found.path.name)
+
+    def test_a_disc_with_no_kickstarts_offers_none(self):
+        release = amigacd.RELEASES_BY_KEY["3.9"]
+        match = amigacd.CdMatch(self.disc, release=release)
+        self.assertIsNone(amigacd.kickstart_on_disc(
+            match, MACHINES_BY_KEY["a1200"], self.scratch))
+
+    def prepare(self, **given):
+        """What the build makes of the disc, and the setup it carries on with."""
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        workdir = Path(tempfile.mkdtemp(dir=self.scratch))
+        config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(workdir / "card.img"),
+            image_size=256 * 1024 * 1024, os_cd=str(self.disc),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                name="DH0", size=None, dostype="FFS-INTL", bootable=True)],
+            **given)
+        config = builder._prepare_os_cd(config, workdir, Progress())
+        return config, workdir / "amigaos"
+
+    def test_a_pistorm_with_no_kickstart_is_given_the_discs(self):
+        """Emu68 loads its Kickstart from a file, and the disc has the file."""
+        config, staged = self.prepare(machine_key="a500")
+        self.assertTrue(config.kickstart_path.endswith(
+            "kickCDTVa1000a500a2000a600.rom"), config.kickstart_path)
+        self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
+                         b"from the Workbench disk",
+                         "and a 3.2 ROM wants no modules")
+
+    def test_a_kickstart_somebody_chose_is_the_one_used(self):
+        chosen = self.scratch / "chosen.rom"
+        chosen.write_bytes(rom(40, 68))
+        config, staged = self.prepare(machine_key="a1200",
+                                      kickstart_path=str(chosen))
+        self.assertEqual(config.kickstart_path, str(chosen))
+        self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
+                         b"for an A1200")
+
+    def test_a_rom_chip_is_never_assumed_to_be_the_newer_one(self):
+        """A file says nothing about what is soldered to the board.
+
+        Taken at its word, a 3.2 ROM file chosen for a machine that boots
+        from its own chip would leave the modules off, and a 3.1 chip cannot
+        start 3.2 without them.
+        """
+        newer = self.scratch / "newer.rom"
+        newer.write_bytes(rom(47, 96))
+        for given in ({}, {"kickstart_path": str(newer)}):
+            config, staged = self.prepare(
+                machine_key="a500", accelerator="accelerator",
+                accelerator_cpu="68030", amiga_only=True,
+                install_emu68=False, **given)
+            self.assertEqual(config.kickstart_path,
+                             given.get("kickstart_path", ""),
+                             "and it is not handed the disc's either")
+            self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
+                             b"for an A500", given)
+            self.assertTrue((staged / "Libs" / "68030.library").is_file())
+
     def test_it_runs_on_a_68000_and_on_any_kickstart_from_31(self):
         def check(kickstart, accelerator=Accelerator.STOCK):
             return amigacd.requirements(
@@ -528,6 +614,15 @@ class AmigaOs32IsFloppiesOnADisc(unittest.TestCase):
         for version in (40, 46, 47):
             self.assertEqual(check(version), [], version)
         self.assertIn("Kickstart", check(39)[0])
+
+
+def rom(version: int, revision: int) -> bytes:
+    """A Kickstart as far as its header goes, which is as far as is read."""
+    import struct                                              # noqa: PLC0415
+    data = bytearray(512 * 1024)
+    data[0:2] = b"\x11\x14"
+    struct.pack_into(">HH", data, 12, version, revision)
+    return bytes(data)
 
 
 def icon() -> bytes:
