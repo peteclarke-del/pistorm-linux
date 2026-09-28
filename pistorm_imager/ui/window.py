@@ -98,8 +98,8 @@ KEPT_ACROSS_QUICK_SETUP = (
     #  person rather than by the machine or the layout, so a quick setup has
     #  no opinion about them and must not throw them away.
     "accelerator", "accelerator_cpu", "amiga_only",
-    "os_cd", "os_cd_release", "boingbag_archives", "boingbags",
-    "boingbag_emulator",
+    "os_cd", "os_cd_release", "os_cd_options", "boingbag_archives",
+    "boingbags", "boingbag_emulator",
     #  Which Raspberry Pi is plugged into the board, which of its USB sockets
     #  the Amiga was given, how much chip RAM is fitted and what is going onto
     #  the boot partition are facts about somebody's hardware and their
@@ -1000,7 +1000,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_accelerator = Adw.ComboRow(
             title="Processor",
             subtitle="AmigaOS 3.5 and 3.9 need a 68020 or better. Emu68 gives "
-                     "a PiStorm a 68040, so a PiStorm can always run them.",
+                     "a PiStorm a 68040, so a PiStorm can always run them; "
+                     "3.2 runs on any processor.",
             model=combo([a.label for a in machines.Accelerator]))
         self.quick_accelerator.set_selected(
             list(machines.Accelerator).index(machines.Accelerator.PISTORM))
@@ -1056,7 +1057,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             title="Operating system",
             model=combo(["Install Workbench from my floppy images",
                          "Don't install one - partition only",
-                         "Install AmigaOS 3.5 or 3.9 from a CD image"]))
+                         f"Install AmigaOS {amigacd.release_names()} from a "
+                         f"CD image"]))
         self.quick_system_source.connect("notify::selected",
                                          lambda *_a: self._on_source_changed())
         group.add(self.quick_system_source)
@@ -1875,10 +1877,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  Apply switched off with a 3.9 disc chosen and nothing missing.
         if self._system_source() == "cd":
             if not config.os_cd:
-                missing.append("an AmigaOS 3.5 or 3.9 CD image")
+                missing.append(f"an AmigaOS {amigacd.release_names()} CD "
+                               f"image")
             elif not self._os_cd_usable():
-                missing.append("a CD image this recognises as AmigaOS 3.5 "
-                               "or 3.9")
+                missing.append(f"a CD image this recognises as AmigaOS "
+                               f"{amigacd.release_names()}")
             return missing
 
         needs_disks = (config.install_amigaos
@@ -2184,14 +2187,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.os_group.add(self.os_disks)
         page.add(self.os_group)
 
-        #  3.5 and 3.9 were sold on CD, so they are a source of their own
-        #  rather than another release in the floppy list.
+        #  A release sold on CD is a source of its own rather than another
+        #  release in the floppy list.
         group = Adw.PreferencesGroup(
-            title="AmigaOS 3.5 or 3.9 from CD",
-            description="These two releases came on CD. Point at the disc "
+            title=f"AmigaOS {amigacd.release_names()} from CD",
+            description="These releases came on CD. Point at the disc "
                         "image and the whole system is installed from it, in "
-                        "the order the disc's own installer uses. Both need a "
-                        "68020 or better and a Kickstart 3.1 (V40) ROM.")
+                        "the order the disc's own installer uses. 3.5 and 3.9 "
+                        "need a 68020 or better and a Kickstart 3.1 (V40) "
+                        "ROM; 3.2 runs on a Kickstart 3.2 ROM, or on a 3.1 "
+                        "ROM with the Kickstart modules from its disc.")
         self.os_cd_row = FileRow("AmigaOS CD image (.iso)",
                                  filters=[("CD images", ["*.iso", "*.ISO"])],
                                  on_change=lambda _p: self._on_os_cd_chosen())
@@ -2199,6 +2204,23 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.os_cd_details = Adw.ActionRow(title="Disc", subtitle="No CD selected")
         self.os_cd_details.set_sensitive(False)
         group.add(self.os_cd_details)
+        #  What a disc's installer asks is the disc's to say, so there is a
+        #  switch for every question any release has and each is shown only
+        #  for a disc that asks it.
+        self.os_cd_options: dict[str, Adw.SwitchRow] = {}
+        for release in amigacd.RELEASES:
+            for option in release.options:
+                if option.key in self.os_cd_options:
+                    continue
+                row = Adw.SwitchRow(title=self._as_markup(option.label),
+                                    subtitle=self._as_markup(
+                                        option.description))
+                row.set_active(option.default)
+                row.set_visible(False)
+                row.connect("notify::active",
+                            lambda *_a: self._update_summary())
+                group.add(row)
+                self.os_cd_options[option.key] = row
         self.boingbag_row = FileRow(
             "BoingBag archives folder", folder=True,
             subtitle="The update packs, as downloaded (.lha). Every pack that "
@@ -4265,7 +4287,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.rom_row.set_path(str(better.path))
         self._on_rom_chosen()
         self._toast(f"Using {better.name} - AmigaOS {release} needs "
-                    f"Kickstart 3.1")
+                    + amigacd.kickstart_wanted(
+                        amigacd.RELEASES_BY_KEY[release]))
 
     def _os_cd_usable(self) -> bool:
         match = getattr(self, "_os_cd_match", None)
@@ -4274,6 +4297,26 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _os_cd_release(self) -> str:
         match = getattr(self, "_os_cd_match", None)
         return match.release.key if match and match.release else ""
+
+    def _os_cd_chosen_options(self) -> list[str]:
+        """What was answered, of the questions the chosen disc asks.
+
+        Only the chosen disc's: a switch left on for a disc that is no longer
+        the one selected must not follow the build to a release that never
+        asked.
+        """
+        match = getattr(self, "_os_cd_match", None)
+        if not match or not match.release:
+            return []
+        return [option.key for option in match.release.options
+                if self.os_cd_options[option.key].get_active()]
+
+    def _show_os_cd_options(self) -> None:
+        match = getattr(self, "_os_cd_match", None)
+        asked = {option.key for option in match.release.options} \
+            if match and match.release else set()
+        for key, row in self.os_cd_options.items():
+            row.set_visible(key in asked)
 
     def _boingbag_archives(self) -> list[str]:
         """Every .lha in the chosen folder, for the builder to sort out.
@@ -4307,11 +4350,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._os_cd_match = None
         if not path or not Path(path).is_file():
             self.os_cd_details.set_subtitle("No CD selected")
+            self._show_os_cd_options()
             self._update_summary()
             return
         match = amigacd.identify(path)
         self._os_cd_match = match if match.release else None
         self.os_cd_details.set_subtitle(self._as_markup(match.label))
+        self._show_os_cd_options()
         self._suit_the_rom_to_the_release()
         self._on_boingbags_chosen()
         self._update_summary()
@@ -4332,6 +4377,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._update_summary()
             return
         names = [bag.label for bag in boingbag.for_release(release)]
+        if not names:
+            self.boingbag_found.set_subtitle(self._as_markup(
+                f"AmigaOS {release} has no BoingBags, so nothing in that "
+                f"folder is applied"))
+            self._update_summary()
+            return
         self.boingbag_found.set_subtitle(self._as_markup(
             f"{len(archives)} archive(s) for AmigaOS {release}: "
             + ", ".join(names)))
@@ -4476,6 +4527,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             os_cd=(self.os_cd_row.path
                    if self._system_source() == "cd" else ""),
             os_cd_release=self._os_cd_release(),
+            os_cd_options=self._os_cd_chosen_options(),
             boingbag_archives=self._boingbag_archives(),
             boingbags=self._chosen_boingbags(),
             boingbag_emulator=self.boingbag_emulator.get_active(),
@@ -5041,6 +5093,8 @@ class ImagerWindow(Adw.ApplicationWindow):
                     self.quick_accelerator_cpu.set_selected(index)
         self._on_accelerator_changed()
         self.os_cd_row.set_path(config.os_cd)
+        for key, row in self.os_cd_options.items():
+            row.set_active(key in config.os_cd_options)
         self.boingbag_emulator.set_active(config.boingbag_emulator)
         #  The community pack is a switch rather than a name in the list, so
         #  it is read back from whether the list carries it.

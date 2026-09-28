@@ -55,6 +55,7 @@ EXPORT_IMAGE = SCRATCH / "toexport.img"
 #  A disc shaped like an AmigaOS 3.9 CD - the trees it carries, empty - so the
 #  CD path can be driven without the real 490 MB image being on this machine.
 CD_IMAGE = SCRATCH / "AmigaOS39.iso"
+CD32_IMAGE = SCRATCH / "AmigaOS32.iso"
 from pistorm_imager.core.util import Progress as _Progress  # noqa: E402
 QUIET_PROGRESS = _Progress()
 
@@ -76,6 +77,13 @@ def _make_cd_image() -> bool:
     #  the reader has to go through to get the names right.
     _subprocess.run([tool, "-quiet", "-R", "-V", "AmigaOS3.9",
                      "-o", str(CD_IMAGE), str(tree)], check=True)
+    #  And one shaped like the 3.2 disc, which is floppy images: the same
+    #  stand-in the installer's own tests master.
+    import test_amigacd                                     # noqa: PLC0415
+    release = amigacd.RELEASES_BY_KEY["3.2"]
+    test_amigacd.make_iso(
+        test_amigacd.make_disc_tree(release, SCRATCH / "cdtree32"),
+        CD32_IMAGE, rock_ridge=True, volume=release.volume)
     return True
 
 
@@ -509,6 +517,61 @@ def on_activate(app: ImagerApplication) -> None:
             asked = window._missing_choices()
             check(any("CD image" in item for item in asked),
                   f"a CD install with no CD asks for one: {asked}")
+            window.os_cd_row.set_path(str(CD_IMAGE))
+            window._on_os_cd_chosen()
+
+            #  What a disc's installer asks is asked of that disc alone, and
+            #  the answer has to reach the build.  A switch that is on screen
+            #  and changes nothing on the card is worse than no switch.
+            asked = window.os_cd_options
+            check(not any(row.get_visible() for row in asked.values()),
+                  "a 3.9 disc is asked none of the 3.2 disc's questions")
+            for row in asked.values():
+                row.set_active(True)
+            check(window.gather().os_cd_options == [],
+                  f"and an answer it never asked for does not follow it: "
+                  f"{window.gather().os_cd_options}")
+            window.os_cd_row.set_path(str(CD32_IMAGE))
+            window._on_os_cd_chosen()
+            check(window.gather().os_cd_release == "3.2",
+                  f"a 3.2 disc is read as one: "
+                  f"{window.gather().os_cd_release!r}")
+            check(all(row.get_visible() for row in asked.values()),
+                  "and its questions are put")
+            check(window.gather().os_cd_options == sorted(asked),
+                  f"an answer given reaches the build: "
+                  f"{window.gather().os_cd_options}")
+            for row in asked.values():
+                row.set_active(False)
+            check(window.gather().os_cd_options == [],
+                  "and so does taking it back")
+            for row in asked.values():
+                row.set_active(True)
+            answered = window.gather()
+            kept = window._keep_other_pages(
+                dataclasses.replace(answered, os_cd_options=[]), answered)
+            check(kept.os_cd_options == answered.os_cd_options,
+                  f"a quick setup keeps the answers: {kept.os_cd_options}")
+            for row in asked.values():
+                row.set_active(False)
+            window.apply(answered)
+            check(window.gather().os_cd_options == answered.os_cd_options,
+                  f"and a loaded setup gives them back: "
+                  f"{window.gather().os_cd_options}")
+            roundtrip = jobs.from_dict(jobs.to_dict(answered)) \
+                if hasattr(jobs, "from_dict") else answered
+            check(roundtrip.os_cd_options == answered.os_cd_options,
+                  "and a saved job holds them")
+            window.boingbag_row.set_path(str(SCRATCH))
+            found = window.boingbag_found.get_subtitle() or ""
+            check("no BoingBags" in found or "No .lha" in found,
+                  f"3.2 has no BoingBags, and says so: {found!r}")
+            for row in asked.values():
+                row.set_active(False)
+            #  Loading a setup chooses its own source, so the one these
+            #  checks are being made under is chosen again.
+            window.quick_system_source.set_selected(FRESH_SOURCES.index("cd"))
+            window._on_source_changed()
             window.os_cd_row.set_path(str(CD_IMAGE))
             window._on_os_cd_chosen()
 

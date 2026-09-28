@@ -185,11 +185,13 @@ class BuildConfig:
     adf_version: str = ""              # "" means "work it out from the disks"
     amiga_volume_name: str = "Workbench"
 
-    #  Installing AmigaOS 3.5 or 3.9 from its CD image.  These two releases
-    #  were sold on CD rather than floppy, so they are a separate source from
-    #  ``adf_folder`` rather than another version of it.
+    #  Installing AmigaOS from its CD image.  A disc is a separate source from
+    #  ``adf_folder`` rather than another version of it - even the 3.2 disc,
+    #  which holds floppy images but is installed by its own script.
     os_cd: str = ""                    # the .iso to install from
-    os_cd_release: str = ""            # "3.5" or "3.9"; "" means read the disc
+    os_cd_release: str = ""            # an amigacd release; "" reads the disc
+    #  What the disc's installer would have asked, as amigacd.Option keys.
+    os_cd_options: list[str] = dataclasses.field(default_factory=list)
     #  The BoingBag archives to apply on top, and which of the packs in them
     #  to use.  Empty means every pack the archives hold that is on by default.
     boingbag_archives: list[str] = dataclasses.field(default_factory=list)
@@ -3140,7 +3142,7 @@ def _expand(handle, config: BuildConfig, target_size: int, progress: Progress) -
 
 def _prepare_os_cd(config: BuildConfig, workdir: Path,
                    progress: Progress) -> BuildConfig:
-    """Stage AmigaOS 3.5 or 3.9 from its CD, with its BoingBags on top.
+    """Stage AmigaOS from its CD, with its BoingBags on top.
 
     The result is a directory tree that looks exactly like the finished system
     drive, and it is handed to the rest of the build as the boot partition's
@@ -3153,7 +3155,8 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     match = amigacd.identify(config.os_cd)
     if match.release is None:
         raise RuntimeError(
-            f"{Path(config.os_cd).name} is not an AmigaOS 3.5 or 3.9 CD "
+            f"{Path(config.os_cd).name} is not an AmigaOS "
+            f"{amigacd.release_names()} CD "
             f"(its volume is \"{match.volume_name}\").")
     if not match.usable:
         missing = ", ".join(layer.label for layer in match.missing
@@ -3180,7 +3183,13 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     progress.step(f"Installing {match.release.label} from "
                   f"{Path(config.os_cd).name}")
     staged = workdir / "amigaos"
-    files = amigacd.stage(match, staged, progress)
+    files = amigacd.stage(
+        match, staged, progress, machine=machine,
+        kickstart_version=rom_version,
+        #  Emu68 is the processor on a PiStorm, and brings what it needs.
+        real_cpu=(None if accelerator is machines.Accelerator.PISTORM
+                  else machine.cpu_fitted(accelerator, card_cpu)),
+        options=config.os_cd_options)
     progress.log(f"{files} files staged from the CD")
 
     _apply_boingbags(config, match.release, staged, machine, accelerator,
