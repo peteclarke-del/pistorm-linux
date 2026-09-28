@@ -24,7 +24,7 @@ drive brings no Workbench, so it needs the floppies alongside it.
 
 | Task | What happens |
 | --- | --- |
-| **Build a new card** | Writes an MBR with a FAT32 boot partition (Emu68 + Raspberry Pi firmware + your Kickstart) and a type `0x76` Amiga partition carrying a Rigid Disk Block. Optionally installs AmigaOS onto it from a set of Workbench floppy images, so the card boots straight to Workbench. |
+| **Build a new card** | Writes an MBR with a FAT32 boot partition (Emu68 + Raspberry Pi firmware + your Kickstart) and a type `0x76` Amiga partition carrying a Rigid Disk Block. Optionally installs AmigaOS onto it, from a set of Workbench floppy images or from an [AmigaOS 3.2, 3.5 or 3.9 CD image](#amigaos-32-35-and-39), so the card boots straight to Workbench. |
 | **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
 | **Write a drive image unchanged** | Takes a WinUAE/FS-UAE/HstWB `.hdf` - the Amiga drive on its own, with no partition table - and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
 | **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
@@ -112,13 +112,18 @@ All three were sold on CD, so they are a source of their own rather than
 another release in the ADF list. Point at the `.iso` and the whole system is
 installed from it.
 
+![The AmigaOS CD group on the Amiga page, with a 3.2 disc chosen](docs/images/10-amigaos-cd.png)
+
+The disc is read as soon as it is chosen: which release it is, about how many
+files an install will copy, and - for a disc that asks one - the question its
+own installer would have put. With a 3.2 disc and a PiStorm, the Kickstart row
+above it changes too, to the ROM the disc carries.
+
 The three are one installer. A release is a list of *layers* - a tree to copy
 and where it lands - and a layer may name a tree on the disc or a tree inside
 a floppy image on the disc. Recognising a disc, laying it out and checking it
 against the machine are the same code for all of them; what differs is the
 table each release is described by.
-
-![The AmigaOS CD group on the Amiga page](docs/images/10-amigaos-cd.png)
 
 ### The layout comes from the disc, not from guesswork
 
@@ -170,7 +175,11 @@ its word it would leave the modules off, and a 3.1 chip cannot start 3.2
 without them. With them, the same drive boots on either.
 
 The ROM is found by the model in its name and proved by reading its header -
-the disc keeps the CDTV's extended ROM in the same drawer. Only a Kickstart
+the disc keeps the CDTV's extended ROM in the same drawer. An A500, A600 or
+A2000 is given the ROM the disc carries for those models, not the A1200's. It
+is nonetheless *shown* as "Kickstart 3.2 A1200 (47.96)": a ROM is named here by
+the version in its header, and every 3.2 ROM on the disc is 47.96 whichever
+machine it was built for. The file name beside it is the one to go by. Only a Kickstart
 this application chose is replaced; one picked by hand is left where it is.
 
 **Processor libraries.** 3.2's boot script runs `CPU CHECKINSTALL`, which stops
@@ -281,15 +290,28 @@ machine, a stock machine with an accelerator fitted, and a PiStorm - where Emu68
 replaces the processor with a 68040-class core.
 
 ```
-a500   stock       KS V40: needs MC68020 or better, has MC68000   refused
-a500   accelerator KS V40: allowed
-a500   pistorm     KS V40: allowed
-a500   pistorm     KS V37: needs Kickstart 3.1 (V40), ROM is V37  refused
-a1200  stock       KS V47: needs Kickstart 3.1 (V40), ROM is V47  refused
-a500   stock       KS V40: AmigaOS 3.2                            allowed
-a500   stock       KS V39: AmigaOS 3.2 needs Kickstart 3.1 (V40)
-                           or newer, ROM is V39                   refused
+AmigaOS 3.9
+a500   stock        needs MC68020 or better, has MC68000          refused
+a500   accelerator                                                allowed
+a1200  stock        (it shipped with a 68020)                     allowed
+a500   pistorm      KS V40                                        allowed
+a500   pistorm      KS V37: needs Kickstart 3.1 (V40), ROM is V37 refused
+a1200  pistorm      KS V47: needs Kickstart 3.1 (V40), ROM is V47 refused
+
+AmigaOS 3.2
+a500   stock                                                      allowed
+a500   pistorm      KS V40, KS V46, KS V47                        allowed
+a500   pistorm      KS V39: needs Kickstart 3.1 (V40) or newer,
+                            ROM is V39                            refused
 ```
+
+**The Kickstart is only checked where it is a file.** Emu68 loads the
+Kickstart from the boot partition, so on a PiStorm the ROM that was chosen is
+the ROM the machine will run and can be held against the release. A stock
+machine, or one with an accelerator card, runs from the chip on its board. No
+file chosen here says what that chip is, so it is not checked, and nothing is
+decided on the strength of it - which is why the rows above for those machines
+name no Kickstart at all.
 
 A PiStorm clears the processor requirement on every machine, so that check can
 only ever refuse a stock machine or an under-specified accelerator. It is
@@ -420,7 +442,7 @@ decisions are made.
 | --- | --- |
 | **Source** | The task - the five listed under [What it does](#what-it-does) - and where the Amiga system comes from: a new drive, a PiMiga installation, or a hard disk image. |
 | **Storage** | The size of the system drive, whether the rest of the card becomes a PFS3 work drive, whether the card carries an Amiga drive at all, and the Amiga partitions themselves. |
-| **Amiga** | Which Amiga the card is for, which Raspberry Pi is on its PiStorm board, how much chip RAM is fitted, how you look at it, the Kickstart ROM, and the Workbench floppy images. |
+| **Amiga** | Which Amiga the card is for, which Raspberry Pi is on its PiStorm board, how much chip RAM is fitted, how you look at it, the Kickstart ROM, and what AmigaOS is installed from: the Workbench floppy images, or an AmigaOS CD image and what goes with it. |
 | **Packages** | The optional software, fetched from its publisher rather than taken from a drive you happen to have - and, where something chosen needs one, [which USB socket](#which-socket-and-the-two-files-that-have-to-agree) the Amiga is given. |
 | **Options** | HDMI output, the Raspberry Pi's own settings, the [boot partition add-ons](#add-ons-that-go-onto-the-boot-partition), and the Emu68 switches, which end up in `cmdline.txt` or, on Emu68 1.1 and later, as [device tree overlays](#emu68-11-moved-four-settings-out-of-cmdlinetxt) in `config.txt`. |
 | **Target** | Where the result goes, how big the boot partition is, and **what this will build**. |
@@ -522,7 +544,8 @@ pistorm_imager/
   core/
     fat32.py     FAT32 reader/writer working directly on an image or device
     amigafs.py   Amiga OFS/FFS: reads ADFs, creates and fills FFS partitions
-    amigaos.py   recognising Workbench disks and installing them
+    amigaos.py   recognising Workbench disks and installing them; copying
+                 a Linux tree onto an Amiga volume, metadata sidecars and all
     mbr.py       DOS partition table
     rdb.py       Amiga Rigid Disk Block: partitions and embedded file systems
     emu68.py     GitHub releases, asset naming, Raspberry Pi firmware
@@ -535,6 +558,7 @@ pistorm_imager/
     pfs3.py      PFS3: reads real volumes, creates and fills new ones
     compat.py    automatic emulator-to-PiStorm fixes (RTG driver, startup)
     amigainfo.py Workbench .info icons, enough to retarget tool types
+                 and to place an icon and its drawer's window
     machines.py  target machine profiles: chipset, processor, board,
                  Raspberry Pi, chip RAM, Kickstart, display
     iso9660.py   reading CD images: ISO 9660 with Joliet and Rock Ridge
@@ -552,7 +576,8 @@ pistorm_imager/
     updates.py   asking GitHub whether there is a newer release of this tool
     devices.py   finding and describing removable drives
     prepare.py   partitioning and formatting the target
-    util.py      sizes, progress reporting, stream copying
+    util.py      sizes, progress reporting, stream copying, expanding
+                 compress (.Z) files
     builder.py   the orchestrator
     jobs.py      job serialisation across the privilege boundary
   ui/            the GTK4 interface
@@ -562,7 +587,9 @@ pistorm_imager/data/   the icon and desktop entry, in the layout they
                  install into, and shipped inside the wheel
 docs/images/     the screenshots above, rendered from the real window by
                  tests/shots.py rather than captured by hand
-tests/           unit tests plus a real end-to-end image build
+tests/           unit tests plus a real end-to-end image build;
+                 shots.py redraws the screenshots and bootcheck.py boots a
+                 built card in FS-UAE
 ```
 
 ## Tests
@@ -596,6 +623,22 @@ network interface answers, so "does the machine still get to Workbench" is a
 question worth asking of the card rather than of the code. A card carrying
 lwip-amiga and the wired Ethernet driver reaches the end in about four seconds
 with no network hardware present at all.
+
+The Kickstart, the processor and the machine can be named after the card, in
+that order, and default to the A1200 3.1 ROM in `samples/`, a 68040 and an
+A1200:
+
+```
+python3 tests/bootcheck.py card.img 3.2.rom 68020
+python3 tests/bootcheck.py drive.hdf 3.1.rom 68030 a500
+```
+
+The processor matters for AmigaOS 3.2. Its boot script stops a 68040 that has
+no `68040.library`, and Emu68 carries one in its kernel where an emulator does
+not - so a 3.2 card built for a PiStorm is booted here as a 68020, which that
+check lets through. The drive handed to the emulator keeps each file's
+protection bits, in the sidecars described under
+[Linux file names, Amiga file names](#linux-file-names-amiga-file-names).
 
 Both the ADF reader and the FFS writer were cross-checked against
 [amitools](https://github.com/cnvogelg/amitools): every one of the 153 files on
@@ -634,7 +677,10 @@ hardware they are for. And a card built here from PiMiga - its System drive on a
 multi-gigabyte PFS3 partition - has been lifted out as an `.hdf` and booted in
 FS-UAE, which runs the real PFS3 19.2 handler out of the RDB rather than this
 project's own reader. That is what found and then settled five PFS3 writer bugs
-that were silent at build time and fatal at mount.
+that were silent at build time and fatal at mount. And AmigaOS 3.2 installed
+from its CD boots to Workbench in FS-UAE four ways: for an A1200 PiStorm on
+Kickstart 3.1, on Kickstart 3.2 and on the disc's own ROM with GlowIcons, and
+for an A500 with a 68030 accelerator on Kickstart 3.1.
 
 **Also verified on hardware, since:** cards built from a ClassicWB drive with
 the optional software installed, on a four-partition layout (a system drive,
@@ -644,7 +690,16 @@ palette editor opening on every boot, installers re-running at every startup,
 `MultiView` named in default icons in a way Workbench could not resolve - each
 reported from a running machine rather than from a test.
 
-**Still not tried on hardware:** the RTG and dual-output display handling,
+**Still not tried on hardware:** AmigaOS 3.2, 3.5 and 3.9 installed from CD.
+For 3.2 on a PiStorm two things rest on reading rather than on a running
+machine: that Emu68's own `68040.library` satisfies the boot script's processor
+check, and that `LoadModule` - which a Kickstart 3.1 needs in order to start
+3.2 - survives the reboot it performs under Emu68. A Kickstart 3.2, which is
+what a PiStorm card is given from the disc, does not use `LoadModule` at all.
+Nor has the 3.2 ROM the disc carries for the A500, A600 and A2000 been booted
+under Emu68; the A1200's has, in an emulator.
+
+**Also not tried on hardware:** the RTG and dual-output display handling,
 including the switcher scripts, which needs a monitor on the Pi's HDMI rather
 than the 15 kHz output these cards have been built for. It is checked against
 the format specifications, against independent tools and in an emulator, which
@@ -655,8 +710,9 @@ is not the same as an Amiga drawing a screen from it.
 Quick setup asks a single question about where the card's contents come from,
 because the answers are alternatives rather than additions:
 
-- **Default** - a new drive, which can then have Workbench installed onto it
-  from your floppy images, or be left as bare formatted partitions.
+- **Default** - a new drive, which can then have AmigaOS installed onto it
+  from your floppy images or from an AmigaOS 3.2, 3.5 or 3.9 CD image, or be
+  left as bare formatted partitions.
 - **PiMiga installation** - its drives, games and demos wholesale, with the
   graphics driver replaced for the target machine.
 - **Amiga hard disk image** - the partition scheme and contents of an existing
@@ -1303,8 +1359,18 @@ follows the AmigaOS install script:
 | Install | its own `Install` drawer, so its cut-down `C/`, `L/` and `Libs/` cannot replace the full versions |
 
 File contents, protection bits, comments and datestamps are all carried across
-unchanged. The partition being installed onto must be FFS, because that is the
-only Amiga file system this tool can create.
+unchanged. The partition being installed onto must be FFS or PFS3.
+
+**AmigaOS 3.2 is better installed from its CD.** A folder of 3.2 floppy images
+is recognised, and the table above is what is done with it - which is the 3.1
+layout, and not what the 3.2 installer does. The Storage disk is copied whole
+into `Storage` rather than shared out between `Prefs`, `Classes`, `Libs` and
+`Devs`; the boot script is the Workbench disk's, which is written for a floppy;
+one of the fifteen language disks is taken as *the* Locale disk; compressed
+catalogs and help files stay compressed; and the Kickstart modules and
+processor libraries are not installed at all. The [CD install](#amigaos-32-is-floppy-images-on-a-disc)
+reads the same floppy images off the disc and does each of those as the
+installer does.
 
 Put your own Workbench disks and Kickstart in `samples/` and they are found
 automatically - see `samples/README.md`. None of that material is kept in this
@@ -3934,6 +4000,14 @@ differences have to be settled on the way in:
 
   Two drawers of the same name are **merged into one** rather than either being
   renamed, which would leave a game looking for half of its files.
+* **What a Linux file cannot hold.** An Amiga file carries protection bits, a
+  datestamp and a comment, and a Linux directory has nowhere to put them.
+  Emulators that mount a directory as a drive keep them in a sidecar beside
+  each file, named `<file>.uaem`. Where a tree has them they are read, so a
+  script keeps its script bit and a command its pure bit, and the sidecars
+  themselves are not copied onto the card. A `.uaem` file with no file beside
+  it to describe is an ordinary file, and is copied as one. A tree without
+  sidecars is copied as it always was.
 * **Length.** FFS allows 30 characters, PFS3 far more. Only a name that really
   had to be cut short is reported as shortened, and that is the warning worth
   acting on: a shortened name can stop a game starting, because a WHDLoad slave
