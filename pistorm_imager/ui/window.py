@@ -4291,8 +4291,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         carried = None
         if self._accelerator() is machines.Accelerator.PISTORM:
             carried = amigacd.kickstart_on_disc(
-                self._os_cd_match, self._machine(),
-                emu68.cache_dir() / "kickstart")
+                self._os_cd_match, self._machine(), self._kickstart_cache())
         if carried is not None:
             self._rom_from_disc = str(carried.path)
             if chosen != self._rom_from_disc:
@@ -4317,6 +4316,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._toast(f"Using {better.name} - AmigaOS {release} needs "
                     + amigacd.kickstart_wanted(
                         amigacd.RELEASES_BY_KEY[release]))
+
+    @staticmethod
+    def _kickstart_cache() -> Path:
+        """Where a Kickstart lifted off a disc is kept."""
+        return emu68.cache_dir() / "kickstart"
 
     def _os_cd_usable(self) -> bool:
         match = getattr(self, "_os_cd_match", None)
