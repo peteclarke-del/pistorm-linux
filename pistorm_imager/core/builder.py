@@ -185,11 +185,15 @@ class BuildConfig:
     adf_version: str = ""              # "" means "work it out from the disks"
     amiga_volume_name: str = "Workbench"
 
-    #  Installing AmigaOS 3.5 or 3.9 from its CD image.  These two releases
-    #  were sold on CD rather than floppy, so they are a separate source from
-    #  ``adf_folder`` rather than another version of it.
+    #  Installing AmigaOS from its CD image.  A disc is a separate source from
+    #  ``adf_folder`` rather than another version of it - even the 3.2 disc,
+    #  which holds floppy images but is installed by its own script.
     os_cd: str = ""                    # the .iso to install from
-    os_cd_release: str = ""            # "3.5" or "3.9"; "" means read the disc
+    os_cd_release: str = ""            # an amigacd release; "" reads the disc
+    #  What the disc's installer would have asked, as amigacd.Option keys.
+    #  None is nobody having been asked, which leaves each at its default;
+    #  an empty list is every one of them having been turned down.
+    os_cd_options: list[str] | None = None
     #  The BoingBag archives to apply on top, and which of the packs in them
     #  to use.  Empty means every pack the archives hold that is on by default.
     boingbag_archives: list[str] = dataclasses.field(default_factory=list)
@@ -3140,7 +3144,7 @@ def _expand(handle, config: BuildConfig, target_size: int, progress: Progress) -
 
 def _prepare_os_cd(config: BuildConfig, workdir: Path,
                    progress: Progress) -> BuildConfig:
-    """Stage AmigaOS 3.5 or 3.9 from its CD, with its BoingBags on top.
+    """Stage AmigaOS from its CD, with its BoingBags on top.
 
     The result is a directory tree that looks exactly like the finished system
     drive, and it is handed to the rest of the build as the boot partition's
@@ -3153,7 +3157,8 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     match = amigacd.identify(config.os_cd)
     if match.release is None:
         raise RuntimeError(
-            f"{Path(config.os_cd).name} is not an AmigaOS 3.5 or 3.9 CD "
+            f"{Path(config.os_cd).name} is not an AmigaOS "
+            f"{amigacd.release_names()} CD "
             f"(its volume is \"{match.volume_name}\").")
     if not match.usable:
         missing = ", ".join(layer.label for layer in match.missing
@@ -3167,8 +3172,24 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     accelerator = machines.Accelerator(config.accelerator)
     card_cpu = machines.Cpu(config.accelerator_cpu) \
         if config.accelerator_cpu else None
+    #  A Kickstart file is the Kickstart only where something loads it, and
+    #  Emu68 does.  A machine running from the chip on its board has whatever
+    #  is soldered to it: a file chosen here says nothing about that, so it
+    #  is not taken as the answer - and the release is installed for the
+    #  oldest ROM it runs on, which is the one that cannot be assumed away.
+    soft_loaded = (accelerator is machines.Accelerator.PISTORM
+                   and not config.amiga_only)
     rom_version = None
-    if config.kickstart_path and Path(config.kickstart_path).is_file():
+    if soft_loaded and not config.kickstart_path and config.install_emu68:
+        carried = amigacd.kickstart_on_disc(match, machine,
+                                            workdir / "kickstart")
+        if carried is not None:
+            progress.log(f"No Kickstart was chosen, so the one on the disc "
+                         f"is used: {carried.name}")
+            config = dataclasses.replace(
+                config, kickstart_path=str(carried.path), kickstart_key="")
+    if soft_loaded and config.kickstart_path \
+            and Path(config.kickstart_path).is_file():
         info = kickstart.identify(config.kickstart_path, config.kickstart_key)
         rom_version = info.version
     problems = amigacd.requirements(match.release, machine, accelerator,
@@ -3180,7 +3201,13 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     progress.step(f"Installing {match.release.label} from "
                   f"{Path(config.os_cd).name}")
     staged = workdir / "amigaos"
-    files = amigacd.stage(match, staged, progress)
+    files = amigacd.stage(
+        match, staged, progress, machine=machine,
+        kickstart_version=rom_version,
+        #  Emu68 is the processor on a PiStorm, and brings what it needs.
+        real_cpu=(None if accelerator is machines.Accelerator.PISTORM
+                  else machine.cpu_fitted(accelerator, card_cpu)),
+        options=config.os_cd_options)
     progress.log(f"{files} files staged from the CD")
 
     _apply_boingbags(config, match.release, staged, machine, accelerator,

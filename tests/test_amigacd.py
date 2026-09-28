@@ -22,8 +22,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager.core import (amigacd, bbupdate,        # noqa: E402
-                                 boingbag, iso9660)
+from pistorm_imager.core import (amigacd, amigafs, amigaos,  # noqa: E402
+                                 bbupdate, boingbag, iso9660, util)
 from pistorm_imager.core.machines import (Accelerator, Cpu,          # noqa: E402
                                           MACHINES_BY_KEY)
 from pistorm_imager.core.util import Progress                        # noqa: E402
@@ -34,9 +34,103 @@ HAVE_7Z = shutil.which("7z") or shutil.which("7za")
 #  The user's own discs, if this is the machine they live on.  Nothing here
 #  depends on them; they are the check that the synthetic shapes match reality.
 REAL_DISCS = {
+    "3.2": Path("/media") / Path.home().name / "18TB" / "AmigaOS3.2CD.iso",
     "3.5": Path.home() / "Downloads" / "AmigaOS3.5.iso",
     "3.9": Path.home() / "Downloads" / "AmigaOS39.iso",
 }
+
+FLOPPY_BLOCKS = 1760
+SCRIPT, PURE = 0x40, 0x20
+#  The models whose Kickstart modules the synthetic 3.2 disc carries.
+MODELS = ("A500", "A1200")
+
+
+def compress(data: bytes) -> bytes:
+    """A ``.Z`` stream, written without a compressor to agree with.
+
+    Every byte goes out as a nine-bit code of its own, and the table is
+    cleared often enough that the width never has to grow - 248 codes at a
+    time, which is a whole number of the eight-code groups the format pads
+    to.  Nothing is saved; it is the format that is being tested.
+    """
+    codes: list[int] = []
+    for start in range(0, len(data), 247):
+        codes += list(data[start:start + 247])
+        if start + 247 < len(data):
+            codes.append(256)
+    return pack(codes)
+
+
+def pack(codes: list[int]) -> bytes:
+    """Nine-bit codes as a ``.Z`` stream holds them, low bit first."""
+    out = bytearray(b"\x1f\x9d\x90")
+    buffer = held = 0
+    for code in codes:
+        buffer |= code << held
+        held += 9
+        while held >= 8:
+            out.append(buffer & 0xFF)
+            buffer >>= 8
+            held -= 8
+    if held:
+        out.append(buffer & 0xFF)
+    return bytes(out)
+
+
+def make_floppy(path: Path, name: str, files: dict) -> Path:
+    """A floppy image holding ``files``: path -> bytes, or (bytes, protect)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w+b") as handle:
+        handle.truncate(FLOPPY_BLOCKS * amigafs.BLOCK)
+        volume = amigafs.VolumeWriter.format(handle, 0, FLOPPY_BLOCKS, name)
+        for relative, content in files.items():
+            data, protect = content if isinstance(content, tuple) \
+                else (content, 0)
+            drawer, _, leaf = relative.rpartition("/")
+            parent = volume.makedirs(drawer) if drawer else volume.root
+            volume.write_file(parent, leaf, data, protect=protect)
+        volume.close()
+    return path
+
+
+def floppy_files(release) -> dict:
+    """What each floppy of a release has to hold for every layer to be met."""
+    disks: dict[str, dict] = {}
+    for layer in release.layers:
+        if not layer.source.lower().endswith(amigacd.FLOPPY_SUFFIX):
+            continue
+        names = [layer.source.replace(amigacd.MODEL, model)
+                 for model in MODELS] if amigacd.MODEL in layer.source \
+            else [layer.source.replace("*", "DE")]
+        for name in names:
+            files = disks.setdefault(name, {"Disk.info": b"icon"})
+            leaf = layer.within.rpartition("/")[2]
+            if "." in leaf or leaf in ("Installer", "DAControl", "DiskDoctor",
+                                       "Startup-HardDrive", "Release",
+                                       "MMU-Configuration"):
+                files[layer.within] = layer.label.encode()
+            else:
+                top = next((pattern.replace("*", "x") for pattern in layer.only),
+                           "afile")
+                files[f"{layer.within}/{top}".lstrip("/")] = \
+                    layer.label.encode()
+    return disks
+
+
+def make_disc_tree(release, tree: Path, floppies: dict | None = None) -> Path:
+    """Lay a release out as its disc has it, floppy images and all."""
+    for layer in release.layers:
+        if not layer.source.lower().endswith(amigacd.FLOPPY_SUFFIX):
+            write(tree / layer.source / "afile", b"content")
+    found = floppy_files(release)
+    for name, files in (floppies or {}).items():
+        found.setdefault(name, {}).update(files)
+    for name, files in found.items():
+        make_floppy(tree / name, Path(name).stem, files)
+    if release.roms:
+        for name in ("kicka1200.rom", "kickCDTVa1000a500a2000a600.rom"):
+            write(tree / release.roms / name, rom(47, 96))
+    return tree
 
 
 def make_iso(tree: Path, output: Path, *, joliet: bool = False,
@@ -152,9 +246,7 @@ class RecognisingAnAmigaOsDisc(unittest.TestCase):
         cls.scratch = Path(tempfile.mkdtemp(prefix="pistorm-cd-test-"))
         cls.discs = {}
         for release in amigacd.RELEASES:
-            tree = cls.scratch / release.key
-            for layer in release.layers:
-                write(tree / layer.source / "afile", b"content")
+            tree = make_disc_tree(release, cls.scratch / release.key)
             cls.discs[release.key] = make_iso(
                 tree, cls.scratch / f"{release.key}.iso",
                 rock_ridge=True, volume=release.volume)
@@ -245,10 +337,356 @@ class RecognisingAnAmigaOsDisc(unittest.TestCase):
         """
         for release in amigacd.RELEASES:
             backdrops = [layer for layer in release.layers
-                         if layer.source.endswith("Extras/Backdrops")]
+                         if "backdrops" in layer.source.lower()]
             self.assertEqual(len(backdrops), 1, release.key)
             self.assertEqual(backdrops[0].destination,
                              "Prefs/Presets/Backdrops")
+
+
+class AmigaOs32IsFloppiesOnADisc(unittest.TestCase):
+    """The 3.2 disc holds floppy images, and is installed as its script says.
+
+    Everything here is a thing Install3.2:Install/Install does, and that a
+    copy of the floppies one after another would not.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not HAVE_GENISOIMAGE:
+            raise unittest.SkipTest("genisoimage is not installed")
+        cls.scratch = Path(tempfile.mkdtemp(prefix="pistorm-cd32-test-"))
+        cls.release = amigacd.RELEASES_BY_KEY["3.2"]
+        cls.guide = b"@database help\n" + b"A line of help. " * 200
+        tree = make_disc_tree(cls.release, cls.scratch / "tree", {
+            "ADF/Workbench3.2.adf": {
+                "S/Startup-sequence": (b"for a floppy", SCRIPT),
+                "S/Shell-startup": (b"aliases", SCRIPT),
+                "C/Assign": (b"assign", PURE),
+                "Libs/exec.library": b"from the Workbench disk",
+                "Locale/stray": b"not wanted",
+                "Devs.info": icon(),
+                "Prefs.info": b"in four colours",
+            },
+            "ADF/Install3.2.adf": {
+                "Update/Startup-HardDrive": (b"for a hard drive", SCRIPT),
+                "HDTools/HDToolBox": b"tool",
+                "HDTools/Other": b"not a hard disk tool",
+            },
+            "ADF/Locale-DE.adf": {
+                "Help/deutsch/Sys/Workbench.guide.Z": compress(cls.guide),
+                "Help/deutsch/Sys/named.Z": b"not compressed at all",
+            },
+            "ADF/ModulesA500_3.2.adf": {
+                "LIBS/exec.library": b"for an A500"},
+            "ADF/ModulesA1200_3.2.adf": {
+                "LIBS/exec.library": b"for an A1200"},
+            "ADF/MMULibs.adf": {"Libs/68030.library": b"for a real 68030",
+                                "Configs/other": b"not wanted"},
+            "ADF/GlowIcons3.2.adf": {"Prefs.info": b"in colour",
+                                     "Trashcan.info": b"for no trashcan"},
+        })
+        #  Named for the A2000 too, and not a Kickstart at all.
+        write(tree / "ROM" / "a2000-extended.rom", b"\0" * (256 * 1024))
+        cls.disc = make_iso(tree, cls.scratch / "os32.iso", rock_ridge=True,
+                            volume=cls.release.volume)
+        cls.match = amigacd.identify(cls.disc)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.scratch, ignore_errors=True)
+
+    def stage(self, machine="a1200", **given) -> Path:
+        into = Path(tempfile.mkdtemp(dir=self.scratch))
+        amigacd.stage(self.match, into, machine=MACHINES_BY_KEY[machine],
+                      **given)
+        return into
+
+    def test_the_disc_is_recognised_and_every_layer_found(self):
+        self.assertEqual(self.match.release.key, "3.2")
+        self.assertTrue(self.match.usable, self.match.label)
+        self.assertEqual(self.match.missing, ())
+
+    def test_a_relabelled_disc_is_recognised_by_its_floppies(self):
+        tree = make_disc_tree(self.release, self.scratch / "relabelled")
+        image = make_iso(tree, self.scratch / "relabelled.iso",
+                         rock_ridge=True, volume="MY BACKUP")
+        self.assertEqual(amigacd.identify(image).release.key, "3.2")
+
+    def test_the_boot_script_is_the_hard_drive_one(self):
+        """Not the one on the Workbench disk, which is for a floppy."""
+        staged = self.stage()
+        scripts = [p.name for p in (staged / "S").iterdir()
+                   if p.name.lower() == "startup-sequence"]
+        self.assertEqual(scripts, ["Startup-Sequence"])
+        self.assertEqual((staged / "S" / "Startup-Sequence").read_bytes(),
+                         b"for a hard drive")
+
+    def test_what_the_script_leaves_on_the_floppy_is_left(self):
+        staged = self.stage()
+        self.assertFalse((staged / "Locale" / "stray").exists())
+        self.assertFalse((staged / "Tools" / "Other").exists())
+        self.assertTrue((staged / "Tools" / "HDToolBox").exists())
+        self.assertFalse((staged / "Configs").exists())
+
+    def test_compressed_files_are_expanded_under_their_own_name(self):
+        help_drawer = self.stage() / "Locale" / "Help" / "deutsch" / "Sys"
+        self.assertEqual((help_drawer / "Workbench.guide").read_bytes(),
+                         self.guide)
+        self.assertFalse((help_drawer / "Workbench.guide.Z").exists())
+        #  Named like one and not one: copied, not refused.
+        self.assertEqual((help_drawer / "named").read_bytes(),
+                         b"not compressed at all")
+
+    def test_drawers_spelled_two_ways_are_one_drawer(self):
+        """LIBS on one floppy and Libs on another, which AmigaDOS reads alike."""
+        staged = self.stage(kickstart_version=40)
+        spellings = [p.name for p in staged.iterdir()
+                     if p.name.lower() == "libs"]
+        self.assertEqual(len(spellings), 1, spellings)
+
+    def test_an_old_kickstart_gets_the_modules_for_its_own_machine(self):
+        for machine, model in (("a500", "A500"), ("a1000", "A500"),
+                               ("a1200", "A1200")):
+            staged = self.stage(machine, kickstart_version=40)
+            self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
+                             f"for an {model}".encode(), machine)
+
+    def test_a_32_kickstart_is_given_no_modules(self):
+        staged = self.stage(kickstart_version=47)
+        self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
+                         b"from the Workbench disk")
+
+    def test_a_kickstart_nobody_chose_is_treated_as_the_old_one(self):
+        staged = self.stage(kickstart_version=None)
+        self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
+                         b"for an A1200")
+
+    def test_a_real_processor_gets_its_library_and_emu68_does_not(self):
+        """The boot script waits for a key when a 68030 has none.
+
+        Emu68 has one of its own in the kernel, and the disc's would be built
+        on an MMU it has not got.
+        """
+        library = Path("Libs") / "68030.library"
+        self.assertFalse((self.stage() / library).exists(), "Emu68")
+        self.assertFalse((self.stage(real_cpu=Cpu.M68020) / library).exists(),
+                         "a 68020 needs none")
+        for cpu in (Cpu.M68030, Cpu.M68040, Cpu.M68060):
+            self.assertTrue((self.stage(real_cpu=cpu) / library).exists(), cpu)
+
+    def test_glowicons_are_a_question_and_the_answer_is_yes(self):
+        self.assertEqual((self.stage() / "Prefs.info").read_bytes(),
+                         b"in colour", "with nobody asked")
+        plain = self.stage(options=[])
+        self.assertEqual((plain / "Prefs.info").read_bytes(),
+                         b"in four colours")
+        self.assertTrue(amigacd._Staging(plain).find("Disk.info"))
+        self.assertTrue((plain / "Storage.info").exists())
+        glowing = self.stage(options=["glowicons"])
+        self.assertEqual((glowing / "Prefs.info").read_bytes(), b"in colour")
+        self.assertFalse((glowing / "Trashcan.info").exists())
+
+    def test_an_option_the_disc_never_asked_is_not_honoured(self):
+        self.assertEqual(self.release.chosen(["glowicons", "invented"]),
+                         frozenset({"glowicons"}))
+        self.assertEqual(amigacd.RELEASES_BY_KEY["3.9"].chosen(["glowicons"]),
+                         frozenset())
+
+    def test_icons_are_put_where_the_script_puts_them(self):
+        import struct                                          # noqa: PLC0415
+        """Only the four-colour icons: the GlowIcons disk brings its own."""
+        plain = self.stage(options=[])
+        data = (plain / "Devs.info").read_bytes()
+        self.assertEqual(struct.unpack_from(">ii", data, 58), (270, 4))
+        data = (plain / "Storage.info").read_bytes()
+        self.assertEqual(struct.unpack_from(">ii", data, 58), (270, 38))
+        self.assertEqual(struct.unpack_from(">hhhh", data, 78),
+                         (480, 77, 110, 199))
+
+    def test_the_drawers_the_script_makes_are_made(self):
+        staged = self.stage()
+        for drawer in self.release.drawers:
+            self.assertTrue(amigacd._Staging(staged).find(drawer), drawer)
+
+    def test_protection_bits_reach_the_volume(self):
+        """A script is only run by name with its script bit set."""
+        staged = self.stage()
+        image = self.scratch / "volume.hdf"
+        blocks = 8192
+        with open(image, "w+b") as handle:
+            handle.truncate(blocks * amigafs.BLOCK)
+            volume = amigafs.VolumeWriter.format(handle, 0, blocks, "System")
+            amigaos.install_tree(volume, staged, "", Progress())
+            volume.close()
+        with open(image, "rb") as handle:
+            volume = amigafs.Volume(handle)
+            self.assertEqual(volume.find("S/Shell-startup").protect & 0xFF,
+                             SCRIPT)
+            self.assertEqual(volume.find("S/Startup-Sequence").protect & 0xFF,
+                             SCRIPT)
+            self.assertEqual(volume.find("C/Assign").protect & 0xFF, PURE)
+            sidecars = [path for path, _entry in volume.walk()
+                        if path.lower().endswith(amigaos.SIDECAR_SUFFIX)]
+        self.assertEqual(sidecars, [])
+
+    def test_the_disc_gives_each_machine_the_kickstart_written_for_it(self):
+        into = Path(tempfile.mkdtemp(dir=self.scratch))
+        for machine, name in (("a1200", "kicka1200.rom"),
+                              ("a500", "kickCDTVa1000a500a2000a600.rom"),
+                              ("a600", "kickCDTVa1000a500a2000a600.rom")):
+            found = amigacd.kickstart_on_disc(
+                self.match, MACHINES_BY_KEY[machine], into)
+            self.assertIsNotNone(found, machine)
+            self.assertTrue(found.path.name.endswith(name), found.path.name)
+            self.assertEqual(found.version, 47)
+
+    def test_something_in_the_rom_drawer_that_is_no_kickstart_is_passed(self):
+        """The real disc keeps the CDTV's extended ROM beside them."""
+        into = Path(tempfile.mkdtemp(dir=self.scratch))
+        found = amigacd.kickstart_on_disc(
+            self.match, MACHINES_BY_KEY["a2000"], into)
+        self.assertTrue(found.path.name.endswith(
+            "kickCDTVa1000a500a2000a600.rom"), found.path.name)
+
+    def test_a_disc_with_no_kickstarts_offers_none(self):
+        release = amigacd.RELEASES_BY_KEY["3.9"]
+        match = amigacd.CdMatch(self.disc, release=release)
+        self.assertIsNone(amigacd.kickstart_on_disc(
+            match, MACHINES_BY_KEY["a1200"], self.scratch))
+
+    def prepare(self, **given):
+        """What the build makes of the disc, and the setup it carries on with."""
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        workdir = Path(tempfile.mkdtemp(dir=self.scratch))
+        config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(workdir / "card.img"),
+            image_size=256 * 1024 * 1024, os_cd=str(self.disc),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                name="DH0", size=None, dostype="FFS-INTL", bootable=True)],
+            **given)
+        config = builder._prepare_os_cd(config, workdir, Progress())
+        return config, workdir / "amigaos"
+
+    def test_a_pistorm_with_no_kickstart_is_given_the_discs(self):
+        """Emu68 loads its Kickstart from a file, and the disc has the file."""
+        config, staged = self.prepare(machine_key="a500")
+        self.assertTrue(config.kickstart_path.endswith(
+            "kickCDTVa1000a500a2000a600.rom"), config.kickstart_path)
+        self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
+                         b"from the Workbench disk",
+                         "and a 3.2 ROM wants no modules")
+
+    def test_a_kickstart_somebody_chose_is_the_one_used(self):
+        chosen = self.scratch / "chosen.rom"
+        chosen.write_bytes(rom(40, 68))
+        config, staged = self.prepare(machine_key="a1200",
+                                      kickstart_path=str(chosen))
+        self.assertEqual(config.kickstart_path, str(chosen))
+        self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
+                         b"for an A1200")
+
+    def test_a_rom_chip_is_never_assumed_to_be_the_newer_one(self):
+        """A file says nothing about what is soldered to the board.
+
+        Taken at its word, a 3.2 ROM file chosen for a machine that boots
+        from its own chip would leave the modules off, and a 3.1 chip cannot
+        start 3.2 without them.
+        """
+        newer = self.scratch / "newer.rom"
+        newer.write_bytes(rom(47, 96))
+        for given in ({}, {"kickstart_path": str(newer)}):
+            config, staged = self.prepare(
+                machine_key="a500", accelerator="accelerator",
+                accelerator_cpu="68030", amiga_only=True,
+                install_emu68=False, **given)
+            self.assertEqual(config.kickstart_path,
+                             given.get("kickstart_path", ""),
+                             "and it is not handed the disc's either")
+            self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
+                             b"for an A500", given)
+            self.assertTrue((staged / "Libs" / "68030.library").is_file())
+
+    def test_it_runs_on_a_68000_and_on_any_kickstart_from_31(self):
+        def check(kickstart, accelerator=Accelerator.STOCK):
+            return amigacd.requirements(
+                self.release, MACHINES_BY_KEY["a500"], accelerator,
+                kickstart_version=kickstart)
+        for version in (40, 46, 47):
+            self.assertEqual(check(version), [], version)
+        self.assertIn("Kickstart", check(39)[0])
+
+
+def rom(version: int, revision: int) -> bytes:
+    """A Kickstart as far as its header goes, which is as far as is read."""
+    import struct                                              # noqa: PLC0415
+    data = bytearray(512 * 1024)
+    data[0:2] = b"\x11\x14"
+    struct.pack_into(">HH", data, 12, version, revision)
+    return bytes(data)
+
+
+def icon() -> bytes:
+    """A drawer icon: a DiskObject with DrawerData after it."""
+    import struct                                              # noqa: PLC0415
+    data = bytearray(78 + 56)
+    struct.pack_into(">H", data, 0, 0xE310)
+    data[48] = 2
+    struct.pack_into(">I", data, 66, 1)
+    return bytes(data)
+
+
+class TheSidecarBesideAStagedFile(unittest.TestCase):
+    """What a Linux directory cannot hold about an Amiga file."""
+
+    def setUp(self):
+        self.scratch = Path(tempfile.mkdtemp(prefix="pistorm-sidecar-test-"))
+        self.addCleanup(shutil.rmtree, self.scratch, ignore_errors=True)
+
+    def test_everything_written_is_read_back(self):
+        target = self.scratch / "PCD"
+        target.write_bytes(b"x")
+        for protect in (0, SCRIPT, PURE, 0x0F, 0x42, 0xFF):
+            amigaos.write_sidecar(target, protect, 15808, 162, 1105,
+                                  "a comment with spaces")
+            known = amigaos.read_sidecar(target)
+            self.assertEqual(known.protect, protect)
+            self.assertEqual((known.days, known.mins), (15808, 162))
+            self.assertEqual(known.comment, "a comment with spaces")
+
+    def test_it_is_written_as_an_emulator_writes_it(self):
+        target = self.scratch / "PCD"
+        target.write_bytes(b"x")
+        amigaos.write_sidecar(target, 0x42)
+        self.assertTrue(amigaos.sidecar_of(target).read_text()
+                        .startswith("-s--rw-d 1978-01-01 "))
+
+    def test_a_file_that_only_looks_like_one_is_still_a_file(self):
+        """Metadata for nothing is not metadata."""
+        (self.scratch / "notes.uaem").write_bytes(b"somebody's file")
+        self.assertEqual(amigaos.tree_size(self.scratch), (15, 1))
+
+
+class ExpandingACompressedFile(unittest.TestCase):
+
+    def test_what_went_in_comes_out(self):
+        for data in (b"", b"a", b"abc" * 5000, bytes(range(256)) * 9):
+            self.assertEqual(util.unlzw(compress(data)), data, len(data))
+
+    def test_a_repeated_code_is_followed_before_it_is_in_the_table(self):
+        """The case every LZW reader gets wrong once: a run of one byte.
+
+        Code 257 is the first the table gains, and here it is used by the
+        very code that creates it - "a", then "aa" before "aa" is known.
+        The codes are assembled by hand, as a compressor would choose them.
+        """
+        self.assertEqual(util.unlzw(pack([97, 257])), b"aaa")
+        self.assertEqual(
+            util.unlzw(pack([97, 257, 258, 259, 260, 261, 262, 263, 259])),
+            b"a" * 40)
+
+    def test_something_else_is_refused(self):
+        with self.assertRaises(ValueError):
+            util.unlzw(b"\x1f\x8b\x08 gzip, not compress")
 
 
 class TheProcessorAndKickstartGate(unittest.TestCase):
@@ -875,6 +1313,39 @@ class AgainstTheRealDiscs(unittest.TestCase):
         if not path.is_file():
             self.skipTest(f"{path.name} is not on this machine")
         return path
+
+    def test_the_real_32_disc_is_recognised_and_complete(self):
+        match = amigacd.identify(self.disc("3.2"))
+        self.assertEqual(match.release.key, "3.2")
+        self.assertTrue(match.usable, match.label)
+        self.assertEqual(match.missing, ())
+        self.assertGreater(match.files, 4000)
+
+    def test_the_real_32_disc_has_modules_for_every_machine(self):
+        match = amigacd.identify(self.disc("3.2"))
+        with iso9660.IsoImage.open(match.path) as iso:
+            disc = amigacd._Disc(iso)
+            modules = [layer for layer in match.release.layers
+                       if amigacd.MODEL in layer.source]
+            self.assertTrue(modules)
+            for machine in MACHINES_BY_KEY.values():
+                for layer in modules:
+                    found = disc.sources(layer, machine.amiga_model)
+                    self.assertTrue(found and disc.holds(layer, found[0]),
+                                    f"{machine.key}: {layer.label}")
+
+    def test_the_real_32_disc_installs_with_nothing_left_compressed(self):
+        match = amigacd.identify(self.disc("3.2"))
+        into = Path(tempfile.mkdtemp(prefix="pistorm-cd32-real-"))
+        self.addCleanup(shutil.rmtree, into, ignore_errors=True)
+        amigacd.stage(match, into, machine=MACHINES_BY_KEY["a1200"],
+                      kickstart_version=40)
+        self.assertEqual([p for p in into.rglob("*.Z")], [])
+        self.assertIn(b"Startup-Sequence_HardDrive",
+                      (into / "S" / "Startup-Sequence").read_bytes())
+        self.assertTrue((into / "Libs" / "A1200" / "exec.library").is_file())
+        guide = into / "Locale" / "Help" / "english" / "Sys" / "Workbench.guide"
+        self.assertTrue(guide.read_bytes().startswith(b"@database"))
 
     def test_the_real_35_disc_is_recognised_and_complete(self):
         match = amigacd.identify(self.disc("3.5"))
