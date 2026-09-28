@@ -46,7 +46,7 @@ import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from . import amigafs, amigainfo, amigaos, iso9660, machines
+from . import amigafs, amigainfo, amigaos, iso9660, kickstart, machines
 from .machines import Cpu
 from .util import LZW_MAGIC, Progress, unlzw
 
@@ -160,6 +160,8 @@ class Release:
     #  Drawers its installer makes that no layer fills.
     drawers: tuple[str, ...] = ()
     places: tuple[Place, ...] = ()
+    #  Where the disc keeps Kickstart ROMs of its own, if it has any.
+    roms: str = ""
 
     @property
     def needs_kickstart(self) -> int:
@@ -233,8 +235,8 @@ OS39_LAYERS = (
 GLOWICONS = Option(
     "glowicons", "Install GlowIcons",
     "The colour icon set from the disc's GlowIcons disk, in place of the "
-    "four-colour icons. The disc's own installer asks the same question, and "
-    "its answer unless told otherwise is no.")
+    "four-colour icons. The disc's own installer asks the same question.",
+    default=True)
 
 
 def _floppy(name: str) -> str:
@@ -372,7 +374,7 @@ RELEASES = (
     #  it is, and on an older one by loading the modules above.
     Release("3.2", "AmigaOS 3.2", "AmigaOS3.2CD", OS32_LAYERS,
             needs_cpu=Cpu.M68000, kickstart_to=None, options=(GLOWICONS,),
-            drawers=OS32_DRAWERS, places=OS32_PLACES),
+            drawers=OS32_DRAWERS, places=OS32_PLACES, roms="ROM"),
     Release("3.5", "AmigaOS 3.5", "AmigaOS3.5", OS35_LAYERS),
     Release("3.9", "AmigaOS 3.9", "AmigaOS3.9", OS39_LAYERS),
 )
@@ -736,6 +738,46 @@ def stage(match: CdMatch, into: str | Path,
                 icon.read_bytes(), x=place.x, y=place.y, left=place.left,
                 top=place.top, width=place.width, height=place.height))
     return written
+
+
+def kickstart_on_disc(match: CdMatch, machine: machines.Machine,
+                      into: str | Path) -> kickstart.RomInfo | None:
+    """The Kickstart the disc carries for this machine, lifted out of it.
+
+    Only of use where the Kickstart is a file - Emu68 maps one from the boot
+    partition.  A machine running from the ROM chip on its board has whatever
+    is soldered to it, and nothing on a disc changes that.
+
+    Found by the model in its name and proved by reading it: the disc keeps
+    other things beside its Kickstarts, and one ROM serves several models.
+    """
+    if match.release is None or not match.release.roms:
+        return None
+    wanted = machine.amiga_model.lower()
+    try:
+        with iso9660.IsoImage.open(match.path) as iso:
+            folder = iso.find(match.release.roms)
+            if folder is None or not folder.is_dir:
+                return None
+            for entry in sorted(iso.listdir(folder),
+                                key=lambda item: item.name.lower()):
+                name = entry.name.lower()
+                if entry.is_dir or not name.endswith(".rom") \
+                        or wanted not in name \
+                        or entry.size not in kickstart.VALID_SIZES:
+                    continue
+                #  Written afresh each time.  A copy already there is only
+                #  the same ROM if it came off the same disc, and its name
+                #  and size cannot say so.
+                target = Path(into) / f"{match.volume_name}-{entry.name}"
+                iso.extract(entry, target)
+                found = kickstart.identify(target, "")
+                if found.usable and found.version is not None \
+                        and found.version >= match.release.kickstart_from:
+                    return found
+    except (iso9660.Iso9660Error, OSError, ValueError):
+        return None
+    return None
 
 
 def requirements(release: Release, machine: machines.Machine,

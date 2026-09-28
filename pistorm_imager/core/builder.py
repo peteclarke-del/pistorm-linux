@@ -191,7 +191,9 @@ class BuildConfig:
     os_cd: str = ""                    # the .iso to install from
     os_cd_release: str = ""            # an amigacd release; "" reads the disc
     #  What the disc's installer would have asked, as amigacd.Option keys.
-    os_cd_options: list[str] = dataclasses.field(default_factory=list)
+    #  None is nobody having been asked, which leaves each at its default;
+    #  an empty list is every one of them having been turned down.
+    os_cd_options: list[str] | None = None
     #  The BoingBag archives to apply on top, and which of the packs in them
     #  to use.  Empty means every pack the archives hold that is on by default.
     boingbag_archives: list[str] = dataclasses.field(default_factory=list)
@@ -3170,8 +3172,24 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     accelerator = machines.Accelerator(config.accelerator)
     card_cpu = machines.Cpu(config.accelerator_cpu) \
         if config.accelerator_cpu else None
+    #  A Kickstart file is the Kickstart only where something loads it, and
+    #  Emu68 does.  A machine running from the chip on its board has whatever
+    #  is soldered to it: a file chosen here says nothing about that, so it
+    #  is not taken as the answer - and the release is installed for the
+    #  oldest ROM it runs on, which is the one that cannot be assumed away.
+    soft_loaded = (accelerator is machines.Accelerator.PISTORM
+                   and not config.amiga_only)
     rom_version = None
-    if config.kickstart_path and Path(config.kickstart_path).is_file():
+    if soft_loaded and not config.kickstart_path and config.install_emu68:
+        carried = amigacd.kickstart_on_disc(match, machine,
+                                            workdir / "kickstart")
+        if carried is not None:
+            progress.log(f"No Kickstart was chosen, so the one on the disc "
+                         f"is used: {carried.name}")
+            config = dataclasses.replace(
+                config, kickstart_path=str(carried.path), kickstart_key="")
+    if soft_loaded and config.kickstart_path \
+            and Path(config.kickstart_path).is_file():
         info = kickstart.identify(config.kickstart_path, config.kickstart_key)
         rom_version = info.version
     problems = amigacd.requirements(match.release, machine, accelerator,

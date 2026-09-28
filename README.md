@@ -156,6 +156,23 @@ built for a 3.2 ROM does not. The disc carries the modules for an A500, A600,
 A1200, A2000, A3000, A4000 and CD32; an A1000 and an A500+ are an A500 to
 AmigaOS, and each machine profile says which it is.
 
+The disc also carries the 3.2 Kickstarts themselves, under `ROM`, and what is
+done with them depends on how the machine gets its Kickstart:
+
+| The machine | Its Kickstart is | So |
+| --- | --- | --- |
+| A PiStorm | a file, which Emu68 loads from the boot partition | the disc's ROM for that model is used, unless you chose one yourself |
+| Anything else | the chip on the board | nothing on the disc is assumed to be fitted, and no file chosen here is taken as evidence of what is |
+
+The second row is why a drive for a real accelerator always gets the Kickstart
+modules. A 3.2 ROM *file* says nothing about the chip in the machine; taken at
+its word it would leave the modules off, and a 3.1 chip cannot start 3.2
+without them. With them, the same drive boots on either.
+
+The ROM is found by the model in its name and proved by reading its header -
+the disc keeps the CDTV's extended ROM in the same drawer. Only a Kickstart
+this application chose is replaced; one picked by hand is left where it is.
+
 **Processor libraries.** 3.2's boot script runs `CPU CHECKINSTALL`, which stops
 and waits for a key when a 68030, 68040 or 68060 has no library of its own. So
 a drive built for a real accelerator card is given the ones on the disc's
@@ -163,9 +180,9 @@ a drive built for a real accelerator card is given the ones on the disc's
 `68040.library` in its kernel, which is the one that check finds, and the
 disc's are built on an MMU that Emu68 has not got.
 
-**What is asked.** The disc's installer asks whether to install GlowIcons, and
-its answer unless told otherwise is no; the same question is a switch here,
-shown only when the disc chosen is one that asks it. Its other questions - which
+**What is asked.** The disc's installer asks whether to install GlowIcons. The
+same question is a switch here, shown only when the disc chosen is one that
+asks it, and it starts switched on. Its other questions - which
 languages, printers and keymaps - are not asked: all of them are installed, as
 they are for 3.5 and 3.9, so choosing is a matter for Prefs on the Amiga rather
 than for a rebuild.
@@ -182,9 +199,11 @@ Three cards were booted in FS-UAE from the image the build wrote, not from the
 staging tree:
 
 ```
-a1200  pistorm            Kickstart 3.1 (40.68)   boots to Workbench 3.2
-a1200  pistorm            Kickstart 3.2 (47.96)   boots to Workbench 3.2
-a500   68030 accelerator  Kickstart 3.1 (40.68)   boots to Workbench 3.2
+a1200  pistorm            Kickstart 3.1 (40.68)          boots to Workbench 3.2
+a1200  pistorm            Kickstart 3.2 (47.96)          boots to Workbench 3.2
+a1200  pistorm            none chosen: the disc's 3.2,
+                          with GlowIcons                 boots to Workbench 3.2
+a500   68030 accelerator  Kickstart 3.1 (40.68)          boots to Workbench 3.2
 ```
 
 The two PiStorm cards were booted as a 68020, because an emulated 68040 has no
@@ -549,7 +568,7 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 880 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 886 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
