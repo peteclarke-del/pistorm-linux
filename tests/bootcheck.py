@@ -6,6 +6,12 @@ laid out as a directory drive - which is how this project already runs an
 AmigaOS binary under FS-UAE for the Boing Bag updater.
 
     python3 tests/bootcheck.py card.hdf          # needs a display
+    python3 tests/bootcheck.py card.hdf 3.2.rom 68020 a500
+
+The Kickstart, the processor and the machine can be named after the card. The processor
+matters for AmigaOS 3.2, whose boot script stops a 68040 that has no
+68040.library: Emu68 carries one in its kernel and an emulator does not, so a
+3.2 card is booted here as a 68020, which that check lets through.
 
 One line is added to the end of ``S:User-Startup``, after everything the build
 put there, so that a boot which reaches the end says so. Everything above it
@@ -44,21 +50,27 @@ def extract(volume, into: Path) -> int:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(volume.read_file(entry))
+        #  The emulator reads these back, so a script keeps its script bit.
+        amigaos.write_sidecar(target, entry.protect & 0xFF, entry.days,
+                              entry.mins, entry.ticks, entry.comment)
         count += 1
     return count
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    if not 2 <= len(argv) <= 5:
         print(__doc__)
         return 2
     card = Path(argv[1])
+    rom_file = Path(argv[2]) if len(argv) > 2 else ROM
+    processor = argv[3] if len(argv) > 3 else ""
+    machine_key = argv[4] if len(argv) > 4 else "a1200"
     command = bbupdate.fsuae_command()
     if command is None:
         print("FS-UAE is not installed, so nothing can be booted")
         return 2
-    if not ROM.is_file():
-        print(f"no Kickstart ROM at {ROM}")
+    if not rom_file.is_file():
+        print(f"no Kickstart ROM at {rom_file}")
         return 2
 
     #  A confined FS-UAE sees neither /tmp nor the hidden parts of the home,
@@ -72,7 +84,12 @@ def main(argv: list[str]) -> int:
     print(f"reading {label} out of {card.name}")
     print(f"  {extract(volume, tree)} files")
 
-    startup = tree / "S" / "User-Startup"
+    #  Under whatever spelling the card has it: the emulator's drive is a
+    #  Linux directory, where "User-startup" and "User-Startup" are two files
+    #  and AmigaOS runs the one that was already there.
+    startup = next((path for path in (tree / "S").glob("*")
+                    if path.name.lower() == "user-startup"),
+                   tree / "S" / "User-Startup")
     body = startup.read_bytes() if startup.exists() else b""
     if body:
         print("--- S:User-Startup as the build wrote it ---")
@@ -82,12 +99,18 @@ def main(argv: list[str]) -> int:
                         .encode("latin-1"))
 
     rom = work / "kickstart.rom"
-    shutil.copy2(ROM, rom)
+    shutil.copy2(rom_file, rom)
     config = work / "bootcheck.fs-uae"
-    config.write_text(emulate.fsuae_config(
-        machines.MACHINES_BY_KEY["a1200"], tree, rom,
+    settings = emulate.fsuae_config(
+        machines.MACHINES_BY_KEY[machine_key], tree, rom,
         extra={"window_width": "640", "window_height": "512",
-               "fullscreen": "0"}))
+               "fullscreen": "0"})
+    if processor:
+        settings = "\n".join(
+            f"cpu = {processor}" if line.startswith("cpu = ") else line
+            for line in settings.splitlines()
+            if not line.startswith("fpu = ")) + "\n"
+    config.write_text(settings)
 
     marker = tree / MARKER
     print(f"booting with {command}")

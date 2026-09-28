@@ -185,6 +185,32 @@ DRAWER_DATA = 66
 WBDRAWER = 2
 
 
+def place(data: bytes, *, x: int | None = None, y: int | None = None,
+          left: int | None = None, top: int | None = None,
+          width: int | None = None, height: int | None = None) -> bytes:
+    """Put an icon somewhere, and say how its drawer's window opens.
+
+    What AmigaOS's ``IconPos`` command does.  Anything left as None is left
+    as it is.  The window belongs to the DrawerData that follows the
+    DiskObject, which begins with a NewWindow whose first four words are the
+    left edge, top edge, width and height - so an icon with no DrawerData has
+    no window to set, and is given none.
+    """
+    if len(data) < DISKOBJECT_SIZE \
+            or struct.unpack_from(">H", data, 0)[0] != MAGIC:
+        return data
+    out = bytearray(data)
+    for offset, value in ((CURRENT_X, x), (CURRENT_Y, y)):
+        if value is not None:
+            struct.pack_into(">i", out, offset, value)
+    if struct.unpack_from(">I", data, DRAWER_DATA)[0] \
+            and len(data) >= DISKOBJECT_SIZE + DRAWERDATA_SIZE:
+        for index, value in enumerate((left, top, width, height)):
+            if value is not None:
+                struct.pack_into(">h", out, DISKOBJECT_SIZE + index * 2, value)
+    return bytes(out)
+
+
 def is_drawer_icon(data: bytes) -> bool:
     """Whether this icon is one a *drawer* can wear.
 
