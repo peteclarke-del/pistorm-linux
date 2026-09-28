@@ -103,14 +103,20 @@ Along the way it will:
   it** rather than its file name, and keeping the whole set to one release (a
   2.0 Extras drawer on a 3.1 system is a broken install, and collections
   routinely hold several releases side by side);
-* install **AmigaOS 3.5 and 3.9 from their CD images**, with their BoingBags
-  on top - described below.
+* install **AmigaOS 3.2, 3.5 and 3.9 from their CD images**, with the
+  BoingBags for 3.5 and 3.9 on top - described below.
 
-## AmigaOS 3.5 and 3.9
+## AmigaOS 3.2, 3.5 and 3.9
 
-Both were sold on CD rather than floppy, so they are a source of their own
-rather than another release in the ADF list. Point at the `.iso` and the whole
-system is installed from it.
+All three were sold on CD, so they are a source of their own rather than
+another release in the ADF list. Point at the `.iso` and the whole system is
+installed from it.
+
+The three are one installer. A release is a list of *layers* - a tree to copy
+and where it lands - and a layer may name a tree on the disc or a tree inside
+a floppy image on the disc. Recognising a disc, laying it out and checking it
+against the machine are the same code for all of them; what differs is the
+table each release is described by.
 
 ![The AmigaOS CD group on the Amiga page](docs/images/10-amigaos-cd.png)
 
@@ -124,7 +130,69 @@ obvious answer, and a wrong destination makes a system that *looks* installed:
 and the printer and keymap sets are lifted out of the Workbench tree's own
 `Storage` and copied again into `Devs`.
 
-### Neither release is one tree, and the two discs differ
+### AmigaOS 3.2 is floppy images on a disc
+
+The 3.2 disc holds no Workbench tree at all. It holds thirty-five floppy
+images under `ADF`, which its installer mounts one after another, and that
+installer - `Install/Install` on the `Install3.2` floppy - does a good deal
+more than copy each disk where its name suggests:
+
+| What the installer does | Why copying the floppies would get it wrong |
+| --- | --- |
+| Takes `S/Startup-Sequence` from `Update/Startup-HardDrive` on the Install disk | The one on the Workbench disk is written for booting a floppy |
+| Splits the Storage disk nine ways: `DefIcons` to `Prefs/Env-Archive/Sys`, `Classes/DataTypes` to `Classes`, `LIBS` to `Libs`, printers and keymaps to `Devs` | Copied whole into `Storage`, none of it is where AmigaOS looks |
+| Expands every `.Z` file - 3,572 catalogs, help files and fonts - and drops the suffix | They are Unix `compress` streams; left as they are, there is no help and no translated text |
+| Puts backdrops in `Prefs/Presets/Backdrops` | As on the other two discs, `Backdrops` is the obvious answer and the wrong one |
+| Copies the Kickstart modules for *this* machine, and only under a ROM older than 3.2 | They are per model, on eight disks; the wrong set replaces `exec.library` with another machine's |
+
+The floppy images are read where they sit inside the `.iso` - nothing is
+unpacked to get at them - and the `.Z` files are expanded by this project's own
+reader, which was checked against `gzip -d` on every one of the 3,572.
+
+**Kickstart.** 3.2 runs on a Kickstart 3.2 ROM as it is. On a 3.1 ROM its boot
+script loads 3.2's own modules over the ROM with `LoadModule`, which is what the
+modules disks are for - so a card built for a 3.1 ROM gets them, and a card
+built for a 3.2 ROM does not. The disc carries the modules for an A500, A600,
+A1200, A2000, A3000, A4000 and CD32; an A1000 and an A500+ are an A500 to
+AmigaOS, and each machine profile says which it is.
+
+**Processor libraries.** 3.2's boot script runs `CPU CHECKINSTALL`, which stops
+and waits for a key when a 68030, 68040 or 68060 has no library of its own. So
+a drive built for a real accelerator card is given the ones on the disc's
+`MMULibs` disk, without being asked. A PiStorm is not: Emu68 carries a
+`68040.library` in its kernel, which is the one that check finds, and the
+disc's are built on an MMU that Emu68 has not got.
+
+**What is asked.** The disc's installer asks whether to install GlowIcons, and
+its answer unless told otherwise is no; the same question is a switch here,
+shown only when the disc chosen is one that asks it. Its other questions - which
+languages, printers and keymaps - are not asked: all of them are installed, as
+they are for 3.5 and 3.9, so choosing is a matter for Prefs on the Amiga rather
+than for a rebuild.
+
+**Protection bits.** A floppy image carries what a CD cannot: the script bit
+that lets `S:PCD` be run by name, and the pure bit that lets `C:Assign` be made
+resident. A staging tree on Linux has nowhere to keep them, so each staged file
+has a sidecar beside it - `<file>.uaem`, the convention emulators use for a
+directory drive - which the volume writer reads and does not copy. A directory
+drive brought in from an emulator with sidecars of its own is read the same
+way.
+
+Three cards were booted in FS-UAE from the image the build wrote, not from the
+staging tree:
+
+```
+a1200  pistorm            Kickstart 3.1 (40.68)   boots to Workbench 3.2
+a1200  pistorm            Kickstart 3.2 (47.96)   boots to Workbench 3.2
+a500   68030 accelerator  Kickstart 3.1 (40.68)   boots to Workbench 3.2
+```
+
+The two PiStorm cards were booted as a 68020, because an emulated 68040 has no
+Emu68 to bring its library and stops at the check above. That a real PiStorm
+passes it rests on Emu68 answering to `68040.library`, which was read out of
+its kernel rather than seen on hardware.
+
+### Neither 3.5 nor 3.9 is one tree, and the two discs differ
 
 | | 3.5 disc | 3.9 disc |
 | --- | --- | --- |
@@ -187,8 +255,9 @@ the thing you are chasing is in it.
 
 ### The processor, and the Kickstart
 
-Both releases need a 68020 or better and a Kickstart 3.1 (V40). The machine
-profiles now carry a processor, and it distinguishes three cases: a stock
+3.5 and 3.9 need a 68020 or better and a Kickstart 3.1 (V40), and refuse
+anything newer. 3.2 runs on a 68000, and on any Kickstart from 3.1 up. The
+machine profiles now carry a processor, and it distinguishes three cases: a stock
 machine, a stock machine with an accelerator fitted, and a PiStorm - where Emu68
 replaces the processor with a 68040-class core.
 
@@ -198,6 +267,9 @@ a500   accelerator KS V40: allowed
 a500   pistorm     KS V40: allowed
 a500   pistorm     KS V37: needs Kickstart 3.1 (V40), ROM is V37  refused
 a1200  stock       KS V47: needs Kickstart 3.1 (V40), ROM is V47  refused
+a500   stock       KS V40: AmigaOS 3.2                            allowed
+a500   stock       KS V39: AmigaOS 3.2 needs Kickstart 3.1 (V40)
+                           or newer, ROM is V39                   refused
 ```
 
 A PiStorm clears the processor requirement on every machine, so that check can
@@ -447,7 +519,7 @@ pistorm_imager/
     machines.py  target machine profiles: chipset, processor, board,
                  Raspberry Pi, chip RAM, Kickstart, display
     iso9660.py   reading CD images: ISO 9660 with Joliet and Rock Ridge
-    amigacd.py   installing AmigaOS 3.5 and 3.9 from their CDs
+    amigacd.py   installing AmigaOS 3.2, 3.5 and 3.9 from their CDs
     boingbag.py  the update packs for 3.5 and 3.9
     bbupdate.py  running a locked update's own Updater under FS-UAE
     emulate.py   turns a machine profile into an FS-UAE configuration
@@ -477,9 +549,10 @@ tests/           unit tests plus a real end-to-end image build
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 809 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 880 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
+python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
 ```
 
 The core suite builds real images in a temporary directory and reads them back,

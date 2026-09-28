@@ -14,6 +14,7 @@ overwrite the full versions from the Workbench disk.
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import filecmp
 import os
 import re
@@ -574,6 +575,89 @@ def _read_source(path: Path, relative: str, compat, progress: Progress,
     )
 
 
+#  ------------------------------------------------------ host-side metadata
+#
+#  A Linux directory cannot hold what an Amiga file carries beside its
+#  contents - the protection bits, the datestamp, the comment.  Emulators that
+#  mount a directory as a drive keep them in a sidecar next to each file, named
+#  "<file>.uaem", and the same convention is used here for a tree staged on the
+#  way to a card.  The bits are not decoration: a script in S: is only run by
+#  name when its script bit is set, and a command is only made resident when it
+#  is marked pure.
+SIDECAR_SUFFIX = ".uaem"
+_SIDECAR_FLAGS = "hsparwed"
+_AMIGA_EPOCH = datetime.datetime(1978, 1, 1)
+
+
+@dataclasses.dataclass(frozen=True)
+class Metadata:
+    protect: int = 0
+    days: int = 0
+    mins: int = 0
+    ticks: int = 0
+    comment: str = ""
+
+    def as_arguments(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+def sidecar_of(path: Path) -> Path:
+    return path.with_name(path.name + SIDECAR_SUFFIX)
+
+
+def write_sidecar(path: Path, protect: int = 0, days: int = 0, mins: int = 0,
+                  ticks: int = 0, comment: str = "") -> None:
+    """Record beside a staged file what the Amiga knew about it."""
+    flags = ""
+    for index, letter in enumerate(_SIDECAR_FLAGS):
+        bit = 1 << (7 - index)
+        #  The low four are stored inverted: set means *denied*.
+        on = not (protect & bit) if bit < 0x10 else bool(protect & bit)
+        flags += letter if on else "-"
+    when = _AMIGA_EPOCH + datetime.timedelta(days=days, minutes=mins,
+                                             seconds=ticks / 50)
+    stamp = when.strftime("%Y-%m-%d %H:%M:%S.") + f"{when.microsecond // 10000:02d}"
+    sidecar_of(path).write_text(f"{flags} {stamp} {comment}\n",
+                                encoding="latin-1")
+
+
+def read_sidecar(path: Path) -> Metadata | None:
+    """What the sidecar beside ``path`` says, or None when there is none."""
+    try:
+        text = sidecar_of(path).read_text(encoding="latin-1")
+    except OSError:
+        return None
+    fields = text.rstrip("\n").split(" ", 3)
+    flags = fields[0].lower()
+    if len(flags) != len(_SIDECAR_FLAGS):
+        return None
+    protect = 0
+    for index, letter in enumerate(_SIDECAR_FLAGS):
+        bit = 1 << (7 - index)
+        on = flags[index] == letter
+        if (not on) if bit < 0x10 else on:
+            protect |= bit
+    days = mins = ticks = 0
+    try:
+        when = datetime.datetime.strptime(" ".join(fields[1:3]),
+                                          "%Y-%m-%d %H:%M:%S.%f")
+        since = when - _AMIGA_EPOCH
+        if since.days >= 0:
+            days = since.days
+            mins = since.seconds // 60
+            ticks = (since.seconds % 60) * 50 + since.microseconds // 20000
+    except ValueError:
+        pass                        # the bits still stand without a date
+    return Metadata(protect, days, mins, ticks,
+                    fields[3] if len(fields) > 3 else "")
+
+
+def _is_sidecar(path: Path) -> bool:
+    """Whether this is metadata for a file beside it, and not a file itself."""
+    return (path.name.lower().endswith(SIDECAR_SUFFIX)
+            and path.with_name(path.name[:-len(SIDECAR_SUFFIX)]).exists())
+
+
 @dataclasses.dataclass(frozen=True)
 class _Placement:
     """Where one host entry ends up on the Amiga, and why it moved."""
@@ -858,7 +942,7 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
     #  the time this loop took - more than writing the data.
     prefix = len(str(source)) + 1
     for path in sorted(source.rglob("*")):
-        if path.is_symlink():
+        if path.is_symlink() or _is_sidecar(path):
             continue
         relative = str(path)[prefix:].replace(os.sep, "/")
         lowered = relative.lower()
@@ -920,8 +1004,10 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
                 #  and checking would mean walking the directory per entry.
                 block = dir_blocks.get(placed.path)
                 if block is None:
-                    block = target.mkdir(parent, placed.name,
-                                         check_existing=merge)
+                    known = read_sidecar(path)
+                    block = target.mkdir(
+                        parent, placed.name, check_existing=merge,
+                        **(known.as_arguments() if known else {}))
                 dir_blocks[placed.path] = block
             else:
                 data = _read_source(path, relative, compat, progress)
@@ -937,8 +1023,10 @@ def install_tree(target: VolumeWriter, source: str | Path, destination: str,
                         changes["repointed"] = changes.get("repointed", 0) + 1
                         progress.log(f"  {_printable(relative)}: {was} -> {now} "
                                      f"(the file it names had to be renamed)")
+                known = read_sidecar(path)
                 target.write_file(parent, placed.name, data,
-                                  check_existing=merge)
+                                  check_existing=merge,
+                                  **(known.as_arguments() if known else {}))
                 copied += 1
                 if written is not None:
                     written.append(landed_path(destination, placed.path))
@@ -992,7 +1080,8 @@ def tree_size(source: str | Path) -> tuple[int, int]:
     """Total bytes and file count of a host directory tree."""
     total = count = 0
     for path in Path(source).rglob("*"):
-        if path.is_file() and not path.is_symlink():
+        if path.is_file() and not path.is_symlink() \
+                and not _is_sidecar(path):
             try:
                 total += path.stat().st_size
                 count += 1
