@@ -33,6 +33,8 @@ from pistorm_imager.ui.window import (FRESH_SOURCES,  # noqa: E402
 
 import tempfile  # noqa: E402
 
+from test_amigacd import rom as test_amigacd_rom  # noqa: E402
+
 #  Self-contained stand-ins so the test never depends on files left behind by
 #  an earlier run.
 SCRATCH = Path(tempfile.mkdtemp(prefix="pistorm-gui-test-"))
@@ -568,6 +570,45 @@ def on_activate(app: ImagerApplication) -> None:
                   f"3.2 has no BoingBags, and says so: {found!r}")
             for row in asked.values():
                 row.set_active(False)
+            #  The 3.2 disc carries Kickstarts, and Emu68 loads its Kickstart
+            #  from a file - so a PiStorm is given the disc's.  A machine
+            #  that boots from the chip on its board is not: what is on a
+            #  disc cannot be assumed to be what is soldered in.
+            window.quick_system_source.set_selected(FRESH_SOURCES.index("cd"))
+            window._on_source_changed()
+            window.os_cd_row.set_path(str(CD32_IMAGE))
+            window._on_os_cd_chosen()
+            before = window.rom_row.path
+            window.rom_row.set_path("")
+            window.quick_accelerator.set_selected(
+                list(machines.Accelerator).index(machines.Accelerator.PISTORM))
+            window._on_accelerator_changed()
+            given = window.rom_row.path
+            check(given.endswith(".rom") and "AmigaOS3.2CD" in given,
+                  f"a PiStorm is given the Kickstart on the disc: {given!r}")
+            check(window.gather().kickstart_path == given,
+                  "and it reaches the build")
+            window.quick_accelerator.set_selected(
+                list(machines.Accelerator).index(
+                    machines.Accelerator.ACCELERATOR))
+            window._on_accelerator_changed()
+            check(window.rom_row.path != given,
+                  f"a machine with a ROM chip is not: {window.rom_row.path!r}")
+            window.quick_accelerator.set_selected(
+                list(machines.Accelerator).index(machines.Accelerator.PISTORM))
+            window._on_accelerator_changed()
+            theirs = SCRATCH / "theirs.rom"
+            theirs.write_bytes(test_amigacd_rom(40, 68))
+            window.rom_row.set_path(str(theirs))
+            window._on_os_cd_chosen()
+            check(window.rom_row.path == str(theirs),
+                  f"a Kickstart chosen by hand is left alone: "
+                  f"{window.rom_row.path!r}")
+            window.rom_row.set_path(before)
+            #  The stand-in disc's Kickstart is a stand-in too, and was put
+            #  where the real one would be kept.
+            Path(given).unlink(missing_ok=True)
+
             #  Loading a setup chooses its own source, so the one these
             #  checks are being made under is chosen again.
             window.quick_system_source.set_selected(FRESH_SOURCES.index("cd"))
