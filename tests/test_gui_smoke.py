@@ -525,6 +525,10 @@ def on_activate(app: ImagerApplication) -> None:
             #  What a disc's installer asks is asked of that disc alone, and
             #  the answer has to reach the build.  A switch that is on screen
             #  and changes nothing on the card is worse than no switch.
+            #  The stand-in 3.2 disc's Kickstart is a stand-in too, and has
+            #  the real one's name: kept where the real one is kept, it would
+            #  replace it.  So before that disc is chosen at all.
+            window._kickstart_cache = lambda: SCRATCH / "kickstart"
             asked = window.os_cd_options
             check(not any(row.get_visible() for row in asked.values()),
                   "a 3.9 disc is asked none of the 3.2 disc's questions")
@@ -584,7 +588,8 @@ def on_activate(app: ImagerApplication) -> None:
                 list(machines.Accelerator).index(machines.Accelerator.PISTORM))
             window._on_accelerator_changed()
             given = window.rom_row.path
-            check(given.endswith(".rom") and "AmigaOS3.2CD" in given,
+            check(given.endswith(".rom") and "AmigaOS3.2CD" in given
+                  and given.startswith(str(SCRATCH)),
                   f"a PiStorm is given the Kickstart on the disc: {given!r}")
             check(window.gather().kickstart_path == given,
                   "and it reaches the build")
@@ -605,9 +610,7 @@ def on_activate(app: ImagerApplication) -> None:
                   f"a Kickstart chosen by hand is left alone: "
                   f"{window.rom_row.path!r}")
             window.rom_row.set_path(before)
-            #  The stand-in disc's Kickstart is a stand-in too, and was put
-            #  where the real one would be kept.
-            Path(given).unlink(missing_ok=True)
+            del window._kickstart_cache
 
             #  Loading a setup chooses its own source, so the one these
             #  checks are being made under is chosen again.
