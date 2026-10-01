@@ -1204,10 +1204,16 @@ class WhatThePlanSays(unittest.TestCase):
         self.assertIn("without Emu68", without)
 
     def test_a_missing_kickstart_is_only_a_fault_if_emu68_wants_one(self):
-        """With no Emu68 nothing on the card maps a ROM."""
-        self.assertIn("Emu68 will not start without one",
+        """With no Emu68 nothing on the card maps a ROM.
+
+        And with Emu68 and no Kickstart file the card still starts: Emu68
+        uses the ROM chip in the Amiga, which is how a PiStorm card set up by
+        hand with no kick.rom runs. The plan says so rather than calling it a
+        card that cannot start.
+        """
+        self.assertIn("ROM chip in the Amiga",
                       self.plan(install_emu68=True, kickstart_path=""))
-        self.assertNotIn("Emu68 will not start without one",
+        self.assertNotIn("ROM chip in the Amiga",
                          self.plan(install_emu68=False, kickstart_path=""))
 
     def test_the_plan_names_what_provides_the_processor(self):
