@@ -2469,10 +2469,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  partition table at all - the RDB is the partition table.
         self.amiga_only_row = Adw.SwitchRow(
             title="Amiga drives only, no Emu68 boot partition",
-            subtitle="For a real accelerator with an IDE or SCSI interface "
-                     "rather than a PiStorm. The Rigid Disk Block starts at "
-                     "block 0, where the controller looks for it, and there "
-                     "is no FAT32 partition and no Emu68.")
+            subtitle="For a drive on the Amiga's own IDE or SCSI port - "
+                     "behind a PiStorm that boots from its own card, or a "
+                     "real accelerator. The Rigid Disk Block starts at block "
+                     "0, where the controller looks for it, and there is no "
+                     "FAT32 partition and no Emu68.")
         self.amiga_only_row.set_active(False)
         self.amiga_only_row.connect("notify::active",
                                     lambda *_a: self._amiga_only_changed())
@@ -3013,9 +3014,10 @@ class ImagerWindow(Adw.ApplicationWindow):
             "Needs Emu68: a boot partition with no Emu68 on it and no Amiga "
             "drive either would be an empty card.")
         self.amiga_only_row.set_subtitle(
-            "For a real accelerator with an IDE or SCSI interface rather than "
-            "a PiStorm. The Rigid Disk Block starts at block 0, where the "
-            "controller looks for it, and there is no FAT32 partition."
+            "For a drive on the Amiga's own IDE or SCSI port - behind a "
+            "PiStorm that boots from its own card, or a real accelerator. The "
+            "Rigid Disk Block starts at block 0, where the controller looks "
+            "for it, and there is no FAT32 partition."
             if not wants_emu68 else
             "Turn off \u201cInstall Emu68\u201d on the Source page first - "
             "Emu68 needs the boot partition this would remove.")
@@ -3027,18 +3029,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         amiga_only = self.amiga_only_row.get_active()
         if getattr(self, "group_kickstart", None) is not None:
             self.group_kickstart.set_visible(not amiga_only)
-        #  RTG is Emu68 drawing on the Pi's HDMI output. With no Emu68 there
-        #  is no Pi in the picture at all, so the Amiga's own video is the
-        #  only answer and offering the others would invite a card set up for
-        #  a screen that cannot exist.
-        if amiga_only:
-            native = list(machines.Display).index(machines.Display.NATIVE)
-            if self.quick_display.get_selected() != native:
-                self.quick_display.set_selected(native)
-        self.quick_display.set_sensitive(not amiga_only)
-        self.quick_display.set_subtitle(
-            "Without Emu68 there is no RTG output, so this is the Amiga's own "
-            "video." if amiga_only else "")
         options = self.stack.get_child_by_name("options")
         if options is not None:
             page = self.stack.get_page(options)
@@ -4810,9 +4800,16 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _where_the_card_goes(self) -> str:
         """What to do with the card that was just written."""
         if self.amiga_only_row.get_active():
+            #  The drive is not for the PiStorm's slot, but the machine may
+            #  well have one: Emu68 then boots from the PiStorm's own card
+            #  and finds this drive on the IDE port.
+            behind = (" The PiStorm boots Emu68 from its own card, which this "
+                      "one cannot replace."
+                      if self._accelerator() is machines.Accelerator.PISTORM
+                      else "")
             return ("Eject the card and put it on the Amiga's own IDE or "
                     "SCSI controller - it carries no boot partition, so a "
-                    "PiStorm cannot start from it.")
+                    "PiStorm cannot start from it." + behind)
         if self.boot_only_row.get_active():
             return ("Eject the card and put it in your PiStorm. It carries "
                     "Emu68 and the Kickstart; the Amiga's drives are on your "

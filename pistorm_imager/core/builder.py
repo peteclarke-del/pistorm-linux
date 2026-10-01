@@ -346,6 +346,27 @@ class BuildConfig:
             said.append(
                 "Workbench is set to open on the RTG screen, and this card "
                 "has no RTG display configured.")
+        #  A drive for the IDE port behind a PiStorm carries Picasso96 and
+        #  Emu68's driver for it, but the Pi's side of the screen - its HDMI
+        #  mode and the memory the driver draws in - is in config.txt on the
+        #  PiStorm's own card, which this build does not write.
+        if self.amiga_only and self.rtg_display and self.on_a_pistorm():
+            said.append(
+                "This drive is set up for an RTG screen on the Pi's HDMI, "
+                "and the Pi's half of that lives on the PiStorm's own card. "
+                "Build that one with “Emu68 only, no Amiga drive” "
+                "and the same display, or RTG will have no memory to draw in.")
+        #  RTG is still offered without a PiStorm - the drive may go into a
+        #  machine with an RTG card of its own - but the board Picasso96 is
+        #  told to drive is Emu68's, which only a PiStorm has.
+        if self.rtg_display and not self.on_a_pistorm() and any(
+                packages.CATALOGUE_BY_KEY[key].rtg_only
+                for key in keys if key in packages.CATALOGUE_BY_KEY):
+            said.append(
+                "This machine has no PiStorm, and Picasso96 is installed with "
+                "Emu68's VideoCore as its board. An RTG card of its own needs "
+                "that card's driver in Devs/Monitors and its BOARDTYPE in the "
+                "Picasso96 monitor icon.")
         if not self.install_amigaos and not filled and not self.os_cd \
                 and not self.boot_only \
                 and self.mode is BuildMode.FRESH:
@@ -442,6 +463,16 @@ class BuildConfig:
         card_cpu = (machines.Cpu(self.accelerator_cpu)
                     if self.accelerator_cpu else None)
         return self.machine().cpu_fitted(accelerator, card_cpu)
+
+    def on_a_pistorm(self) -> bool:
+        """Whether the machine has a PiStorm, whatever this card carries.
+
+        Not the same as installing Emu68: a drive for the IDE port behind a
+        PiStorm carries no Emu68 and is still watched through the Pi.
+        """
+        from . import machines                              # noqa: PLC0415
+        return (machines.Accelerator(self.accelerator or "pistorm")
+                is machines.Accelerator.PISTORM)
 
     def chip_ram_fitted(self) -> int:
         """How much chip RAM this card is being built for, in KB."""
