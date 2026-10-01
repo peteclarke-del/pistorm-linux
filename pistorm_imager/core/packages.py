@@ -476,18 +476,33 @@ CATALOGUE: list[Package] = [
         "scripts that other software ships then run through this instead.",
         category=Category.SYSTEM,
         #  Its own Install script copies the program into C: and its
-        #  libraries with copylib, which is what these two lines do. The
+        #  libraries with copylib, which is what these lines do. The
         #  rest - its demos, its documentation, the tool that sets a theme -
         #  is staged, because choosing a theme is a decision and this cannot
         #  make it.
+        #
+        #  Library by library, not the drawer: the drawer also holds
+        #  openurl.library 3.0, which the script copies only when asked to
+        #  and only where there is none - and which loads L:OpenURL-Handler,
+        #  a file the archive does not carry.  Copied anyway, every program
+        #  that opens it stops on "openurl.library was unable to load
+        #  L:OpenURL-Handler into memory. Please reinstall." - iGame among
+        #  them, through its Urltext class.  NewInstaller itself never needs it.
+        #
+        #  reqtools.library, which it "strongly needs", comes from the ReqTools
+        #  package rather than from this drawer: named here, NewInstaller's
+        #  copy would outrank the one somebody ticked ReqTools for.
         download=Download(
             "util/wb/NewInstaller17.lha",
             (("NewInstaller1_7/NewInstaller", "C"),
-             ("NewInstaller1_7/Libs", "Libs"),
+             ("NewInstaller1_7/Libs/guigfx.library", "Libs"),
+             ("NewInstaller1_7/Libs/render.library", "Libs"),
+             ("NewInstaller1_7/Libs/identify.library", "Libs"),
              ("NewInstaller1_7/Catalogs", "Locale/Catalogs"),
              ("NewInstaller1_7/Defaults", STAGING + "/NewInstaller/Defaults"),
              ("NewInstaller1_7/Tools", STAGING + "/NewInstaller/Tools"),
              ("NewInstaller1_7/Docs", STAGING + "/NewInstaller/Docs"))),
+        requires=("reqtools",),
         note="Installed as C:NewInstaller. To have it replace the Commodore "
              "Installer outright, run its own Install from Storage/Install "
              "on the Amiga - it asks questions this cannot answer for you.",
