@@ -2282,13 +2282,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.page_packages = page
         self.packages_group = Adw.PreferencesGroup(
             title="Software to add",
-            description="A Workbench built from the original disks is exactly "
-                        "what shipped in 1994: no archiver, no installer, no "
-                        "WHDLoad. Everything here is fetched from its "
-                        "publisher - Aminet, or the project that makes it - "
-                        "and cached, so a card is built from the current "
-                        "release rather than from whatever another "
-                        "installation happened to hold.")
+            description="Fetched from each publisher - Aminet, or the project "
+                        "that makes it - and cached between builds.")
+        suggest = Gtk.Button(label="Suggested load", valign=Gtk.Align.CENTER,
+                             tooltip_text="Tick what suits this machine, "
+                                          "chipset and display")
+        suggest.add_css_class("flat")
+        suggest.connect("clicked", lambda *_a: self._apply_suggested_packages())
+        self.packages_group.set_header_suffix(suggest)
         #  A drive imported from an image usually has its own copy of some of
         #  this. The file system creates files and never overwrites them, so
         #  one of the two wins by landing first - which is not a decision the
@@ -2304,26 +2305,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.replace_older_row.connect("notify::active",
                                        lambda *_a: self._update_summary())
         self.packages_group.add(self.replace_older_row)
-        #  The catalogue itself is in a window of its own. As a page of
-        #  switch rows it ran to several screens, with the categories only
-        #  findable by scrolling; the window shows every category at once.
-        self.software_row = Adw.ActionRow(title="Software to install")
-        choose = Gtk.Button(label="Choose\u2026")
-        choose.set_valign(Gtk.Align.CENTER)
-        choose.add_css_class("suggested-action")
-        choose.connect("clicked", lambda *_a: self._open_software())
-        self.software_row.add_suffix(choose)
-        self.software_row.set_activatable_widget(choose)
-        self.packages_group.add(self.software_row)
-        suggest = Adw.ActionRow(
-            title="Suggested load",
-            subtitle="Tick what suits this machine, chipset and display")
-        button = Gtk.Button(label="Apply")
-        button.set_valign(Gtk.Align.CENTER)
-        button.connect("clicked", lambda *_a: self._apply_suggested_packages())
-        suggest.add_suffix(button)
-        suggest.set_activatable_widget(button)
-        self.packages_group.add(suggest)
+        #  What a fresh window starts with is the same recommendation the
+        #  "suggest a set" button makes, for the machine and screen the
+        #  window opens on.  Ticking ``package.default`` directly is what let
+        #  the two drift apart: the flags said one set and the button said
+        #  another.
+        starting = set(packages.suggested(machines.MACHINES[0],
+                                          list(machines.Display)[0]))
+        self.package_rows: dict[str, PackageCheck] = {}
+        self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
+        self.packages_group.add(self._software_browser(starting))
         page.add(self.packages_group)
 
         #  A prepared drive can carry its own copy of a chosen program under
@@ -2400,20 +2391,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.desktop_group.set_visible(False)
         page.add(self.desktop_group)
 
-        #  What a fresh window starts with is the same recommendation the
-        #  "suggest a set" button makes, for the machine and screen the
-        #  window opens on.  Ticking ``package.default`` directly is what let
-        #  the two drift apart: the flags said one set and the button said
-        #  another.
-        starting = set(packages.suggested(machines.MACHINES[0],
-                                          list(machines.Display)[0]))
-        self.package_rows: dict[str, PackageCheck] = {}
-        self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
-        #  The rows are built now, not when the window is first opened: they
-        #  are what gather() reads, so they have to exist whether or not
-        #  anybody looks at them. The window itself waits until it is wanted.
-        self.software_view = self._software_window(starting)
-        self.software_dialog: Adw.Window | None = None
 
         #  Which USB socket the Amiga is given.  The driver numbers its units
         #  by path rather than by socket - unit 0 is the Pi's onboard OTG port
@@ -2443,64 +2420,66 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._count_software()
         return page
 
-    #  How many columns the Software Installation window lays its categories
-    #  out in. Enough that the whole catalogue fits on one screen at the
-    #  window's size; the categories are shared between them by length.
-    SOFTWARE_COLUMNS = 5
-    SOFTWARE_SIZE = (1560, 900)
+    #  How tall the software browser is. Fixed, so the page around it stays
+    #  short: the list scrolls inside it rather than the page growing to the
+    #  length of the catalogue.
+    SOFTWARE_HEIGHT = 380
+    #  The two views that are not a category: what is ticked, and everything.
+    CHOSEN, EVERYTHING = "chosen", "all"
 
-    def _software_window(self, starting: set[str]) -> Adw.ToolbarView:
-        """Every package, grouped by category, on one screen.
+    def _software_browser(self, starting: set[str]) -> Gtk.Widget:
+        """The catalogue: categories on the left, their software on the right.
 
-        Each category is a card of tick boxes, and the cards are dealt into
-        columns by length so no column runs far past the others. What a
-        package is - and why it is held on, or cannot be had - is shown in a
-        strip along the bottom for whichever box is under the pointer or has
-        the keyboard focus, rather than under every box at once.
+        One category at a time, a line each, with the reason first where a
+        package is held on or cannot be had. A search box finds a package in
+        any of them, and *Chosen* lists what the card will carry. It took the
+        place of a page of switch rows several screens long, and then of a
+        window wide enough to show everything at once - which was too big.
         """
-        view = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        suggest = Gtk.Button(label="Suggested load",
-                             tooltip_text="Tick what suits this machine, "
-                                          "chipset and display")
-        suggest.connect("clicked", lambda *_a: self._apply_suggested_packages())
-        header.pack_start(suggest)
-        self.software_total = Gtk.Label()
-        self.software_total.add_css_class("dim-label")
-        header.pack_end(self.software_total)
-        view.add_top_bar(header)
+        frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        frame.add_css_class("card")
+        self.software_search = Gtk.SearchEntry(
+            placeholder_text="Find software", margin_top=8, margin_bottom=8,
+            margin_start=8, margin_end=8)
+        self.software_search.connect("search-changed",
+                                     lambda *_a: self._refilter_software())
+        frame.append(self.software_search)
+        frame.append(Gtk.Separator())
+        panes = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                        height_request=self.SOFTWARE_HEIGHT)
+        frame.append(panes)
 
-        columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
-                          homogeneous=True, margin_top=12, margin_bottom=12,
-                          margin_start=12, margin_end=12)
-        stacks = []
-        for _ in range(self.SOFTWARE_COLUMNS):
-            stack = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
-                            valign=Gtk.Align.START)
-            columns.append(stack)
-            stacks.append(stack)
-        lengths = [0] * self.SOFTWARE_COLUMNS
-        self.software_titles: dict[packages.Category, Gtk.Label] = {}
-        #  The longest cards are dealt first, each to the column with least
-        #  in it, which keeps the columns level. Dealt in their own order, a
-        #  long card could land under another long one and run off the
-        #  bottom while the next column stood half empty.
-        for category in sorted(packages.Category,
-                               key=lambda c: -len(packages.in_category(c))):
-            members = packages.in_category(category)
-            if not members:
-                continue
-            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-            card.add_css_class("card")
-            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0,
-                            margin_top=8, margin_bottom=8, margin_start=10,
-                            margin_end=10)
-            card.append(inner)
-            title = Gtk.Label(xalign=0, margin_bottom=4)
-            title.add_css_class("heading")
-            inner.append(title)
-            self.software_titles[category] = title
-            for package in members:
+        #  The views, each with how much of it is ticked.
+        self.software_sidebar = Gtk.ListBox(
+            selection_mode=Gtk.SelectionMode.SINGLE)
+        self.software_sidebar.add_css_class("navigation-sidebar")
+        self.software_counts: dict[object, Gtk.Label] = {}
+        views = [(self.CHOSEN, "Chosen"), (self.EVERYTHING, "Everything")] \
+            + [(c, c.value) for c in packages.Category
+               if packages.in_category(c)]
+        self._software_views = [view for view, _title in views]
+        for view, title in views:
+            line = Gtk.Box(spacing=8, margin_start=4, margin_end=4)
+            name = Gtk.Label(label=title, xalign=0, hexpand=True,
+                             ellipsize=Pango.EllipsizeMode.END)
+            count = Gtk.Label()
+            count.add_css_class("dim-label")
+            count.add_css_class("numeric")
+            line.append(name)
+            line.append(count)
+            self.software_counts[view] = count
+            self.software_sidebar.append(line)
+        self.software_sidebar.connect(
+            "row-selected", lambda *_a: self._refilter_software())
+        side = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                  width_request=210)
+        side.set_child(self.software_sidebar)
+        panes.append(side)
+        panes.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+
+        self.software_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        for category in packages.Category:
+            for package in packages.in_category(category):
                 row = PackageCheck(package.label, package.description)
                 row.set_active(package.key in starting)
                 row.connect("notify::active",
@@ -2508,64 +2487,86 @@ class ImagerWindow(Adw.ApplicationWindow):
                             self._on_package_toggled(key))
                 row.connect("notify::active",
                             lambda *_a: self._count_software())
-                hover = Gtk.EventControllerMotion()
-                hover.connect("enter", lambda *_a, key=package.key:
-                              self._describe_software(key))
-                row.add_controller(hover)
-                focus = Gtk.EventControllerFocus()
-                focus.connect("enter", lambda *_a, key=package.key:
-                              self._describe_software(key))
-                row.add_controller(focus)
+                for controller in (Gtk.EventControllerMotion(),
+                                   Gtk.EventControllerFocus()):
+                    controller.connect("enter", lambda *_a, key=package.key:
+                                       self._describe_software(key))
+                    row.add_controller(controller)
+                row.set_margin_top(3)
+                row.set_margin_bottom(3)
+                row.set_margin_start(6)
+                row.set_margin_end(6)
+                holder = Gtk.ListBoxRow(child=row, activatable=False)
+                holder.package = package
                 self.package_rows[package.key] = row
-                inner.append(row)
-            #  Ties go to the right, so the longest card - the libraries
-            #  nobody chooses for themselves - ends up last, not first.
-            shortest = max(range(len(lengths)),
-                           key=lambda i: (-lengths[i], i))
-            stacks[shortest].append(card)
-            #  A card's heading and padding take about two rows' height.
-            lengths[shortest] += len(members) + 2
+                self.software_list.append(holder)
+        self.software_list.set_filter_func(self._software_shown)
+        self.software_list.set_header_func(self._software_header)
+        self.software_empty = Gtk.Label(
+            label="Nothing here", vexpand=True, valign=Gtk.Align.CENTER)
+        self.software_empty.add_css_class("dim-label")
+        self.software_list.set_placeholder(self.software_empty)
+        listing = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                     hexpand=True)
+        listing.set_child(self.software_list)
+        panes.append(listing)
 
-        #  Scrollable only as a fallback for a small screen: at the window's
-        #  own size everything is meant to be visible at once, and the GUI
-        #  test measures that it is.
-        scrolled = Gtk.ScrolledWindow(vexpand=True,
-                                      hscrollbar_policy=Gtk.PolicyType.NEVER)
-        scrolled.set_child(columns)
-        self.software_columns = columns
+        frame.append(Gtk.Separator())
         self.software_details = Gtk.Label(
             xalign=0, yalign=0, wrap=True, use_markup=True, lines=4,
-            ellipsize=Pango.EllipsizeMode.END, margin_top=10,
-            margin_bottom=12, margin_start=16, margin_end=16,
-            height_request=88,
+            ellipsize=Pango.EllipsizeMode.END, margin_top=8,
+            margin_bottom=10, margin_start=12, margin_end=12,
+            height_request=72,
             label="Point at a package to see what it is and where it comes "
                   "from. Ticking one ticks what it needs as well.")
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        body.append(scrolled)
-        body.append(Gtk.Separator())
-        body.append(self.software_details)
-        view.set_content(body)
-        return view
+        frame.append(self.software_details)
+        #  Opens on the first category rather than on an empty Chosen list
+        #  for a card nothing has been decided for yet.
+        self.software_sidebar.select_row(
+            self.software_sidebar.get_row_at_index(2))
+        return frame
 
-    def _open_software(self) -> None:
-        """Show the Software Installation window, making it the first time.
+    def _software_view(self):
+        """The view chosen in the sidebar: CHOSEN, EVERYTHING or a category."""
+        row = self.software_sidebar.get_selected_row()
+        index = row.get_index() if row is not None else 0
+        return self._software_views[index]
 
-        A window of its own rather than a dialog drawn inside this one: this
-        one is sized for a page of settings, and a dialog is never bigger than
-        the window it sits in - so the catalogue would be back to scrolling.
-        Hidden on close rather than destroyed, so it opens as it was left.
-        """
-        if self.software_dialog is None:
-            width, height = self.SOFTWARE_SIZE
-            self.software_dialog = Adw.Window(
-                title="Software Installation", transient_for=self, modal=True,
-                hide_on_close=True, default_width=width,
-                default_height=height, content=self.software_view)
-            #  Hand the focus back on closing, so the window it was opened
-            #  over is the active one again.
-            self.software_dialog.connect(
-                "close-request", lambda *_a: (self.present(), False)[1])
-        self.software_dialog.present()
+    def _software_shown(self, holder) -> bool:
+        package = holder.package
+        wanted = self.software_search.get_text().strip().lower()
+        if wanted:
+            return any(wanted in text.lower() for text in
+                       (package.label, package.description, package.key,
+                        package.category.value))
+        view = self._software_view()
+        if view == self.CHOSEN:
+            return self.package_rows[package.key].get_active()
+        return view == self.EVERYTHING or package.category is view
+
+    def _software_header(self, holder, before) -> None:
+        """Name the category where a list spans several of them."""
+        spans = (self.software_search.get_text().strip()
+                 or self._software_view() in (self.CHOSEN, self.EVERYTHING))
+        if spans and (before is None
+                      or before.package.category is not holder.package.category):
+            label = Gtk.Label(label=holder.package.category.value, xalign=0,
+                              margin_top=8, margin_start=12, margin_bottom=2)
+            label.add_css_class("heading")
+            holder.set_header(label)
+        else:
+            holder.set_header(None)
+
+    def _refilter_software(self) -> None:
+        if not hasattr(self, "software_list"):
+            return
+        searching = bool(self.software_search.get_text().strip())
+        self.software_empty.set_label(
+            "No software matches that" if searching
+            else "Nothing ticked yet" if self._software_view() == self.CHOSEN
+            else "Nothing here")
+        self.software_list.invalidate_filter()
+        self.software_list.invalidate_headers()
 
     def _describe_software(self, key: str) -> None:
         """Say what a package is, and what it is tied to, in the details strip."""
@@ -2592,21 +2593,24 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.software_details.set_markup(text)
 
     def _count_software(self) -> None:
-        """Keep the totals in the window and on the page in step with the ticks."""
-        if not getattr(self, "software_titles", None):
+        """Keep the counts in the sidebar in step with the ticks."""
+        if not getattr(self, "software_counts", None):
             return
-        chosen = total = 0
-        for category, title in self.software_titles.items():
-            keys = [p.key for p in packages.in_category(category)]
-            ticked = sum(1 for k in keys if self.package_rows[k].get_active())
-            chosen += ticked
-            total += len(keys)
-            title.set_label(f"{category.value}  \u00b7  {ticked}/{len(keys)}")
-        summary = f"{chosen} of {total} chosen"
-        self.software_total.set_label(summary)
-        self.software_row.set_subtitle(
-            summary + ", fetched from their publishers and cached between "
-            "builds")
+        ticked = {key for key, row in self.package_rows.items()
+                  if row.get_active()}
+        for view, label in self.software_counts.items():
+            if view == self.CHOSEN:
+                label.set_label(str(len(ticked)))
+            elif view == self.EVERYTHING:
+                label.set_label(str(len(self.package_rows)))
+            else:
+                members = [p.key for p in packages.in_category(view)]
+                label.set_label(f"{sum(k in ticked for k in members)}"
+                                f"/{len(members)}")
+        #  What is ticked has changed, so the Chosen list has too.
+        if self._software_view() == self.CHOSEN \
+                and not self.software_search.get_text().strip():
+            self._refilter_software()
 
     def _page_storage(self) -> Adw.PreferencesPage:
         """How the card is divided up.
@@ -3581,6 +3585,10 @@ class ImagerWindow(Adw.ApplicationWindow):
             for key, row in self.package_rows.items():
                 if row.get_sensitive():
                     row.set_active(key in wanted)
+                elif not packages.CATALOGUE_BY_KEY[key].essential:
+                    #  Refused here, and on only because something ticked
+                    #  earlier dragged it in: the suggestion lets it go.
+                    row.set_active(False)
         finally:
             self._settling_packages = was
         self._tick_what_is_needed()
@@ -4033,6 +4041,12 @@ class ImagerWindow(Adw.ApplicationWindow):
                 version = ".".join(str(part) for part in package.min_emu68)
                 note += (f"  -  needs Emu68 {version} or newer; choose one on "
                          f"the Source page.")
+            elif not fits and package.unsuited_need(
+                    chipset, display, pi=pi, cpu=cpu, emu68_tag=tag):
+                need = package.unsuited_need(chipset, display, pi=pi, cpu=cpu,
+                                             emu68_tag=tag)
+                note = (f"Needs {need.label}, which is not offered for this "
+                        f"setup.  -  " + note)
             elif not fits:
                 note += "  -  not a fit for this chipset."
             else:
@@ -4322,9 +4336,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         if getattr(self, "_settling_packages", False):
             return False
-        dialog = getattr(self, "software_dialog", None)
-        if dialog is not None and dialog.get_visible():
-            return True
         return self.stack.get_visible_child_name() == "packages"
 
     def _ask_about_rivals(self, key: str) -> None:

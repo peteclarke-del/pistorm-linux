@@ -164,24 +164,29 @@ class SaveRow(FileRow):
 
 
 class PackageCheck(Gtk.CheckButton):
-    """One package in the Software Installation window.
+    """One package in the software list: a tick box, its name, and one line.
 
-    A tick box rather than a switch row, so that the whole catalogue fits on
-    one screen: a switch row carries its description underneath it, and at
-    three or four lines each the list ran to some five thousand pixels. The
-    description is still here - as the tooltip, and in the window's details
-    strip - and the row keeps a switch row's ``title`` and ``subtitle`` so
-    the code that explains why a package is held or refused did not have to
-    learn a second widget.
+    The line under the name is the row's subtitle, cut to fit - the
+    description, or the reason first where the package is held on or cannot
+    be had - and the whole of it is the tooltip and the details strip. It
+    keeps a switch row's ``title`` and ``subtitle``, so the code that
+    explains why a package is held or refused did not have to learn a second
+    widget.
     """
 
     def __init__(self, title: str, subtitle: str = ""):
         super().__init__()
-        #  A label of its own so a long name wraps inside its column instead
-        #  of widening every column to fit it.
-        self._title = Gtk.Label(label=title, xalign=0, wrap=True,
-                                wrap_mode=Pango.WrapMode.WORD_CHAR)
-        self.set_child(self._title)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1,
+                      margin_start=4)
+        self._title = Gtk.Label(label=title, xalign=0,
+                                ellipsize=Pango.EllipsizeMode.END)
+        self._line = Gtk.Label(xalign=0, use_markup=True, single_line_mode=True,
+                               ellipsize=Pango.EllipsizeMode.END)
+        self._line.add_css_class("dim-label")
+        self._line.add_css_class("caption")
+        box.append(self._title)
+        box.append(self._line)
+        self.set_child(box)
         self._subtitle = ""
         self.set_subtitle(subtitle)
 
@@ -197,6 +202,7 @@ class PackageCheck(Gtk.CheckButton):
     def set_subtitle(self, subtitle: str) -> None:
         """Markup, as a switch row's subtitle is - callers escape it."""
         self._subtitle = subtitle or ""
+        self._line.set_markup(self._subtitle.replace("\n", " "))
         self.set_tooltip_markup(self._subtitle or None)
 
 

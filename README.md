@@ -476,9 +476,7 @@ decisions are made.
 
 ![The Amiga page: the machine, the display, and the Kickstart](docs/images/05-amiga.png)
 
-![The Packages page: how much is chosen, and the way into the catalogue](docs/images/06-packages.png)
-
-![The Software Installation window: every group of the catalogue on one screen](docs/images/06-software.png)
+![The Packages page: the groups on the left, their software on the right](docs/images/06-packages.png)
 
 ![The Options page: display, Raspberry Pi and Emu68 switches](docs/images/07-options.png)
 
@@ -621,7 +619,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 892 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 889 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1744,8 +1742,8 @@ A Workbench installed from the original floppies is exactly what shipped in
 people add next are offered as a catalogue of 97 packages, grouped as Games,
 Files and archives, Internet, Workbench look, Pictures music and video, Speed
 and patches, Tools, Emu68 and the Pi, and the libraries the rest depend on.
-They are chosen in [a window of their own](#the-software-installation-window),
-every group on one screen.
+They are chosen [a group at a time](#choosing-the-software), with a search
+across all of them.
 
 That last group is not like the others. Everything else in the catalogue cares
 about the Amiga - its chipset, its screen, its processor - while [USB](#usb-on-the-amiga)
@@ -2649,26 +2647,30 @@ entirely**, with the reason said plainly in the log rather than discovered on
 the Amiga. Installing something that cannot work, in a place where something
 else will trip over it, is worse than not installing it at all.
 
-### The Software Installation window
+### Choosing the software
 
 The catalogue outgrew a page of switch rows: each carried three or four lines
 of description, and at 97 packages the list ran to several screens with the
-groups only findable by scrolling. **Packages** now holds one row - how many
-are chosen, and a *Choose…* button - and the choosing happens in a window of
-its own, sized so that **every group is on one screen at once**. Each group is
-a card of tick boxes, dealt into five columns longest first so no column runs
-past the others, and the GUI test measures that the whole catalogue fits
-without scrolling. The window is a separate top-level window rather than a
-dialog because a dialog is never bigger than the window it sits in.
+groups only findable by scrolling. A window wide enough to show every group at
+once came next, and was too large to live with. What stayed is a browser on
+the **Packages** page that fits the normal window: the groups down the left,
+each with how much of it is ticked, and the chosen group's software on the
+right - a line each, with the reason first where a package is held on or
+cannot be had. **Chosen** lists what the card will carry, **Everything** lists
+the lot, and a search box finds a package in any group. The list scrolls inside
+the browser, so the page itself stays short.
 
 What a package is, where it comes from, and why it is held on or cannot be had
-is shown in a strip along the bottom for whichever box is under the pointer or
+is shown in a strip under the list for whichever box is under the pointer or
 has the focus - with what it brings with it and what that is ticked needs it,
 read from the catalogue's `requires`. **Ties are kept both ways**: ticking a
 package ticks what it needs, and turning off something another ticked package
-needs turns that package off too. The libraries nobody chooses for their own
-sake have a group of their own, *Libraries (ticked for you)*, so a card says
-what it carries.
+needs turns that package off too. **And a package is only offered where what it
+needs is**: a freeware adventure needs ScummVM, which needs an RTG screen, so on
+a native screen the adventure is refused too and says which of its needs is
+missing - before, it could be ticked and dragged ScummVM onto the card. The
+libraries nobody chooses for their own sake have a group of their own,
+*Libraries (ticked for you)*.
 
 The new entries, and what was learned fitting them:
 

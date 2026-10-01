@@ -132,23 +132,6 @@ def on_activate(app: ImagerApplication) -> None:
             window.stack.set_visible_child_name(page)
             settle(450)
             shot(window, name)
-            if page == "packages":
-                #  The catalogue is chosen in a window of its own.
-                window._open_software()
-                settle(900)
-                window._describe_software(next(iter(window.package_rows)))
-                settle(300)
-                software = window.software_dialog
-                width, height = window.SOFTWARE_SIZE
-                paintable = Gtk.WidgetPaintable.new(software)
-                snapshot = Gtk.Snapshot()
-                paintable.snapshot(snapshot, width, height)
-                software.get_renderer().render_texture(
-                    snapshot.to_node(), None).save_to_png(
-                    str(OUT / "06-software.png"))
-                print("wrote docs/images/06-software.png")
-                software.close()
-                settle(300)
 
         window._choose_export()
         settle(450)
