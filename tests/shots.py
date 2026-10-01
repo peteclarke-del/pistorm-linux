@@ -117,6 +117,9 @@ def on_activate(app: ImagerApplication) -> None:
         settle(900)
 
         shot(window, "01-welcome")
+        if os.environ.get("SHOTS_ONLY_FIRST"):
+            app.quit()
+            return
 
         from pistorm_imager.core import builder              # noqa: PLC0415
         window._start_task(builder.Task.NEW_CARD)

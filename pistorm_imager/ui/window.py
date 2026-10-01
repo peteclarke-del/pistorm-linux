@@ -124,15 +124,14 @@ TASKS = [
      "accelerator.",
      "drive-harddisk-symbolic",
      ("amiga", "source", "storage", "packages", "target", "review")),
-    (builder.Task.PREPARED, "Write a prepared system",
-     "A finished image - CaffeineOS, an Emu68 Hatcher image, a backup of a "
-     "card - with your Emu68 and settings applied on top.",
+    #  One task for any image: a whole card and an Amiga drive are written
+    #  differently, but which one a file is the file itself says, so the
+    #  task becomes Task.DRIVE_IMAGE once a drive is chosen.
+    (builder.Task.PREPARED, "Write an image to a card",
+     "A finished card - CaffeineOS, an Emu68 Hatcher image, a backup - or "
+     "a WinUAE, FS-UAE or HstWB drive image, with your Emu68 and settings "
+     "applied.",
      "folder-download-symbolic",
-     ("amiga", "source", "storage", "options", "target", "review")),
-    (builder.Task.DRIVE_IMAGE, "Put a drive image on a card",
-     "A WinUAE, FS-UAE or HstWB .hdf written as it is, with an Emu68 boot "
-     "partition built around it.",
-     "drive-removable-media-symbolic",
      ("amiga", "source", "storage", "options", "target", "review")),
     (builder.Task.REBUILD, "Rebuild one drive",
      "Format and fill one drive on a card you already have - a new System "
@@ -152,6 +151,10 @@ TASKS = [
      ("export",)),
 ]
 TASK_STEPS = {task: steps for task, _t, _s, _i, steps in TASKS}
+TASK_STEPS[builder.Task.DRIVE_IMAGE] = TASK_STEPS[builder.Task.PREPARED]
+#  The tasks a chosen image can turn into: a card or a drive.
+IMAGE_TASKS = {builder.ImageKind.CARD: builder.Task.PREPARED,
+               builder.ImageKind.DRIVE: builder.Task.DRIVE_IMAGE}
 
 IMAGE_FILTERS = [
     ("Disk images", ["*.img", "*.IMG", "*.raw", "*.iso", "*.vhd", "*.bin", "*.dd"]),
@@ -745,8 +748,12 @@ class ImagerWindow(Adw.ApplicationWindow):
                         machines.Accelerator.PISTORM))
         finally:
             self._ready = was
+        #  An image already chosen decides between a card and a drive again,
+        #  rather than the tile's choice standing over what the file says.
+        if task in IMAGE_TASKS.values() and self.image_row.path:
+            self._on_image_chosen()
         self._suggest_what_was_found()
-        self._show_steps(TASK_STEPS[task])
+        self._show_steps(TASK_STEPS[self._task])
         self._on_accelerator_changed()
         self._sync_visibility()
         self._relayout_partitions()
@@ -889,21 +896,39 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  and nothing else - so it can no longer promise settings here.
             description="Each one leads to what it needs, and back here if "
                         "you change your mind.")
+        #  A grid of tiles, each one the whole of its task: a row apiece with
+        #  a Start button at the end was a long column of identical buttons
+        #  with the thing being chosen at the other side of the window.
+        #  The name on the tile, what it does in its tooltip: with the whole
+        #  description on each, eight of them ran four rows down the window.
+        grid = Gtk.FlowBox(homogeneous=True, min_children_per_line=3,
+                           max_children_per_line=3, column_spacing=12,
+                           row_spacing=12,
+                           selection_mode=Gtk.SelectionMode.NONE)
+        self.task_tiles: dict[builder.Task, Gtk.Button] = {}
         for task, title_text, subtitle, icon_name, _steps in TASKS:
-            label = "Export" if task is builder.Task.EXPORT else "Start"
-            handler = (lambda t=task: self._start_task(t))
-            row = Adw.ActionRow(title=title_text, subtitle=subtitle)
-            prefix = Gtk.Image.new_from_icon_name(icon_name)
-            prefix.set_pixel_size(32)
-            prefix.add_css_class("dim-label")
-            row.add_prefix(prefix)
-            button = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
-            button.add_css_class("suggested-action")
-            button.set_size_request(128, -1)     # one column, not a ragged edge
-            button.connect("clicked", lambda _b, h=handler: h())
-            row.add_suffix(button)
-            row.set_activatable_widget(button)
-            choices.add(row)
+            tile = Gtk.Button(tooltip_text=subtitle)
+            tile.add_css_class("card")
+            tile.add_css_class("task-tile")
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(box, f"set_margin_{side}")(8)
+            image = Gtk.Image.new_from_icon_name(icon_name)
+            image.set_pixel_size(40)
+            image.add_css_class("accent")
+            box.append(image)
+            heading = Gtk.Label(label=title_text, wrap=True,
+                                justify=Gtk.Justification.CENTER)
+            heading.add_css_class("heading")
+            heading.set_max_width_chars(16)
+            heading.set_valign(Gtk.Align.START)
+            heading.set_vexpand(True)
+            box.append(heading)
+            tile.set_child(box)
+            tile.connect("clicked", lambda _b, t=task: self._start_task(t))
+            grid.append(tile)
+            self.task_tiles[task] = tile
+        choices.add(grid)
         self.group_choices = choices
         page.add(choices)
 
@@ -1905,15 +1930,16 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.mode_group = group
 
         self.image_group = Adw.PreferencesGroup(
-            title="Pre-built image",
-            description="A finished system such as CaffeineOS, an Emu68 "
-                        "Hatcher image, or any .img backup of a card. "
-                        "Download it from its author and point at the file; a "
-                        "system this tool recognises is named, along with what "
-                        "it expects of the machine. Compressed images (.xz, "
+            title="Image",
+            description="A whole card - CaffeineOS, an Emu68 Hatcher image, "
+                        "any .img backup - is written as it is. An Amiga "
+                        "drive - a WinUAE, FS-UAE or HstWB .hdf - gets an "
+                        "Emu68 boot partition built around it. Which one a "
+                        "file is, it says itself. Compressed images (.xz, "
                         ".gz, .zip, .7z) are streamed straight to the card, so "
                         "no scratch space is needed.")
-        self.image_row = FileRow("Image file", filters=IMAGE_FILTERS,
+        self.image_row = FileRow("Image file",
+                                 filters=IMAGE_FILTERS + HDF_FILTERS,
                                  on_change=lambda _p: self._on_image_chosen())
         self.image_group.add(self.image_row)
         self.image_info = Adw.ActionRow(title="Image details", subtitle="No image selected")
@@ -1924,13 +1950,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         page.add(self.group_primary)
 
         self.hdf_group = Adw.PreferencesGroup(
-            title="Amiga hard disk image",
-            description="An .hdf holding a Rigid Disk Block, as produced by "
-                        "WinUAE, FS-UAE or HstWB Installer. This is the Amiga "
-                        "drive only, so the card's partition table and boot "
-                        "partition are created around it.")
+            title="The Amiga drive",
+            description="The card's partition table and boot partition are "
+                        "created around it.")
+        #  Filled from the image chosen above when that is a drive; there is
+        #  one place to choose an image, not two.
         self.hdf_row = FileRow("Hard disk image (.hdf)", filters=HDF_FILTERS,
                                on_change=lambda _p: self._on_hdf_chosen())
+        self.hdf_row.set_visible(False)
         self.hdf_group.add(self.hdf_row)
         self.hdf_info = Adw.ActionRow(title="Image details", subtitle="No image selected")
         self.hdf_info.set_sensitive(False)
@@ -3237,7 +3264,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.quick_workbench_screen.set_visible(
             self._display().has_choice_of_screen)
         self.mode_hint.set_subtitle(MODES[self.mode_row.get_selected()][2])
-        self.image_group.set_visible(mode is builder.BuildMode.IMAGE)
+        self.image_group.set_visible(mode in (builder.BuildMode.IMAGE,
+                                              builder.BuildMode.HDF))
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
         rebuilding = mode is builder.BuildMode.REWRITE
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
@@ -4406,15 +4434,28 @@ class ImagerWindow(Adw.ApplicationWindow):
         from ..core import imgsrc
         if not self.image_row.path:
             self.image_info.set_subtitle("No image selected")
+            self.hdf_row.set_path("")
             self._update_summary()
             return
         try:
             source = imgsrc.inspect(self.image_row.path)
             description = source.description
+            kind = builder.image_kind(self.image_row.path)
         except Exception as error:  # noqa: BLE001
             self.image_info.set_subtitle(f"Cannot read this file: {error}")
             self._update_summary()
             return
+        self._image_is(kind)
+        if kind is builder.ImageKind.DRIVE:
+            self.image_info.set_subtitle(
+                "An Amiga drive - " + description + "\nAn Emu68 boot "
+                "partition is built around it.")
+            self._update_summary()
+            return
+        if kind is None:
+            description += ("\nNeither a partition table nor an Amiga drive "
+                            "was found at its start; it will be written as "
+                            "it is.")
         #  Naming the system, and saying what it expects, is worth more than
         #  the file's dimensions: a card gets committed to one of these.
         found = distributions.identify(self.image_row.path)
@@ -4480,6 +4521,33 @@ class ImagerWindow(Adw.ApplicationWindow):
             text += f"  -  about {human_size(amigaos.estimate_size(chosen))} installed"
         self.os_disks.set_subtitle(text)
         self._update_summary()
+
+    def _image_is(self, kind: "builder.ImageKind | None") -> None:
+        """Turn the image task into the one the chosen file needs.
+
+        A drive is put on the card with a boot partition built around it, a
+        card - or a file that says neither - is written as it is.
+        """
+        if self._task not in IMAGE_TASKS.values():
+            return
+        task = IMAGE_TASKS.get(kind, builder.Task.PREPARED)
+        self.hdf_row.set_path(self.image_row.path
+                              if task is builder.Task.DRIVE_IMAGE else "")
+        if task is self._task:
+            return
+        self._task = task
+        was, self._ready = self._ready, False
+        try:
+            for index, entry in enumerate(MODES):
+                if entry[1] is task.mode:
+                    self.mode_row.set_selected(index)
+                    break
+            if task.emu68 is not None:
+                self.install_emu_row.set_active(task.emu68)
+        finally:
+            self._ready = was
+        self._sync_visibility()
+        self._relayout_partitions()
 
     def _on_hdf_chosen(self) -> None:
         if not self.hdf_row.path:
@@ -4892,8 +4960,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  Source page belongs to the builds and must not be borrowed.
             source_image=(self.export_source.path
                           if self._mode() is builder.BuildMode.EXPORT
-                          else self.image_row.path),
-            hdf_image=self.hdf_row.path,
+                          else self.image_row.path
+                          if self._mode() is builder.BuildMode.IMAGE
+                          else ""),
+            hdf_image=(self.hdf_row.path
+                       if self._mode() is builder.BuildMode.HDF else ""),
             output_hdf=self._making_hdf(),
             #  Export reads an image and writes files; it shares the job, the
             #  progress and the button with the builds, and nothing else.
@@ -5537,8 +5608,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             if variant.key == config.variant:
                 self.variant_row.set_selected(index)
         self.install_emu_row.set_active(config.install_emu68)
-        self.image_row.set_path(config.source_image)
         self.hdf_row.set_path(config.hdf_image)
+        self.image_row.set_path(config.source_image or config.hdf_image)
         self.repair_row.set_active(config.repair_rdb)
         self.local_zip_row.set_path(config.emu68_archive)
         self.rom_row.set_path(config.kickstart_path)
