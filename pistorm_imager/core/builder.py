@@ -1652,19 +1652,20 @@ def _write_manifest_now(volume, config: "BuildConfig",
     progress.log(f"  S:{name} written: {lines} path(s) this build added")
 
 
-def _landing_paths(pairs: list[tuple[str, str]]) -> list[str]:
+def _landing_paths(pairs: list[tuple[str, str]]) -> dict[str, str | None]:
     """Where a set of overlays will put single files on the drive.
 
     Only files: a whole drawer is merged into whatever is already there, and
     refusing one during the copy would take out the drive's own contents
-    along with it.
+    along with it. Each file is mapped to the package's copy of it, so the
+    copy pass can keep the system's own where that is the newer release.
     """
-    out: list[str] = []
+    out: dict[str, str | None] = {}
     for source, destination in pairs:
         path = Path(source)
         if path.is_file():
-            out.append(f"{destination}/{path.name}" if destination
-                       else path.name)
+            out[f"{destination}/{path.name}" if destination
+                else path.name] = str(path)
         elif destination:
             #  A drawer going onto the card needs its name free. ClassicWB
             #  keeps Visage as a *file* in Utilities, and this build wants a
@@ -1672,7 +1673,7 @@ def _landing_paths(pairs: list[tuple[str, str]]) -> list[str]:
             #  outright. Only a file can ever be refused by this: the copy
             #  asks about files and never about drawers, so a drawer of the
             #  same name is merged into as before.
-            out.append(destination)
+            out.setdefault(destination, None)
     return out
 
 
@@ -1760,6 +1761,48 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
             for pair in extra:
                 credit.setdefault(pair, launcher.key)
         out += extra
+    for key, _pairs in by_package:
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is None or not package.kickstart_drawer:
+            continue
+        extra = _kickstart_images(config, package, progress)
+        if credit is not None:
+            for pair in extra:
+                credit.setdefault(pair, key)
+        out += extra
+    return out
+
+
+def _kickstart_images(config: "BuildConfig", package: "packages.Package",
+                      progress: Progress) -> list[tuple[str, str]]:
+    """The user's own ROMs a package can use, decrypted, under its names.
+
+    Taken from the folder the card's Kickstart was chosen from, which is
+    where people keep the rest of theirs. Nothing else is searched: these are
+    somebody's own ROMs, and the one place they said they keep them is the
+    place to look.
+    """
+    if not config.kickstart_path:
+        progress.log(f"  {package.label}: no Kickstart was chosen, so there "
+                     f"is no folder of ROMs to copy into "
+                     f"{package.kickstart_drawer}")
+        return []
+    folder = Path(config.kickstart_path).parent
+    found = kickstart.whdload_images(folder, config.kickstart_key or None)
+    if not found:
+        progress.log(f"  {package.label}: none of the ROMs in {folder} is one "
+                     f"it can use, so {package.kickstart_drawer} is left "
+                     f"without Kickstart images")
+        return []
+    staged = packages.cache_dir() / f"{package.key}-kickstarts"
+    shutil.rmtree(staged, ignore_errors=True)
+    staged.mkdir(parents=True)
+    out = []
+    for name, data, info in found:
+        (staged / name).write_bytes(data)
+        out.append((str(staged / name), package.kickstart_drawer))
+        progress.log(f"  {package.label}: {package.kickstart_drawer}/{name} "
+                     f"from {info.path.name}")
     return out
 
 
