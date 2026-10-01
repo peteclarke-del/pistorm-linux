@@ -2068,6 +2068,32 @@ class ChoicesThatBuildAndMislead(unittest.TestCase):
         said = self._config(rtg_display=True).concerns()
         self.assertTrue([s for s in said if "no RTG screen to open on" in s])
 
+    def test_an_ide_drive_behind_a_pistorm_names_the_pistorms_own_card(self):
+        #  The drive carries Picasso96; the Pi's HDMI mode and video memory
+        #  are in config.txt on the PiStorm's card, which this does not write.
+        said = self._config(amiga_only=True, install_emu68=False,
+                            rtg_display=True,
+                            package_keys=["picasso96"]).concerns()
+        self.assertTrue([s for s in said if "PiStorm's own card" in s])
+        said = self._config(amiga_only=True, install_emu68=False,
+                            rtg_display=True, accelerator="accelerator",
+                            accelerator_cpu="68030",
+                            package_keys=["picasso96"]).concerns()
+        self.assertFalse([s for s in said if "PiStorm's own card" in s])
+
+    def test_rtg_without_a_pistorm_is_allowed_and_names_the_board(self):
+        #  The drive may go into a machine with an RTG card of its own, so it
+        #  is not refused - but Picasso96 is set up for Emu68's board.
+        config = self._config(amiga_only=True, install_emu68=False,
+                              rtg_display=True, accelerator="stock",
+                              package_keys=["picasso96"])
+        self.assertFalse([p for p in config.validate() if "RTG" in p])
+        said = config.concerns()
+        self.assertTrue([s for s in said if "VideoCore as its board" in s])
+        said = self._config(rtg_display=True,
+                            package_keys=["picasso96"]).concerns()
+        self.assertFalse([s for s in said if "VideoCore as its board" in s])
+
     def test_software_nobody_can_fetch_on_your_behalf(self):
         #  Roadshow's publisher serves the archive only to a browser, so the
         #  card is built without it unless a copy is already cached.  The

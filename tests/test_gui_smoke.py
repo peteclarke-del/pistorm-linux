@@ -449,6 +449,38 @@ def on_activate(app: ImagerApplication) -> None:
               and not window.boot_group.get_visible()
               and not options_page.get_visible(),
               "a card with no boot partition stops asking about one")
+        #  But the screen is a fact about the machine, not this drive.
+        #  Reported as "picasso 96 and the how do you look at it menus are
+        #  unavailable" for an A1200 whose PiStorm boots from its own card
+        #  and whose drives are on the IDE port.
+        rtg = list(machines.Display).index(machines.Display.RTG_HDMI)
+        window.quick_display.set_selected(rtg)
+        window._on_display_changed()
+        check(window.quick_display.get_sensitive()
+              and window.quick_display.get_selected() == rtg,
+              "a drives-only card can still be watched on RTG")
+        check(window.gather().rtg_display
+              and window.gather().package_display == "rtg",
+              "and the RTG display reaches the drive")
+        #  An RTG display holds Picasso96 on, so "offered" is ticked and
+        #  going onto the drive.
+        check(window.package_rows["picasso96"].get_active()
+              and "picasso96" in window.gather().package_keys,
+              "and Picasso96 goes onto the drive with it")
+        #  Nor is it the processor's: the drive may go into a machine with
+        #  an RTG card of its own.
+        window.quick_accelerator.set_selected(
+            list(machines.Accelerator).index(machines.Accelerator.STOCK))
+        window._on_accelerator_changed()
+        check(window.quick_display.get_sensitive()
+              and window.gather().rtg_display,
+              "RTG stays on offer without a PiStorm")
+        window.quick_accelerator.set_selected(
+            list(machines.Accelerator).index(machines.Accelerator.PISTORM))
+        window._on_accelerator_changed()
+        window.quick_display.set_selected(
+            list(machines.Display).index(machines.Display.NATIVE))
+        window._on_display_changed()
         #  And turning Emu68 back on undoes it rather than leaving a
         #  contradiction the build would have to settle.
         window.install_emu_row.set_active(True)
