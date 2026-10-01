@@ -2257,9 +2257,11 @@ def _kickstart_images(config: "BuildConfig", package: "packages.Package",
                      f"it can use, so {package.kickstart_drawer} is left "
                      f"without Kickstart images")
         return []
-    staged = packages.cache_dir() / f"{package.key}-kickstarts"
-    shutil.rmtree(staged, ignore_errors=True)
-    staged.mkdir(parents=True)
+    #  A folder of this build's own: the images are the user's ROMs, made
+    #  afresh each time, and a fixed folder in the cache was left owned by
+    #  root after a card was written with administrator rights - so the next
+    #  build could neither clear it nor write into it, and stopped.
+    staged = Path(tempfile.mkdtemp(prefix="pistorm-kickstarts-"))
     out = []
     for name, data, info in found:
         (staged / name).write_bytes(data)
