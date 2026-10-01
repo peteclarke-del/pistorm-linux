@@ -170,3 +170,41 @@ def scan(folder: str | Path, key_file: str | Path | None = None) -> list[RomInfo
         if info.version is not None or info.encrypted:
             results.append(info)
     return results
+
+
+#  The images WHDLoad will use, under the names it looks for them by in
+#  Devs:Kickstarts - its own documentation's table (docs/en/need.html). Keyed
+#  on the SHA-1 of the plain image, not on the version: 40.68 is the A1200's,
+#  the A3000's and the A4000's ROM, three different files, and WHDLoad refuses
+#  any image that is not exactly the one it names. The hashes are the ones
+#  WinUAE's ROM list gives; the A1200 one was checked against a real ROM.
+WHDLOAD_IMAGES = {
+    "11f9e62cf299f72184835b7b2a70a16333fc0d88": "kick33180.A500",
+    "891e9a547772fe0c6c19b610baf8bc4ea7fcb785": "kick34005.A500",
+    "3b7f1493b27e212830f989f26ca76c02049f09ca": "kick40063.A600",
+    "e21545723fe8374e91342617604f1b3d703094f1": "kick40068.A1200",
+    "5fe04842d04a489720f0f4bb0e46948199406f49": "kick40068.A4000",
+}
+
+
+def whdload_images(folder: str | Path, key_file: str | Path | None = None
+                   ) -> list[tuple[str, bytes, RomInfo]]:
+    """Every ROM in ``folder`` WHDLoad can use, as (its name, image, source).
+
+    Each is decrypted and un-swapped first, so the card needs no rom.key. A
+    256K Kickstart is often kept doubled to fill 512K; the half is what is
+    compared, and what WHDLoad wants.
+    """
+    found: dict[str, tuple[bytes, RomInfo]] = {}
+    for info in scan(folder, key_file):
+        try:
+            data = prepare(info, key_file)
+        except (RuntimeError, OSError):
+            continue
+        half = len(data) // 2
+        if len(data) == 512 * 1024 and data[:half] == data[half:]:
+            data = data[:half]
+        name = WHDLOAD_IMAGES.get(hashlib.sha1(data).hexdigest())
+        if name is not None and name not in found:
+            found[name] = (data, info)
+    return [(name, data, info) for name, (data, info) in sorted(found.items())]
