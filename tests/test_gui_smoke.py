@@ -941,43 +941,54 @@ def on_activate(app: ImagerApplication) -> None:
         check(not window.package_rows["picasso96"].get_active(),
               "and a native-only display does not carry it")
 
-        #  The software is chosen in a window of its own, reached from the
-        #  Packages page. As switch rows on the page it ran to several
-        #  screens; asked for "everything on one screen of the dialog".
+        #  The software is chosen on its own page, a category at a time.
+        #  A page of switch rows ran to several screens, and then a window
+        #  showing everything at once was "too large and cumbersome".
         from gi.repository import Adw as _A                   # noqa: PLC0415
-        from gi.repository import Gtk as _G                   # noqa: PLC0415
-        check(window.software_row.get_ancestor(_A.PreferencesPage)
+        check(window.software_list.get_ancestor(_A.PreferencesPage)
               is window.page_packages,
-              "the way into the software is on the Packages page")
+              "the software lives on the Packages page")
         check(window.stack.get_child_by_name("packages") is not None,
               "and the Packages page is in the switcher")
-        check(window.software_dialog is None,
-              "the window is not made until it is wanted")
-        _, wanted, _, _ = window.software_columns.measure(
-            _G.Orientation.VERTICAL, window.SOFTWARE_SIZE[0])
-        room = window.SOFTWARE_SIZE[1] - 200
-        check(wanted <= room,
-              f"and the whole catalogue fits it without scrolling "
-              f"({wanted}px of {room}px)")
-        window._open_software()
-        check(all(row.get_root() is window.software_dialog
-                  for row in window.package_rows.values()),
-              "every package is in the Software Installation window")
-        check(window.software_dialog.get_transient_for() is window,
-              "which is a window of its own, over this one")
-        check(window._asking_is_welcome(),
-              "a rival is asked about while the window is open")
-        window.software_dialog.close()
-        check(not window.software_dialog.get_visible()
-              and len(window.package_rows) == len(packages_mod.CATALOGUE),
-              "and closing it keeps every row")
-        before = window.software_row.get_subtitle()
+        def visible() -> list[str]:
+            out, index = [], 0
+            while (holder := window.software_list.get_row_at_index(index)):
+                if window._software_shown(holder):
+                    out.append(holder.package.key)
+                index += 1
+            return out
+        games = list(window._software_views).index(
+            packages_mod.Category.GAMES)
+        window.software_sidebar.select_row(
+            window.software_sidebar.get_row_at_index(games))
+        pump()
+        check(set(visible()) == {p.key for p in packages_mod.in_category(
+                  packages_mod.Category.GAMES)},
+              "a category shows its own software and nothing else")
+        window.software_sidebar.select_row(
+            window.software_sidebar.get_row_at_index(0))
+        pump()
+        check(set(visible()) == set(window._chosen_packages()),
+              "Chosen shows exactly what the card will carry")
+        window.software_search.set_text("scumm")
+        pump()
+        check(visible() and all("scumm" in k for k in visible()),
+              f"the search finds across categories ({visible()})")
+        window.software_search.set_text("")
+        pump()
+        check(window.software_counts[window.CHOSEN].get_label()
+              == str(len(window._chosen_packages())),
+              "the Chosen count is the number ticked")
+        before = window.software_counts[window.CHOSEN].get_label()
         window.package_rows["whdload"].set_active(
             not window.package_rows["whdload"].get_active())
-        check(window.software_row.get_subtitle() != before,
-              f"the count on the page follows the ticks ({before!r})")
+        check(window.software_counts[window.CHOSEN].get_label() != before,
+              f"and follows the ticks ({before})")
         window.package_rows["whdload"].set_active(
             not window.package_rows["whdload"].get_active())
+        window.software_sidebar.select_row(
+            window.software_sidebar.get_row_at_index(games))
+        pump()
 
         #  Two packages doing one job are alternatives, and the user is asked
         #  before either is taken away.

@@ -583,6 +583,17 @@ class NiceToHaves(unittest.TestCase):
                                 f"{package.key} cannot be fetched and does "
                                 f"not say where to get it")
 
+    def test_a_package_is_not_offered_when_what_it_needs_is_not(self):
+        #  A freeware adventure on a native screen: ScummVM is RTG only, so
+        #  the game could be ticked and dragged ScummVM onto the card.
+        from pistorm_imager.core.machines import Chipset, Display  # noqa
+        lure = packages.CATALOGUE_BY_KEY["scummvm_lure"]
+        self.assertFalse(lure.suits(Chipset.AGA, Display.NATIVE))
+        self.assertEqual(lure.unsuited_need(Chipset.AGA, Display.NATIVE).key,
+                         "scummvm")
+        self.assertTrue(lure.suits(Chipset.AGA, Display.RTG_HDMI))
+        self.assertIsNone(lure.unsuited_need(Chipset.AGA, Display.RTG_HDMI))
+
     def test_no_two_packages_share_a_key(self):
         keys = [p.key for p in packages.CATALOGUE]
         self.assertEqual(len(keys), len(set(keys)))
