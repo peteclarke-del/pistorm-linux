@@ -1814,6 +1814,24 @@ class TheNewestReleaseWins(unittest.TestCase):
         self.assertIn("C", places)
         self.assertIn("Libs", places)
 
+    def test_newinstaller_does_not_bring_an_openurl_with_no_handler(self):
+        #  Reported as iGame complaining of a missing library and asking for
+        #  a reinstall: NewInstaller's drawer carries openurl.library 3.0,
+        #  which loads L:OpenURL-Handler - not in the archive - and its own
+        #  script copies it only when asked to.  Copying the whole drawer
+        #  put it on every card, and every program that opens it stopped.
+        package = packages.CATALOGUE_BY_KEY["newinstaller"]
+        sources = [src for src, _dest in package.download.items]
+        self.assertNotIn("NewInstaller1_7/Libs", sources,
+                         "the drawer holds openurl.library as well")
+        self.assertFalse([s for s in sources if "openurl" in s.lower()])
+        #  The ones its script does copy are still there - reqtools by way
+        #  of its own package, so a ticked ReqTools is not outranked.
+        for name in ("guigfx", "render", "identify"):
+            self.assertIn(f"NewInstaller1_7/Libs/{name}.library", sources)
+        self.assertIn("reqtools", package.requires)
+        self.assertNotIn("NewInstaller1_7/Libs/reqtools.library", sources)
+
     def test_where_a_download_comes_from_is_named(self):
         self.assertEqual(
             packages.CATALOGUE_BY_KEY["newinstaller"].download.where, "Aminet")
