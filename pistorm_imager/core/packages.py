@@ -418,7 +418,22 @@ class Package:
         if self.min_emu68 and not emu68_module.at_least(emu68_tag or "",
                                                         self.min_emu68):
             return False
-        return True
+        #  Nor anything that cannot have what it needs. A freeware adventure
+        #  needs ScummVM, which needs an RTG screen; offered on a native one
+        #  it could be ticked, and dragged ScummVM onto the card with it.
+        return self.unsuited_need(chipset, display, pi=pi, cpu=cpu,
+                                  emu68_tag=emu68_tag) is None
+
+    def unsuited_need(self, chipset: Chipset, display: Display, *,
+                      pi: Pi | None = None, cpu: Cpu | None = None,
+                      emu68_tag: str | None = None) -> "Package | None":
+        """The first package this one needs that does not suit, if any."""
+        for key in self.requires:
+            other = CATALOGUE_BY_KEY.get(key)
+            if other is not None and not other.suits(
+                    chipset, display, pi=pi, cpu=cpu, emu68_tag=emu68_tag):
+                return other
+        return None
 
     def archive(self, cpu: Cpu | None = None,
                 kernel: str = "") -> "Download | None":
