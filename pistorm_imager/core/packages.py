@@ -380,6 +380,14 @@ class Package:
     #  they come from the folder the card's own Kickstart was chosen from,
     #  matched by checksum - WHDLoad refuses any image but the exact one.
     kickstart_drawer: str = ""
+    #  The drawer a games menu is written into, from the games on the drives
+    #  the card is filled with - for a launcher that shows a menu tree rather
+    #  than scanning drawers itself.
+    content_menu: str = ""
+    #  Pictures, text or other material that is not needed to run the
+    #  software and is offered rather than assumed, described for the
+    #  question that offers it. Empty for a package that has none.
+    media: str = ""
 
     @property
     def manual(self) -> bool:
@@ -1792,6 +1800,79 @@ CATALOGUE: list[Package] = [
         note="Installed into Programs/FroggerNG, registered. It wants a big "
              "stack, which its icon already gives it; started from a Shell, "
              "set Stack 100000 first.",
+    ),
+    Package(
+        "ags2_screens", "AGS2 pictures",
+        "The background pictures and icon ArcadeGameSelector 2 is drawn "
+        "with.",
+        category=Category.SYSTEM,
+        #  Per Olofsson's own 2020 release, an LhA inside a zip. Only the
+        #  layout's pictures, the readme and an icon are taken: its programs
+        #  are older than the 2022 build, and its AGA.ags and OCS.ags drawers
+        #  are a sample menu - scripts that only print "this is the sample
+        #  script", beside screenshots of commercial games that are not the
+        #  author's to give away.
+        download=Download(
+            "https://github.com/MagerValp/ArcadeGameSelector/releases/"
+            "download/v2020.04.14/AGS2-20200414.lha.zip",
+            (("AGS2/WB13-Background.iff", "Programs/AGS2"),
+             ("AGS2/WB13-Empty.iff", "Programs/AGS2"),
+             ("AGS2/README.txt", "Programs/AGS2")),
+            inner=("AGS2-20200414.lha",),
+            #  The release's own test-script icon, pointed at IconX, so the
+            #  start script opens by double click; an invented icon would
+            #  have no picture.
+            retool=(("AGS2/Test AGS2 OCS.info", "Programs/AGS2",
+                     "Game Selector.info", "C:IconX"),),
+            source="https://github.com/MagerValp/ArcadeGameSelector/releases"),
+        support_only=True,
+        evidence=("Programs/AGS2/WB13-Background.iff",),
+    ),
+    Package(
+        "ags2", "AGS2 game selector",
+        "A full-screen games menu worked with the joystick - the menu program "
+        "of the Amiga Game Selector distribution. Its menu is built from the "
+        "games on your drives, in the drawers they are already sorted into.",
+        category=Category.GAMES,
+        #  Not Paul Vince's "Amiga Game Selector" itself: that is a whole
+        #  Workbench distribution of many gigabytes, bundling thousands of
+        #  games - commercial ones among them - and not this tool's to hand
+        #  out. Its menu program is this, which its authors publish on
+        #  GitHub with its source; David Lindecrantz's 2022 build is the
+        #  newest, and the only one that follows menus more than two deep.
+        #  No repository carries a licence, so it is fetched from its
+        #  publisher at build time and never kept anywhere else.
+        download=Download(
+            "https://github.com/Optiroc/ArcadeGameSelector/releases/"
+            "download/v2022.08.26/AGS2-20220826.lha",
+            (("AGS2/AGS2", "Programs/AGS2"),
+             ("AGS2/AGS2menu", "Programs/AGS2"),
+             ("AGS2/AGS2helper", "Programs/AGS2")),
+            #  It finds its menu, its settings and its pictures through AGS:,
+            #  so the script its icon runs makes the assign, and takes it
+            #  away again on the way back to Workbench.
+            write=(Written("Game Selector", "Programs/AGS2",
+                           "; Game Selector - written by the PiStorm imager.\n"
+                           "Assign >NIL: AGS: SYS:Programs/AGS2\n"
+                           "SYS:Programs/AGS2/AGS2\n"
+                           "Assign >NIL: AGS: REMOVE\n"),),
+            source="https://github.com/Optiroc/ArcadeGameSelector/releases"),
+        #  It opens a native screen sized from its background picture; an
+        #  RTG mode can only be named by the Picasso96 mode ID of the card
+        #  being built, which nothing here works out yet.
+        native_only=True,
+        #  Every entry the build writes is a WHDLoad command line.
+        requires=("ags2_screens", "whdload"),
+        content_words=("game",),
+        wants_content=True,
+        content_menu="Programs/AGS2",
+        media="each game's screenshot and description in the menu, a few "
+              "hundred kilobytes a game",
+        note="Double click Programs/AGS2/Game Selector; Esc or the CD32 blue "
+             "button returns to Workbench. Each game's icon settings were "
+             "copied into its menu entry when the card was built, so games "
+             "added later appear when the card is rebuilt.",
+        evidence=("Programs/AGS2/AGS2menu",),
     ),
     Package(
         "scummvm", "ScummVM",
