@@ -484,6 +484,46 @@ class TestFindRdb(_Scratch):
         self.assertEqual(found[1].partitions[0].drive_name, "DH0")
 
 
+class AnImageSaysWhatItIs(_Scratch):
+    """One task writes any image; the file decides how.
+
+    A whole card is written as it is, a drive gets a boot partition built
+    around it - and both turn up as .img files, compressed or not.
+    """
+
+    def test_a_drive_image_is_a_drive(self):
+        path = self.scratch() / "disk.img"
+        make_hdf(path, 20 * MIB, [rdb.Partition("DH0", 1, 19,
+                                                rdb.DOSTYPE_FFS_INTL)])
+        self.assertIs(builder.image_kind(path), builder.ImageKind.DRIVE)
+
+    def test_a_bare_file_system_is_a_drive(self):
+        path = self.scratch() / "partition.hdf"
+        path.write_bytes(b"DOS\x03" + bytes(4 * MIB))
+        self.assertIs(builder.image_kind(path), builder.ImageKind.DRIVE)
+
+    def test_a_card_is_a_card_even_compressed(self):
+        folder = self.scratch()
+        card = folder / "card.img"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(card),
+            image_size=300 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
+            amiga_partitions=[builder.AmigaPartitionSpec("DH0", None,
+                                                         "FFS-INTL", True, 0)]),
+            QUIET)
+        self.assertIs(builder.image_kind(card), builder.ImageKind.CARD)
+        import gzip
+        packed = folder / "card.img.gz"
+        with open(card, "rb") as raw, gzip.open(packed, "wb") as out:
+            out.write(raw.read(MIB))
+        self.assertIs(builder.image_kind(packed), builder.ImageKind.CARD)
+
+    def test_anything_else_is_neither(self):
+        path = self.scratch() / "notes.img"
+        path.write_bytes(bytes(MIB))
+        self.assertIsNone(builder.image_kind(path))
+
+
 class TestHdfOutput(_Scratch):
     def test_creates_a_bare_amiga_drive(self):
         folder = self.scratch()

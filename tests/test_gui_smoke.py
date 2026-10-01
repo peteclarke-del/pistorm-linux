@@ -737,7 +737,9 @@ def on_activate(app: ImagerApplication) -> None:
         check(result.mode is config.mode, "task mode survives a round trip")
         check(result.variant == config.variant, "board choice survives a round trip")
         check(result.source_image == config.source_image, "source image survives")
-        check(result.hdf_image == config.hdf_image, "hard disk image survives")
+        #  One image is chosen, and it is either a card or a drive: a drive
+        #  left over beside a card image is not carried into the build.
+        check(result.hdf_image == "", "a card image task carries no drive")
         check(result.boot_options.hdmi_mode == 82, "HDMI mode survives")
         check(result.boot_options.overclock is True, "overclock survives")
         check(result.boot_options.cm4_external_antenna is False, "antenna survives")
@@ -2065,9 +2067,18 @@ def on_activate(app: ImagerApplication) -> None:
 
         _check_application_updates(window)
 
-        window._start_task(builder.Task.DRIVE_IMAGE)
+        #  One tile writes any image; the file decides whether it is a card
+        #  written as it is or a drive with a boot partition built round it.
+        check(builder.Task.DRIVE_IMAGE not in window.task_tiles
+              and builder.Task.PREPARED in window.task_tiles,
+              "one tile for writing an image, card or drive")
+        window.task_tiles[builder.Task.PREPARED].emit("clicked")
+        window.image_row.set_path(str(HDF_IMAGE))
         window.file_row.set_path(str(SCRATCH / "quick.img"))
         window._sync_visibility()
+        check(window._task is builder.Task.DRIVE_IMAGE
+              and window.hdf_row.path == str(HDF_IMAGE),
+              f"a drive image makes the task a drive's ({window._task})")
         check(window.hdf_group.get_visible(), "HDF mode reveals the hard disk chooser")
         check(not window.partition_group.get_visible(),
               "HDF mode hides the partition editor (the RDB comes from the image)")
