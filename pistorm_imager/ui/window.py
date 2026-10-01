@@ -132,7 +132,7 @@ TASKS = [
     (builder.Task.DRIVE_IMAGE, "Put a drive image on a card",
      "A WinUAE, FS-UAE or HstWB .hdf written as it is, with an Emu68 boot "
      "partition built around it.",
-     "drive-multidisk-symbolic",
+     "drive-removable-media-symbolic",
      ("amiga", "source", "storage", "options", "target", "review")),
     (builder.Task.REBUILD, "Rebuild one drive",
      "Format and fill one drive on a card you already have - a new System "
@@ -2229,6 +2229,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.packages_group.add(self._software_browser(starting))
         page.add(self.packages_group)
 
+        #  Pictures and text some software can bring, which it does not need
+        #  to run: asked about, never assumed. One switch for each ticked
+        #  package the catalogue says has some.
+        self.media_group = Adw.PreferencesGroup(
+            title="Pictures and extras",
+            description="Not needed for the software to work, and sometimes "
+                        "large - included only if you want them.")
+        self.media_rows: dict[str, Adw.SwitchRow] = {}
+        for package in packages.CATALOGUE:
+            if not package.media:
+                continue
+            row = Adw.SwitchRow(
+                title=GLib.markup_escape_text(f"{package.label}: include "
+                                              f"{package.media}"))
+            row.set_active(False)
+            row.connect("notify::active", lambda *_a: self._update_summary())
+            self.media_rows[package.key] = row
+            self.media_group.add(row)
+        self.media_group.set_visible(False)
+        page.add(self.media_group)
+
         #  A prepared drive can carry its own copy of a chosen program under
         #  a different name entirely - ClassicWB keeps SysInfo 3.24 from 1993
         #  in Tools/SysInfo while the package installs 4.4 into
@@ -2508,6 +2529,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         """Keep the counts in the sidebar in step with the ticks."""
         if not getattr(self, "software_counts", None):
             return
+        #  The media question is only asked of what is being installed.
+        if hasattr(self, "media_rows"):
+            shown = False
+            for key, row in self.media_rows.items():
+                ticked = self.package_rows[key].get_active()
+                row.set_visible(ticked)
+                shown |= ticked
+            self.media_group.set_visible(shown)
         ticked = {key for key, row in self.package_rows.items()
                   if row.get_active()}
         for view, label in self.software_counts.items():
@@ -3365,6 +3394,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                                        or self._rewrite_boots())
         self.group_primary.set_visible(fills)
         self.os_cd_group.set_visible(fills and self._system_source() == "cd")
+        #  The floppy group's rows follow whether floppies are wanted; with
+        #  none of them shown its heading stood on its own over nothing.
+        self.os_group.set_visible(fills and self.volume_row.get_visible())
         #  The partition layout is the task's to make only on a new card or
         #  drive; elsewhere the drives come from what is being written.
         self.group_sizes.set_visible(task in (builder.Task.NEW_CARD,
@@ -4921,6 +4953,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  set by the quick setup, so ticking a package and pressing Write
             #  from the pages themselves quietly built a card without it.
             package_keys=self._chosen_packages(),
+            #  Only for software that is going on, and only where asked.
+            with_media=[key for key, row in getattr(self, "media_rows",
+                                                    {}).items()
+                        if row.get_active()
+                        and self.package_rows[key].get_active()],
             replace_older_software=self.replace_older_row.get_active(),
             #  Everything the user asked to be left out, from both lists.
             #  They read in opposite directions and mean the same thing: a
@@ -5609,6 +5646,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.drives_kind_row.set_selected(1)
             self.drives_file_row.set_path(config.drives_target)
         self.drives_size_row.set_text(exact_size_text(config.drives_image_size))
+        for key, row in getattr(self, "media_rows", {}).items():
+            row.set_active(key in (config.with_media or []))
         if not config.target_is_device:
             self.file_row.set_path(config.target)
         #  Before the software, which is offered on the strength of it: a
