@@ -594,6 +594,40 @@ class NiceToHaves(unittest.TestCase):
         self.assertTrue(lure.suits(Chipset.AGA, Display.RTG_HDMI))
         self.assertIsNone(lure.unsuited_need(Chipset.AGA, Display.RTG_HDMI))
 
+    def test_nothing_this_tool_writes_is_mounted_at_boot(self):
+        #  fat95's mountlist for the SD card's boot partition went into
+        #  DEVS:DOSDrivers, which AmigaOS mounts near the top of the
+        #  Startup-Sequence. On a PiStorm it put a day-old file system onto
+        #  Emu68's SD driver before anything else had started, and the A1200
+        #  crashed at once. In an emulator the driver is not there, the mount
+        #  failed quietly, and the card booted - which is how it got onto a
+        #  card at all. A mountlist this tool writes is mounted when somebody
+        #  asks: it goes in Storage/DOSDrivers, never DEVS:DOSDrivers.
+        for package in packages.CATALOGUE:
+            for item in package.download.write:
+                self.assertNotEqual(
+                    item.destination.lower(), "devs/dosdrivers",
+                    f"{package.key} writes {item.name} where it is mounted "
+                    f"at every boot")
+
+    def test_nothing_from_emu68s_tools_holds_up_the_boot(self):
+        #  WaitUntilConnected ran before the TCP/IP stack and, where the WiFi
+        #  could not come up, waited for ever: the machine never reached
+        #  Workbench. Emu68's tools talk to the Pi's own hardware, which an
+        #  emulator does not have, so a boot check cannot prove them; anything
+        #  of theirs started at boot runs in the background, where it cannot
+        #  stop the machine starting.
+        for package in packages.CATALOGUE:
+            if package.download.path != packages.EMU68_TOOLS:
+                continue
+            for line in package.startup:
+                word = line.strip().split(" ", 1)[0].upper()
+                if word in ("IF", "ELSE", "ENDIF", "ASSIGN", ";", ""):
+                    continue
+                self.assertEqual(word, "RUN",
+                                 f"{package.key} starts {line.strip()!r} in "
+                                 f"the foreground at boot")
+
     def test_no_two_packages_share_a_key(self):
         keys = [p.key for p in packages.CATALOGUE]
         self.assertEqual(len(keys), len(set(keys)))

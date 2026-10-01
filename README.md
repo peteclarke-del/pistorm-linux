@@ -603,7 +603,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 889 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 891 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -2666,10 +2666,25 @@ The new entries, and what was learned fitting them:
 * **Files a package writes can name the hardware**, the way startup lines
   already could. fat95's mountlist for the SD card's boot partition names
   `brcm-sdhc.device` on a Pi 3 and `brcm-emmc.device` on a Pi 4 or CM4, and is
-  left out, with a log line, when no Pi was chosen.
-* **The WiFi waits for its link.** `WaitUntilConnected` from Emu68's tools runs
-  before the TCP/IP stack starts, so the first DHCP request no longer goes out
-  before the Pi has joined the network.
+  left out, with a log line, when no Pi was chosen. It is mounted on request,
+  never at boot - see below.
+* **Nothing new runs at boot that an emulator cannot prove.** A card rebuilt
+  with this catalogue crashed the moment the A1200 started, and booted
+  perfectly in FS-UAE. Two additions were the difference, both talking to the
+  Pi's own hardware, which FS-UAE has not got: fat95's mountlist for the SD
+  card's boot partition sat in `DEVS:DOSDrivers`, so AmigaOS mounted it near
+  the top of the Startup-Sequence - a file system released the day before, on
+  Emu68's SD driver, before anything else had started; and Emu68's
+  `WaitUntilConnected` ran before the TCP/IP stack and, where the WiFi could
+  not come up, waited for ever rather than for the minute its README promises.
+  The mountlist now goes to `Storage/DOSDrivers` and is mounted by double
+  clicking it, and the wait is gone from the startup (the command stays in
+  `C:`). Two tests hold the line for the whole catalogue: nothing this tool
+  writes goes in `DEVS:DOSDrivers`, and anything from Emu68's tools started at
+  boot runs in the background, where it cannot stop the machine starting.
+  The boot check that should have caught the second one did not, because the
+  build it ran ticked both TCP/IP stacks, and with two the WiFi interface file
+  - and with it the wait - is left out.
 * **Nothing in a startup line may hold the boot.** Booted in FS-UAE with every
   package ticked, the 3.2 drive stopped dead at `SetClockI2C LOAD`, waiting for
   an I2C controller that is not there; it now runs in the background, and the
