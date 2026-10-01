@@ -47,6 +47,21 @@ nowhere to put a Workbench install, a package or a folder of games, the build
 **says so before it starts** rather than quietly dropping them - the ticks stay
 where they are.
 
+**The mirror of it is a drive with no boot partition.** *Amiga drives only, no
+Emu68 boot partition* puts the Rigid Disk Block at block 0, where an Amiga IDE
+or SCSI controller looks for it - a CF card or disk for an A1200's IDE port, say.
+That is a statement about *this drive*, not about the machine, so **how you
+look at it - and with it Picasso96 and Emu68's VideoCore driver - stays on
+offer** whatever this switch and the Processor row say. An A1200 with a PiStorm
+that boots Emu68 from its own card and keeps its drives on the IDE port is still
+watched through the Pi, and a drive may equally be going into a machine with an
+RTG card of its own. Two things are said before such a drive is written: the
+Pi's half of an RTG screen - its HDMI mode and the memory the driver draws in -
+lives in `config.txt` on the PiStorm's own card, so build that one with *Emu68
+only* and the same display; and on a machine with no PiStorm, Picasso96 is
+still set up for Emu68's VideoCore, so another RTG card needs its own driver and
+`BOARDTYPE`.
+
 All of them are offered on the first screen, which is a choice of what to do
 rather than a page of settings that happens to be first. It carries a masthead
 so the choice sits in the window instead of clinging to the top of it: three
@@ -602,7 +617,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 886 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 888 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
