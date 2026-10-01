@@ -78,7 +78,7 @@ def cmd_identify(args) -> int:
               f"{human_size(info.size)} sha1={info.sha1[:12]}")
         if info.note:
             print(f"    {info.note}")
-        if info.version and not info.aga:
+        if info.version and info.aga is False:
             print("    warning: not an AGA/A1200 ROM - Emu68 expects an A1200 Kickstart")
     return 0
 
