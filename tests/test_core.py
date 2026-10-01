@@ -1028,3 +1028,123 @@ class TestFullBuild(_Scratch):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class RebuildingOneDrive(_Scratch):
+    """Rewrite one drive on a card that already exists, and nothing else.
+
+    Asked for as "choose to overwrite a partition on the target and only
+    write that partition out": a System drive rebuilt with new software,
+    without writing the 60 GB of games beside it again. The promise is that
+    every byte outside the chosen drive is left exactly as it was.
+    """
+
+    def tree(self, name: str, files: dict[str, bytes]) -> Path:
+        root = self.scratch() / name
+        for path, data in files.items():
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_bytes(data)
+        return root
+
+    def card(self, *, amiga_only: bool = False) -> tuple[Path, Path]:
+        system = self.tree("system", {
+            "S/Startup-Sequence": b"LoadWB\n", "C/Dir": b"dir",
+            "Libs/old.library": b"x" * 4000})
+        games = self.tree("games", {"Games/Old/Game": b"old game" * 500})
+        target = self.scratch() / "card.img"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(target),
+            image_size=400 * MIB, boot_size=96 * MIB, install_emu68=False,
+            amiga_only=amiga_only,
+            amiga_partitions=[
+                builder.AmigaPartitionSpec("DH0", 120 * MIB, "PFS3", True, 0,
+                                           content_folder=str(system),
+                                           volume_name="System"),
+                builder.AmigaPartitionSpec("DH1", 120 * MIB, "PFS3", False,
+                                           -128, content_folder=str(games),
+                                           volume_name="Games"),
+                builder.AmigaPartitionSpec("DH2", None, "PFS3", False, -128,
+                                           volume_name="Work")],
+        ), QUIET)
+        return target, games
+
+    def region(self, target: Path, drive: str) -> tuple[int, int]:
+        with open(target, "rb") as handle:
+            base, table = builder.find_rdb(handle)
+        part = next(p for p in table.partitions if p.drive_name == drive)
+        start = part.byte_offset(table.geometry, base)
+        return start, start + part.size_bytes(table.geometry)
+
+    def rebuild(self, target: Path, drive: str, folder: Path, **extra) -> None:
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.REWRITE, target=str(target),
+            rewrite_drive=drive, install_emu68=False,
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                drive, None, "PFS3", False, 0, content_folder=str(folder),
+                volume_name="Games")],
+            **extra), QUIET)
+
+    def check_only_the_drive_changed(self, amiga_only: bool) -> None:
+        target, _games = self.card(amiga_only=amiga_only)
+        before = target.read_bytes()
+        newer = self.tree("newer", {"Games/New/Game": b"new game" * 700})
+        self.rebuild(target, "DH1", newer)
+        after = target.read_bytes()
+        start, end = self.region(target, "DH1")
+        self.assertEqual(before[:start], after[:start],
+                         "nothing before the drive may change")
+        self.assertEqual(before[end:], after[end:],
+                         "nothing after the drive may change")
+        self.assertNotEqual(before[start:end], after[start:end])
+        names = [d.volume for d in builder.list_drives(target)]
+        self.assertEqual(names, ["System", "Games", "Work"])
+        from pistorm_imager.core import amigaos            # noqa: PLC0415
+        volume, _label = amigaos.open_amiga_volume(target, "DH1")
+        try:
+            found = {path for path, entry in volume.walk() if not entry.is_dir}
+        finally:
+            volume.f.close()
+        self.assertIn("Games/New/Game", found)
+        self.assertNotIn("Games/Old/Game", found,
+                         "the drive is rebuilt, not added to")
+
+    def test_only_the_chosen_drive_changes_on_a_card(self):
+        self.check_only_the_drive_changed(amiga_only=False)
+
+    def test_only_the_chosen_drive_changes_on_a_bare_amiga_drive(self):
+        #  The A1200's IDE CF card: no MBR, the RDB at block 0.
+        self.check_only_the_drive_changed(amiga_only=True)
+
+    def test_a_drive_the_card_has_not_got_is_refused(self):
+        target, games = self.card()
+        before = target.read_bytes()
+        with self.assertRaises(RuntimeError) as caught:
+            self.rebuild(target, "DH7", games)
+        self.assertIn("DH0, DH1, DH2", str(caught.exception))
+        self.assertEqual(before, target.read_bytes())
+
+    def test_amigaos_only_goes_on_the_drive_that_boots(self):
+        target, games = self.card()
+        with self.assertRaises(RuntimeError) as caught:
+            self.rebuild(target, "DH2", games, install_amigaos=True,
+                         adf_folder=str(self.scratch()))
+        self.assertIn("boots from", str(caught.exception))
+
+    def test_a_stray_write_is_refused_rather_than_made(self):
+        import io                                           # noqa: PLC0415
+        handle = io.BytesIO(bytes(1000))
+        confined = builder._Confined(handle, 100, 200, "DH1")
+        confined.seek(150)
+        confined.write(b"x" * 50)
+        confined.seek(190)
+        with self.assertRaises(RuntimeError):
+            confined.write(b"x" * 20)
+        confined.seek(10)
+        with self.assertRaises(RuntimeError):
+            confined.write(b"x")
+        self.assertEqual(handle.getvalue().count(b"x"), 50)
+
+    def test_the_drive_must_be_named(self):
+        config = builder.BuildConfig(mode=builder.BuildMode.REWRITE,
+                                     target="/tmp/card.img", rewrite_drive="")
+        self.assertTrue([p for p in config.validate() if "which drive" in p])

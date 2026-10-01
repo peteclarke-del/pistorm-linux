@@ -8,7 +8,7 @@ understands pre-built images such as **PiMiga**, so you can write one to a card
 and still apply your own Emu68 build, Kickstart, video mode and WiFi settings on
 top of it.
 
-![The opening screen: four tasks, each with an icon and a button](docs/images/01-welcome.png)
+![The opening screen: five tasks, each with an icon and a button](docs/images/01-welcome.png)
 
 ## What it does
 
@@ -28,6 +28,7 @@ drive brings no Workbench, so it needs the floppies alongside it.
 | **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
 | **Write a drive image unchanged** | Takes a WinUAE/FS-UAE/HstWB `.hdf` - the Amiga drive on its own, with no partition table - and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
 | **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
+| **Rebuild one drive** | The mirror of that: formats one Amiga drive on a card or image you already have and fills it again - a System drive with a new Workbench and software - leaving the partition table, the boot partition and every other drive [exactly as they were](#rebuilding-one-drive). |
 
 **A card can also carry Emu68 and nothing else.** Some machines keep their
 storage elsewhere - a second card in a CF adapter, a real disk on the IDE port -
@@ -53,7 +54,7 @@ so the choice sits in the window instead of clinging to the top of it: three
 rows above a large empty area read as though something had failed to load, and
 each task now has an icon and a button in one column.
 
-The fifth task writes no card at all. **Export drives as .hdf**
+The sixth task writes no card at all. **Export drives as .hdf**
 reads the Amiga drives back *out* of a card, a backup or an `.hdf`, and writes
 each one you tick as its own file.
 
@@ -602,7 +603,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 886 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 892 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1575,6 +1576,40 @@ real list that is 4,201 entries in and 3,886 out. Matching ignores case, because
 the list was written on a case-insensitive Amiga volume and is checked against a
 Linux tree where `WHDLoad` and `WHDLOAD` are two different directories, and an
 entry on a volume nothing here fills is kept rather than dropped unchecked.
+
+## Rebuilding one drive
+
+Asked for as *"choose to overwrite a partition on the target and only write
+that partition out"*: an A1200 whose CF card on the IDE port carries a System
+drive and 60 GB of games, where the System drive wants a new Workbench and the
+software from this catalogue, and writing the games out again would be an hour
+spent putting back what was already there.
+
+**Rebuild one drive** reads the card's own Rigid Disk Block - at block 0 on a
+bare drive like that CF card, or inside the `0x76` partition on a PiStorm SD
+card - lists its drives on the Target page, and rebuilds the one chosen. The
+card decides where the drive is, how big and which file system; the build is
+narrowed to that drive and then does to it exactly what a new card's build
+does - installs AmigaOS from the floppies or the CD, copies a folder into it,
+adds the software - against the table that is already there. The Storage and
+Options pages are hidden, because there is no layout to choose and no boot
+partition to write, and only the drive the Amiga boots from is offered a
+system and software.
+
+**Nothing outside the drive can change.** That rests on more than every writer
+underneath getting its arithmetic right: the card is handed to the build
+through a wrapper that refuses any write outside the drive's byte range, so a
+mistake stops the build instead of landing in the Games drive. Tested both
+ways - a card with an MBR and a bare Amiga drive - by comparing every byte
+before and after the drive, and end to end on a CF-shaped image whose System
+drive was rebuilt from the AmigaOS 3.2 CD with every package ticked: everything
+outside DH0 hashed identical, and the card booted in FS-UAE.
+
+The drive's own name is kept, so a `System:` drive does not come back as
+`Workbench:` and break every assign that names it. The confirmation names the
+drive being erased and the drives being left alone, and is asked for an image
+file as well as a card. *Back this drive up first* takes you to Export with the
+card already chosen.
 
 ## Software to add to a floppy install
 
