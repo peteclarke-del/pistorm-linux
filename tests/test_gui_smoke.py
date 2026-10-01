@@ -2564,6 +2564,54 @@ def on_activate(app: ImagerApplication) -> None:
         window.target_row.set_selected(1)
         window.device_list = []
         pump()
+        # ------------------------------- rebuilding one drive on a card
+        #  Asked for as "choose to overwrite a partition on the target and
+        #  only write that partition out". The drives are read off the card,
+        #  and only the one that boots is offered a system and software.
+        print("\nrebuilding one drive")
+        was_customising = getattr(window, "_customising", False)
+        was_mode = window.mode_row.get_selected()
+        window._choose_rewrite()
+        pump()
+        check(window._mode() is builder.BuildMode.REWRITE,
+              "the task can be chosen from the first screen")
+        pages = {n: window.stack.get_page(window.stack.get_child_by_name(n))
+                 for n in ("storage", "options", "target", "packages")}
+        check(not pages["storage"].get_visible()
+              and not pages["options"].get_visible(),
+              "there is no layout and no boot partition to set")
+        check(pages["target"].get_visible() and pages["packages"].get_visible(),
+              "but the card and the software are still asked for")
+        window.target_row.set_selected(1)
+        window.file_row.set_path(str(EXPORT_IMAGE))
+        pump()
+        check(window.rewrite_group.get_visible()
+              and [d.name for d in window._rewrite_drives] == ["DH0", "DH1"],
+              f"the card's drives are listed "
+              f"({[d.name for d in window._rewrite_drives]})")
+        check(window._rewrite_drive_name() == "DH0",
+              "the one that boots is chosen to start with")
+        check(window.os_group.get_visible(),
+              "and it is offered a system")
+        window.rewrite_drive_row.set_selected(1)
+        pump()
+        settings = window.gather()
+        check(settings.mode is builder.BuildMode.REWRITE
+              and settings.rewrite_drive == "DH1"
+              and [p.name for p in settings.amiga_partitions] == ["DH1"],
+              f"choosing DH1 reaches the build ({settings.rewrite_drive}, "
+              f"{[p.name for p in settings.amiga_partitions]})")
+        check(not settings.install_amigaos and not settings.os_cd
+              and not window.os_group.get_visible(),
+              "a drive that does not boot is offered no system")
+        check(not [p for p in settings.validate() if "drive" in p.lower()],
+              f"and the job is complete ({settings.validate()})")
+        window.rewrite_drive_row.set_selected(0)
+        window.mode_row.set_selected(was_mode)
+        window._set_customising(was_customising)
+        window._sync_visibility()
+        window.file_row.set_path("")
+        pump()
         # ------------------------------- exporting drives out of an image
         #  The old answer wrote the build's output as one bare .hdf, which
         #  cannot describe the four drives a PiStorm card carries. This is
