@@ -76,6 +76,69 @@ class BuildMode(enum.Enum):
 FILLS_DRIVES = (BuildMode.FRESH, BuildMode.REWRITE)
 
 
+class Task(enum.Enum):
+    """What somebody came to do, which decides the shape of everything else.
+
+    The window used to offer the build mode as one setting among many, beside
+    three switches - install Emu68, Emu68 only, Amiga drives only - that
+    between them could describe a card nobody could boot: a boot partition
+    with no Emu68 on it, or an .hdf chosen and then silently not written. A
+    task fixes all four at once, so the combinations that do not work cannot
+    be asked for; the build checks the same rules, whichever way a job
+    reached it.
+    """
+
+    NEW_CARD = "new-card"           # Emu68 boot partition and Amiga drives
+    BOOT_CARD = "boot-card"         # Emu68 only: the drives are elsewhere
+    AMIGA_DRIVE = "amiga-drive"     # drives only, for the IDE or SCSI port
+    PREPARED = "prepared"           # a finished image written as it is
+    DRIVE_IMAGE = "drive-image"     # an .hdf with a boot partition around it
+    REBUILD = "rebuild"             # one drive on an existing card
+    UPDATE = "update"               # the boot partition of an existing card
+    EXPORT = "export"               # drives read back out as .hdf files
+
+    @property
+    def mode(self) -> BuildMode:
+        return {Task.NEW_CARD: BuildMode.FRESH, Task.BOOT_CARD: BuildMode.FRESH,
+                Task.AMIGA_DRIVE: BuildMode.FRESH,
+                Task.PREPARED: BuildMode.IMAGE,
+                Task.DRIVE_IMAGE: BuildMode.HDF,
+                Task.REBUILD: BuildMode.REWRITE,
+                Task.UPDATE: BuildMode.CUSTOMISE,
+                Task.EXPORT: BuildMode.EXPORT}[self]
+
+    @property
+    def emu68(self) -> bool | None:
+        """Whether Emu68 goes on the card: decided, or None for a choice.
+
+        Only where a boot partition already exists is leaving it alone a
+        real choice - a prepared image or a card being updated keeps the
+        Emu68 it has. A boot partition this build creates without one is a
+        card that cannot start.
+        """
+        if self in (Task.PREPARED, Task.UPDATE):
+            return None
+        return self in (Task.NEW_CARD, Task.BOOT_CARD, Task.DRIVE_IMAGE)
+
+    @property
+    def writes_boot_partition(self) -> bool:
+        return self not in (Task.AMIGA_DRIVE, Task.REBUILD, Task.EXPORT)
+
+    @property
+    def fills_drives(self) -> bool:
+        """Whether AmigaOS and software can be put on a drive."""
+        return self in (Task.NEW_CARD, Task.AMIGA_DRIVE, Task.REBUILD)
+
+    def shape(self, config: "BuildConfig") -> "BuildConfig":
+        """``config`` made the shape this task says, keeping everything else."""
+        emu68 = self.emu68
+        return dataclasses.replace(
+            config, mode=self.mode,
+            boot_only=self is Task.BOOT_CARD,
+            amiga_only=self is Task.AMIGA_DRIVE,
+            install_emu68=config.install_emu68 if emu68 is None else emu68)
+
+
 @dataclasses.dataclass
 class AmigaPartitionSpec:
     name: str = "DH0"                  # device name, as AmigaDOS mounts it
@@ -289,6 +352,17 @@ class BuildConfig:
         """
         said: list[str] = []
         keys = set(self.package_keys or ())
+        left_out = self.unsuited_packages()
+        if left_out:
+            said.append(f"{', '.join(left_out)} cannot go on this card - not "
+                        f"for this machine, screen, Raspberry Pi or Emu68 - "
+                        f"and will be left out.")
+        said.extend(self.boot_option_concerns())
+        dropped = [key for key in (self.boot_addons or [])
+                   if key not in {a.key for a in self.chosen_addons()}]
+        if dropped:
+            said.append(f"{', '.join(dropped)} cannot go on this card's boot "
+                        f"partition and will be left out.")
         filled = [p for p in self.amiga_partitions
                   if p.content_folder or p.content_hdf]
         names = " ".join((p.volume_name or p.name) + " " + (p.content_folder or "")
@@ -560,9 +634,114 @@ class BuildConfig:
             return True
         return any(p.content_hdf for p in self.amiga_partitions)
 
+    @property
+    def task(self) -> Task | None:
+        """The task this job describes, or None for one no task can make."""
+        if self.shape_problems():
+            return None
+        for task in Task:
+            if task.mode is not self.mode:
+                continue
+            if task.mode is BuildMode.FRESH and (
+                    self.boot_only != (task is Task.BOOT_CARD)
+                    or self.amiga_only != (task is Task.AMIGA_DRIVE)):
+                continue
+            if task.emu68 is not None and task.mode is not BuildMode.REWRITE \
+                    and task.mode is not BuildMode.EXPORT \
+                    and self.install_emu68 != task.emu68:
+                continue
+            return task
+        return None
+
+    def shape_problems(self) -> list[str]:
+        """What no task allows: the combinations that build a dead card.
+
+        Checked for every mode, not only a new card's - the rules that used
+        to live behind ``if self.mode is BuildMode.FRESH`` let a drive image
+        be dropped by a boot-only switch nobody could see, and let a boot
+        partition be made with no Emu68 on it.
+        """
+        problems: list[str] = []
+        if self.mode in (BuildMode.EXPORT, BuildMode.REWRITE,
+                         BuildMode.CUSTOMISE, BuildMode.IMAGE):
+            if self.boot_only:
+                problems.append("Only a new card can be Emu68 and nothing "
+                                "else.")
+            if self.amiga_only:
+                problems.append("Only a new drive can be Amiga drives and "
+                                "nothing else.")
+        if self.mode is BuildMode.HDF:
+            if self.boot_only:
+                problems.append("A drive image needs an Amiga drive to go "
+                                "into; a boot-only card has none.")
+            if self.amiga_only:
+                problems.append("A drive image is put on a card with a boot "
+                                "partition built around it; a drives-only "
+                                "card has none.")
+        if self.mode in (BuildMode.FRESH, BuildMode.HDF) \
+                and not self.amiga_only and not self.install_emu68 \
+                and not self.output_hdf:
+            problems.append("This card would have a boot partition with no "
+                            "Emu68 on it, and could not start.")
+        return problems
+
+    def boot_option_concerns(self) -> list[str]:
+        """Emu68 settings set against what the machine and screen decide.
+
+        The machine decides these - ``machines.boot_options`` - and they can
+        still be changed by hand. Changed, they are said here, because each
+        one breaks something specific that nothing on the card will explain.
+        """
+        if not self.install_emu68 or self.amiga_only \
+                or self.mode in (BuildMode.EXPORT, BuildMode.REWRITE):
+            return []
+        from . import machines                              # noqa: PLC0415
+        machine = self.machine()
+        display = (machines.Display(self.package_display)
+                   if self.package_display else machines.Display.NATIVE)
+        wanted = machines.boot_options(machine, display)
+        options = self.boot_options
+        said = []
+        if wanted.chip_slowdown and not options.chip_slowdown:
+            said.append(f"Chip RAM slowdown is off on an "
+                        f"{machine.chipset.value} machine: software that "
+                        f"busy-waits on the chipset runs too fast to work.")
+        if options.vbr_move and not wanted.vbr_move:
+            said.append("The vector base is moved to fast RAM: games and "
+                        "demos that take over the machine put their own "
+                        "vectors at address 0 and will crash.")
+        if display.uses_rtg and not options.vc4_mem:
+            said.append("The display is the Pi's HDMI, and no memory is "
+                        "given to the RTG driver, so it has nothing to draw "
+                        "in.")
+        return said
+
+    def unsuited_packages(self) -> list[str]:
+        """Chosen packages that cannot go on this card, and are left out.
+
+        The build has always skipped them; the job did not say so, and a tick
+        restored from a saved setup could carry one in from a machine or a
+        screen it suited.
+        """
+        from . import machines                              # noqa: PLC0415
+        if not self.package_keys:
+            return []
+        chipset = (machines.Chipset(self.package_chipset)
+                   if self.package_chipset else machines.Chipset.AGA)
+        display = (machines.Display(self.package_display)
+                   if self.package_display else machines.Display.NATIVE)
+        out = []
+        for key in packages.expand(self.package_keys):
+            package = packages.CATALOGUE_BY_KEY.get(key)
+            if package is not None and not package.suits(
+                    chipset, display, pi=self.pi(), cpu=self.cpu(),
+                    emu68_tag=self.release_tag or None):
+                out.append(package.label)
+        return out
+
     def validate(self) -> list[str]:
         """Return a list of problems; an empty list means the config is usable."""
-        problems: list[str] = []
+        problems: list[str] = self.shape_problems()
         if self.mode is BuildMode.EXPORT:
             #  Nothing is written to a card here, so the target is not the
             #  question - the image to read and the folder to fill are.
@@ -713,6 +892,14 @@ class BuildConfig:
                 )
         if self.wifi_ssid and not self.wifi_password:
             problems.append("A WiFi network was given without a password.")
+        #  A kernel built for a later Emu68 than the release it is laid over.
+        kernel = emu68.KERNELS_BY_KEY.get(self.kernel_key)
+        if kernel is not None and self.install_emu68 and self.release_tag \
+                and kernel.min_release \
+                and not emu68.at_least(self.release_tag, kernel.min_release):
+            wanted = ".".join(str(part) for part in kernel.min_release)
+            problems.append(f"The {kernel.label} kernel needs Emu68 {wanted} "
+                            f"or newer, and {self.release_tag} was chosen.")
         return problems
 
 

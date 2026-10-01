@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import amigainfo, builder, compat, emu68, mbr, pfs3, rdb  # noqa: E402
 from pistorm_imager.core.util import MIB, Progress  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from emu68_stub import EMU68  # noqa: E402
 
 QUIET = Progress()
 
@@ -330,7 +332,7 @@ class TestContentInstall(_Scratch):
         target = folder / "card.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(target),
-            image_size=400 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=400 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, content_folder=str(tree))],
         ), QUIET)
@@ -364,7 +366,7 @@ class TestContentInstall(_Scratch):
         target = folder / "card.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(target),
-            image_size=400 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=400 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             fix_compatibility=False,
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, content_folder=str(tree))],
@@ -395,7 +397,7 @@ class TestContentInstall(_Scratch):
         folder, tree = self._tree_with_unreadable_file()
         config = builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(folder / "card.img"),
-            image_size=400 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=400 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, content_folder=str(tree))])
         with self.assertRaises(RuntimeError) as caught:
@@ -413,7 +415,7 @@ class TestContentInstall(_Scratch):
         target = folder / "card.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(target),
-            image_size=400 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=400 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             spare_files_folder=str(spares),
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, content_folder=str(tree))]), QUIET)
@@ -449,7 +451,7 @@ class TestContentInstall(_Scratch):
         (tree / "huge.bin").write_bytes(b"x" * (200 * MIB))
         config = builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(folder / "small.img"),
-            image_size=300 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=300 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, content_folder=str(tree))])
         with self.assertRaises(RuntimeError) as caught:

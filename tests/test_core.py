@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import bootcfg, builder, emu68, fat32, jobs, kickstart, mbr, rdb  # noqa: E402
 from pistorm_imager.core.util import GIB, MIB, Progress, parse_size  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from emu68_stub import EMU68  # noqa: E402
 
 QUIET = Progress()
 
@@ -949,7 +951,7 @@ class TestFullBuild(_Scratch):
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.HDF, target=str(target),
             image_size=512 * MIB, boot_size=96 * MIB,
-            hdf_image=str(hdf), install_emu68=False,
+            hdf_image=str(hdf), emu68_prepared_dir=EMU68,
             amiga_partitions=[builder.AmigaPartitionSpec("DH0", None, "FFS", True, 0)],
         ), QUIET)
 
@@ -985,7 +987,7 @@ class TestFullBuild(_Scratch):
             builder.run_build(builder.BuildConfig(
                 mode=builder.BuildMode.HDF, target=str(target),
                 image_size=300 * MIB, boot_size=96 * MIB,
-                hdf_image=str(hdf), install_emu68=False), QUIET)
+                hdf_image=str(hdf), emu68_prepared_dir=EMU68), QUIET)
         self.assertIn("Amiga partition is only", str(caught.exception))
 
     def test_filesystem_driver_is_lifted_from_a_donor_image(self):
@@ -998,7 +1000,7 @@ class TestFullBuild(_Scratch):
         target = folder / "card.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(target),
-            image_size=512 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=512 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             pfs3_binary=str(donor),
             amiga_partitions=[builder.AmigaPartitionSpec("DH0", None, "PDS3", True, 0)],
         ), QUIET)
@@ -1054,8 +1056,8 @@ class RebuildingOneDrive(_Scratch):
         target = self.scratch() / "card.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(target),
-            image_size=400 * MIB, boot_size=96 * MIB, install_emu68=False,
-            amiga_only=amiga_only,
+            image_size=400 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
+            install_emu68=not amiga_only, amiga_only=amiga_only,
             amiga_partitions=[
                 builder.AmigaPartitionSpec("DH0", 120 * MIB, "PFS3", True, 0,
                                            content_folder=str(system),
@@ -1148,3 +1150,53 @@ class RebuildingOneDrive(_Scratch):
         config = builder.BuildConfig(mode=builder.BuildMode.REWRITE,
                                      target="/tmp/card.img", rewrite_drive="")
         self.assertTrue([p for p in config.validate() if "which drive" in p])
+
+
+class TheTaskDecidesTheShape(unittest.TestCase):
+    """Every task makes a card that can work; no switch can unmake it.
+
+    The build mode used to sit beside three switches - install Emu68, Emu68
+    only, Amiga drives only - and the rules that kept them apart were checked
+    for a new card alone. A drive image with "Emu68 only" left on was
+    silently not written, and a boot partition could be made with no Emu68.
+    """
+
+    def test_every_task_shape_is_allowed(self):
+        for task in builder.Task:
+            with self.subTest(task.name):
+                config = task.shape(builder.BuildConfig(target="/tmp/x.img"))
+                self.assertEqual(config.shape_problems(), [])
+                self.assertIs(config.task, task)
+
+    def test_the_combinations_no_task_makes_are_refused_in_every_mode(self):
+        bad = [
+            dict(mode=builder.BuildMode.HDF, boot_only=True),
+            dict(mode=builder.BuildMode.HDF, amiga_only=True,
+                 install_emu68=False),
+            dict(mode=builder.BuildMode.IMAGE, boot_only=True),
+            dict(mode=builder.BuildMode.REWRITE, amiga_only=True),
+            dict(mode=builder.BuildMode.FRESH, install_emu68=False),
+            dict(mode=builder.BuildMode.HDF, install_emu68=False),
+        ]
+        for given in bad:
+            with self.subTest(given):
+                config = builder.BuildConfig(target="/tmp/x.img", **given)
+                self.assertTrue(config.shape_problems())
+                self.assertTrue(config.validate())
+                self.assertIsNone(config.task)
+
+    def test_emu68_is_a_choice_only_where_a_boot_partition_exists(self):
+        for task in (builder.Task.PREPARED, builder.Task.UPDATE):
+            for emu68 in (True, False):
+                config = task.shape(builder.BuildConfig(
+                    target="/tmp/x.img", install_emu68=emu68))
+                self.assertEqual(config.install_emu68, emu68)
+                self.assertIs(config.task, task)
+
+    def test_software_that_cannot_go_on_is_said_before_the_build(self):
+        config = builder.Task.NEW_CARD.shape(builder.BuildConfig(
+            target="/tmp/x.img", package_keys=["scummvm"],
+            package_display="native"))
+        said = " ".join(config.concerns())
+        self.assertIn("ScummVM", said)
+        self.assertIn("left out", said)

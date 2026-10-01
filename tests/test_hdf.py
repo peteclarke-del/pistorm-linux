@@ -9,6 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import builder, hdfcheck, mbr, rdb  # noqa: E402
 from pistorm_imager.core.util import MIB, Progress  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from emu68_stub import EMU68  # noqa: E402
 
 QUIET = Progress()
 
@@ -157,7 +159,7 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
         out = self.scratch() / "card.hdf"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
-            image_size=200 * MIB, install_emu68=False, fix_compatibility=True,
+            image_size=200 * MIB, emu68_prepared_dir=EMU68, fix_compatibility=True,
             pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, volume_name="Sys",
@@ -269,7 +271,7 @@ class TestUserStartupOnBothFileSystems(_Scratch):
         out = self.scratch() / f"{dostype}.hdf"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
-            image_size=400 * MIB, install_emu68=False,
+            image_size=400 * MIB, emu68_prepared_dir=EMU68,
             install_amigaos=True, adf_folder=str(self.ADFS),
             amiga_volume_name="Workbench", fix_compatibility=False,
             pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
@@ -324,7 +326,7 @@ class TestEmptyPartitionsAreFormatted(_Scratch):
         out = self.scratch() / "card.hdf"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
-            image_size=300 * MIB, install_emu68=False,
+            image_size=300 * MIB, emu68_prepared_dir=EMU68,
             pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
             amiga_partitions=partitions), QUIET)
         return out
@@ -471,7 +473,7 @@ class TestFindRdb(_Scratch):
         card = folder / "card.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(card),
-            image_size=300 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=300 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             amiga_partitions=[builder.AmigaPartitionSpec("DH0", None,
                                                          "FFS-INTL", True, 0)]),
             QUIET)
@@ -488,7 +490,7 @@ class TestHdfOutput(_Scratch):
         out = folder / "made.hdf"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
-            install_emu68=False, image_size=64 * MIB,
+            emu68_prepared_dir=EMU68, image_size=64 * MIB,
             amiga_partitions=[
                 builder.AmigaPartitionSpec("DH0", None, "FFS-INTL", True, 0)]),
             QUIET)
@@ -515,7 +517,7 @@ class TestCardImageAsSource(_Scratch):
         donor = folder / "donor-card.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(donor),
-            image_size=300 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=300 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             amiga_partitions=[builder.AmigaPartitionSpec("DH0", None,
                                                          "FFS-INTL", True, 0)]),
             QUIET)
@@ -528,7 +530,7 @@ class TestCardImageAsSource(_Scratch):
         rebuilt = folder / "rebuilt.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.HDF, target=str(rebuilt),
-            image_size=600 * MIB, boot_size=128 * MIB, install_emu68=False,
+            image_size=600 * MIB, boot_size=128 * MIB, emu68_prepared_dir=EMU68,
             hdf_image=str(donor)), QUIET)
 
         with open(rebuilt, "rb") as handle:
@@ -551,7 +553,7 @@ class TestCardImageAsSource(_Scratch):
         card = folder / "card.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.HDF, target=str(card),
-            image_size=400 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=400 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             hdf_image=str(broken), repair_rdb=True), QUIET)
 
         with open(card, "rb") as handle:
@@ -576,7 +578,7 @@ class TestCardImageAsSource(_Scratch):
         with self.assertRaises(RuntimeError) as caught:
             builder.run_build(builder.BuildConfig(
                 mode=builder.BuildMode.HDF, target=str(card),
-                image_size=400 * MIB, boot_size=96 * MIB, install_emu68=False,
+                image_size=400 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
                 hdf_image=str(bad), repair_rdb=True), QUIET)
         self.assertIn("overlap", str(caught.exception))
 
@@ -789,7 +791,7 @@ class TestABootableDriveFilledFromAnImage(_Scratch):
         made = self.scratch() / "source.hdf"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(made), output_hdf=True,
-            image_size=40 * MIB, install_emu68=False,
+            image_size=40 * MIB, emu68_prepared_dir=EMU68,
             pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, volume_name="Src",
@@ -801,7 +803,7 @@ class TestABootableDriveFilledFromAnImage(_Scratch):
         out = self.scratch() / "card.hdf"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
-            image_size=80 * MIB, install_emu68=False, fix_compatibility=True,
+            image_size=80 * MIB, emu68_prepared_dir=EMU68, fix_compatibility=True,
             pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, volume_name="Sys",
@@ -830,7 +832,7 @@ class EveryDriveWearsTheCardsIcon(_Scratch):
         out = self.scratch() / "card.hdf"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
-            image_size=120 * MIB, install_emu68=False, fix_compatibility=True,
+            image_size=120 * MIB, emu68_prepared_dir=EMU68, fix_compatibility=True,
             pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
             amiga_partitions=[
                 builder.AmigaPartitionSpec(
