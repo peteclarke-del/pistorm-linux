@@ -35,10 +35,10 @@ import re
 import shutil
 import subprocess
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from . import amigainfo
+from . import ahi, amigainfo
 from .compat import EMU68_BOARD
 from .machines import Chipset, Cpu, Display, Machine, Pi
 from .util import Progress, human_size
@@ -134,6 +134,36 @@ class Written:
 
 
 @dataclasses.dataclass(frozen=True)
+class Made:
+    """A file this tool makes from one in the archive, for this card.
+
+    A settings file whose contents the archive decides: AHI's has to name an
+    audio mode, and which IDs exist is said by the driver's own modes file.
+    """
+
+    inside: str
+    name: str
+    destination: str
+    #  Given the file in the archive and everything chosen for the card.
+    make: Callable[[Path, frozenset[str]], bytes]
+
+
+@dataclasses.dataclass(frozen=True)
+class ScummGame:
+    """How ScummVM's launcher lists a game: the section its Add Game writes.
+
+    Without one the game is on the card and ScummVM does not know it, so the
+    launcher opens empty until somebody points Add Game at each drawer.
+    """
+
+    engine: str
+    game: str
+    description: str
+    language: str = "en"
+    platform: str = "pc"
+
+
+@dataclasses.dataclass(frozen=True)
 class Download:
     """A freely distributable archive, from Aminet or a named source.
 
@@ -168,6 +198,7 @@ class Download:
     #  Files this tool writes itself.  An archive that ships templates for
     #  other people's hardware still needs one for the machine being built.
     write: tuple[Written, ...] = ()
+    made: tuple[Made, ...] = ()
     #  (path inside the archive, destination, name on the card). For an
     #  archive that ships one binary per processor: the card wants the one
     #  its machine has, under the name the icon launches.
@@ -203,6 +234,13 @@ class Download:
     #  and calling it the package would lose the actual rule, which is that
     #  the processor decides.
     per_cpu: tuple[tuple[str, str], ...] = ()
+    #  The third shape: one archive with a drawer per processor, holding
+    #  files of the same names. ``(a machines.Cpu value, path inside the
+    #  archive, destination)``; the entries for the machine's processor join
+    #  ``items``, or the first processor's where it is not listed. AmiSSL
+    #  ships its libraries for the 68020 to 68040 and for the 68060 this way,
+    #  and its installer asks which to copy.
+    cpu_items: tuple[tuple[str, str, str], ...] = ()
     #  A publisher that keeps only its newest few builds under one release:
     #  ``path`` is then that release's GitHub API address and this is a
     #  regular expression for the file wanted from it. The newest file that
@@ -236,9 +274,17 @@ class Download:
         Falls back to the first entry, which is the oldest processor the
         publisher builds for and therefore the one that runs anywhere.
         """
+        wanted = cpu.value if cpu is not None else ""
+        if self.cpu_items:
+            listed = {value for value, _i, _d in self.cpu_items}
+            pick = wanted if wanted in listed else self.cpu_items[0][0]
+            chosen = tuple((inside, destination)
+                           for value, inside, destination in self.cpu_items
+                           if value == pick)
+            return dataclasses.replace(self, items=self.items + chosen,
+                                       cpu_items=()).for_cpu(cpu)
         if not self.per_cpu:
             return self
-        wanted = cpu.value if cpu is not None else ""
         for value, path in self.per_cpu:
             if value == wanted:
                 return dataclasses.replace(self, path=path)
@@ -388,6 +434,9 @@ class Package:
     #  software and is offered rather than assumed, described for the
     #  question that offers it. Empty for a package that has none.
     media: str = ""
+    #  A game for ScummVM, registered in its scummvm.ini when both are on
+    #  the card. Its path is where the package puts it.
+    scummvm: ScummGame | None = None
 
     @property
     def manual(self) -> bool:
@@ -452,6 +501,7 @@ class Package:
 
 
 STAGING = "Storage/Install"          # where self-installing packages land
+AMISSL = "AmiSSL"                    # AmiSSL's own drawer on the system drive
 
 #  A ``{name}`` in a startup line, to be filled in before it is written.
 PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -468,17 +518,54 @@ USB_UNIT = "usb_unit"
 #  The Exec device Emu68 drives the SD card through, which depends on the Pi:
 #  a mountlist for a partition on the card has to name it.
 SD_DEVICE = "sd_device"
+#  The time zone as a POSIX rule - ``GMT0BST,M3.5.0/1,M10.5.0`` - which is
+#  what the Amiga's TZ variable and AmiTimeKeeper's TZ setting both take.
+#  ``tz_line`` is the same as a settings line, empty where none is known, so
+#  a settings file that is right without one is still written.
+TIME_ZONE = "tz"
+TIME_ZONE_LINE = "tz_line"
+#  Where the host keeps its own: a TZif file, whose version 2 and later end
+#  with the rule on a line of its own.
+LOCALTIME = Path("/etc/localtime")
 
 
-def hardware_settings(pi: Pi | None) -> dict[str, str]:
-    """The placeholders the Raspberry Pi decides, for files a package writes.
+def host_time_zone(localtime: Path = LOCALTIME) -> str:
+    """This computer's time zone as a POSIX rule, or "" where it has none.
 
-    Empty for a Pi nobody has named, so a file that needs one is left out
-    rather than written naming the wrong device.
+    The card is being made by somebody for an Amiga that is almost always
+    in the same room, so the clock it keeps should be theirs - read off the
+    host rather than asked for, or left to be found in a readme.
+    """
+    try:
+        data = localtime.read_bytes()
+    except OSError:
+        return ""
+    if data[:4] != b"TZif" or data[4:5] < b"2" or not data.endswith(b"\n"):
+        return ""
+    rule = data[data.rstrip(b"\n").rfind(b"\n") + 1:].strip()
+    try:
+        text = rule.decode("ascii")
+    except UnicodeDecodeError:
+        return ""
+    return text if re.fullmatch(r"[A-Za-z<][-+A-Za-z0-9<>,./:]*", text) else ""
+
+
+def hardware_settings(pi: Pi | None,
+                      time_zone: str | None = None) -> dict[str, str]:
+    """The placeholders the machine decides, for files a package writes.
+
+    The SD device is absent for a Pi nobody has named, so a file that needs
+    one is left out rather than written naming the wrong device. The time
+    zone is the host's unless one is given.
     """
     from . import bootcfg                                   # noqa: PLC0415
     overlay = bootcfg.sd_overlay_for(pi.value) if pi is not None else ""
-    return {SD_DEVICE: f"brcm-{overlay}.device"} if overlay else {}
+    out = {SD_DEVICE: f"brcm-{overlay}.device"} if overlay else {}
+    zone = host_time_zone() if time_zone is None else time_zone
+    if zone:
+        out[TIME_ZONE] = zone
+    out[TIME_ZONE_LINE] = f"TZ={zone}\n" if zone else ""
+    return out
 
 
 MOUNT_ADF_SCRIPT = '.key NAME/F\n;\n; MountADF - choose a disk image and mount it as a floppy drive.\n;\n; Written by the PiStorm imager. Double click it and it asks for the file,\n; or pass one:  Execute SYS:Utilities/ADF_Device/MountADF <file>.adf\n; Either way it hands the job to the ADF Device\'s own Insert.script, which\n; asks which unit, mounts it if it is not mounted, and tells DOS the disk\n; has changed - after which AD0: is on Workbench like any other floppy.\n;\nIF "<NAME>" EQ ""\n  RequestFile >ENV:PiStormADF TITLE "Choose a disk image to mount" PATTERN "#?.adf" NOICONS\n  IF EXISTS ENV:PiStormADF\n    IF NOT "$PiStormADF" EQ ""\n      Execute SYS:Utilities/ADF_Device/Insert.script $PiStormADF\n    ENDIF\n    Delete >NIL: ENV:PiStormADF\n  ENDIF\nELSE\n  Execute SYS:Utilities/ADF_Device/Insert.script <NAME>\nENDIF\n'
@@ -1252,11 +1339,17 @@ CATALOGUE: list[Package] = [
              ("AHI/User/Help/ahi.guide", "Storage/Install/AHI")),
             #  The archive keeps two prefs programs side by side; the one
             #  that lands has to be called AHI for its icon to find it.
-            rename=(("AHI/User/Prefs/AHI_MUI", "Prefs", "AHI"),)),
+            rename=(("AHI/User/Prefs/AHI_MUI", "Prefs", "AHI"),),
+            #  AHI chooses no mode until AHI Prefs has been saved once, and
+            #  until then whatever plays through it is silent or says so.
+            made=(Made("AHI/User/Devs/AudioModes/PAULA", "ahi.prefs",
+                       "Prefs/Env-Archive/Sys",
+                       lambda source, _chosen: ahi.prefs_from(source)),)),
         note="Installed, not staged: ahi.device and the Paula driver go "
-             "straight into DEVS:, and AHI Prefs into Prefs. Only the Paula "
-             "driver is copied - the Toccata and Delfina drivers are for "
-             "sound cards this machine has not got.",
+             "straight into DEVS:, and AHI Prefs into Prefs, already saved "
+             "with a Paula 14-bit stereo++ mode on every unit. Only the "
+             "Paula driver is copied - the Toccata and Delfina drivers are "
+             "for sound cards this machine has not got.",
     ),
     Package(
         "amplifier", "AMPlifier",
@@ -1491,9 +1584,36 @@ CATALOGUE: list[Package] = [
         "TLS for the Amiga. Without it almost nothing on the modern web will "
         "answer.",
         category=Category.NETWORK,
-        download=Download("util/libs/AmiSSL-v5-OS3.lha",
-                          stage=STAGING + "/AmiSSL"),
-        note="Run its Installer from Storage/Install on the Amiga.",
+        #  Laid out as its own installer lays it out on AmigaOS 3 when asked
+        #  for a self-contained install: one AmiSSL drawer holding the
+        #  libraries, the OpenSSL command, its settings and the certificate
+        #  authorities, found through the AmiSSL: assign. It used to be
+        #  staged for that installer to be run by hand, and until it was,
+        #  everything that asks for it - YAM, NetSurf, AmiGemini - failed.
+        download=Download(
+            "util/libs/AmiSSL-v5-OS3.lha",
+            (("Libs/AmigaOS3/amisslmaster.library", AMISSL + "/Libs"),
+             ("C/AmigaOS3/OpenSSL", AMISSL),
+             ("C/openssl.cnf", AMISSL),
+             ("C/CA.pl", AMISSL),
+             ("C/tsget.pl", AMISSL),
+             ("Certs", AMISSL + "/Certs"),
+             ("Doc/AmiSSL.doc", AMISSL),
+             ("Doc/OpenSSL.doc", AMISSL)),
+            cpu_items=tuple(
+                (cpu.value, f"Libs/AmigaOS3/AmiSSL/{build}",
+                 AMISSL + "/Libs/AmiSSL")
+                for cpu, build in ((Cpu.M68020, "68020-40"),
+                                   (Cpu.M68030, "68020-40"),
+                                   (Cpu.M68040, "68020-40"),
+                                   (Cpu.M68060, "68060")))),
+        #  What its installer adds to User-Startup for that install.
+        startup=(f"Assign AmiSSL: SYS:{AMISSL}",
+                 "If Exists AmiSSL:Libs",
+                 "  Assign LIBS: AmiSSL:Libs ADD",
+                 "EndIf",
+                 "Path AmiSSL: ADD"),
+        evidence=(AMISSL + "/Libs/amisslmaster.library",),
         default=True,
     ),
     Package(
@@ -1596,17 +1716,19 @@ CATALOGUE: list[Package] = [
                            "TIMEOUT=5000\n"
                            "CX_POPUP=NO\n"
                            "READONLY=NO\n"
-                           "ACTIVE=YES\n"),)),
+                           "ACTIVE=YES\n"
+                           #  Daylight saving too, which Locale's time
+                           #  zone alone does not say.
+                           "{tz_line}"),)),
         #  Run, because it is a commodity and never returns; ACTIVE, because
         #  it starts idle otherwise.
         startup=("IF EXISTS SYS:Utilities/AmiTimeKeeper/TimeKeeper",
                  "   Run >NIL: SYS:Utilities/AmiTimeKeeper/TimeKeeper "
                  "ACTIVE CX_POPUP=NO",
                  "EndIF"),
-        note="Takes its time zone from Locale preferences; for daylight "
-             "saving add a TZ= line (a POSIX rule such as "
-             "GMT0BST,M3.5.0/1,M10.5.0) to "
-             "ENVARC:AmiTimeKeeper/timekeeper.prefs. Needs a TCP/IP stack.",
+        note="Set to this computer's time zone, daylight saving included, "
+             "by the TZ= line in ENVARC:AmiTimeKeeper/timekeeper.prefs. "
+             "Needs a TCP/IP stack.",
         evidence=("Utilities/AmiTimeKeeper/TimeKeeper",),
     ),
     Package(
@@ -1669,8 +1791,7 @@ CATALOGUE: list[Package] = [
         requires=("mui", "mcc_nlist", "mcc_texteditor", "mcc_betterstring",
                   "mcc_thebar", "codesets", "amissl"),
         note="Installed into Internet/YAM, ready to run; no YAM: assign is "
-             "needed. Secure mail needs AmiSSL, which still has to be "
-             "installed from Storage/Install.",
+             "needed. Secure mail goes through AmiSSL, installed with it.",
         evidence=("Internet/YAM/YAM",),
     ),
 
@@ -1746,8 +1867,8 @@ CATALOGUE: list[Package] = [
         needs_cpu=Cpu.M68020,
         note="Installed into Audio/AmigaAMP3. Its plain window and its "
              "preferences are drawn with ReAction, which ClassAct supplies on "
-             "Workbench 3.1. Set AHI to a Stereo++ mode or it says so when it "
-             "starts.",
+             "Workbench 3.1. AHI comes already set to the stereo++ mode it "
+             "asks for.",
     ),
     Package(
         "riva", "RiVA",
@@ -1889,7 +2010,6 @@ CATALOGUE: list[Package] = [
         download=Download(
             "game/misc/ScummVM_RTG_060.lha",
             (("ScummVM/ScummVM", "Games/ScummVM"),
-             ("ScummVM/scummvm.ini", "Games/ScummVM"),
              ("ScummVM/translations.dat", "Games/ScummVM"),
              ("ScummVM/extras", "Games/ScummVM/extras"),
              ("ScummVM/scummmodern", "Games/ScummVM/scummmodern"),
@@ -1900,7 +2020,12 @@ CATALOGUE: list[Package] = [
              ("ScummVM/ScummVM.readme", "Games/ScummVM"),
              ("ScummVM/README.md", "Games/ScummVM"),
              ("ScummVM/COPYING", "Games/ScummVM"),
-             ("ScummVM.info", "Games"))),
+             ("ScummVM.info", "Games")),
+            #  Its own settings, with a section for each freeware game
+            #  ticked beside it, so they are in the launcher from the start.
+            made=(Made("ScummVM/scummvm.ini", "scummvm.ini", "Games/ScummVM",
+                       lambda source, chosen: scummvm_ini(
+                           source, chosen, "Games/ScummVM")),)),
         requires=("ahi",),
         rtg_only=True,
         #  Built for the 68060 and its readme names the PiStorm as the machine
@@ -1911,8 +2036,9 @@ CATALOGUE: list[Package] = [
         needs_cpu=Cpu.M68040,
         note="Installed into Games/ScummVM, about 60 MB. Its author asks for "
              "a 32-bit screen mode and a PiStorm with a Raspberry Pi 4; on a "
-             "Pi 3 it runs, slowly. Add games with the launcher's Add Game or "
-             "Mass Add, pointed at Games/ScummVM/games.",
+             "Pi 3 it runs, slowly. The freeware games ticked with it are "
+             "already in its launcher; add others with Add Game or Mass Add, "
+             "pointed at Games/ScummVM/games.",
     ),
     Package(
         "scummvm_lure", "Lure of the Temptress (freeware)",
@@ -1924,6 +2050,8 @@ CATALOGUE: list[Package] = [
             (("lure", "Games/ScummVM/games/Lure"),),
             source="scummvm.org"),
         requires=("scummvm",),
+        scummvm=ScummGame("lure", "lure",
+                          "Lure of the Temptress (DOS/English)"),
     ),
     Package(
         "scummvm_bass", "Beneath a Steel Sky (freeware)",
@@ -1939,6 +2067,8 @@ CATALOGUE: list[Package] = [
              ("readme.txt", "Games/ScummVM/games/BASS")),
             source="scummvm.org"),
         requires=("scummvm",),
+        scummvm=ScummGame("sky", "sky",
+                          "Beneath a Steel Sky (Floppy/DOS/English)"),
     ),
     Package(
         "scummvm_fotaq", "Flight of the Amazon Queen (freeware)",
@@ -1951,6 +2081,8 @@ CATALOGUE: list[Package] = [
             (("FOTAQ_Floppy", "Games/ScummVM/games/FOTAQ"),),
             source="scummvm.org"),
         requires=("scummvm",),
+        scummvm=ScummGame("queen", "queen",
+                          "Flight of the Amazon Queen (Floppy/DOS/English)"),
     ),
     Package(
         "scummvm_drascula", "Drascula: The Vampire Strikes Back (freeware)",
@@ -1965,6 +2097,8 @@ CATALOGUE: list[Package] = [
              ("drascula.doc", "Games/ScummVM/games/Drascula")),
             source="scummvm.org"),
         requires=("scummvm",),
+        scummvm=ScummGame("drascula", "drascula",
+                          "Drascula: The Vampire Strikes Back (DOS/English)"),
     ),
     Package(
         "adoom", "ADoom",
@@ -2219,9 +2353,16 @@ CATALOGUE: list[Package] = [
         #  are for making self-extracting archives and are left out.
         download=Download("util/arc/UnZip-6.0.lha",
                           (("UnZip/020/UnZip", "C"),
-                           ("UnZip/020/FUnZip", "C"))),
+                           ("UnZip/020/FUnZip", "C")),
+                          #  Its readme: without TZ it "says so and treats
+                          #  archive times as local time". An environment
+                          #  variable is the file's contents, with no line
+                          #  ending to become part of the value.
+                          write=(Written("TZ", "Prefs/Env-Archive", "{tz}"),)),
         default=True,
-        note="UnZip 6.0-31. Shell use: UnZip <file>.zip -d <drawer>.",
+        note="UnZip 6.0-31. Shell use: UnZip <file>.zip -d <drawer>. "
+             "ENVARC:TZ is set to this computer's time zone, which it needs "
+             "for the UTC times modern archives carry.",
     ),
     Package(
         "fat95", "PC disks and memory sticks (fat95)",
@@ -2981,6 +3122,57 @@ def _unpack_inner(package: Package, root: Path, parts: tuple[str, ...],
     return destination
 
 
+def _made(package: Package, root: Path, progress: Progress,
+          chosen: Iterable[str] = ()) -> list[tuple[str, str]]:
+    """The files made from the archive's own, for ``Download.made``."""
+    out: list[tuple[str, str]] = []
+    for item in package.download.made:
+        source = inside_archive(root, item.inside)
+        try:
+            data = item.make(source, frozenset(chosen))
+        except (OSError, ValueError) as error:
+            progress.log(f"  {package.label}: {item.destination}/{item.name} "
+                         f"not written - {error}")
+            continue
+        made = cache_dir() / f"{package.key}-made" / item.destination
+        made.mkdir(parents=True, exist_ok=True)
+        (made / item.name).write_bytes(data)
+        out.append((str(made / item.name), item.destination))
+        progress.log(f"  {package.label}: wrote {item.destination}/{item.name}")
+    return out
+
+
+def scummvm_ini(source: Path, chosen: Iterable[str], drawer: str) -> bytes:
+    """ScummVM's own settings, with the chosen games in its launcher.
+
+    A section per game, as Add Game writes one: the target name is the game
+    ID, and the path is where the game's package puts it, relative to the
+    drawer ScummVM runs from - its ini already points everything at PROGDIR:.
+    """
+    text = source.read_bytes().decode("latin-1").rstrip("\n") + "\n"
+    present = set(re.findall(r"(?m)^\[([^\]]+)\]", text))
+    wanted = set(chosen)
+    for package in CATALOGUE:                      # the catalogue's order
+        game = package.scummvm
+        if package.key not in wanted or game is None \
+                or game.game in present or not package.download:
+            continue
+        where = next((d for _i, d in package.download.items
+                      if d == drawer or d.startswith(drawer + "/")), None)
+        if where is None:
+            continue
+        relative = where[len(drawer):].strip("/")
+        text += (f"\n[{game.game}]\n"
+                 f"description={game.description}\n"
+                 f"engineid={game.engine}\n"
+                 f"gameid={game.game}\n"
+                 f"language={game.language}\n"
+                 f"platform={game.platform}\n"
+                 f"path=PROGDIR:{relative}/\n")
+        present.add(game.game)
+    return text.encode("latin-1")
+
+
 def _written(package: Package, progress: Progress,
              chosen: Iterable[str] = (),
              settings: dict[str, str] | None = None) -> list[tuple[str, str]]:
@@ -3138,12 +3330,13 @@ def fetch(package: Package, progress: Progress,
     #  archive went to `stage` - which for such a package is "", the volume
     #  root.
     if not (download.items or download.rename or download.write
-            or download.retool or download.tooltypes):
+            or download.retool or download.tooltypes or download.made):
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
         whole = [(str(source), download.stage)]
         return whole + _named_icons(package, whole, progress)
     out: list[tuple[str, str]] = _written(package, progress, chosen, settings)
+    out += _made(package, root, progress, chosen)
     for inside, destination, newname, entries in download.tooltypes:
         source = inside_archive(root, inside)
         if not source.exists():
