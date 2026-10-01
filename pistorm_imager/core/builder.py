@@ -219,6 +219,9 @@ class BuildConfig:
     #  card on an A1200's IDE port, say. The Pi's boot card is ``target``;
     #  the drives, with Workbench and the software on them, go here, and the
     #  two are written by one build from one set of choices.
+    #  Packages whose optional media - screenshots, descriptions - was asked
+    #  for, by key. Offered, never assumed.
+    with_media: list[str] = dataclasses.field(default_factory=list)
     drives_target: str = ""
     drives_target_is_device: bool = False
     drives_image_size: int = 8 * 1024 * MIB
@@ -2181,6 +2184,12 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
         out += extra
     for key, _pairs in by_package:
         package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is not None and package.content_menu:
+            extra = _content_menu(config, package, resolved, progress)
+            if credit is not None:
+                for pair in extra:
+                    credit.setdefault(pair, key)
+            out += extra
         if package is None or not package.kickstart_drawer:
             continue
         extra = _kickstart_images(config, package, progress)
@@ -2189,6 +2198,42 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
                 credit.setdefault(pair, key)
         out += extra
     return out
+
+
+def _content_menu(config: "BuildConfig", package: "packages.Package",
+                  resolved: list[tuple[str, str]],
+                  progress: Progress) -> list[tuple[str, str]]:
+    """A launcher's menu, written from the games on the drives being filled.
+
+    The drives are the content partitions the build fills from a folder on
+    this computer; what is left off them is left out of the menu as well.
+    WHDLoad's own binary - one of the files being installed - says which
+    icon settings are WHDLoad options.
+    """
+    from . import gamemenu                                  # noqa: PLC0415
+    boot = {spec.name.upper() for spec in config.amiga_partitions
+            if spec.bootable}
+    drives = [gamemenu.Drive((spec.volume_name or spec.name).strip(),
+                             Path(spec.content_folder),
+                             tuple(spec.exclude or ()), WHDLOAD_DRAWER)
+              for spec in config.amiga_partitions
+              if spec.content_folder and spec.name.upper() not in boot
+              and Path(spec.content_folder).is_dir()]
+    if not drives:
+        progress.log(f"  {package.label}: no drive is being filled with "
+                     f"games, so its menu is empty")
+        return []
+    whdload = next((Path(source) for source, destination in resolved
+                    if Path(source).name.lower() == "whdload"
+                    and destination.lower() == "c"), None)
+    words = gamemenu.option_words(whdload) if whdload is not None else set()
+    layout = (gamemenu.AGA if config.machine().aga else gamemenu.NATIVE)
+    into = Path(tempfile.mkdtemp(prefix="pistorm-menu-"))
+    count = gamemenu.build(drives, into, layout, words,
+                           package.key in (config.with_media or []), progress)
+    progress.log(f"  {package.label}: a menu of {count} game(s), in the "
+                 f"{layout.name} layout")
+    return [(str(into), package.content_menu)]
 
 
 def _kickstart_images(config: "BuildConfig", package: "packages.Package",

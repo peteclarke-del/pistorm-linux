@@ -22,44 +22,83 @@ image, put them on a layout of your choosing, and add the Workbench disks and
 software to them. That is why a ClassicWB card is built with the second: its
 drive brings no Workbench, so it needs the floppies alongside it.
 
-| Task | What happens |
-| --- | --- |
-| **Build a new card** | Writes an MBR with a FAT32 boot partition (Emu68 + Raspberry Pi firmware + your Kickstart) and a type `0x76` Amiga partition carrying a Rigid Disk Block. Optionally installs AmigaOS onto it, from a set of Workbench floppy images or from an [AmigaOS 3.2, 3.5 or 3.9 CD image](#amigaos-32-35-and-39), so the card boots straight to Workbench. |
-| **Write a pre-built image** | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
-| **Write a drive image unchanged** | Takes a WinUAE/FS-UAE/HstWB `.hdf` - the Amiga drive on its own, with no partition table - and builds the boot partition around it. Images with no Rigid Disk Block get one generated for them, and a whole card image such as PiMiga can be used here too: only its Amiga drive is taken, so it can be moved onto a card of a different size with a fresh boot partition. Every imported drive is checked for PiStorm compatibility and repaired. |
-| **Update an existing card** | Touches only the boot partition: swap the Emu68 version, change the Kickstart, alter the HDMI mode, add WiFi. Everything on the Amiga side is left alone. |
-| **Rebuild one drive** | The mirror of that: formats one Amiga drive on a card or image you already have and fills it again - a System drive with a new Workbench and software - leaving the partition table, the boot partition and every other drive [exactly as they were](#rebuilding-one-drive). |
+Everything starts from a **task**, chosen on the first screen and fixed for the
+journey. The task decides the shape of what is written - whether there is a
+boot partition, whether Emu68 goes on it, whether there are Amiga drives - so
+the switches that used to say those things separately, and could between them
+describe a card that would never start, are gone. Each task then shows **its
+own steps, in the order their choices gate one another**: the machine first,
+because it decides the board, the display and which software suits it - or,
+where the card already exists, the card first, because it decides what there is
+to change. Back and Next walk the steps, and the last is **Review**: what the
+build adds up to, what is still needed, and Write once nothing is.
+
+| Task | Steps | What happens |
+| --- | --- | --- |
+| **A new PiStorm card** | Machine, System, Drives, Software, Emu68, Target, Review | An MBR with a FAT32 boot partition (Emu68, the Raspberry Pi firmware, your Kickstart) and a `0x76` Amiga partition carrying a Rigid Disk Block, with AmigaOS installed from Workbench floppy images or an [AmigaOS 3.2, 3.5 or 3.9 CD](#amigaos-32-35-and-39), and the software you choose. |
+| **A PiStorm with its drives elsewhere** | the same | [Two things written by one build](#a-pistorm-with-its-drives-elsewhere): the Pi's boot card with Emu68, and the Amiga drives - Workbench and your software - on a CF card or disk for the IDE port, or an image of one. |
+| **A PiStorm boot card only** | Machine, Emu68, Target, Review | Emu68 and its settings and nothing else, for drives that already exist elsewhere. |
+| **A drive for the Amiga's IDE or SCSI port** | Machine, System, Drives, Software, Target, Review | Amiga drives with no boot partition: the Rigid Disk Block at block 0, where the controller looks for it. |
+| **Write a prepared system** | Machine, System, Drives, Emu68, Target, Review | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
+| **Put a drive image on a card** | Machine, System, Drives, Emu68, Target, Review | Takes a WinUAE/FS-UAE/HstWB `.hdf` - the Amiga drive on its own - and builds the boot partition around it. Images with no Rigid Disk Block get one generated, and every imported drive is checked for PiStorm compatibility and repaired. |
+| **Rebuild one drive** | Target, Machine, System, Software, Review | Formats one Amiga drive on a card or image you already have and fills it again, leaving the partition table, the boot partition and every other drive [exactly as they were](#rebuilding-one-drive). |
+| **Update an existing card** | Target, Machine, Emu68, Review | Touches only the boot partition: another Emu68, another Kickstart, the HDMI mode, WiFi. |
+| **Export drives as .hdf** | Export | Reads the Amiga drives back out of a card or an image. |
+
+**The build holds the same rules, whatever reached it.** A job carries its
+task, and the combinations no task makes are refused in every mode, not only a
+new card's: a drive image with "Emu68 only" left on used to be silently not
+written, and a boot partition could be made with no Emu68 on it. Before
+anything is written the build also says which chosen software cannot go on
+this card and is left out, which Emu68 settings contradict the machine and the
+screen, and refuses a kernel newer than the release under it.
+
+**Earlier choices carry forward.** Changing the machine or the screen re-derives
+the Emu68 settings they decide - chip RAM slowdown, the vector base, the RTG
+memory - unless you set one yourself, in which case it is kept and the build
+says if it contradicts the machine. A release change refreshes the boot
+add-ons and re-checks the kernel. A drive layout you arranged, or one that came
+with a saved setup, is left alone as the choices before it change, and *Use the
+suggested layout* on the Drives step has the suggestion back. **No Kickstart
+file is not a gap**: Emu68 then uses the ROM chip in the Amiga, as a card set up
+by hand with no `kick.rom` does.
+
+The quick start that used to sit beside all this went with it. It built a whole
+configuration a second way, and the two disagreed: applying it on "Write a
+prepared system" turned the job into a new card, dropped a CD source and the
+chosen software, and kept a second set of target controls in step with the
+first by mirroring them both ways.
 
 **A card can also carry Emu68 and nothing else.** Some machines keep their
 storage elsewhere - a second card in a CF adapter, a real disk on the IDE port -
-and want the SD to be the boot partition and no more. *Emu68 only, no Amiga
-drive* on the Storage page does that: the MBR gets **one** entry, and the rest of
-the card is left unclaimed.
+and want the SD to be the boot partition and no more. The *PiStorm boot card
+only* task does that: the MBR gets **one** entry, and the rest of the card is
+left unclaimed.
 
-An empty Amiga partition is not the same answer, which is why this is a switch
-rather than a layout with nothing in it. An empty partition still takes the rest
+An empty Amiga partition is not the same answer, which is why this is a task of
+its own rather than a layout with nothing in it. An empty partition still takes the rest
 of the card, still appears on the desktop, and still asks to be initialised -
 and the space cannot be given to anything else. With no entry at all the card
 says what it is.
 
-The choice hides the layout rather than clearing it, so turning it off brings
-back exactly the drives that were there. And because a boot-only card has
+And because a boot-only card has
 nowhere to put a Workbench install, a package or a folder of games, the build
 **says so before it starts** rather than quietly dropping them - the ticks stay
 where they are.
 
-**The mirror of it is a drive with no boot partition.** *Amiga drives only, no
-Emu68 boot partition* puts the Rigid Disk Block at block 0, where an Amiga IDE
+**The mirror of it is a drive with no boot partition.** *A drive for the
+Amiga's IDE or SCSI port* puts the Rigid Disk Block at block 0, where an Amiga IDE
 or SCSI controller looks for it - a CF card or disk for an A1200's IDE port, say.
 That is a statement about *this drive*, not about the machine, so **how you
 look at it - and with it Picasso96 and Emu68's VideoCore driver - stays on
-offer** whatever this switch and the Processor row say. An A1200 with a PiStorm
+offer** whatever this task and the Processor row say. An A1200 with a PiStorm
 that boots Emu68 from its own card and keeps its drives on the IDE port is still
 watched through the Pi, and a drive may equally be going into a machine with an
 RTG card of its own. Two things are said before such a drive is written: the
 Pi's half of an RTG screen - its HDMI mode and the memory the driver draws in -
-lives in `config.txt` on the PiStorm's own card, so build that one with *Emu68
-only* and the same display; and on a machine with no PiStorm, Picasso96 is
+lives in `config.txt` on the PiStorm's own card, so build that one with the
+same display - or build both at once, with *A PiStorm with its drives
+elsewhere*; and on a machine with no PiStorm, Picasso96 is
 still set up for Emu68's VideoCore, so another RTG card needs its own driver and
 `BOARDTYPE`.
 
@@ -128,7 +167,7 @@ All three were sold on CD, so they are a source of their own rather than
 another release in the ADF list. Point at the `.iso` and the whole system is
 installed from it.
 
-![The AmigaOS CD group on the Amiga page, with a 3.2 disc chosen](docs/images/10-amigaos-cd.png)
+![The AmigaOS CD group on the System step, with a 3.2 disc chosen](docs/images/10-amigaos-cd.png)
 
 The disc is read as soon as it is chosen: which release it is, about how many
 files an install will copy, and - for a disc that asks one - the question its
@@ -434,75 +473,41 @@ keeps working because the command it runs keeps its name.
 
 ## The window
 
-It opens on a choice of what to do, and nothing else, because a choice with a
-page of settings under it is not a choice - the settings are the thing being
-chosen between.
+The first screen is the choice of task, and nothing else:
 
-| | |
+![The opening screen: the tasks, each with an icon and a button](docs/images/01-welcome.png)
+
+Choosing one shows that task's steps along the top, in the order their choices
+gate one another, and Back and Next along the bottom walk them. A new card
+takes all seven:
+
+| Step | What it asks |
 | --- | --- |
-| **A basic PiStorm card** | Emu68 and an empty Amiga drive, partitioned and formatted, ready to install Workbench onto from floppies. Leads to which Amiga it is for, what was found to install from, the card and its size, and the plan. |
-| **Write a prepared system** | A finished image you have downloaded - CaffeineOS, an Emu68 Hatcher image, or a backup of a card. Leads to the image chooser and the card, and nothing about the machine, because the image brings its own answer to that. |
-| **Customise an installation** | The full workflow: sources, storage, the software to add, boot options. Everything the other two decide for you. |
-| **Export drives as .hdf** | Reads the Amiga drives back *out* of a card or an image and writes each one you tick as its own file. Writes no card at all, which is why it is a task here rather than a destination on the Target page. |
+| **Machine** | Which Amiga, which Raspberry Pi is on its PiStorm board, how much chip RAM is fitted, how you look at it, and the Kickstart ROM. The processor is only asked about for a drive that may go into a machine without a PiStorm. |
+| **System** | Where the Amiga system comes from - a new drive, a PiMiga installation or a hard disk image - and what AmigaOS is installed from: the Workbench floppy images, or an AmigaOS CD image and what goes with it. |
+| **Drives** | The size of the system drive, whether the rest becomes a PFS3 work drive, and the Amiga partitions themselves. *Use the suggested layout* redraws them from the choices so far. |
+| **Software** | The optional software, a group at a time, with a search across all of them - and, where something chosen needs one, [which USB socket](#which-socket-and-the-two-files-that-have-to-agree) the Amiga is given, and whether to include the pictures and extras some software can bring. |
+| **Emu68** | The PiStorm board, the Emu68 release and kernel, HDMI output, the Raspberry Pi's own settings, the [boot partition add-ons](#add-ons-that-go-onto-the-boot-partition), and the Emu68 switches, which end up in `cmdline.txt` or, on Emu68 1.1 and later, as [device tree overlays](#emu68-11-moved-four-settings-out-of-cmdlinetxt) in `config.txt`. |
+| **Target** | Where the result goes - a card or an image file, and for a split build where the drives go - and how big the boot partition is. |
+| **Review** | What this will build, and what is still needed before Write is offered. |
 
-The first two lead to one screen that asks only what it needs. Choosing **A
-basic PiStorm card** keeps the masthead and adds the machine, whatever Kickstart
-and Workbench disks were found on this computer, the card, and the plan:
+![The Machine step: the Amiga, the Pi, the display, and the Kickstart](docs/images/05-amiga.png)
 
-![Quick setup, with a Kickstart and a full AmigaOS 3.1 disk set already found](docs/images/02-quick-setup.png)
+![The System step: where the system comes from, and the Workbench disks](docs/images/03-source.png)
 
-The two greyed rows are detections, not settings. They are what the scan found
-to build from - here a 40.68 A1200 ROM and a complete 3.1 floppy set - and the
-refresh button beside the heading looks again.
+![The Drives step: drive sizes and the Amiga partitions](docs/images/04-storage.png)
 
-### Customising
+![The Software step: the groups on the left, their software on the right](docs/images/06-packages.png)
 
-**Customise an installation** replaces that single screen with six, reachable
-in any order from the switcher along the top. Each is laid out in the order its
-decisions are made.
+![The Emu68 step: the release, the display and the Emu68 switches](docs/images/07-options.png)
 
-| Page | What it asks |
-| --- | --- |
-| **Source** | The task - the five listed under [What it does](#what-it-does) - and where the Amiga system comes from: a new drive, a PiMiga installation, or a hard disk image. |
-| **Storage** | The size of the system drive, whether the rest of the card becomes a PFS3 work drive, whether the card carries an Amiga drive at all, and the Amiga partitions themselves. |
-| **Amiga** | Which Amiga the card is for, which Raspberry Pi is on its PiStorm board, how much chip RAM is fitted, how you look at it, the Kickstart ROM, and what AmigaOS is installed from: the Workbench floppy images, or an AmigaOS CD image and what goes with it. |
-| **Packages** | The optional software, fetched from its publisher rather than taken from a drive you happen to have - and, where something chosen needs one, [which USB socket](#which-socket-and-the-two-files-that-have-to-agree) the Amiga is given. |
-| **Options** | HDMI output, the Raspberry Pi's own settings, the [boot partition add-ons](#add-ons-that-go-onto-the-boot-partition), and the Emu68 switches, which end up in `cmdline.txt` or, on Emu68 1.1 and later, as [device tree overlays](#emu68-11-moved-four-settings-out-of-cmdlinetxt) in `config.txt`. |
-| **Target** | Where the result goes, how big the boot partition is, and **what this will build**. |
+![The Target step](docs/images/08-target.png)
 
-![The Source page: the task, and where the system comes from](docs/images/03-source.png)
+![Review: what is still needed, and what this will build](docs/images/11-review.png)
 
-![The Storage page: drive sizes, the boot-only switch, and the Amiga partitions](docs/images/04-storage.png)
-
-![The Amiga page: the machine, the display, and the Kickstart](docs/images/05-amiga.png)
-
-![The Packages page: the groups on the left, their software on the right](docs/images/06-packages.png)
-
-![The Options page: display, Raspberry Pi and Emu68 switches](docs/images/07-options.png)
-
-Every route ends with the same block: **what this will build**, and `Apply this
-setup` beneath it. That block finishes whichever route was taken - the last
-thing on a quick screen, or the last thing on the Target page when customising -
-so the same decision reads the same way whichever way it was reached.
-
-![The Target page, ending in what this will build and Apply this setup](docs/images/08-target.png)
-
-Nothing is written until that Apply has been pressed. `Write card` stays off
-before it, and goes off again whenever something changes what would actually be
-written - a partition renamed two pages away puts the setup back to needing
-another look, and says so beside the summary. Apply itself is offered only once
-enough has been chosen for a card to boot: not merely a configuration that will
-write, but one with a Kickstart for Emu68 to map and floppies for an install
-from floppies. What is still wanted is named where the button is -
-
-> Still needed: a Kickstart ROM, and 1 more
-
- - and a prepared image is exempt, because the image and a card are the whole
-requirement.
-
-`Back` sits bottom left, in the same bar as `Write card`, and always returns to
-the choice. It withdraws the acceptance with it, so reconsidering the choice
-that led to a setup does not leave Write lit while you do.
+Write is offered on Review once nothing is missing - there is no separate
+Apply to press first, so nothing has to be re-accepted after a change. What is
+still wanted is listed there, each item naming the step it is on.
 
 ### Exporting
 
@@ -619,7 +624,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 891 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 915 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1592,6 +1597,24 @@ real list that is 4,201 entries in and 3,886 out. Matching ignores case, because
 the list was written on a case-insensitive Amiga volume and is checked against a
 Linux tree where `WHDLoad` and `WHDLOAD` are two different directories, and an
 entry on a volume nothing here fills is kept rather than dropped unchecked.
+
+## A PiStorm with its drives elsewhere
+
+Asked for as *"split the installation to allow workbench etc. to be installed
+into a different drive/image than the sd card that the pi boots from"*: an
+A1200 whose PiStorm boots Emu68 from its SD card, and whose Workbench and
+games are on a CF card on the IDE port. That used to be two tasks run one after
+the other with the same answers given twice.
+
+It is one task now, with one set of choices - the machine, the system, the
+drives, the software, Emu68 - and two destinations on the Target step: the
+Pi's boot card, and where the Amiga drives go, another card or an image file.
+The build writes the boot card first and then the drives, each held to the
+rules of its own task: the boot card is Emu68 and nothing else, and the drives
+start with their Rigid Disk Block at block 0, where the IDE port reads it. The
+WiFi network goes on the boot card, where Emu68 reads it, and the driver for it
+on the drives, so the two halves agree without being told twice. Review
+describes both, and the two targets must differ.
 
 ## Rebuilding one drive
 
@@ -2739,6 +2762,28 @@ The new entries, and what was learned fitting them:
   package ticked, the 3.2 drive stopped dead at `SetClockI2C LOAD`, waiting for
   an I2C controller that is not there; it now runs in the background, and the
   same drive reaches the end of its startup in 36 seconds.
+* **AGS2, the menu program of the Amiga Game Selector distribution.** The
+  distribution itself - many gigabytes, bundling thousands of games, commercial
+  ones among them - is not this tool's to hand out; its menu program is
+  published by its authors on GitHub, and is fetched from there at build time.
+  AGS2 does not look for games: it shows a drawer tree, an `.ags` drawer per
+  submenu and a `.run` script per entry. **So the menu is written at build
+  time, from the games on the drives being filled**, in the drawers the
+  collection is already sorted into - `WHDLoad/OCS/A/Agony` becomes
+  *OCS > A > Agony*. Each entry is named from its slave's own header (language
+  versions that share a title are told apart by their drawer), and started with
+  the game's own icon settings, because WHDLoad reads tool types only from
+  Workbench and AGS2 starts it from a script; only the options WHDLoad's own
+  documentation names are passed on, so NewIcons image data in a tool type
+  cannot break the launch. Built from a 4,404-slave collection it makes a menu
+  of 4,140 games in a minute; in FS-UAE the menu opens, and an entry it wrote
+  starts its game. On AGA the menu is a 256-colour screen laid out for a
+  WHDLoad screenshot at its full 320x256; elsewhere it is AGS2's own 16-colour
+  layout.
+* **Pictures and extras are asked about.** Software that can bring material it
+  does not need to run - AGS2's screenshots and descriptions, a few hundred
+  kilobytes a game - says so on the Software step, with a switch for each
+  ticked package, off unless turned on.
 * **WookieChat uses the shared MUI classes.** Its installer copied a 2008 set of
   NList classes into `SYS:Libs/MUI`, which `LIBS:` searches before MUI's own
   drawer, so they shadowed the 2021 classes every other MUI program was built
