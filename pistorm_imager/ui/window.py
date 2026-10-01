@@ -64,6 +64,11 @@ MODES = [
      "Build a new card and give a partition that image as its contents."),
     ("Update an existing card", builder.BuildMode.CUSTOMISE,
      "Leave everything on the card alone and only refresh the boot partition."),
+    ("Rebuild one drive on a card", builder.BuildMode.REWRITE,
+     "Format one Amiga drive on a card or image that already exists and fill "
+     "it again - a System drive with a new Workbench and software, say - "
+     "leaving the partition table, the boot partition and every other drive "
+     "exactly as they are."),
     ("Export drives as .hdf", builder.BuildMode.EXPORT,
      "Read the Amiga drives back out of a card or an image and write each one "
      "as its own .hdf, ready to mount in WinUAE or FS-UAE. Each file carries "
@@ -884,6 +889,11 @@ class ImagerWindow(Adw.ApplicationWindow):
              "options. Everything the other two decide for you.",
              "Customise", "preferences-system-symbolic",
              lambda: self._set_customising(True)),
+            ("Rebuild one drive",
+             "Format and fill one drive on a card you already have - a new "
+             "System with the software you choose - without writing the "
+             "drives beside it again.",
+             "Rebuild", "view-refresh-symbolic", self._choose_rewrite),
             #  Reading drives back out is a task like the others, and belongs
             #  where somebody looking for it would start.
             ("Export drives as .hdf",
@@ -2848,6 +2858,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.device_row = Adw.ComboRow(title="Card", model=combo(["No cards found"]))
         self.device_row.connect("notify::selected",
                                 lambda *_a: (self._mirror_back(),
+                                             self._refresh_rewrite_drives(),
                                              self._update_summary()))
         self.device_group.add(self.device_row)
         page.add(self.device_group)
@@ -2857,7 +2868,9 @@ class ImagerWindow(Adw.ApplicationWindow):
             description="A sparse .img file you can write to a card later, or use "
                         "with an emulator.")
         self.file_row = SaveRow("Save image as", filters=IMAGE_FILTERS,
-                                on_change=lambda _p: self._update_summary())
+                                on_change=lambda _p: (
+                                    self._refresh_rewrite_drives(),
+                                    self._update_summary()))
         self.file_group.add(self.file_row)
         self.file_size_row = Adw.EntryRow(
             title="Image size - 32GB as cards are sold, 32GiB binary")
@@ -2865,6 +2878,52 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.file_size_row.connect("changed", lambda _r: self._update_summary())
         self.file_group.add(self.file_size_row)
         page.add(self.file_group)
+
+        #  Rebuilding one drive: which one, read off the card itself.
+        self.rewrite_group = Adw.PreferencesGroup(
+            title="Drive to rebuild",
+            description="Only this drive is written. It is formatted and "
+                        "filled again with what the other pages choose; the "
+                        "partition table, the boot partition and every other "
+                        "drive are left exactly as they are. Anything on it "
+                        "that the new build does not bring is lost, so back "
+                        "it up first if it matters.")
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic",
+                             valign=Gtk.Align.CENTER,
+                             tooltip_text="Read the card's drives again")
+        refresh.add_css_class("flat")
+        refresh.connect("clicked", lambda _b: self._refresh_rewrite_drives())
+        self.rewrite_group.set_header_suffix(refresh)
+        self.rewrite_drive_row = Adw.ComboRow(
+            title="Drive", model=combo(["Choose the card or image first"]))
+        self.rewrite_drive_row.connect("notify::selected",
+                                       lambda *_a: self._on_rewrite_drive())
+        self.rewrite_group.add(self.rewrite_drive_row)
+        #  For a card this account cannot read: the build runs with the
+        #  rights to, and finds the drive by name there.
+        self.rewrite_name_row = Adw.EntryRow(
+            title="Drive name, as AmigaDOS mounts it - DH0, DH1...")
+        self.rewrite_name_row.connect("changed",
+                                      lambda _r: self._update_summary())
+        self.rewrite_name_row.set_visible(False)
+        self.rewrite_group.add(self.rewrite_name_row)
+        self.rewrite_folder_row = FileRow(
+            "Fill it from a folder",
+            "Nothing - just the system and software chosen", folder=True,
+            on_change=lambda _p: self._update_summary())
+        self.rewrite_group.add(self.rewrite_folder_row)
+        backup = Adw.ActionRow(
+            title="Back this drive up first",
+            subtitle="Takes you to Export with this card chosen, to save the "
+                     "drive as an .hdf before it is rebuilt.")
+        button = Gtk.Button(label="Export", valign=Gtk.Align.CENTER)
+        button.connect("clicked", lambda _b: self._back_up_rewrite_drive())
+        backup.add_suffix(button)
+        backup.set_activatable_widget(button)
+        self.rewrite_group.add(backup)
+        self._rewrite_drives: list[builder.Drive] = []
+        self.rewrite_group.set_visible(False)
+        page.add(self.rewrite_group)
 
         self.boot_group = Adw.PreferencesGroup(
             title="Boot partition",
@@ -2923,6 +2982,20 @@ class ImagerWindow(Adw.ApplicationWindow):
         return view
 
     # ------------------------------------------------------------- helpers
+
+    def _choose_rewrite(self) -> None:
+        """Rebuild one drive on an existing card, in the full workflow.
+
+        It shares nearly everything with building a card - the system, the
+        software, the display - so it is that workflow with the partitioning
+        taken away and the drive to rebuild chosen where the card is.
+        """
+        for index, entry in enumerate(MODES):
+            if entry[1] is builder.BuildMode.REWRITE:
+                self.mode_row.set_selected(index)
+                break
+        self._set_customising(True)
+        self._sync_visibility()
 
     def _choose_export(self) -> None:
         """Go straight to reading drives out of an image."""
@@ -3040,6 +3113,115 @@ class ImagerWindow(Adw.ApplicationWindow):
             return None
         return self.device_list[index]
 
+    def _rewrite_target(self) -> str:
+        """The card or image the drive to rebuild is on, or "" if none yet."""
+        if self._writing_to_device():
+            card = self._selected_device()
+            return card.path if card is not None else ""
+        return self.file_row.path
+
+    def _refresh_rewrite_drives(self) -> None:
+        """List the drives on the chosen card, keeping the one already chosen.
+
+        Read from the card's own Rigid Disk Block. Where it cannot be read -
+        no permission to open the card - the name is asked for instead, and
+        the build, which runs with the rights to, finds it by that name.
+        """
+        if not getattr(self, "_ready", False) \
+                or self._mode() is not builder.BuildMode.REWRITE:
+            return
+        path = self._rewrite_target()
+        wanted = self._rewrite_drive_name()
+        drives = [d for d in builder.list_drives(path) if d.name] if path else []
+        self._rewrite_drives = drives
+        was, self._ready = self._ready, False
+        try:
+            if drives:
+                self.rewrite_drive_row.set_model(
+                    combo([d.label for d in drives]))
+                names = [d.name.upper() for d in drives]
+                #  The drive asked for before, or else the one that boots -
+                #  which is the one most worth rebuilding.
+                index = (names.index(wanted.upper()) if wanted.upper() in names
+                         else next((i for i, d in enumerate(drives)
+                                    if d.bootable), 0))
+                self.rewrite_drive_row.set_selected(index)
+                self.rewrite_drive_row.set_subtitle("")
+            else:
+                self.rewrite_drive_row.set_model(combo(
+                    ["Choose the card or image first" if not path
+                     else "No Amiga drives could be read"]))
+                self.rewrite_drive_row.set_subtitle(
+                    "" if not path else
+                    "Type the drive's name below; the card is read again when "
+                    "it is written.")
+        finally:
+            self._ready = was
+        self.rewrite_name_row.set_visible(bool(path) and not drives)
+        self._on_rewrite_drive()
+
+    def _rewrite_drive(self) -> "builder.Drive | None":
+        drives = getattr(self, "_rewrite_drives", [])
+        index = self.rewrite_drive_row.get_selected()
+        return drives[index] if 0 <= index < len(drives) else None
+
+    def _rewrite_drive_name(self) -> str:
+        drive = self._rewrite_drive()
+        if drive is not None:
+            return drive.name
+        return self.rewrite_name_row.get_text().strip().upper()
+
+    def _rewrite_boots(self) -> bool:
+        """Whether the drive being rebuilt is the one the Amiga boots from.
+
+        Unknown when the card could not be read; then the system is offered,
+        and the build refuses it if the card says otherwise.
+        """
+        drive = self._rewrite_drive()
+        return drive.bootable if drive is not None else True
+
+    def _on_rewrite_drive(self) -> None:
+        if not getattr(self, "_ready", False):
+            return
+        #  Only the drive that boots takes a Workbench and software; for any
+        #  other the system pages have nothing to say.
+        boots = self._rewrite_boots()
+        if self._mode() is builder.BuildMode.REWRITE:
+            self.os_group.set_visible(boots)
+            for group in self.package_groups:
+                group.set_visible(boots)
+        self._update_summary()
+
+    def _rewrite_spec(self) -> list[builder.AmigaPartitionSpec]:
+        """The one drive being rebuilt, as the build is to fill it.
+
+        Its size, file system and whether it boots are the card's, and the
+        build reads them again from there; what is said here is only what to
+        put on it, and the name it keeps on Workbench.
+        """
+        name = self._rewrite_drive_name()
+        if not name:
+            return []
+        drive = self._rewrite_drive()
+        volume = (drive.volume if drive is not None and drive.volume
+                  else self.volume_row.get_text().strip() or name)
+        return [builder.AmigaPartitionSpec(
+            name, drive.size if drive is not None else None,
+            drive.filesystem if drive is not None else "PFS3",
+            self._rewrite_boots(), 0,
+            content_folder=self.rewrite_folder_row.path,
+            volume_name=volume)]
+
+    def _back_up_rewrite_drive(self) -> None:
+        """Export, with this card chosen, so the drive can be saved first."""
+        path = self._rewrite_target()
+        name = self._rewrite_drive_name()
+        self._choose_export()
+        if path:
+            self.export_source.set_path(path)
+        self._toast(f"Tick {name or 'the drive'} and choose a folder to save "
+                    f"it in; then come back to rebuild it")
+
     def _making_hdf(self) -> bool:
         """Kept as False: the build no longer writes a bare Amiga drive.
 
@@ -3099,13 +3281,16 @@ class ImagerWindow(Adw.ApplicationWindow):
                 self._set_customising(getattr(self, "_customising", False))
             self._update_back()
         self.hdf_group.set_visible(mode is builder.BuildMode.HDF)
+        rebuilding = mode is builder.BuildMode.REWRITE
         self.partition_group.set_visible(mode is builder.BuildMode.FRESH)
-        self.os_group.set_visible(mode is builder.BuildMode.FRESH)
+        self.os_group.set_visible(mode is builder.BuildMode.FRESH
+                                  or (rebuilding and self._rewrite_boots()))
         #  Anything this build lays out can have software added to it, not
         #  only a Workbench installed from floppies: an imported drive gets
         #  the same package overlays, and hiding the list meant a card built
         #  around somebody's drive could not be given WHDLoad or iGame.
-        show_packages = mode is builder.BuildMode.FRESH
+        show_packages = (mode is builder.BuildMode.FRESH
+                         or (rebuilding and self._rewrite_boots()))
         for group in self.package_groups:
             group.set_visible(show_packages)
         #  The floppies are offered alongside an imported drive too: a drive
@@ -3135,7 +3320,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  or a drive imported onto a card this build partitions. A Workbench
         #  installed from floppies has never been watched on anything.
         self.display_group.set_visible(
-            mode is not builder.BuildMode.FRESH
+            mode not in builder.FILLS_DRIVES
             or any(row.spec().content_hdf for row in self.partition_rows)
             or bool(self.quick_hdf.path))
         #  Only a card that imports a drive can have the clash this settles.
@@ -3143,11 +3328,14 @@ class ImagerWindow(Adw.ApplicationWindow):
             show_packages
             and (any(row.spec().content_hdf for row in self.partition_rows)
                  or bool(self.quick_hdf.path)))
-        self.expand_group.set_visible(mode is not builder.BuildMode.FRESH)
+        self.expand_group.set_visible(mode not in builder.FILLS_DRIVES)
         for row in self.extra_rows:
             row.set_visible(self.expand_row.get_active())
-        install = self.install_emu_row.get_active() and not making_hdf
-        self.install_emu_row.set_visible(not making_hdf)
+        #  Rebuilding a drive writes nothing to the boot partition, so there
+        #  is no Emu68 to choose.
+        install = (self.install_emu_row.get_active() and not making_hdf
+                   and not rebuilding)
+        self.install_emu_row.set_visible(not making_hdf and not rebuilding)
         for row in (self.variant_row, self.variant_hint, self.release_row,
                     self.local_zip_row):
             row.set_visible(install)
@@ -3198,14 +3386,30 @@ class ImagerWindow(Adw.ApplicationWindow):
         if options is not None:
             page = self.stack.get_page(options)
             if page is not None and self._customising:
-                page.set_visible(not amiga_only)
+                page.set_visible(not amiga_only and not rebuilding)
+        #  The card's layout is already there when a drive is rebuilt, so
+        #  there is nothing to lay out.
+        storage = self.stack.get_child_by_name("storage")
+        if storage is not None:
+            page = self.stack.get_page(storage)
+            if page is not None and self._customising:
+                page.set_visible(not rebuilding)
+        self.rewrite_group.set_visible(rebuilding)
+        if rebuilding and not self._rewrite_drives:
+            self._refresh_rewrite_drives()
         self.device_group.set_visible(self._writing_to_device())
+        self.device_group.set_description(
+            "Only removable drives are listed. Only the drive chosen below is "
+            "written; the rest of the card is left as it is." if rebuilding
+            else "Only removable drives are listed. Everything on the chosen "
+                 "card will be destroyed.")
         self.file_group.set_visible(not self._writing_to_device())
         self.file_group.set_title("Amiga hard disk image" if making_hdf
                                   else "Image file")
         self.file_group.set_description(
             "A bare Amiga drive with a Rigid Disk Block and no boot partition - "
             "usable here, and in WinUAE or FS-UAE." if making_hdf
+            else "The card image or .hdf that already has the drive." if rebuilding
             else "A sparse .img file you can write to a card later, or use with "
                  "an emulator.")
         partitions_ours = mode in (builder.BuildMode.FRESH, builder.BuildMode.HDF)
@@ -4661,6 +4865,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 image_size = 8 * GIB
         boot_size = self._boot_size()
 
+        rebuilding = mode is builder.BuildMode.REWRITE
         return builder.BuildConfig(
             mode=mode,
             target=target,
@@ -4691,10 +4896,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             boot_size=boot_size,
             boot_only=self.boot_only_row.get_active(),
             amiga_only=self.amiga_only_row.get_active(),
+            rewrite_drive=(self._rewrite_drive_name() if rebuilding else ""),
             #  The rows are kept while the switch is on, so the layout
             #  survives being asked a different question - but they must not
             #  reach a card that is not going to have them.
-            amiga_partitions=([] if self.boot_only_row.get_active()
+            amiga_partitions=(self._rewrite_spec() if rebuilding
+                              else [] if self.boot_only_row.get_active()
                               else [row.spec() for row in self.partition_rows]),
             pfs3_binary=self.quick_donor.path,
             #  Only a card we are partitioning ourselves can have an OS
@@ -4703,7 +4910,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  Workbench of its own, and a card made from it alone stops at a
             #  Shell, so the two go together rather than one excluding the
             #  other.
-            install_amigaos=(mode is builder.BuildMode.FRESH
+            install_amigaos=((mode is builder.BuildMode.FRESH
+                              or (rebuilding and self._rewrite_boots()))
                              and bool(self.adf_row.path)
                              and (self._system_source() == "adf"
                                   or self._imported_needs_floppies())),
@@ -4715,7 +4923,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  the card is actually written from - and not only where a quick
             #  setup is assembled.
             os_cd=(self.os_cd_row.path
-                   if self._system_source() == "cd" else ""),
+                   if self._system_source() == "cd"
+                   and (not rebuilding or self._rewrite_boots()) else ""),
             os_cd_release=self._os_cd_release(),
             os_cd_options=self._os_cd_chosen_options(),
             boingbag_archives=self._boingbag_archives(),
@@ -4724,7 +4933,12 @@ class ImagerWindow(Adw.ApplicationWindow):
             accelerator=self._accelerator().value,
             accelerator_cpu=(self._accelerator_cpu().value
                              if self._accelerator_cpu() else ""),
-            amiga_volume_name=self.volume_row.get_text().strip() or "Workbench",
+            #  A rebuilt drive keeps the name it had: a System drive that comes
+            #  back as "Workbench" breaks every assign and script naming it.
+            amiga_volume_name=(
+                self._rewrite_spec()[0].volume_name
+                if rebuilding and self._rewrite_spec()
+                else self.volume_row.get_text().strip() or "Workbench"),
             #  The software chosen on the Amiga page.  These only used to be
             #  set by the quick setup, so ticking a package and pressing Write
             #  from the pages themselves quietly built a card without it.
@@ -4804,6 +5018,33 @@ class ImagerWindow(Adw.ApplicationWindow):
         problems = config.validate()
         if problems:
             self._toast(problems[0])
+            return
+
+        if config.mode is builder.BuildMode.REWRITE:
+            #  Asked whatever the target is: an image file loses that drive
+            #  just as surely as a card does.
+            drive = self._rewrite_drive()
+            what = (f'{drive.name} ("{drive.volume}", {human_size(drive.size)})'
+                    if drive is not None and drive.volume
+                    else config.rewrite_drive)
+            others = [d.name for d in getattr(self, "_rewrite_drives", [])
+                      if d.name.upper() != config.rewrite_drive.upper()]
+            body = (f"Everything on {what} will be erased, and the drive "
+                    f"built again from what you chose.\n\nThe partition "
+                    f"table, the boot partition"
+                    + (f" and {', '.join(others)}" if others else "")
+                    + f" are left exactly as they are.\n\n{config.target}")
+            dialog = Adw.AlertDialog(heading=f"Rebuild {config.rewrite_drive}?",
+                                     body=body)
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("write", f"Erase and rebuild "
+                                         f"{config.rewrite_drive}")
+            dialog.set_response_appearance("write",
+                                           Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("cancel")
+            dialog.set_close_response("cancel")
+            dialog.connect("response", self._on_confirm, config)
+            dialog.present(self)
             return
 
         if config.target_is_device:
@@ -4967,6 +5208,10 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _where_the_card_goes(self) -> str:
         """What to do with the card that was just written."""
+        if self._mode() is builder.BuildMode.REWRITE:
+            return (f"{self._rewrite_drive_name()} has been rebuilt and "
+                    f"nothing else on the card was touched. Eject it and put "
+                    f"it back where it came from.")
         if self.amiga_only_row.get_active():
             #  The drive is not for the PiStorm's slot, but the machine may
             #  well have one: Emu68 then boots from the PiStorm's own card

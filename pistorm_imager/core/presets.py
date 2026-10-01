@@ -283,6 +283,8 @@ def _describe_imported_drive(path: str) -> tuple[list[str], bool]:
 
 def describe(config: builder.BuildConfig, detected: Detected) -> str:
     """A plain account of what the build will actually put on the card."""
+    if config.mode is builder.BuildMode.REWRITE:
+        return _describe_rebuild(config)
     if getattr(config, "amiga_only", False):
         #  No boot partition and no MBR: the card is Amiga drives and nothing
         #  else, which is what a real accelerator's IDE controller reads.
@@ -366,6 +368,40 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
     elif any(s.dostype.startswith(("PFS", "PDS")) for s in config.amiga_partitions):
         lines.append("PFS3 handler: NOT FOUND - the PFS3 partitions will not "
                      "mount until one is supplied, or added from HDToolBox")
+    return "\n".join(lines)
+
+
+def _describe_rebuild(config: builder.BuildConfig) -> str:
+    """What rebuilding one drive will do, and - as plainly - what it will not.
+
+    Nothing about the boot partition, the Kickstart or the layout: none of it
+    is written, and describing it would read as though it were.
+    """
+    if not config.rewrite_drive:
+        return "Choose the card and the drive on it to rebuild"
+    spec = next((s for s in config.amiga_partitions
+                 if s.name.upper() == config.rewrite_drive.upper()), None)
+    label = spec.volume_name if spec and spec.volume_name else ""
+    shown = (f"{config.rewrite_drive} ({label}:)" if label
+             and label.upper() != config.rewrite_drive.upper()
+             else config.rewrite_drive)
+    size = (f", {human_size(spec.size)} {spec.dostype}"
+            if spec and spec.size else "")
+    lines = [f"Rebuilding {shown}{size}: erased, and filled again with:"]
+    if config.os_cd:
+        lines.append(f"  AmigaOS installed from {Path(config.os_cd).name}")
+    elif config.install_amigaos:
+        release = f"AmigaOS {config.adf_version}" if config.adf_version \
+            else "AmigaOS"
+        lines.append(f"  {release} installed from your floppy images")
+    if spec and spec.content_folder:
+        lines.append(f"  the contents of {Path(spec.content_folder).name}")
+    if spec and spec.bootable and config.package_keys:
+        lines.append(f"  {len(config.package_keys)} packages of software")
+    if len(lines) == 1:
+        lines.append("  nothing - it is left formatted and empty")
+    lines.append("Left exactly as they are: the partition table, the boot "
+                 "partition and every other drive")
     return "\n".join(lines)
 
 
