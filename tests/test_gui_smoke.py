@@ -421,34 +421,25 @@ def on_activate(app: ImagerApplication) -> None:
         check(not window.quick_accelerator_cpu.get_visible(),
               "and the row asking for one is hidden")
 
-        #  Emu68 is answered on the Source page, a page *before* the Storage
-        #  one carrying the two switches it rules out, so it has to be the
-        #  thing that decides - not the other way about.  With no boot
-        #  partition there is nowhere to put a Kickstart, a config.txt or a
-        #  cmdline.txt either, so those go off the window rather than being
-        #  filled in and silently dropped.
-        options_page = window.stack.get_page(
-            window.stack.get_child_by_name("options"))
-        #  The Options page only exists as a page while customising, so that
-        #  is the state in which its coming and going means anything.
-        window._set_customising(True)
-        window.install_emu_row.set_active(True)
-        window._sync_visibility()
-        check(window.boot_only_row.get_sensitive()
-              and not window.amiga_only_row.get_sensitive(),
-              "with Emu68 on, only the boot-only card can be asked for")
-        window.install_emu_row.set_active(False)
-        window._sync_visibility()
-        check(window.amiga_only_row.get_sensitive()
-              and not window.boot_only_row.get_sensitive(),
-              "with Emu68 off, only the drives-only card can be")
-        window.amiga_only_row.set_active(True)
-        check(window.gather().amiga_only,
-              "and the drives-only choice reaches the card")
-        check(not window.group_kickstart.get_visible()
-              and not window.boot_group.get_visible()
-              and not options_page.get_visible(),
+        #  The task decides the card's shape. The three switches that used to
+        #  - install Emu68, Emu68 only, drives only - could describe a card
+        #  that cannot start, so they are no longer on the window at all.
+        from pistorm_imager.core import builder as _b          # noqa: PLC0415
+        window._start_task(_b.Task.AMIGA_DRIVE)
+        pump()
+        settings = window.gather(require_target=False)
+        check(settings.amiga_only and not settings.install_emu68
+              and settings.task is _b.Task.AMIGA_DRIVE,
+              "a drive for the IDE port is drives only, with no Emu68")
+        check(not window.boot_only_group.get_visible()
+              and not window.install_emu_row.get_visible(),
+              "and none of the switches that decide that is offered")
+        check("options" not in window._steps
+              and not window.boot_group.get_visible(),
               "a card with no boot partition stops asking about one")
+        check(window.group_kickstart.get_visible(),
+              "but still asks for the Kickstart, which WHDLoad's images "
+              "come from")
         #  But the screen is a fact about the machine, not this drive.
         #  Reported as "picasso 96 and the how do you look at it menus are
         #  unavailable" for an A1200 whose PiStorm boots from its own card
@@ -481,35 +472,29 @@ def on_activate(app: ImagerApplication) -> None:
         window.quick_display.set_selected(
             list(machines.Display).index(machines.Display.NATIVE))
         window._on_display_changed()
-        #  And turning Emu68 back on undoes it rather than leaving a
-        #  contradiction the build would have to settle.
-        window.install_emu_row.set_active(True)
-        window._sync_visibility()
-        check(not window.amiga_only_row.get_active()
-              and not window.gather().amiga_only,
-              "turning Emu68 back on withdraws the drives-only card")
-        check(window.group_kickstart.get_visible()
-              and window.boot_group.get_visible()
-              and options_page.get_visible(),
+        #  Another task brings its own shape, with nothing left over.
+        window._start_task(_b.Task.NEW_CARD)
+        pump()
+        settings = window.gather(require_target=False)
+        check(not settings.amiga_only and settings.install_emu68
+              and settings.task is _b.Task.NEW_CARD,
+              "a new card is Emu68 and drives, whatever the last task was")
+        check("options" in window._steps and window.boot_group.get_visible(),
               "and brings back everything that lives on the boot partition")
 
         #  What to do with the finished card depends on what was built. An
         #  Amiga-drives-only card cannot boot in a PiStorm at all, so telling
         #  somebody to put it in one sends them to fit a card that was never
         #  going to work in that slot.
-        window.install_emu_row.set_active(False)
-        window._sync_visibility()
-        window.amiga_only_row.set_active(True)
+        window._start_task(_b.Task.AMIGA_DRIVE)
         drives_only = window._where_the_card_goes()
         check("IDE or SCSI" in drives_only and "cannot start" in drives_only,
               f"a drives-only card is not sent to a PiStorm: {drives_only!r}")
-        window.install_emu_row.set_active(True)
-        window._sync_visibility()
-        window.boot_only_row.set_active(True)
+        window._start_task(_b.Task.BOOT_CARD)
         boot_only = window._where_the_card_goes()
         check("PiStorm" in boot_only and "own storage" in boot_only,
               f"a boot-only card says where its drives are: {boot_only!r}")
-        window.boot_only_row.set_active(False)
+        window._start_task(_b.Task.NEW_CARD)
         check(window._where_the_card_goes() == "Eject the card and put it in "
               "your PiStorm.", "and an ordinary card reads as it always did")
 
@@ -527,6 +512,9 @@ def on_activate(app: ImagerApplication) -> None:
         if not HAVE_CD:
             print("  skip  no genisoimage, so the CD checks are not run")
         else:
+            #  A task fills the folder from what was found on this machine;
+            #  the check is about a card with none.
+            window.adf_row.set_path("")
             window.quick_system_source.set_selected(FRESH_SOURCES.index("cd"))
             window._on_source_changed()
             window.os_cd_row.set_path(str(CD_IMAGE))
@@ -828,7 +816,7 @@ def on_activate(app: ImagerApplication) -> None:
         #  been chosen since, and the layout follows it. What matters is that
         #  the two drives added by hand are gone and the settings own the
         #  layout again, which is what leaving it alone got wrong.
-        check(after == window._quick_layout()
+        check(after == list(window._quick_config().amiga_partitions)
               and window._hand_edited_partitions() is None,
               f"the storage layout goes back to the settings ({len(after)} "
               f"rows, {len(pristine_rows) + 2} before forgetting)")
@@ -1258,33 +1246,33 @@ def on_activate(app: ImagerApplication) -> None:
         from pistorm_imager.ui.window import combo as _combo
         labels = _combo(["Select a card", card.description])
         window.device_row.set_model(labels)
-        window.quick_device.set_model(_combo(["Select a card",
+        window.device_row.set_model(_combo(["Select a card",
                                               card.description]))
         window.target_row.set_selected(0)
-        window.quick_target.set_selected(0)
-        window.quick_card_size.set_text("125G")          # the trap: 125 GiB
-        window.quick_device.set_selected(1)
-        check(not window.quick_card_size.get_sensitive(),
+        window.target_row.set_selected(0)
+        window.file_size_row.set_text("125G")          # the trap: 125 GiB
+        window.device_row.set_selected(1)
+        check(not window.file_size_row.get_sensitive(),
               "the size box is closed while writing to a card")
         check(window.gather().image_size == card.size,
               f"the card's own capacity is the size "
               f"({window.gather().image_size} vs {card.size})")
-        check("125" in window.quick_card_size.get_title()
-              and "GB" in window.quick_card_size.get_title(),
-              f"the card is named with both readings ({window.quick_card_size.get_title()!r})")
-        window.quick_device.set_selected(0)
+        check("125" in window.file_size_row.get_title()
+              and "GB" in window.file_size_row.get_title(),
+              f"the card is named with both readings ({window.file_size_row.get_title()!r})")
+        window.device_row.set_selected(0)
         window.target_row.set_selected(1)
-        window.quick_target.set_selected(1)
-        check(window.quick_card_size.get_sensitive(),
+        window.target_row.set_selected(1)
+        check(window.file_size_row.get_sensitive(),
               "and opens again for an image file")
-        check("32GB as cards are sold" in window.quick_card_size.get_title(),
-              f"which says which unit it means ({window.quick_card_size.get_title()!r})")
-        window.quick_card_size.set_text("125G")
+        check("32GB as cards are sold" in window.file_size_row.get_title(),
+              f"which says which unit it means ({window.file_size_row.get_title()!r})")
+        window.file_size_row.set_text("125G")
         window._show_size()
         said = window.quick_size_info.get_subtitle()
         check("binary" in said and "125GB" in said,
               f"a bare G is called out as binary ({said!r})")
-        window.quick_card_size.set_text("125GB")
+        window.file_size_row.set_text("125GB")
         window._show_size()
         said = window.quick_size_info.get_subtitle()
         check("binary" not in said,
@@ -1296,9 +1284,9 @@ def on_activate(app: ImagerApplication) -> None:
         #  and the Emu68 release - and each was found only when somebody
         #  noticed it missing. This compares every field at once.
         window.target_row.set_selected(1)
-        window.quick_target.set_selected(1)
+        window.target_row.set_selected(1)
         window.file_row.set_path(str(SCRATCH / "roundtrip.img"))
-        window.quick_file.set_path(str(SCRATCH / "roundtrip.img"))
+        window.file_row.set_path(str(SCRATCH / "roundtrip.img"))
         window.file_size_row.set_text("40GB")
         for key in ("whdload", "lha"):
             if key in window.package_rows:
@@ -1404,7 +1392,7 @@ def on_activate(app: ImagerApplication) -> None:
                 "pistorm_imager.core.machines", fromlist=["x"]).MACHINES)
                 if m.key == "a600"))
         window.quick_trapdoor.set_active(True)
-        window.quick_card_size.set_text("32G")
+        window.file_size_row.set_text("32G")
         window.quick_pimiga.set_path(str(SCRATCH / "pimiga"))
         saved = window.interface_state()
         check(saved["machine"] == "a600",
@@ -1433,8 +1421,8 @@ def on_activate(app: ImagerApplication) -> None:
         window.apply_interface_state(dict(saved, card_size="59.48G",
                                           target_kind=0,
                                           image_path="/tmp/somewhere-else.img"))
-        check(window.quick_card_size.get_text().startswith("125"),
-              f"the card size survives loading ({window.quick_card_size.get_text()!r})")
+        check(window.file_size_row.get_text().startswith("125"),
+              f"the card size survives loading ({window.file_size_row.get_text()!r})")
         check(window.gather().target == str(SCRATCH / "big.img"),
               f"the target survives loading ({window.gather().target!r})")
         check(window.gather().image_size == 125 * 1024 ** 3,
@@ -1442,15 +1430,15 @@ def on_activate(app: ImagerApplication) -> None:
         #  apply() protects the layout it was given; hand it back, or the
         #  checks below are testing a layout deliberately left alone.
         window._derived_partitions = [r.spec() for r in window.partition_rows]
-        window.quick_card_size.set_text("32G")
+        window.file_size_row.set_text("32G")
 
         #  A source defines the partition layout, so changing it must redraw
         #  it: the rows are what a build reads, and leaving them behind would
         #  copy from a place the user had just cleared.
         window.quick_system_source.set_selected(0)          # "Choose for me"
         window.target_row.set_selected(1)
-        window.quick_target.set_selected(1)
-        window.quick_file.set_path(str(SCRATCH / "layout.img"))
+        window.target_row.set_selected(1)
+        window.file_row.set_path(str(SCRATCH / "layout.img"))
         pimiga_root = SCRATCH / "pimiga"
         for drive in ("System", "Games", "Demos", "Work"):
             (pimiga_root / "disks" / drive).mkdir(parents=True, exist_ok=True)
@@ -1460,7 +1448,7 @@ def on_activate(app: ImagerApplication) -> None:
               f"a PiMiga source lays out its drives ({[p.name for p in with_source]})")
         #  Every choice that shapes the layout must redraw it, or the page and
         #  the build disagree about what is being made.
-        window.quick_card_size.set_text("16GB")
+        window.file_size_row.set_text("16GB")
         smaller = window.gather().amiga_partitions
         check(sum(p.size or 0 for p in smaller) < sum(p.size or 0 for p in with_source),
               "changing the card size resizes the partitions")
@@ -1478,7 +1466,7 @@ def on_activate(app: ImagerApplication) -> None:
 
         #  A layout the user has edited by hand must survive the next change.
         window.partition_rows[0].name_row.set_text("DX0")
-        window.quick_card_size.set_text("8GB")
+        window.file_size_row.set_text("8GB")
         kept = [p.name for p in window.gather().amiga_partitions]
         check("DX0" in kept, f"a hand-edited partition is not overwritten ({kept})")
 
@@ -1515,7 +1503,7 @@ def on_activate(app: ImagerApplication) -> None:
         #  a size there has to reach the layout - it used to be ignored by the
         #  quick setup and then overwritten by it.
         window.quick_system_source.set_selected(0)
-        window.quick_card_size.set_text("8GB")
+        window.file_size_row.set_text("8GB")
         window.boot_size_row.set_text("512M")
         check(window.gather().boot_size == 512 * 1024 * 1024,
               f"the boot size is used ({window.gather().boot_size})")
@@ -1820,183 +1808,95 @@ def on_activate(app: ImagerApplication) -> None:
         check(edited is not None and edited[0].volume_name == "MyOwnName",
               "an edited layout is noticed and would be kept")
 
-        #  The quick start is a choice of three things to do, and is the
-        #  whole window until "Customise" is chosen.
-        window._set_customising(False)
-        visible = {name for name in ("quick", "source", "storage", "amiga",
-                                     "options", "target")
-                   if window.stack.get_page(
-                       window.stack.get_child_by_name(name)).get_visible()}
-        check(visible == {"quick"},
-              f"the quick start is the only page to begin with ({visible})")
-        check(not window.back_button.get_visible(),
-              "and there is nothing to go back to")
+        #  The first screen is the choice of task, and is the whole window
+        #  until one is chosen. Each task then shows its own steps, in the
+        #  order their choices gate one another, front to back.
+        from pistorm_imager.core import builder as _bt          # noqa: PLC0415
+        from pistorm_imager.ui.window import TASK_STEPS         # noqa: PLC0415
+        window._leave_task()
+        pump()
+
+        def shown_steps() -> list:
+            order, page = [], window.stack.get_pages()
+            for index in range(page.get_n_items()):
+                item = page.get_item(index)
+                if item.get_visible():
+                    order.append(item.get_name())
+            return order
+
+        check(shown_steps() == ["quick"],
+              f"the choice of task is the only page to begin with "
+              f"({shown_steps()})")
         check(not window.bottom_bar.get_visible(),
-              "nor anything to summarise or write yet")
+              "with nothing to go back to, summarise or write yet")
+        for task in _bt.Task:
+            window._start_task(task)
+            pump()
+            check(shown_steps() == list(TASK_STEPS[task])
+                  and window.stack.get_visible_child_name()
+                  == TASK_STEPS[task][0],
+                  f"{task.name} takes its own steps, in its order "
+                  f"({shown_steps()})")
+        check(TASK_STEPS[_bt.Task.NEW_CARD][0] == "amiga"
+              and TASK_STEPS[_bt.Task.REBUILD][0] == "target",
+              "the machine comes first, or the card where it already exists")
 
-        window._set_customising(True)
-        visible = {name for name in ("quick", "source", "storage", "amiga",
-                                     "options", "target")
-                   if window.stack.get_page(
-                       window.stack.get_child_by_name(name)).get_visible()}
-        check("quick" not in visible and "storage" in visible,
-              f"customising shows the workflow and hides the quick start ({visible})")
-        check(window.back_button.get_visible()
-              and window.bottom_bar.get_visible(),
-              "and offers a way back to it, with the summary and Write")
-        window._set_customising(False)
-        check(window.stack.get_visible_child_name() == "quick",
-              "going back returns to the quick start")
-
-        def on_quick_screen() -> set:
-            names = {"choices": window.group_choices,
-                     "hardware": window.group_hardware,
-                     "detected": window.group_detected,
-                     "image": window.image_group,
-                     "target": window.group_target,
-                     "plan": window.group_plan}
-            return {name for name, group in names.items()
-                    if group.get_visible()
-                    and group.get_ancestor(Adw.PreferencesPage)
-                    is window.page_quick}
-
-        #  The first screen is the choice and nothing else.
-        window._set_customising(False)
-        window._set_quick_screen("choices")
-        shown = on_quick_screen()
-        check(shown == {"choices"},
-              f"the first screen shows only the three choices ({shown})")
-
-        window._choose_basic()
-        shown = on_quick_screen()
-        check(shown == {"hardware", "detected", "target", "plan"}
-              and window.back_button.get_visible(),
-              f"a basic card shows its own options and a way back ({shown})")
-
-        window._choose_prepared()
-        shown = on_quick_screen()
-        check(shown == {"image", "target", "plan"}
-              and window.back_button.get_visible(),
-              f"a prepared system asks only for the image and the card ({shown})")
-
-        def rank(group) -> int:
-            """Where a group sits among its siblings on the page."""
-            parent = group.get_parent()
-            index, child = 0, parent.get_first_child()
-            while child is not None:
-                if child is group:
-                    return index
-                index, child = index + 1, child.get_next_sibling()
-            return -1
-
-        #  The picker has to come before the summary that describes what it
-        #  chose; add() appends, so a group moved here landed last.
-        window._choose_prepared()
-        check(rank(window.image_group) < rank(window.group_target)
-              < rank(window.group_plan),
-              f"image {rank(window.image_group)}, card "
-              f"{rank(window.group_target)}, plan {rank(window.group_plan)} "
-              f"- in that order")
-
-        window._choose_basic()
-        check(rank(window.group_hardware) < rank(window.group_detected)
-              < rank(window.group_target) < rank(window.group_plan),
-              "a basic card reads hardware, disks, card, plan")
-
-        window._set_quick_screen("choices")
-        check(window.group_choices.get_visible()
-              and not window.back_button.get_visible(),
-              "Back returns to the three choices")
-
-        #  One Back, doing whatever going back means where you are - and
-        #  always to the choice itself, never to the screen last open.
-        window._choose_basic()
+        #  Next and Back walk the steps; Write is only on the last.
+        window._start_task(_bt.Task.NEW_CARD)
+        pump()
+        check(window.next_button.get_visible()
+              and not window.write_button.get_visible(),
+              "the first step offers Next, not Write")
+        for _ in TASK_STEPS[_bt.Task.NEW_CARD][1:]:
+            window._go_next()
+        pump()
+        check(window.stack.get_visible_child_name() == "review"
+              and window.write_button.get_visible()
+              and not window.next_button.get_visible(),
+              "the last step is Review, and offers Write")
         window._go_back()
-        check(window.group_choices.get_visible()
-              and not window.back_button.get_visible(),
-              "Back from a quick screen returns to the choices")
-        window._choose_basic()
-        window._set_customising(True)
+        check(window.stack.get_visible_child_name() == "target",
+              "Back goes one step back")
+        window.stack.set_visible_child_name("amiga")
         window._go_back()
-        check(not window._customising and window.group_choices.get_visible()
-              and not window.back_button.get_visible(),
-              "Back from the workflow returns to the choices, not the last screen")
+        pump()
+        check(window._task is None and shown_steps() == ["quick"],
+              "and from the first step, back to the choice of task")
 
         #  Settings belong on the page they are about.
-        window._set_customising(True)
+        window._start_task(_bt.Task.NEW_CARD)
         for group, page_name in ((window.group_hardware, "amiga"),
                                  (window.group_primary, "source"),
-                                 (window.group_sizes, "storage")):
+                                 (window.os_group, "source"),
+                                 (window.group_sizes, "storage"),
+                                 (window.emu68_group, "options"),
+                                 (window.group_plan, "review")):
             holder = group.get_ancestor(Adw.PreferencesPage)
             found = holder is window.stack.get_child_by_name(page_name)
             check(found, f"a group lives on the {page_name} page")
 
-        #  Writing needs more than a valid configuration: a card written with
-        #  no Kickstart boots into nothing.
-        window._set_customising(True)
+        #  Write follows the choices themselves - there is no separate Apply
+        #  to forget - and a missing Kickstart is not a gap: Emu68 uses the
+        #  ROM chip in the Amiga, as a card set up by hand does.
         window.file_row.set_path(str(SCRATCH / "gate.img"))
         window.rom_row.set_path("")
-        window._update_summary()
-        check(not window.apply_button.get_sensitive()
-              and "Kickstart" in window.apply_note.get_text(),
-              f"Apply waits for a Kickstart ({window.apply_note.get_text()})")
-
-        rom = Path(__file__).resolve().parent.parent / "samples" / "kickstart"
-        roms = sorted(rom.glob("*.rom"))
-        if roms:
-            window.rom_row.set_path(str(roms[0]))
         from pistorm_imager.core import emu68 as _e
         window.releases = [_e.Release(                # as if the list had loaded
             tag="v1.0.7", name="1.0.7", prerelease=False, published="2024-01-01",
             assets=[f"v1.0.7-Emu68-{v.key}.zip" for v in _e.VARIANTS])]
-        #  The disks are identified on a thread, and a basic card now fills
-        #  the folder row from what was found rather than leaving it empty -
-        #  so this waits for the scan the way a person does, rather than
-        #  asking before the answer is in.
         if window.adf_row.path:
             wait_for(lambda: getattr(window, "_adf_disks", None),
                      "the Workbench disks to be identified")
         window._update_summary()
-        check(not window.write_button.get_sensitive(),
-              "Write is off until the setup is applied")
-        check(window.apply_button.get_sensitive(),
-              f"Apply is offered once the choices are made "
-              f"({window.apply_note.get_text()})")
-        window._on_apply_quick(None)
-        check(window.write_button.get_sensitive(),
-              "applying enables Write")
-        window.partition_rows[0].volume_row.set_text("ChangedAfterApply")
-        window._update_summary()
-        check(not window.write_button.get_sensitive(),
-              "changing anything afterwards disables Write again")
-        window._on_apply_quick(None)
-        check(window.write_button.get_sensitive(),
-              "and applying again re-enables it")
-
-        #  The same block finishes every route: what it will build, with the
-        #  button that accepts it underneath.
-        check(window.group_plan.get_ancestor(Adw.PreferencesPage)
-              is window.page_target,
-              "customising finishes on the Target page")
-        window._set_customising(False)
-        window._choose_basic()
-        check(window.group_plan.get_ancestor(Adw.PreferencesPage)
-              is window.page_quick,
-              "and a quick option finishes on its own screen")
-        #  The strip is the last thing in the summary card, under the text.
-        card = window.quick_plan.get_parent()
-        order, child = [], card.get_first_child()
-        while child is not None:
-            order.append(child)
-            child = child.get_next_sibling()
-        check(order and order[0] is window.quick_plan
-              and order[-1] is window.apply_row,
-              "Apply sits at the end of the summary, underneath it")
-        #  Reconsidering the choice withdraws the setup with it.
-        window._go_back()
-        window._update_summary()
-        check(not window.write_button.get_sensitive(),
-              "going back withdraws the accepted setup")
+        missing = window._missing_choices()
+        check(not [m for m in missing if "Kickstart" in m],
+              f"no Kickstart is asked for ({missing})")
+        check(window.write_button.get_sensitive() == (not missing),
+              f"Write is offered exactly when nothing is missing ({missing})")
+        window.stack.set_visible_child_name("review")
+        pump()
+        check(window.missing_group.get_visible() == bool(missing),
+              "and Review lists whatever still is")
 
         #  Editing storage has to show up in the plan the user reads before
         #  pressing Write; it used to describe the quick settings alone.
@@ -2111,10 +2011,10 @@ def on_activate(app: ImagerApplication) -> None:
         window._sync_visibility()
         window.quick_primary.set_selected(0)
         window.target_row.set_selected(1)
-        window.quick_target.set_selected(1)
-        window.quick_file.set_path(str(SCRATCH / "quick.img"))
+        window.target_row.set_selected(1)
         window.file_row.set_path(str(SCRATCH / "quick.img"))
-        window.quick_card_size.set_text("8G")
+        window.file_row.set_path(str(SCRATCH / "quick.img"))
+        window.file_size_row.set_text("8G")
         window.ssid_row.set_text("Amiga")
         window.psk_row.set_text("hunter2")
         window.country_row.set_text("IE")
@@ -2136,18 +2036,6 @@ def on_activate(app: ImagerApplication) -> None:
               and quick.boot_options.sd_unit0_rw,
               "it keeps the boot switches only a person can set")
         check(not quick.install_emu68, "it keeps Emu68 installation turned off")
-
-        window._on_apply_quick(None)
-        after = window.gather()
-        check(after.wifi_ssid == "Amiga" and after.wifi_password == "hunter2"
-              and after.wifi_country == "IE",
-              f"applying it leaves the WiFi settings on the page ({after.wifi_ssid!r})")
-        check(after.amiga_volume_name == "PiMiga",
-              f"applying it leaves the volume name ({after.amiga_volume_name!r})")
-        check(after.boot_options.swap_df0_with_df1 and after.boot_options.sd_unit0_rw,
-              "applying it leaves the boot switches alone")
-        check(not after.install_emu68,
-              "applying it does not switch Emu68 installation back on")
 
         #  The machine's own cmdline options share one field with whatever was
         #  typed there, so neither may swallow the other - and the machine's
@@ -2172,9 +2060,8 @@ def on_activate(app: ImagerApplication) -> None:
 
         _check_application_updates(window)
 
-        hdf_index = next(i for i, m in enumerate(MODES)
-                         if m[1] is builder.BuildMode.HDF)
-        window.mode_row.set_selected(hdf_index)
+        window._start_task(builder.Task.DRIVE_IMAGE)
+        window.file_row.set_path(str(SCRATCH / "quick.img"))
         window._sync_visibility()
         check(window.hdf_group.get_visible(), "HDF mode reveals the hard disk chooser")
         check(not window.partition_group.get_visible(),
@@ -2201,15 +2088,14 @@ def on_activate(app: ImagerApplication) -> None:
             g = row.get_ancestor(_Adw.PreferencesGroup)
             return g.get_title() if g is not None else "nowhere"
 
-        window._choose_basic()
+        window._start_task(builder.Task.NEW_CARD)
         pump()
-        on_quick = group_of(window.adf_row)
-        check(on_quick == group_of(window.quick_found_adf),
-              f"the basic screen offers the ADF chooser (it is on {on_quick!r})")
-        check(group_of(window.rom_row) == on_quick,
-              "the basic screen offers the Kickstart chooser")
-        check(group_of(window.quick_system_source) == on_quick,
-              "the basic screen offers the install-from-floppies choice")
+        check(group_of(window.adf_row) == "Workbench floppy images"
+              and window.os_group.get_ancestor(_Adw.PreferencesPage)
+              is window.page_source,
+              "a new card offers the ADF chooser on its System step")
+        check(group_of(window.rom_row) == "Kickstart ROM",
+              "and the Kickstart chooser on its Machine step")
         #  An earlier check left an .hdf selected, and an .hdf source
         #  correctly rules a floppy install out - so start from a clean one.
         window.quick_hdf.set_path("")
@@ -2484,11 +2370,11 @@ def on_activate(app: ImagerApplication) -> None:
                                removable=True)
         window.device_list = [card]
         window.device_row.set_model(combo([SELECT_CARD, card.description]))
-        window.quick_device.set_model(combo([SELECT_CARD, card.description]))
+        window.device_row.set_model(combo([SELECT_CARD, card.description]))
         #  Chosen the way the quick setup does it, which is what mirrors onto
         #  the Target page.
-        window.quick_target.set_selected(0)            # write to a card
-        window.quick_device.set_selected(1)            # the one above
+        window.target_row.set_selected(0)            # write to a card
+        window.device_row.set_selected(1)            # the one above
         pump()
         shown = window.file_size_row.get_text()
         check(parse_size(shown) == real_size,
@@ -2508,16 +2394,16 @@ def on_activate(app: ImagerApplication) -> None:
 
         #  Now genuinely building an image file, with that card still in the
         #  reader, and a size a megabyte over what it holds.
-        window.quick_target.set_selected(1)
+        window.target_row.set_selected(1)
         pump()
-        window.quick_card_size.set_text(exact_size_text(real_size + 1024 * 1024))
+        window.file_size_row.set_text(exact_size_text(real_size + 1024 * 1024))
         pump()
         check("too big" in window.quick_size_info.get_subtitle(),
               "a size just over a card in the reader is called out: "
               f"{window.quick_size_info.get_subtitle()[-90:]!r}")
         window.device_list = []
-        window.quick_target.set_selected(1)
-        window.quick_card_size.set_text("32GB")
+        window.target_row.set_selected(1)
+        window.file_size_row.set_text("32GB")
         pump()
 
         #  Choosing a card on the Target page has to survive being chosen.
@@ -2532,12 +2418,12 @@ def on_activate(app: ImagerApplication) -> None:
         print("\nchoosing a card actually writes to the card")
         window.device_list = [card]
         labels = [SELECT_CARD] + [c.description for c in window.device_list]
-        for row in (window.device_row, window.quick_device):
+        for row in (window.device_row,):
             row.set_model(combo(labels))
             row.set_selected(0)
         pump()
         #  Start where a person starts when no card was in at launch.
-        window.quick_target.set_selected(1)
+        window.target_row.set_selected(1)
         pump()
         window.target_row.set_selected(0)
         pump()
@@ -2552,7 +2438,7 @@ def on_activate(app: ImagerApplication) -> None:
               f"and the build goes to the card: {chosen.target!r} "
               f"(is_device={chosen.target_is_device})")
         #  The choice has to survive the next thing touched on Quick setup.
-        window._mirror_target()
+        window._target_settled()
         pump()
         check(window.gather().target_is_device,
               "and it survives a later Quick setup change")
@@ -2633,10 +2519,7 @@ def on_activate(app: ImagerApplication) -> None:
         #  are about the quick start.
         was_customising = getattr(window, "_customising", False)
         was_mode = window.mode_row.get_selected()
-        export_mode = next(i for i, m in enumerate(MODES)
-                           if m[1] is builder.BuildMode.EXPORT)
-        window.mode_row.set_selected(export_mode)
-        window._sync_visibility()
+        window._start_task(builder.Task.EXPORT)
         pump()
         check(window._mode() is builder.BuildMode.EXPORT, "the task can be chosen")
         pages = {n: window.stack.get_page(window.stack.get_child_by_name(n))
@@ -2727,8 +2610,7 @@ def on_activate(app: ImagerApplication) -> None:
         #  hides everything else.
         window._go_back()
         pump()
-        check(window._mode() is not builder.BuildMode.EXPORT,
-              "Back leaves the export task")
+        check(window._task is None, "Back leaves the export task")
         export_page = window.stack.get_page(window.stack.get_child_by_name("export"))
         check(not export_page.get_visible(), "and its page with it")
         quick_page = window.stack.get_page(window.stack.get_child_by_name("quick"))
@@ -2741,109 +2623,36 @@ def on_activate(app: ImagerApplication) -> None:
 
         # ------------------------------ a way back from everywhere but the start
         #  The rule: the first screen is a choice and needs no Back, and
-        #  every other screen has one. The export page broke it by being a
-        #  task the bar had never heard of - and the bar carries the button
-        #  that runs the job as well, so that page could be neither left nor
-        #  used. Walked here rather than reasoned about, one screen at a time.
+        #  every step of every task has one, in a bar that also carries
+        #  Next or Write. Walked here rather than reasoned about.
         print("\na way back from everywhere but the first screen")
-        window._set_customising(False)
-        window._set_quick_screen("choices")
+        window._leave_task()
         pump()
-        check(not window.back_button.get_visible(),
-              "the first screen is a choice, and needs no Back")
-        check(not window.bottom_bar.get_visible(), "nor a bar to put it in")
-
-        #  And it stays that way when another task is chosen. A session saved
-        #  while exporting used to come back with the first screen on top of
-        #  the export task: no image chosen, so the bar read "Still needed: No
-        #  image to export drives from" and offered Back to where it already
-        #  was. _set_customising showed the quick page without asking what the
-        #  mode was.
-        window.mode_row.set_selected(
-            next(i for i, m in enumerate(MODES)
-                 if m[1] is builder.BuildMode.EXPORT))
-        window._sync_visibility()
-        window._set_customising(False)          # what startup does last
-        pump()
-        quick_page = window.stack.get_page(window.stack.get_child_by_name("quick"))
-        check(not quick_page.get_visible(),
-              "the first screen does not reappear under another task")
-        check(window.stack.get_page(
-            window.stack.get_child_by_name("export")).get_visible(),
-              "the task that was chosen is enabled")
-        #  And is the one actually on screen. Hiding a page does not move the
-        #  stack off it: the switcher listed only Export while the quick
-        #  page's content was still displayed, which is exactly what the
-        #  screenshot showed. Asking which pages are enabled would have passed.
-        check(window.stack.get_visible_child_name() == "export",
-              f"and is the page actually shown: "
-              f"{window.stack.get_visible_child_name()!r}")
-        #  A task that writes no card does not survive a restart: the session
-        #  records the mode, so quitting inside Export reopened there - the
-        #  one task that hides the first screen. This is the rule startup
-        #  applies after restoring.
-        window.mode_row.set_selected(
-            next(i for i, m in enumerate(MODES)
-                 if m[1] is builder.BuildMode.EXPORT))
-        pump()
-        check(window._mode() is builder.BuildMode.EXPORT, "chosen for the check")
-        window._forget_tasks_that_write_no_card()
-        window._sync_visibility()
-        pump()
-        check(window._mode() is not builder.BuildMode.EXPORT,
-              "a restored session does not open on Export")
-        check(window.stack.get_visible_child_name() == "quick",
-              f"it opens on the first screen: "
-              f"{window.stack.get_visible_child_name()!r}")
-        check(not window.back_button.get_visible(),
-              "with no Back on it")
-
-        window._go_back()
-        pump()
-        check(quick_page.get_visible(), "and Back brings the first screen back")
-        check(window.stack.get_visible_child_name() == "quick",
-              f"landing on it, not merely enabling it: "
-              f"{window.stack.get_visible_child_name()!r}")
-        check(not window.back_button.get_visible(),
-              "with no Back on it once more")
-
+        check(not window.bottom_bar.get_visible(),
+              "the first screen is a choice, and needs no Back or bar")
+        from pistorm_imager.ui.window import TASK_STEPS as _steps
         elsewhere = []
-        for screen in ("basic", "prepared", "image", "default"):
-            window._set_quick_screen(screen)
-            pump()
-            if window._quick_screen == screen:
-                elsewhere.append((f"quick/{screen}",
+        for task in builder.Task:
+            window._start_task(task)
+            for name in _steps[task]:
+                window.stack.set_visible_child_name(name)
+                pump()
+                elsewhere.append((f"{task.name}/{name}",
                                   window.back_button.get_visible(),
                                   window.bottom_bar.get_visible()))
-        window._set_quick_screen("choices")
-        window._set_customising(True)
-        pump()
-        for name in ("source", "storage", "amiga", "packages", "options",
-                     "target"):
-            if window.stack.get_child_by_name(name) is None:
-                continue
-            window.stack.set_visible_child_name(name)
-            pump()
-            elsewhere.append((name, window.back_button.get_visible(),
-                              window.bottom_bar.get_visible()))
-        window._set_customising(False)
-        window.mode_row.set_selected(
-            next(i for i, m in enumerate(MODES)
-                 if m[1] is builder.BuildMode.EXPORT))
-        window._sync_visibility()
-        pump()
-        elsewhere.append(("export", window.back_button.get_visible(),
-                          window.bottom_bar.get_visible()))
-
-        check(len(elsewhere) >= 10,
-              f"every other screen was actually visited: {len(elsewhere)}")
+        check(len(elsewhere) >= 30,
+              f"every step of every task was visited: {len(elsewhere)}")
         without = [n for n, back, _bar in elsewhere if not back]
         check(not without, f"and every one of them has a Back: missing {without}")
         barless = [n for n, _back, bar in elsewhere if not bar]
         check(not barless, f"and a bar to put it in: missing {barless}")
-
-        window._go_back()
+        #  A restored session opens on the choice, whatever task it was in.
+        window._start_task(builder.Task.EXPORT)
+        window._leave_task()
         pump()
+        check(window.stack.get_visible_child_name() == "quick"
+              and not window.bottom_bar.get_visible(),
+              "leaving a task lands on the first screen, with no bar")
 
     except Exception as error:  # noqa: BLE001
         import traceback

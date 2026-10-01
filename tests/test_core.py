@@ -1164,7 +1164,12 @@ class TheTaskDecidesTheShape(unittest.TestCase):
     def test_every_task_shape_is_allowed(self):
         for task in builder.Task:
             with self.subTest(task.name):
-                config = task.shape(builder.BuildConfig(target="/tmp/x.img"))
+                config = task.shape(builder.BuildConfig(
+                    target="/tmp/x.img",
+                    #  A split build is one with somewhere else to put the
+                    #  drives; without it, it is a new card.
+                    drives_target=("/tmp/drives.img"
+                                   if task is builder.Task.SPLIT else "")))
                 self.assertEqual(config.shape_problems(), [])
                 self.assertIs(config.task, task)
 
@@ -1200,3 +1205,52 @@ class TheTaskDecidesTheShape(unittest.TestCase):
         said = " ".join(config.concerns())
         self.assertIn("ScummVM", said)
         self.assertIn("left out", said)
+
+
+class APiStormWithItsDrivesElsewhere(_Scratch):
+    """The Pi boots from one card; Workbench is on another, on the IDE port.
+
+    Asked for as "split the installation to allow workbench etc. to be
+    installed into a different drive/image than the sd card that the pi
+    boots from". One set of choices, two targets, one build.
+    """
+
+    def test_one_build_writes_the_boot_card_and_the_drives(self):
+        folder = self.scratch()
+        system = folder / "system"
+        (system / "S").mkdir(parents=True)
+        (system / "S" / "Startup-Sequence").write_bytes(b"LoadWB\n")
+        (system / "C").mkdir()
+        (system / "C" / "Dir").write_bytes(b"dir")
+        boot, drives = folder / "boot.img", folder / "drives.img"
+        config = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target=str(boot), image_size=300 * MIB, boot_size=96 * MIB,
+            drives_target=str(drives), drives_image_size=200 * MIB,
+            emu68_prepared_dir=EMU68,
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0, content_folder=str(system),
+                volume_name="System")]))
+        self.assertIs(config.task, builder.Task.SPLIT)
+        builder.run_build(config, QUIET)
+        with open(boot, "rb") as handle:
+            parts = [p for p in mbr.read_table(handle) if not p.empty]
+        self.assertEqual([p.type_id for p in parts], [mbr.TYPE_FAT32_LBA],
+                         "the boot card is Emu68 and nothing else")
+        with open(drives, "rb") as handle:
+            base, table = builder.find_rdb(handle)
+        self.assertEqual(base, 0, "the drives start with their RDB, for the "
+                                  "IDE port")
+        self.assertEqual([p.drive_name for p in table.partitions], ["DH0"])
+        names = [d.volume for d in builder.list_drives(drives)]
+        self.assertEqual(names, ["System"])
+
+    def test_the_two_targets_must_differ(self):
+        config = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target="/tmp/same.img", drives_target="/tmp/same.img"))
+        self.assertTrue([p for p in config.validate() if "same target" in p])
+
+    def test_only_a_new_card_can_split(self):
+        config = builder.BuildConfig(mode=builder.BuildMode.IMAGE,
+                                     target="/tmp/a.img",
+                                     drives_target="/tmp/b.img")
+        self.assertTrue(config.shape_problems())

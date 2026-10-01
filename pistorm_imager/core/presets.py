@@ -285,6 +285,13 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
     """A plain account of what the build will actually put on the card."""
     if config.mode is builder.BuildMode.REWRITE:
         return _describe_rebuild(config)
+    if config.drives_target:
+        #  Two things are written, and each is described as what it is.
+        boot = describe(config.boot_card_part(), detected)
+        drives = describe(config.drives_part(), detected)
+        return (f"The Pi's boot card ({config.target or 'not chosen yet'}):\n"
+                f"{boot}\n\nThe Amiga drives ({config.drives_target}):\n"
+                f"{drives}")
     if getattr(config, "amiga_only", False):
         #  No boot partition and no MBR: the card is Amiga drives and nothing
         #  else, which is what a real accelerator's IDE controller reads.
@@ -300,7 +307,8 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
         name = detected.kickstart.name if detected.kickstart else "Kickstart"
         lines.append(f"Kickstart: {name}")
     elif config.install_emu68:
-        lines.append("Kickstart: none found - Emu68 will not start without one")
+        lines.append("Kickstart: none chosen - Emu68 will use the ROM chip "
+                     "in the Amiga")
     else:
         #  Emu68 is not being installed, but the boot partition is still
         #  written and whatever Emu68 is already on the card will look for a
