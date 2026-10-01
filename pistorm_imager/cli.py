@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -135,11 +136,40 @@ def cmd_check(args) -> int:
     return 0
 
 
+def _give_the_cache_back(config) -> None:
+    """Hand what a privileged build made in the cache back to its owner.
+
+    A card is written under pkexec, with the user's cache, so anything the
+    build fetched or staged there was root's afterwards - and the next build
+    run as the user could neither clear nor write into it, and stopped on
+    "File exists". pkexec says whose request it was in PKEXEC_UID.
+    """
+    uid = os.environ.get("PKEXEC_UID")
+    if os.geteuid() != 0 or not uid or not uid.isdigit() \
+            or not config.cache_root:
+        return
+    import pwd                                              # noqa: PLC0415
+    try:
+        gid = pwd.getpwuid(int(uid)).pw_gid
+    except KeyError:
+        return
+    for path in [Path(config.cache_root)] + list(
+            Path(config.cache_root).rglob("*")):
+        try:
+            if path.lstat().st_uid == 0:
+                os.lchown(path, int(uid), gid)
+        except OSError:
+            continue
+
+
 def cmd_build(args) -> int:
     config = jobs.load(args.job)
     progress = json_progress() if args.progress_json else console_progress()
     try:
-        builder.run_build(config, progress)
+        try:
+            builder.run_build(config, progress)
+        finally:
+            _give_the_cache_back(config)
     except Cancelled:
         print("Cancelled.", file=sys.stderr)
         return 130

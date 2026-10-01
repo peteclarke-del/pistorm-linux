@@ -276,8 +276,13 @@ def _check_application_updates(window) -> None:
 
     def close_about():
         window.about_dialog.force_close()
-        wait_for(lambda: window.get_visible_dialog() is None,
-                 "the About dialog to close")
+        if not wait_for(lambda: window.get_visible_dialog() is None,
+                        "the About dialog to close"):
+            d = window.get_visible_dialog()
+            print("DIAG dialog", d, getattr(d, "get_heading", lambda: "")(),
+                  "mapped", window.get_mapped(), "active", window.is_active(),
+                  "visible page", window.stack.get_visible_child_name(),
+                  "task", window._task)
         check(not updater._listeners,
               "a closed About dialog stops following the update check")
 
