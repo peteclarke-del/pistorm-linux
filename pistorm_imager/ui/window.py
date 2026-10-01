@@ -865,12 +865,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  to the top of it. The page was three rows and then a great deal of
         #  nothing, which read as though something had failed to load.
         banner = Adw.PreferencesGroup()
-        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+        #  Kept compact so the whole grid of tasks fits on a small screen
+        #  without scrolling.
+        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4,
                        halign=Gtk.Align.CENTER)
-        hero.set_margin_top(18)
-        hero.set_margin_bottom(12)
+        hero.set_margin_top(0)
+        hero.set_margin_bottom(0)
         icon = Gtk.Image.new_from_icon_name("pistorm-imager")
-        icon.set_pixel_size(96)
+        icon.set_pixel_size(64)
         #  The installed application icon if the desktop has it, and a stock
         #  one if this is running from a checkout that has never installed it.
         if not Gtk.IconTheme.get_for_display(
@@ -890,12 +892,9 @@ class ImagerWindow(Adw.ApplicationWindow):
 
         #  The things anyone actually wants to do, rather than a page of
         #  settings that happens to be first.
-        choices = Adw.PreferencesGroup(
-            title="What would you like to do?",
-            #  Nothing is below it any more - this screen is the choice
-            #  and nothing else - so it can no longer promise settings here.
-            description="Each one leads to what it needs, and back here if "
-                        "you change your mind.")
+        #  No description under the heading: each tile says what it does
+        #  in its tooltip, and the line cost a row on a small screen.
+        choices = Adw.PreferencesGroup(title="What would you like to do?")
         #  A grid of tiles, each one the whole of its task: a row apiece with
         #  a Start button at the end was a long column of identical buttons
         #  with the thing being chosen at the other side of the window.
