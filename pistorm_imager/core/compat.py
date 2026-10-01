@@ -244,6 +244,9 @@ class Compatibility:
         #  years-old WHDLoad beat the current release the user had ticked.
         #  Refusing it during the copy leaves the name free for the package.
         self._displace: set[str] = set()
+        #  Where the package's own copy of a displaced path is, so the two can
+        #  be compared when the drive's copy arrives.
+        self._displace_from: dict[str, str] = {}
         self._displaced: list[str] = []
         #  Drawers left out whole, because a newer copy of what they hold is
         #  being installed elsewhere. Reported once each rather than per file.
@@ -386,14 +389,20 @@ class Compatibility:
         for path, why in paths.items():
             self._outranked[path.replace("\\", "/").strip("/").lower()] = why
 
-    def displace(self, paths: Iterable[str]) -> None:
+    def displace(self, paths: Iterable[str] | dict[str, str | None]) -> None:
         """Refuse these paths while copying, so a package can supply them.
 
         Only ever called with paths a package has already fetched, so a
         failed download cannot leave the card without the file it refused.
+        Given as a mapping, each path names the package's own copy, and the
+        drive's copy is kept after all where it is provably the newer one.
         """
-        self._displace |= {p.replace("\\", "/").strip("/").lower()
-                           for p in paths}
+        sources = paths if isinstance(paths, dict) else dict.fromkeys(paths)
+        for path, source in sources.items():
+            posix = path.replace("\\", "/").strip("/").lower()
+            self._displace.add(posix)
+            if source:
+                self._displace_from[posix] = source
 
     def keep_user_startup(self) -> None:
         """Hold back the drive's S:User-Startup so it can be added to."""
@@ -421,6 +430,38 @@ class Compatibility:
         return any(posix == drawer or posix.startswith(drawer + "/")
                    for drawer in self._supersede)
 
+    def _system_is_newer(self, posix: str) -> bool:
+        """Whether the copy being offered beats the package's, by version.
+
+        Only when both carry a version and the system's is strictly greater.
+        A package's copy replaces the system's by default - that is what
+        ticking it asks for - but not with an older release of the same file:
+        AmigaOS 3.2 carries datatypes and classes newer than any package
+        here, and putting the package's over them would be a downgrade made in
+        the user's name.
+        """
+        source = self._displace_from.get(posix)
+        data = getattr(self, "_pending_data", None)
+        if not source or data is None:
+            return False
+        from .content import version_of                     # noqa: PLC0415
+        try:
+            mine = Path(source).read_bytes()
+        except OSError:
+            return False
+        ours, theirs = version_of(mine), version_of(data)
+        if theirs is None:
+            return False
+        if ours is not None:
+            return theirs > ours
+        #  A program, library or datatype descriptor of the package's that
+        #  states no version cannot be shown to be newer than one that does:
+        #  akGIF's descriptor has none, and put over AmigaOS 3.2's GIF 47.1 it
+        #  would hand GIFs to a 2008 class. Text - a script, a prefs file -
+        #  says nothing about age either way, and is still replaced.
+        return mine[:4] == b"\x00\x00\x03\xf3" or (
+            mine[:4] == b"FORM" and mine[8:12] == b"DTYP")
+
     def stop_displacing(self) -> None:
         """The copying is over; the packages may now write their own files.
 
@@ -439,6 +480,7 @@ class Compatibility:
         for the same reason and at the same moment.
         """
         self._displace.clear()
+        self._displace_from.clear()
         self._supersede.clear()
 
     def skip(self, relative: str, *, named: bool = False) -> bool:
@@ -472,6 +514,11 @@ class Compatibility:
                               f"{self._supersede[drawer]} left out whole - "
                               f"you chose a newer copy of what it holds")
                 return True
+        if posix in self._displace and self._system_is_newer(posix):
+            self.note("kept",
+                      f"{relative} (the system's own copy is newer than the "
+                      f"one in the package you chose)")
+            return False
         if posix in self._displace:
             self._displaced.append(relative)
             self.note("replaced",
