@@ -16,6 +16,26 @@ from pistorm_imager.core import (amigainfo, amigaos, compat, content,  # noqa: E
 from pistorm_imager.core.util import Progress  # noqa: E402
 
 
+
+def _resident(version: int, revision: int, name: bytes) -> bytes:
+    """A minimal hunk file whose code holds a Resident structure."""
+    import struct                                           # noqa: PLC0415
+    ident = name + b" %d.%d (1.1.99)\0" % (version, revision)
+    code = bytearray(b"\x70\xff\x4e\x75")               # moveq #-1,d0; rts
+    at = len(code)
+    code += b"\x4a\xfc" + struct.pack(">I", at) + struct.pack(">I", 0)
+    code += bytes([0x80, version, 9, 0]) + struct.pack(">II", 0, 0)
+    code += struct.pack(">I", 0)
+    pointer = len(code)
+    code += ident
+    while len(code) % 4:
+        code += b"\0"
+    struct.pack_into(">I", code, at + 18, pointer)
+    longs = len(code) // 4
+    return (struct.pack(">IIIIII", 0x3F3, 0, 1, 0, 0, longs)
+            + struct.pack(">II", 0x3E9, longs) + bytes(code)
+            + struct.pack(">I", 0x3F2))
+
 class TestDiscover(unittest.TestCase):
     def tree(self, container: str, *names: str) -> Path:
         folder = Path(tempfile.mkdtemp(prefix="pistorm-content-"))
@@ -459,7 +479,7 @@ class UpdatesForAnAcceleratedMachine(unittest.TestCase):
 
     def test_the_cpu_libraries_are_offered_as_an_update(self):
         keys = {p.key for p in
-                packages.in_category(packages.Category.UPDATES)}
+                packages.in_category(packages.Category.SPEED)}
         self.assertIn("mmulib", keys)
 
     def test_whdload_does_not_drag_in_what_stops_it_working(self):
@@ -498,9 +518,8 @@ class UpdatesForAnAcceleratedMachine(unittest.TestCase):
     def test_they_are_still_offered_for_a_machine_used_for_applications(self):
         #  Off by default is not the same as gone: the newer CPU support is
         #  a real improvement where WHDLoad is not the point.
-        keys = {p.key for p in
-                packages.in_category(packages.Category.UPDATES)}
-        self.assertEqual(keys, {"mmulib"})
+        self.assertIn(packages.CATALOGUE_BY_KEY["mmulib"],
+                      packages.in_category(packages.Category.SPEED))
 
 
 class NiceToHaves(unittest.TestCase):
@@ -543,11 +562,14 @@ class NiceToHaves(unittest.TestCase):
     def test_media_and_extras_are_offered_as_their_own_groups(self):
         for category, expected in ((packages.Category.MEDIA,
                                     {"amplifier", "hippoplayer",
-                                     "digibooster", "ahi"}),
+                                     "digibooster", "ahi", "amigaamp",
+                                     "riva", "frogger", "warpjpeg",
+                                     "warppng", "akgif"}),
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
-                                     "kingcon", "sysinfo",
-                                     "adfdevice", "virusz"})):
+                                     "kingcon", "sysinfo", "virusz",
+                                     "scout", "installer",
+                                     "newinstaller"})):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
 
@@ -1302,7 +1324,7 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
         (folder / "Visage").mkdir()
         paths = builder._landing_paths([(str(folder / "Visage"),
                                          "Utilities/Visage")])
-        self.assertEqual(paths, ["Utilities/Visage"])
+        self.assertEqual(list(paths), ["Utilities/Visage"])
         self.assertTrue(self.fixer(paths).skip("Utilities/Visage"))
 
     def test_a_drawer_going_to_the_volume_root_displaces_nothing(self):
@@ -1311,7 +1333,7 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
         self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
         (folder / "Stuff").mkdir()
         self.assertEqual(
-            builder._landing_paths([(str(folder / "Stuff"), "")]), [])
+            builder._landing_paths([(str(folder / "Stuff"), "")]), {})
 
     def test_a_drawers_contents_are_never_displaced_one_by_one(self):
         #  A drawer is merged into whatever is there. Only its own name is
@@ -1331,6 +1353,46 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
                          "a file inside the drawer must survive")
         self.assertFalse(keeps.skip("Prefs/Env-Archive/Sys/anything"),
                          "and so must everything else already under it")
+
+    def test_a_newer_system_file_is_kept_over_an_older_package_copy(self):
+        #  AmigaOS 3.2 carries picture.datatype 47.5; a package bringing 43.41
+        #  under the same name must not put the older one over it. The
+        #  versions are read structurally, so an ID string that does not
+        #  name its kind - "picture 43.41" - still compares.
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-newer-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "picture.datatype").write_bytes(_resident(43, 41, b"picture"))
+        paths = builder._landing_paths([(str(folder / "picture.datatype"),
+                                         "Classes/DataTypes")])
+        fixer = self.fixer(paths)
+        landed = "Classes/DataTypes/picture.datatype"
+        fixer.offer(landed, _resident(47, 5, b"picture"))
+        self.assertFalse(fixer.skip(landed),
+                         "the system's newer copy is kept")
+        fixer.offer(landed, _resident(40, 4, b"picture"))
+        self.assertTrue(fixer.skip(landed),
+                        "an older system copy still gives way to the package")
+        fixer.offer(landed, b"no version at all")
+        self.assertTrue(fixer.skip(landed),
+                        "and one that cannot be compared gives way, as before")
+
+    def test_a_package_binary_with_no_version_does_not_replace_a_versioned_one(self):
+        #  akGIF's descriptor states no version; AmigaOS 3.2's GIF says 47.1.
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-unversioned-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "GIF").write_bytes(b"FORM\x00\x00\x00\x20DTYPNAME\0GIF")
+        (folder / "Notes").write_bytes(b"just text")
+        paths = builder._landing_paths([(str(folder / "GIF"), "Devs/DataTypes"),
+                                        (str(folder / "Notes"), "S")])
+        fixer = self.fixer(paths)
+        fixer.offer("Devs/DataTypes/GIF", b"FORM....DTYPFVER$VER: GIF 47.1 (1.1.21)")
+        self.assertFalse(fixer.skip("Devs/DataTypes/GIF"),
+                         "the system's versioned descriptor is kept")
+        fixer.offer("S/Notes", b"$VER: Notes 1.0")
+        self.assertTrue(fixer.skip("S/Notes"),
+                        "text the package replaces is still replaced")
 
     def test_a_card_that_imports_nothing_has_no_clash_to_settle(self):
         from pistorm_imager.core import builder                # noqa: PLC0415
@@ -1847,8 +1909,10 @@ class IgameNeedsNoDonor(unittest.TestCase):
         #  Not Guigfx: it and render.library are compiled for a processor
         #  with an FPU, which Emu68 does not give a PiStorm, and iGame lists
         #  them as optional.
+        #  WBRun, so a game added by hand starts as its icon would start it;
+        #  a system that has its own newer one keeps it.
         self.assertEqual(needs, {"mui", "mcc_nlist", "mcc_texteditor",
-                                 "mcc_urltext"})
+                                 "mcc_urltext", "wbrun"})
 
     def test_each_of_those_can_be_downloaded(self):
         for key in packages.CATALOGUE_BY_KEY["igame"].requires:
@@ -1866,7 +1930,8 @@ class IgameNeedsNoDonor(unittest.TestCase):
     def test_ticking_igame_brings_them_all(self):
         self.assertEqual(
             packages.expand(["igame"]),
-            ["mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext", "igame"])
+            ["mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext", "wbrun",
+             "igame"])
 
 
 class TheFpuExplanationWasWrong(unittest.TestCase):
@@ -5531,7 +5596,8 @@ class TheProcessorChoosesTheArchive(unittest.TestCase):
             with self.subTest(package.key):
                 for value, path in package.download.per_cpu:
                     machines.Cpu(value)          # raises if it is not one
-                    self.assertTrue(path.startswith("http"), path)
+                    chosen = package.archive(machines.Cpu(value))
+                    self.assertTrue(chosen.url.startswith("http"), path)
 
     def test_a_pistorm_gets_the_build_emu68_can_run(self):
         for package in self.per_cpu():
@@ -5547,8 +5613,13 @@ class TheProcessorChoosesTheArchive(unittest.TestCase):
                      for cpu, _path in
                      ((machines.Cpu(value), path)
                       for value, path in package.download.per_cpu)}
+            #  One archive may serve several processors - XAD's 020 build is
+            #  its author's answer for a 68020, 68030 and 68040 alike - but
+            #  every archive named has to be one some processor gets.
+            paths = {path.rsplit("/", 1)[-1]
+                     for _value, path in package.download.per_cpu}
             with self.subTest(package.key):
-                self.assertEqual(len(set(names.values())), len(names), names)
+                self.assertEqual(set(names.values()), paths, names)
 
     def test_a_processor_nobody_builds_for_falls_back_to_the_oldest(self):
         #  The oldest build is the one that runs anywhere, so an answer this
