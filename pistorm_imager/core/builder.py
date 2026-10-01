@@ -60,11 +60,20 @@ class BuildMode(enum.Enum):
     IMAGE = "image"
     HDF = "hdf"
     CUSTOMISE = "customise"
+    #  One drive on a card that already exists, formatted and filled again;
+    #  the partition table, the boot partition and every other drive are left
+    #  exactly as they are.
+    REWRITE = "rewrite"
     #  Not a build at all: reading the Amiga drives back out of a card as
     #  separate .hdf files. It lives here so that it reaches the card through
     #  the same job, the same progress and the same button as everything else,
     #  rather than growing a second way to run.
     EXPORT = "export"
+
+
+#  The tasks that format Amiga drives and fill them, and so can install
+#  AmigaOS and software: a new card, and one drive rebuilt on an existing one.
+FILLS_DRIVES = (BuildMode.FRESH, BuildMode.REWRITE)
 
 
 @dataclasses.dataclass
@@ -134,6 +143,10 @@ class BuildConfig:
     #  be used. Distinct from an empty partition, which still takes the rest
     #  of the card and still appears on the desktop asking to be initialised.
     boot_only: bool = False
+    #  The drive to rebuild, by its device name, when the task is to rewrite
+    #  one drive on an existing card. Its size, file system and whether it is
+    #  the one the machine boots from are read off the card, not chosen.
+    rewrite_drive: str = ""
     #  The mirror of boot_only: Amiga drives and no Emu68 boot partition at
     #  all.  A real accelerator with an IDE interface reads a Rigid Disk Block
     #  at block 0 and knows nothing about an MBR, so a card for one carries no
@@ -543,7 +556,7 @@ class BuildConfig:
         was missed - its saved screen mode is just as much somebody else's as
         the other two, and nothing was ever done about it.
         """
-        if self.mode is not BuildMode.FRESH:
+        if self.mode not in FILLS_DRIVES:
             return True
         return any(p.content_hdf for p in self.amiga_partitions)
 
@@ -569,6 +582,19 @@ class BuildConfig:
         if self.mode is BuildMode.IMAGE and self.source_image \
                 and not Path(self.source_image).is_file():
             problems.append(f"Source image not found: {self.source_image}")
+        if self.mode is BuildMode.REWRITE:
+            if not self.rewrite_drive:
+                problems.append("Choose which drive on the card to rebuild.")
+            if not self.target_is_device and self.target \
+                    and not Path(self.target).is_file():
+                problems.append(
+                    f"{self.target} does not exist: rebuilding a drive needs "
+                    f"the card or image that already has it.")
+            named = [p for p in self.amiga_partitions
+                     if p.name.upper() == self.rewrite_drive.upper()]
+            if self.rewrite_drive and len(named) != 1:
+                problems.append(f"Nothing says what {self.rewrite_drive} is "
+                                f"to be filled with.")
         if self.mode is BuildMode.HDF:
             if not self.hdf_image:
                 problems.append("No Amiga hard disk image (.hdf) selected.")
@@ -659,18 +685,20 @@ class BuildConfig:
                     f"{spec.name} is set to {spec.dostype}; content can only be "
                     f"written to an FFS or PFS3 partition.")
         if self.os_cd:
-            if self.mode is not BuildMode.FRESH:
+            if self.mode not in FILLS_DRIVES:
                 problems.append(
-                    "AmigaOS can only be installed when building a new card.")
+                    "AmigaOS can only be installed when building a new card "
+                    "or rebuilding a drive.")
             elif not Path(self.os_cd).is_file():
                 problems.append(f"CD image not found: {self.os_cd}")
         for archive in self.boingbag_archives:
             if not Path(archive).is_file():
                 problems.append(f"BoingBag archive not found: {archive}")
         if self.install_amigaos:
-            if self.mode is not BuildMode.FRESH:
+            if self.mode not in FILLS_DRIVES:
                 problems.append(
-                    "AmigaOS can only be installed when building a new card.")
+                    "AmigaOS can only be installed when building a new card "
+                    "or rebuilding a drive.")
             if not self.adf_folder:
                 problems.append("No folder of Workbench ADF disks selected.")
             elif not Path(self.adf_folder).is_dir():
@@ -689,6 +717,114 @@ class BuildConfig:
 
 
 # ---------------------------------------------------------------- helpers
+
+
+class _Confined:
+    """A card that can only be written between two offsets.
+
+    Rebuilding one drive must not touch any other, and that is too important
+    to rest on every writer underneath getting its arithmetic right: a write
+    that strays outside the drive is refused, and the build stops, rather
+    than landing in somebody's Games drive. Reading is unrestricted - the
+    partition table has to be read to find the drive at all.
+    """
+
+    def __init__(self, handle, start: int, end: int, label: str):
+        self._handle = handle
+        self._start = start
+        self._end = end
+        self._label = label
+
+    def write(self, data) -> int:
+        at = self._handle.tell()
+        if at < self._start or at + len(data) > self._end:
+            raise RuntimeError(
+                f"refused a write of {len(data)} bytes at {at}, outside "
+                f"{self._label} ({self._start}-{self._end}); nothing else on "
+                f"the card has been changed")
+        return self._handle.write(data)
+
+    def truncate(self, *_args) -> None:
+        raise RuntimeError(f"refused to resize the card while rebuilding "
+                           f"{self._label}")
+
+    def __getattr__(self, name):
+        return getattr(self._handle, name)
+
+
+def _rewrite_drive(config: BuildConfig, handle, target_size: int,
+                   progress: Progress) -> None:
+    """Format one drive on an existing card and fill it again.
+
+    The card's own Rigid Disk Block decides where the drive is, how big and
+    which file system; the build is narrowed to that one drive and then does
+    exactly what a new card's build does to it - install AmigaOS, fill it,
+    add the software - against the table that is already there. Everything
+    outside the drive is left byte for byte as it was, and ``_Confined``
+    makes that a guarantee rather than an intention.
+    """
+    located = find_rdb(handle)
+    if located is None:
+        raise RuntimeError(f"{config.target} has no Amiga partition table, so "
+                           f"there is no {config.rewrite_drive} on it")
+    base, table = located
+    partition = next((p for p in table.partitions
+                      if p.drive_name.upper() == config.rewrite_drive.upper()),
+                     None)
+    if partition is None:
+        names = ", ".join(p.drive_name for p in table.partitions)
+        raise RuntimeError(f"{config.target} has no {config.rewrite_drive}; "
+                           f"its drives are {names}")
+    dostype = partition.dostype
+    if not amigafs.is_ffs(dostype) and dostype not in (rdb.DOSTYPE_PFS3,
+                                                       rdb.DOSTYPE_PDS3):
+        raise RuntimeError(f"{partition.drive_name} is "
+                           f"{rdb.dostype_name(dostype)}, and only FFS and "
+                           f"PFS3 drives can be written here")
+    spec = next(s for s in config.amiga_partitions
+                if s.name.upper() == partition.drive_name.upper())
+    if not partition.bootable and (config.install_amigaos or config.os_cd):
+        raise RuntimeError(f"{partition.drive_name} is not the drive the "
+                           f"Amiga boots from, so AmigaOS cannot be "
+                           f"installed onto it")
+    #  What the card says the drive is, not what anything else assumed.
+    spec = dataclasses.replace(
+        spec, name=partition.drive_name, bootable=partition.bootable,
+        size=partition.size_bytes(table.geometry),
+        dostype=rdb.dostype_name(dostype))
+    config = dataclasses.replace(config, amiga_partitions=[spec])
+    if not partition.bootable:
+        #  Software goes on the drive the machine boots from; on any other it
+        #  would be an install nothing ever starts.
+        config = dataclasses.replace(config, package_keys=[])
+
+    start = partition.byte_offset(table.geometry, base)
+    end = start + partition.size_bytes(table.geometry)
+    label = spec.volume_name or partition.drive_name
+    progress.step(f"Rebuilding {partition.drive_name} on the card")
+    progress.log(f"Only {partition.drive_name} is written: "
+                 f"{human_size(end - start)} at byte {start}, "
+                 f"{rdb.dostype_name(dostype)}. The partition table, the "
+                 f"boot partition and every other drive are left as they are.")
+    confined = _Confined(handle, start, end, partition.drive_name)
+    #  The file system's first blocks are cleared, so nothing below takes the
+    #  drive for one that is already formatted and leaves it alone.
+    confined.seek(start)
+    confined.write(b"\0" * min(64 * 1024, end - start))
+    amiga = mbr.MbrPartition(0, 0x00, mbr.TYPE_AMIGA, base // SECTOR,
+                             (target_size - base) // SECTOR)
+    if config.install_amigaos and not _boot_drive_is_filled(config):
+        _install_amigaos(config, confined, amiga, table, progress)
+    if spec.content_folder or spec.content_hdf:
+        _check_the_system_can_boot(config, progress)
+        _install_content(config, confined, amiga, table, progress)
+    _format_empty_partitions(config, confined, amiga, table, progress)
+    if partition.bootable and config.patch_display \
+            and config.brings_a_system_from_elsewhere():
+        progress.step("Adapting the display setup on the drive")
+        postwrite.adapt_display(confined, base, table, config.rtg_display,
+                                progress)
+    progress.log(f'{partition.drive_name} rebuilt as "{label}"')
 
 
 def _target_size(config: BuildConfig) -> int:
@@ -3413,7 +3549,9 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
     try:
         emu68_files: list[Path] = []
         emu68_root: Path | None = None
-        if config.install_emu68:
+        #  Rebuilding one Amiga drive writes nothing to the boot partition,
+        #  so there is no Emu68 to fetch.
+        if config.install_emu68 and config.mode is not BuildMode.REWRITE:
             emu68_files, emu68_root = _prepare_emu68(config, workdir, progress)
         #  A CD install becomes an ordinary folder of content, so everything
         #  that already happens to a filled drive - the compatibility pass, the
@@ -3436,7 +3574,9 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
             if config.mode is BuildMode.IMAGE:
                 _write_image(config, handle, target_size, progress)
 
-            if config.mode in (BuildMode.FRESH, BuildMode.HDF):
+            if config.mode is BuildMode.REWRITE:
+                _rewrite_drive(config, handle, target_size, progress)
+            elif config.mode in (BuildMode.FRESH, BuildMode.HDF):
                 boot_part, amiga_part = _write_partition_table(
                     handle, config, target_size, progress)
                 #  An Amiga-drives-only card has no boot partition to make or
@@ -3507,7 +3647,7 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
                     check_and_repair(handle, amiga_part.start_bytes,
                                      amiga_part.size_bytes, config, progress)
 
-            if config.expand_to_fill:
+            if config.expand_to_fill and config.mode is not BuildMode.REWRITE:
                 _expand(handle, config, target_size, progress)
 
             handle.flush()
