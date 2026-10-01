@@ -163,6 +163,43 @@ class SaveRow(FileRow):
             self.set_path(file.get_path())
 
 
+class PackageCheck(Gtk.CheckButton):
+    """One package in the Software Installation window.
+
+    A tick box rather than a switch row, so that the whole catalogue fits on
+    one screen: a switch row carries its description underneath it, and at
+    three or four lines each the list ran to some five thousand pixels. The
+    description is still here - as the tooltip, and in the window's details
+    strip - and the row keeps a switch row's ``title`` and ``subtitle`` so
+    the code that explains why a package is held or refused did not have to
+    learn a second widget.
+    """
+
+    def __init__(self, title: str, subtitle: str = ""):
+        super().__init__()
+        #  A label of its own so a long name wraps inside its column instead
+        #  of widening every column to fit it.
+        self._title = Gtk.Label(label=title, xalign=0, wrap=True,
+                                wrap_mode=Pango.WrapMode.WORD_CHAR)
+        self.set_child(self._title)
+        self._subtitle = ""
+        self.set_subtitle(subtitle)
+
+    def get_title(self) -> str:
+        return self._title.get_label() or ""
+
+    def set_title(self, title: str) -> None:
+        self._title.set_label(title)
+
+    def get_subtitle(self) -> str:
+        return self._subtitle
+
+    def set_subtitle(self, subtitle: str) -> None:
+        """Markup, as a switch row's subtitle is - callers escape it."""
+        self._subtitle = subtitle or ""
+        self.set_tooltip_markup(self._subtitle or None)
+
+
 def combo(items: list[str], selected: int = 0) -> Gtk.StringList:
     model = Gtk.StringList()
     for item in items:

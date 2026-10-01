@@ -475,7 +475,9 @@ decisions are made.
 
 ![The Amiga page: the machine, the display, and the Kickstart](docs/images/05-amiga.png)
 
-![The Packages page: software fetched from its publisher](docs/images/06-packages.png)
+![The Packages page: how much is chosen, and the way into the catalogue](docs/images/06-packages.png)
+
+![The Software Installation window: every group of the catalogue on one screen](docs/images/06-software.png)
 
 ![The Options page: display, Raspberry Pi and Emu68 switches](docs/images/07-options.png)
 
@@ -571,7 +573,8 @@ pistorm_imager/
     mbr.py       DOS partition table
     rdb.py       Amiga Rigid Disk Block: partitions and embedded file systems
     emu68.py     GitHub releases, asset naming, Raspberry Pi firmware
-    kickstart.py ROM identification, Cloanto decryption, byte-swap repair
+    kickstart.py ROM identification, Cloanto decryption, byte-swap repair,
+                 and which ROMs WHDLoad can use
     bootcfg.py   config.txt / cmdline.txt editing
     bootaddon.py add-ons installed onto the Emu68 boot partition rather
                  than onto an Amiga drive
@@ -617,7 +620,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 889 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 888 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1703,9 +1706,11 @@ agree with perfectly:
 
 A Workbench installed from the original floppies is exactly what shipped in
 1994: no archiver, no installer, and no idea what WHDLoad is. The pieces most
-people add next are offered as a catalogue of 51 packages, grouped as System,
-Updates and patches, Look and feel, Speed, Networking, Music and pictures,
-Handy extras, and Raspberry Pi hardware.
+people add next are offered as a catalogue of 97 packages, grouped as Games,
+Files and archives, Internet, Workbench look, Pictures music and video, Speed
+and patches, Tools, Emu68 and the Pi, and the libraries the rest depend on.
+They are chosen in [a window of their own](#the-software-installation-window),
+every group on one screen.
 
 That last group is not like the others. Everything else in the catalogue cares
 about the Amiga - its chipset, its screen, its processor - while [USB](#usb-on-the-amiga)
@@ -2608,6 +2613,84 @@ So a package whose startup line cannot be installed is now **left off the card
 entirely**, with the reason said plainly in the log rather than discovered on
 the Amiga. Installing something that cannot work, in a place where something
 else will trip over it, is worse than not installing it at all.
+
+### The Software Installation window
+
+The catalogue outgrew a page of switch rows: each carried three or four lines
+of description, and at 97 packages the list ran to several screens with the
+groups only findable by scrolling. **Packages** now holds one row - how many
+are chosen, and a *Choose…* button - and the choosing happens in a window of
+its own, sized so that **every group is on one screen at once**. Each group is
+a card of tick boxes, dealt into five columns longest first so no column runs
+past the others, and the GUI test measures that the whole catalogue fits
+without scrolling. The window is a separate top-level window rather than a
+dialog because a dialog is never bigger than the window it sits in.
+
+What a package is, where it comes from, and why it is held on or cannot be had
+is shown in a strip along the bottom for whichever box is under the pointer or
+has the focus - with what it brings with it and what that is ticked needs it,
+read from the catalogue's `requires`. **Ties are kept both ways**: ticking a
+package ticks what it needs, and turning off something another ticked package
+needs turns that package off too. The libraries nobody chooses for their own
+sake have a group of their own, *Libraries (ticked for you)*, so a card says
+what it carries.
+
+The new entries, and what was learned fitting them:
+
+| Group | Added |
+| --- | --- |
+| Games | ScummVM with four freeware adventures (Lure of the Temptress, Beneath a Steel Sky, Flight of the Amazon Queen, Drascula); ADoom and AmiQuake with id's shareware episodes; WHDLoad's Kickstart images |
+| Files and archives | XAD with its 7-Zip and RAR3 clients, XFD, MUIUnArc, LZX, UnZip 6.0, fat95, Directory Opus 5 |
+| Internet | YAM, smb2fs network drives, AmiTimeKeeper network time, OpenURL |
+| Pictures, music and video | AmigaAMP, RiVA, Frogger NG, WarpJPEG, WarpPNG and akGIF datatypes |
+| Tools | Scout |
+| Emu68 and the Pi | Emu68's own tools (EmuControl, Emu68Info, Emu68EDID, ListDeviceTree), and SetClockI2C for a clock module on the Pi |
+
+* **A package never puts an older file over the system's own.** Ticking a
+  package used to push the system's copy of every file it carries aside, with
+  no comparison - so on AmigaOS 3.2 the WarpJPEG, WarpPNG and akGIF datatypes,
+  and Picasso96's V43 `picture.datatype`, would each have replaced a newer,
+  maintained 3.2 component. The two are now compared as the system's copy is
+  copied, and the system's is kept where it is provably newer, or where it
+  states a version and the package's binary states none. Built against the 3.2
+  CD with every package ticked, `picture.datatype`, `layout.gadget` and the
+  JPEG, PNG and GIF descriptors were all kept. The same rule is what makes
+  ClassAct and WBRun safe to offer at all: on 3.5, 3.9 and 3.2 the system's
+  ReAction classes and WBRun are newer and stay.
+* **Versions are read out of the Resident structure** when the ID string does
+  not name its kind - Workbench 3.1's `picture 40.4`, `xadmaster 12.1` and
+  `reqtools 38.1436` all used to read as no version at all.
+* **WHDLoad's Kickstarts come from your own ROMs.** Commodore's images cannot
+  be downloaded, so every ROM in the folder the card's Kickstart was chosen
+  from is decrypted and matched by SHA-1 against the images WHDLoad's own
+  documentation names - `kick34005.A500`, `kick40068.A1200` and the rest - and
+  copied to `Devs/Kickstarts`, beside the `.RTB` relocation tables from
+  `util/boot/skick346.lha`. Matched by checksum, not version: 40.68 is three
+  different ROMs and WHDLoad accepts only the exact one.
+* **A rolling release is looked up, not named.** YAM's only build that speaks
+  current TLS is a nightly release that keeps its three newest files, so a fixed
+  address would stop working within weeks. A download can name a GitHub release
+  and a pattern, and the newest matching file is fetched; offline, the newest
+  cached one is used.
+* **An archive inside the archive.** id's shareware episodes are DOS
+  self-extractors inside a zip, DOOM's split over two files; they are joined
+  and unpacked with 7-Zip. Both payloads match id's published checksums, and
+  Quake's licence is installed beside its data.
+* **Files a package writes can name the hardware**, the way startup lines
+  already could. fat95's mountlist for the SD card's boot partition names
+  `brcm-sdhc.device` on a Pi 3 and `brcm-emmc.device` on a Pi 4 or CM4, and is
+  left out, with a log line, when no Pi was chosen.
+* **The WiFi waits for its link.** `WaitUntilConnected` from Emu68's tools runs
+  before the TCP/IP stack starts, so the first DHCP request no longer goes out
+  before the Pi has joined the network.
+* **Nothing in a startup line may hold the boot.** Booted in FS-UAE with every
+  package ticked, the 3.2 drive stopped dead at `SetClockI2C LOAD`, waiting for
+  an I2C controller that is not there; it now runs in the background, and the
+  same drive reaches the end of its startup in 36 seconds.
+* **WookieChat uses the shared MUI classes.** Its installer copied a 2008 set of
+  NList classes into `SYS:Libs/MUI`, which `LIBS:` searches before MUI's own
+  drawer, so they shadowed the 2021 classes every other MUI program was built
+  against. It now requires the shared packages instead.
 
 ### The software has a page of its own
 
