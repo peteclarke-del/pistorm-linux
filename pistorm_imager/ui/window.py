@@ -4595,7 +4595,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         parts = [info.name, human_size(info.size)]
         if info.note:
             parts.append(info.note)
-        if info.version and not info.aga:
+        if info.version and info.aga is False:
             parts.append("WARNING: not an A1200/AGA ROM")
         if not info.usable:
             parts.append("this file cannot be used")

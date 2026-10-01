@@ -11,13 +11,18 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import re
 import struct
 from pathlib import Path
 
 CLOANTO_MAGIC = b"AMIROMTYPE1"
 
-#  ROM identification: (version, revision) -> (human name, is_aga_a1200)
-KNOWN_ROMS: dict[tuple[int, int], tuple[str, bool]] = {
+#  ROM identification: (version, revision) -> (human name, is_aga_a1200).
+#  From 3.1.4 on, one version.revision is built for every model, so the pair
+#  says the release and not the machine: those are None, and the model is
+#  found by ``_models``. 3.2's 47.96 used to be called the A1200's here, and
+#  the A500 build was then offered as the AGA ROM Emu68 wants.
+KNOWN_ROMS: dict[tuple[int, int], tuple[str, bool | None]] = {
     (34, 5): ("Kickstart 1.3 (34.5)", False),
     (37, 175): ("Kickstart 2.04 (37.175)", False),
     (37, 210): ("Kickstart 2.05 (37.210)", False),
@@ -25,13 +30,40 @@ KNOWN_ROMS: dict[tuple[int, int], tuple[str, bool]] = {
     (40, 63): ("Kickstart 3.1 A500/A600/A2000 (40.63)", False),
     (40, 68): ("Kickstart 3.1 A1200/A4000 (40.68)", True),
     (40, 70): ("Kickstart 3.1 A4000T (40.70)", True),
-    (45, 57): ("Kickstart 3.1.4 (45.57)", True),
-    (46, 143): ("Kickstart 3.1.4 A1200 (46.143)", True),
-    (47, 96): ("Kickstart 3.2 A1200 (47.96)", True),
-    (47, 102): ("Kickstart 3.2.1 A1200 (47.102)", True),
-    (47, 111): ("Kickstart 3.2.2 A1200 (47.111)", True),
-    (47, 115): ("Kickstart 3.2.3 A1200 (47.115)", True),
+    (45, 57): ("Kickstart 3.1.4 (45.57)", None),
+    (46, 143): ("Kickstart 3.1.4 (46.143)", None),
+    (47, 96): ("Kickstart 3.2 (47.96)", None),
+    (47, 102): ("Kickstart 3.2.1 (47.102)", None),
+    (47, 111): ("Kickstart 3.2.2 (47.111)", None),
+    (47, 115): ("Kickstart 3.2.3 (47.115)", None),
 }
+
+#  Builds whose model is known by their contents, as SHA-1 of the plain ROM:
+#  the AmigaOS 3.2 CD's own, named there by the machines each is for.
+ROM_MODELS: dict[str, tuple[str, ...]] = {
+    "5b2982876fec2166673be447643881262c84090e": ("A1200",),
+    "b88e364daf23c9c9920e548b0d3d944e65b1031d":
+        ("A500", "A600", "A1000", "A2000", "CDTV"),
+}
+
+#  The machines a ROM's file can name, as Hyperion's own files do -
+#  kicka1200.rom, kickCDTVa1000a500a2000a600.rom - and the AGA ones.
+MODEL_NAMES = re.compile(r"(?i)(a4000t|a4000|a3000|a2000|a1200|a1000|a600|"
+                         r"a500|cd32|cdtv)")
+AGA_MODELS = {"A1200", "A4000", "A4000T", "CD32"}
+
+
+def _models(data: bytes, path: Path) -> tuple[str, ...]:
+    """The machines a ROM is built for: by its contents, else its name."""
+    known = ROM_MODELS.get(hashlib.sha1(data).hexdigest())
+    if known:
+        return known
+    named = []
+    for found in MODEL_NAMES.findall(path.stem):
+        model = found.upper()
+        if model not in named:
+            named.append(model)
+    return tuple(named)
 
 VALID_SIZES = {256 * 1024, 512 * 1024, 1024 * 1024}
 
@@ -43,7 +75,8 @@ class RomInfo:
     version: int | None
     revision: int | None
     name: str
-    aga: bool
+    #  None where nothing says which machine it was built for.
+    aga: bool | None
     encrypted: bool
     byte_swapped: bool
     sha1: str
@@ -119,6 +152,16 @@ def identify(path: str | Path, key_file: str | Path | None = None) -> RomInfo:
             data = swapped
             note = (note + "; " if note else "") + "byte-swapped dump, will be corrected"
 
+    if header is None and encrypted:
+        #  Decryption cannot fail, only give the wrong bytes: a rom.key from
+        #  another set of ROMs turns this one into noise, which used to be
+        #  reported as no Kickstart at all.
+        return RomInfo(path, size, None, None,
+                       "Encrypted ROM (this rom.key does not fit it)", False,
+                       True, False, sha1, False,
+                       f"Decrypting it with {note.split(' with ')[-1]} gives "
+                       f"no Kickstart: that key is for another set of ROMs. "
+                       f"Use the rom.key that came with this one")
     if header is None:
         return RomInfo(path, size, None, None, "Not a Kickstart ROM", False,
                        encrypted, False, sha1, False,
@@ -126,7 +169,14 @@ def identify(path: str | Path, key_file: str | Path | None = None) -> RomInfo:
 
     version, revision = header
     name, aga = KNOWN_ROMS.get((version, revision),
-                               (f"Kickstart {version}.{revision}", version >= 39))
+                               (f"Kickstart {version}.{revision}",
+                                None if version >= 45 else version >= 39))
+    if aga is None:
+        models = _models(data, path)
+        if models:
+            aga = any(m in AGA_MODELS for m in models)
+            release, _, numbers = name.rpartition(" (")
+            name = f"{release} {'/'.join(models)} ({numbers}"
     usable = len(data) in VALID_SIZES
     if not usable:
         note = (note + "; " if note else "") + f"unusual ROM size ({size} bytes)"

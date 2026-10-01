@@ -1341,7 +1341,7 @@ def _populate_boot(fs: Fat32, config: BuildConfig, emu68_files: list[Path],
         progress.step("Installing the Kickstart ROM")
         info = kickstart.identify(config.kickstart_path, config.kickstart_key or None)
         progress.log(f"{info.name}" + (f" ({info.note})" if info.note else ""))
-        if not info.aga:
+        if info.aga is False:
             progress.log("WARNING: this is not an AGA (A1200) Kickstart. "
                          "Emu68 expects an A1200 ROM.")
         data = kickstart.prepare(info, config.kickstart_key or None)

@@ -189,7 +189,7 @@ def best_rom(roms: list[kickstart.RomInfo],
     def score(rom: kickstart.RomInfo) -> tuple:
         return (
             1 if rom.usable else 0,
-            1 if rom.aga else 0,
+            {True: 2, None: 1}.get(rom.aga, 0),
             2 if wanted and (rom.version, rom.revision) == wanted else 0,
             1 if (rom.version, rom.revision) in kickstart.KNOWN_ROMS else 0,
             #  Prefer the plain A1200 build over A4000/A3000 dumps of the same
@@ -595,7 +595,7 @@ def best_rom_for_machine(roms: list[kickstart.RomInfo],
     def score(rom: kickstart.RomInfo) -> tuple:
         pair = (rom.version or 0, rom.revision or 0)
         rank = len(wanted) - wanted.index(pair) if pair in wanted else 0
-        return (1 if rom.usable else 0, rank, 1 if rom.aga else 0)
+        return (1 if rom.usable else 0, rank, {True: 2, None: 1}.get(rom.aga, 0))
 
     usable = [r for r in roms if r.usable]
     return max(usable, key=score) if usable else None

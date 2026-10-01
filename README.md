@@ -144,7 +144,9 @@ Along the way it will:
   separately for releases that no longer bundle it;
 * identify Kickstart ROMs by looking *inside* them rather than by file name,
   warn when a ROM is not an A1200/AGA one, decrypt Cloanto `AMIROMTYPE1` ROMs
-  when `rom.key` is available, and silently correct byte-swapped dumps;
+  when `rom.key` is available - and say so when the `rom.key` beside one
+  belongs to another set, rather than calling a good ROM "Not a Kickstart" -
+  and silently correct byte-swapped dumps;
 * edit the `config.txt` that ships with your chosen Emu68 release rather than
   generating a new one, so upstream's comments and per-release tuning survive
   and only the keys you actually set are changed;
@@ -231,11 +233,17 @@ without them. With them, the same drive boots on either.
 
 The ROM is found by the model in its name and proved by reading its header -
 the disc keeps the CDTV's extended ROM in the same drawer. An A500, A600 or
-A2000 is given the ROM the disc carries for those models, not the A1200's. It
-is nonetheless *shown* as "Kickstart 3.2 A1200 (47.96)": a ROM is named here by
-the version in its header, and every 3.2 ROM on the disc is 47.96 whichever
-machine it was built for. The file name beside it is the one to go by. Only a Kickstart
-this application chose is replaced; one picked by hand is left where it is.
+A2000 is given the ROM the disc carries for those models, not the A1200's, and
+is shown as such. Every 3.2 ROM is 47.96 in its header whichever machine it
+was built for - and from 3.1.4 on that is true of every release - so the
+version says the release and not the machine. The model comes from the ROM's
+checksum where it is a known build (the 3.2 CD's are), or else from the
+machines its file names, as Hyperion's own files do (`kicka1200.rom`,
+`kickCDTVa1000a500a2000a600.rom`). One that says neither is shown without a
+model and is not warned about as "not an A1200 ROM": it used to be labelled
+A1200 outright, and the A500 build offered as the AGA ROM Emu68 wants. Only a
+Kickstart this application chose is replaced; one picked by hand is left where
+it is.
 
 **Processor libraries.** 3.2's boot script runs `CPU CHECKINSTALL`, which stops
 and waits for a key when a 68030, 68040 or 68060 has no library of its own. So
@@ -1948,6 +1956,14 @@ Only the Paula driver is copied. The Toccata, Delfina, Prelude and Melody
 drivers in the archive are for sound cards this machine has not got, and a mode
 list full of hardware that is not there is worse than a short one.
 
+**And it is set up, not only installed.** AHI chooses no audio mode until AHI
+Prefs has been saved once, and until then whatever plays through it is silent
+or says so - AmigaAMP asks for a stereo++ mode by name. The card gets
+`ENVARC:Sys/ahi.prefs` as AHI Prefs would save it: the layouts are AHI's own
+`devices/ahi.h`, the defaults its Prefs program's, and every unit set to the
+first stereo++ mode the Paula driver's `DEVS:AudioModes/PAULA` lists - read out
+of that file, not written in here - which is *Paula: 14 bit stereo++*.
+
 #### Startup lines that work, and are not repeated
 
 Two faults in the lines added to `S:User-Startup`, both found by reading a
@@ -2701,11 +2717,34 @@ The new entries, and what was learned fitting them:
 | --- | --- |
 | Games | ScummVM with four freeware adventures (Lure of the Temptress, Beneath a Steel Sky, Flight of the Amazon Queen, Drascula); ADoom and AmiQuake with id's shareware episodes; WHDLoad's Kickstart images |
 | Files and archives | XAD with its 7-Zip and RAR3 clients, XFD, MUIUnArc, LZX, UnZip 6.0, fat95, Directory Opus 5 |
-| Internet | YAM, smb2fs network drives, AmiTimeKeeper network time, OpenURL |
+| Internet | YAM, smb2fs network drives, AmiTimeKeeper network time, OpenURL, and AmiSSL installed rather than staged |
 | Pictures, music and video | AmigaAMP, RiVA, Frogger NG, WarpJPEG, WarpPNG and akGIF datatypes |
 | Tools | Scout |
 | Emu68 and the Pi | Emu68's own tools (EmuControl, Emu68Info, Emu68EDID, ListDeviceTree), and SetClockI2C for a clock module on the Pi |
 
+* **AmiSSL is installed, not staged.** It used to be unpacked into
+  `Storage/Install` for its installer to be run on the Amiga, and until
+  somebody did, YAM, NetSurf and everything else that asks for it failed. It
+  is now laid out as that installer lays it out for a self-contained install on
+  AmigaOS 3: one `SYS:AmiSSL` drawer with the libraries, the `OpenSSL` command,
+  its settings and the certificate authorities, and the same `AmiSSL:` assign,
+  `LIBS:` addition and path in `User-Startup`. Its libraries come in a drawer
+  per processor, and the card gets the 68060's on a 68060 and the 68020-40
+  build otherwise. Booted in FS-UAE from a 3.2 build, `OpenSSL version` answers
+  with AmiSSL 5.27 loaded.
+* **The clock is the host's time zone.** UnZip's readme says that without
+  `TZ` it treats the UTC times in modern archives as local time, and
+  AmiTimeKeeper takes only an offset from Locale unless it is given a rule. The
+  card gets `ENVARC:TZ` and a `TZ=` line in AmiTimeKeeper's settings, both the
+  POSIX rule at the end of this computer's own `/etc/localtime` -
+  `GMT0BST,M3.5.0/1,M10.5.0` in Britain - so daylight saving is right too.
+  Where the host has none, `TZ` is left out and AmiTimeKeeper's settings are
+  written without it.
+* **The freeware adventures are in ScummVM's launcher.** They used to be
+  copied into `Games/ScummVM/games` and ScummVM opened to an empty list until
+  each drawer was found with Add Game. `scummvm.ini` is now the one ScummVM
+  ships, with a section for each game ticked beside it - as Add Game writes
+  them, its path taken from where that game is put.
 * **A package never puts an older file over the system's own.** Ticking a
   package used to push the system's copy of every file it carries aside, with
   no comparison - so on AmigaOS 3.2 the WarpJPEG, WarpPNG and akGIF datatypes,

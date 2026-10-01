@@ -3,6 +3,7 @@
 Run with:  python3 -m unittest discover -s tests -v
 """
 import dataclasses
+import hashlib
 import io
 import os
 import struct
@@ -697,6 +698,52 @@ class TestKickstart(_Scratch):
         info = kickstart.identify(folder / "kick.rom")
         self.assertTrue(info.usable)
         self.assertEqual(kickstart.prepare(info), plain)
+
+    def test_the_wrong_key_is_said_to_be_the_wrong_key(self):
+        #  Decrypting with another set's rom.key gives noise, which was
+        #  reported as "Not a Kickstart ROM" - true of the noise, and no
+        #  help to anybody holding a perfectly good ROM.
+        folder = self.scratch()
+        key = b"\x11\x22\x33\x44\x55"
+        plain = self.rom()
+        encrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(plain))
+        (folder / "kick.rom").write_bytes(b"AMIROMTYPE1" + encrypted)
+        (folder / "rom.key").write_bytes(b"\x99" * 7)
+        info = kickstart.identify(folder / "kick.rom")
+        self.assertFalse(info.usable)
+        self.assertNotIn("Not a Kickstart", info.name)
+        self.assertIn("rom.key", info.name)
+
+    def test_a_release_built_for_every_model_is_not_called_the_a1200s(self):
+        #  From 3.1.4 one version.revision is built for each machine; 47.96
+        #  was labelled A1200 and its A500 build offered as the AGA ROM.
+        folder = self.scratch()
+        unnamed = folder / "kick.rom"
+        unnamed.write_bytes(self.rom(47, 96))
+        info = kickstart.identify(unnamed)
+        self.assertNotIn("A1200", info.name)
+        self.assertIsNone(info.aga, "nothing says which machine it is for")
+        for name, aga, model in (("kicka500.rom", False, "A500"),
+                                 ("kicka1200.rom", True, "A1200"),
+                                 ("kickCDTVa1000a500a2000a600.rom", False,
+                                  "A500")):
+            with self.subTest(name):
+                path = folder / name
+                path.write_bytes(self.rom(47, 96))
+                info = kickstart.identify(path)
+                self.assertIs(info.aga, aga)
+                self.assertIn(model, info.name)
+
+    def test_a_known_build_is_known_by_its_contents_whatever_its_name(self):
+        plain = self.rom(47, 96)
+        digest = hashlib.sha1(plain).hexdigest()
+        path = self.scratch() / "kicka1200.rom"        # a misleading name
+        path.write_bytes(plain)
+        with unittest.mock.patch.dict(kickstart.ROM_MODELS,
+                                      {digest: ("A500",)}):
+            info = kickstart.identify(path)
+        self.assertIs(info.aga, False)
+        self.assertIn("A500", info.name)
 
 
 class TestJobs(_Scratch):
