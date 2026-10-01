@@ -5675,6 +5675,138 @@ class TheProcessorChoosesTheArchive(unittest.TestCase):
                                  package.download.per_cpu[0][1])
 
 
+class TheClockKeepsTheHostsTime(unittest.TestCase):
+    """The time zone is this computer's, read off it rather than asked.
+
+    UnZip's readme says that without TZ it treats archive times as local
+    time, and AmiTimeKeeper takes only the offset from Locale without one -
+    so a card that leaves it for the readme is an hour out half the year.
+    """
+
+    def zone_file(self, data: bytes) -> Path:
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-tz-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "localtime").write_bytes(data)
+        return folder / "localtime"
+
+    def test_the_rule_is_read_from_the_end_of_the_zone_file(self):
+        path = self.zone_file(b"TZif2" + bytes(60) + b"\nGMT0BST,M3.5.0/1,M10.5.0\n")
+        self.assertEqual(packages.host_time_zone(path),
+                         "GMT0BST,M3.5.0/1,M10.5.0")
+
+    def test_a_file_with_no_rule_gives_none(self):
+        self.assertEqual(packages.host_time_zone(
+            self.zone_file(b"TZif\0" + bytes(60))), "")
+        self.assertEqual(packages.host_time_zone(
+            self.zone_file(b"not a zone file\n")), "")
+        self.assertEqual(packages.host_time_zone(Path("/nonexistent")), "")
+
+    def test_the_settings_carry_it_and_go_without_it(self):
+        known = packages.hardware_settings(None, "CET-1CEST,M3.5.0,M10.5.0/3")
+        self.assertEqual(known[packages.TIME_ZONE],
+                         "CET-1CEST,M3.5.0,M10.5.0/3")
+        self.assertEqual(known[packages.TIME_ZONE_LINE],
+                         "TZ=CET-1CEST,M3.5.0,M10.5.0/3\n")
+        unknown = packages.hardware_settings(None, "")
+        self.assertNotIn(packages.TIME_ZONE, unknown,
+                         "ENVARC:TZ is left out rather than written empty")
+        self.assertEqual(unknown[packages.TIME_ZONE_LINE], "",
+                         "AmiTimeKeeper's settings are written without it")
+
+    def test_both_programs_are_given_it(self):
+        texts = {(w.destination, w.name): w.text
+                 for key in ("unzip", "amitimekeeper")
+                 for w in packages.CATALOGUE_BY_KEY[key].download.write}
+        self.assertEqual(texts[("Prefs/Env-Archive", "TZ")],
+                         "{" + packages.TIME_ZONE + "}")
+        self.assertIn("{" + packages.TIME_ZONE_LINE + "}",
+                      texts[("Prefs/Env-Archive/AmiTimeKeeper",
+                             "timekeeper.prefs")])
+
+
+class ScummVMKnowsItsGames(unittest.TestCase):
+    """The freeware games ticked with ScummVM are in its launcher.
+
+    Placed and not registered, they were on the card and ScummVM opened to
+    an empty list until each drawer was found with Add Game.
+    """
+
+    def ini(self, text: str = "[scummvm]\nsavepath=PROGDIR:saves/\n") -> Path:
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-scummvm-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "scummvm.ini").write_text(text)
+        return folder / "scummvm.ini"
+
+    def games(self) -> list[packages.Package]:
+        return [p for p in packages.CATALOGUE if p.scummvm is not None]
+
+    def made(self, chosen, source=None) -> str:
+        scummvm = packages.CATALOGUE_BY_KEY["scummvm"]
+        (item,) = scummvm.download.made
+        return item.make(source or self.ini(), frozenset(chosen)).decode()
+
+    def test_every_freeware_game_gets_a_section_where_it_is(self):
+        self.assertTrue(self.games())
+        text = self.made([p.key for p in self.games()])
+        self.assertTrue(text.startswith("[scummvm]\nsavepath="),
+                        "its own settings are kept")
+        for package in self.games():
+            with self.subTest(package.key):
+                section = re.search(
+                    rf"(?ms)^\[{package.scummvm.game}\]\n(.*?)(?:\n\n|\Z)",
+                    text).group(1)
+                self.assertIn(f"engineid={package.scummvm.engine}", section)
+                drawer = package.download.items[0][1].split("/")[-1]
+                self.assertIn(f"path=PROGDIR:games/{drawer}/", section)
+
+    def test_only_the_games_chosen(self):
+        text = self.made([])
+        self.assertNotIn("engineid=", text)
+
+    def test_a_game_already_listed_is_not_listed_twice(self):
+        game = self.games()[0]
+        text = self.made([game.key], self.ini(
+            f"[scummvm]\n\n[{game.scummvm.game}]\npath=elsewhere\n"))
+        self.assertEqual(text.count(f"[{game.scummvm.game}]"), 1)
+
+
+class TheProcessorChoosesTheDrawer(unittest.TestCase):
+    """One archive, a drawer of same-named files per processor.
+
+    AmiSSL ships its libraries this way and its installer asks which drawer
+    to copy; the card gets the one for its machine, and only that one, since
+    two drawers onto one destination would leave whichever came last.
+    """
+
+    def per_cpu(self) -> list[packages.Package]:
+        return [p for p in packages.CATALOGUE
+                if p.download and p.download.cpu_items]
+
+    def test_each_processor_gets_exactly_one_processors_drawers(self):
+        self.assertTrue(self.per_cpu(), "AmiSSL at least is built this way")
+        for package in self.per_cpu():
+            listed = package.download.cpu_items
+            groups = {value: [(i, d) for v, i, d in listed if v == value]
+                      for value, _i, _d in listed}
+            for cpu in list(machines.Cpu) + [None]:
+                with self.subTest(package.key, cpu=cpu):
+                    chosen = package.archive(cpu)
+                    self.assertFalse(chosen.cpu_items)
+                    added = [pair for pair in chosen.items
+                             if pair not in package.download.items]
+                    self.assertIn(added, list(groups.values()))
+
+    def test_a_68060_gets_its_own_and_a_pistorm_the_68040s(self):
+        amissl = packages.CATALOGUE_BY_KEY["amissl"]
+        for cpu, build in ((machines.Cpu.M68060, "68060"),
+                           (machines.PISTORM_CPU, "68020-40"),
+                           (None, "68020-40")):
+            with self.subTest(cpu=cpu):
+                inside = [i for i, _d in amissl.archive(cpu).items
+                          if "/AmiSSL/" in i]
+                self.assertEqual(inside, [f"Libs/AmigaOS3/AmiSSL/{build}"])
+
+
 class AnArchiveThatWrapsItselfInADrawer(unittest.TestCase):
     """Some archives unpack as one drawer holding their contents.
 
