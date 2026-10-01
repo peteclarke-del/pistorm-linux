@@ -89,6 +89,7 @@ class Task(enum.Enum):
     """
 
     NEW_CARD = "new-card"           # Emu68 boot partition and Amiga drives
+    SPLIT = "split"                 # a boot card, and the drives elsewhere
     BOOT_CARD = "boot-card"         # Emu68 only: the drives are elsewhere
     AMIGA_DRIVE = "amiga-drive"     # drives only, for the IDE or SCSI port
     PREPARED = "prepared"           # a finished image written as it is
@@ -99,7 +100,8 @@ class Task(enum.Enum):
 
     @property
     def mode(self) -> BuildMode:
-        return {Task.NEW_CARD: BuildMode.FRESH, Task.BOOT_CARD: BuildMode.FRESH,
+        return {Task.NEW_CARD: BuildMode.FRESH, Task.SPLIT: BuildMode.FRESH,
+                Task.BOOT_CARD: BuildMode.FRESH,
                 Task.AMIGA_DRIVE: BuildMode.FRESH,
                 Task.PREPARED: BuildMode.IMAGE,
                 Task.DRIVE_IMAGE: BuildMode.HDF,
@@ -118,7 +120,8 @@ class Task(enum.Enum):
         """
         if self in (Task.PREPARED, Task.UPDATE):
             return None
-        return self in (Task.NEW_CARD, Task.BOOT_CARD, Task.DRIVE_IMAGE)
+        return self in (Task.NEW_CARD, Task.SPLIT, Task.BOOT_CARD,
+                        Task.DRIVE_IMAGE)
 
     @property
     def writes_boot_partition(self) -> bool:
@@ -127,13 +130,15 @@ class Task(enum.Enum):
     @property
     def fills_drives(self) -> bool:
         """Whether AmigaOS and software can be put on a drive."""
-        return self in (Task.NEW_CARD, Task.AMIGA_DRIVE, Task.REBUILD)
+        return self in (Task.NEW_CARD, Task.SPLIT, Task.AMIGA_DRIVE,
+                        Task.REBUILD)
 
     def shape(self, config: "BuildConfig") -> "BuildConfig":
         """``config`` made the shape this task says, keeping everything else."""
         emu68 = self.emu68
         return dataclasses.replace(
             config, mode=self.mode,
+            drives_target=config.drives_target if self is Task.SPLIT else "",
             boot_only=self is Task.BOOT_CARD,
             amiga_only=self is Task.AMIGA_DRIVE,
             install_emu68=config.install_emu68 if emu68 is None else emu68)
@@ -210,6 +215,13 @@ class BuildConfig:
     #  one drive on an existing card. Its size, file system and whether it is
     #  the one the machine boots from are read off the card, not chosen.
     rewrite_drive: str = ""
+    #  A PiStorm whose Amiga drives are not on the card it boots from - a CF
+    #  card on an A1200's IDE port, say. The Pi's boot card is ``target``;
+    #  the drives, with Workbench and the software on them, go here, and the
+    #  two are written by one build from one set of choices.
+    drives_target: str = ""
+    drives_target_is_device: bool = False
+    drives_image_size: int = 8 * 1024 * MIB
     #  The mirror of boot_only: Amiga drives and no Emu68 boot partition at
     #  all.  A real accelerator with an IDE interface reads a Rigid Disk Block
     #  at block 0 and knows nothing about an MBR, so a card for one carries no
@@ -350,6 +362,11 @@ class BuildConfig:
         told to use an RTG screen with no RTG driver on it. They are said
         before anything is written, and the build goes ahead anyway.
         """
+        if self.drives_target and not self.shape_problems():
+            said = self.drives_part().concerns()
+            said += [c for c in self.boot_card_part().concerns()
+                     if c not in said]
+            return said
         said: list[str] = []
         keys = set(self.package_keys or ())
         left_out = self.unsuited_packages()
@@ -358,6 +375,17 @@ class BuildConfig:
                         f"for this machine, screen, Raspberry Pi or Emu68 - "
                         f"and will be left out.")
         said.extend(self.boot_option_concerns())
+        #  Floppies chosen, and the drive they would go on filled from
+        #  somewhere else: the drive wins and the install is skipped. That is
+        #  right when it was meant - a drive that brings its own Workbench -
+        #  and a surprise when a layout from an earlier choice was kept.
+        if self.install_amigaos and _boot_drive_is_filled(self):
+            boot = next((p for p in self.amiga_partitions if p.bootable), None)
+            source = (boot.content_folder or boot.content_hdf) if boot else ""
+            said.append(f"Workbench from the floppy images is chosen, but the "
+                        f"drive it would go on is filled from "
+                        f"{Path(source).name}, so the floppies only fill in "
+                        f"what that does not bring.")
         dropped = [key for key in (self.boot_addons or [])
                    if key not in {a.key for a in self.chosen_addons()}]
         if dropped:
@@ -639,7 +667,11 @@ class BuildConfig:
         """The task this job describes, or None for one no task can make."""
         if self.shape_problems():
             return None
+        if self.drives_target:
+            return Task.SPLIT
         for task in Task:
+            if task is Task.SPLIT:
+                continue
             if task.mode is not self.mode:
                 continue
             if task.mode is BuildMode.FRESH and (
@@ -653,6 +685,28 @@ class BuildConfig:
             return task
         return None
 
+    def boot_card_part(self) -> "BuildConfig":
+        """The Pi's boot card of a split build: Emu68 and its settings."""
+        return dataclasses.replace(
+            self, drives_target="", boot_only=True, amiga_only=False,
+            install_emu68=True, amiga_partitions=[], package_keys=[],
+            install_amigaos=False, os_cd="", extra_partitions=[],
+            boingbag_archives=[], leave_out=[], off_desktop=[])
+
+    def drives_part(self) -> "BuildConfig":
+        """The Amiga drives of a split build, on their own target.
+
+        The same choices as the boot card, so the drives are installed for
+        the machine and the Emu68 that will run them - and with no boot
+        partition, which is what an IDE port reads.
+        """
+        return dataclasses.replace(
+            self, target=self.drives_target,
+            target_is_device=self.drives_target_is_device,
+            image_size=self.drives_image_size, drives_target="",
+            boot_only=False, amiga_only=True, install_emu68=False,
+            boot_addons=[])
+
     def shape_problems(self) -> list[str]:
         """What no task allows: the combinations that build a dead card.
 
@@ -662,6 +716,10 @@ class BuildConfig:
         partition be made with no Emu68 on it.
         """
         problems: list[str] = []
+        if self.drives_target and (self.mode is not BuildMode.FRESH
+                                   or self.boot_only or self.amiga_only):
+            problems.append("Only a new PiStorm card can have its drives "
+                            "written somewhere else.")
         if self.mode in (BuildMode.EXPORT, BuildMode.REWRITE,
                          BuildMode.CUSTOMISE, BuildMode.IMAGE):
             if self.boot_only:
@@ -710,10 +768,6 @@ class BuildConfig:
             said.append("The vector base is moved to fast RAM: games and "
                         "demos that take over the machine put their own "
                         "vectors at address 0 and will crash.")
-        if display.uses_rtg and not options.vc4_mem:
-            said.append("The display is the Pi's HDMI, and no memory is "
-                        "given to the RTG driver, so it has nothing to draw "
-                        "in.")
         return said
 
     def unsuited_packages(self) -> list[str]:
@@ -741,6 +795,16 @@ class BuildConfig:
 
     def validate(self) -> list[str]:
         """Return a list of problems; an empty list means the config is usable."""
+        if self.drives_target and not self.shape_problems():
+            #  Each half is held to the rules of its own task, and the two
+            #  must not be the same thing.
+            problems = self.boot_card_part().validate()
+            problems += [p for p in self.drives_part().validate()
+                         if p not in problems]
+            if self.drives_target == self.target:
+                problems.append("The boot card and the Amiga drives are the "
+                                "same target; they have to be two.")
+            return problems
         problems: list[str] = self.shape_problems()
         if self.mode is BuildMode.EXPORT:
             #  Nothing is written to a card here, so the target is not the
@@ -3702,6 +3766,17 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
 
 
 def _run_build(config: BuildConfig, progress: Progress) -> None:
+    if config.drives_target:
+        problems = config.validate()
+        if problems:
+            raise RuntimeError("; ".join(problems))
+        progress.step(f"The boot card: {config.target}")
+        progress.log(f"Writing the Pi's boot card to {config.target}, then "
+                     f"the Amiga drives to {config.drives_target}")
+        _run_build(config.boot_card_part(), progress)
+        progress.step(f"The Amiga drives: {config.drives_target}")
+        _run_build(config.drives_part(), progress)
+        return
     if config.mode is BuildMode.EXPORT:
         from . import export as export_module                # noqa: PLC0415
         written = export_module.export(config.source_image, config.export_drives,
