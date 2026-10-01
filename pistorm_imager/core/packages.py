@@ -1419,21 +1419,12 @@ CATALOGUE: list[Package] = [
                                    "interface at a time and the wired socket "
                                    "is the faster of the two"),),
             source="the Emu68-tools release"),
-        #  The interface file says requiresinitdelay=no, so DHCP starts the
-        #  moment the stack adds the interface - which on WiFi is usually
-        #  before the Pi has joined the network, and the first lease request
-        #  goes nowhere. This waits for the driver to report the link up
-        #  instead of guessing a delay. DELAY is two seconds more because the
-        #  driver says "connected" before the WPA handshake has finished; it
-        #  gives up by itself after about a minute and the stack is started
-        #  regardless. Guarded on the interface file, so a card whose stack
-        #  was given the wired socket never waits for a radio it is not using.
-        startup=("IF EXISTS DEVS:NetInterfaces/wifipi",
-                 "   IF EXISTS C:WaitUntilConnected",
-                 "      C:WaitUntilConnected >NIL: "
-                 "DEVICE=DEVS:Networks/wifipi.device UNIT=0 DELAY=100",
-                 "   EndIF",
-                 "EndIF"),
+        #  No wait for the link at boot. Emu68's WaitUntilConnected was run
+        #  here before the stack, and booted where the WiFi cannot come up -
+        #  in an emulator, or on a card whose network was never set - it
+        #  waited for ever instead of giving up after the minute its README
+        #  promises, and the machine never reached Workbench. It is in C: for
+        #  a script that wants it.
         note="Needs the WiFi network filled in on the Amiga page: the driver "
              "reads the same wpa_supplicant.conf the Pi is given.",
         default=True,
@@ -2156,13 +2147,20 @@ CATALOGUE: list[Package] = [
             (("fat95/l/68020/fat95", "L"),
              ("fat95/libs/68020/ptable.library", "Libs"),
              ("fat95/c/lsptres", "C")),
-            write=(Written("EMU68", "Devs/DOSDrivers",
+            #  In Storage, mounted by double clicking it, not at every boot:
+            #  mounting the whole SD card through Emu68's driver with a file
+            #  system released the day before is not something to do to a
+            #  machine unasked, and nothing on the card needs it to boot.
+            write=(Written("EMU68", "Storage/DOSDrivers",
                            BOOT_PARTITION_MOUNTLIST),),
+            retool=(("fat95/DOSDrivers/CF0.info", "Storage/DOSDrivers",
+                     "EMU68.info", "C:Mount"),),
             source="https://github.com/pulchart/fat95/releases"),
         note="fat95 4.1. USB sticks need nothing more: Poseidon's mass "
-             "storage class already names L:fat95 for FAT. The boot partition "
-             "appears as EMU68BOOT, read-only unless the card lets the Amiga "
-             "write to the whole SD card.",
+             "storage class already names L:fat95 for FAT. Double click "
+             "Storage/DOSDrivers/EMU68 to mount the SD card's boot partition; "
+             "it is read-only unless the card lets the Amiga write to the "
+             "whole SD card.",
         evidence=("L/fat95",),
     ),
     Package(
