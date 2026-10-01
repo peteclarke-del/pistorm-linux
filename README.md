@@ -8,19 +8,20 @@ understands pre-built images such as **PiMiga**, so you can write one to a card
 and still apply your own Emu68 build, Kickstart, video mode and WiFi settings on
 top of it.
 
-![The opening screen: five tasks, each with an icon and a button](docs/images/01-welcome.png)
+![The opening screen: a grid of tasks, each a tile to click](docs/images/01-welcome.png)
 
 ## What it does
 
-Four tasks that write a card, all ending with the same boot-partition
-customisation pass, and a fifth that writes no card at all - **Export drives as
-.hdf**, described below. Two of the four take a `.hdf`, and the difference
-between them is the whole point: **Write
-a drive image unchanged** keeps the image's own partitions and file systems and
-adds nothing, while **Build a new card** can take the *files* out of that same
-image, put them on a layout of your choosing, and add the Workbench disks and
-software to them. That is why a ClassicWB card is built with the second: its
-drive brings no Workbench, so it needs the floppies alongside it.
+The first screen is a grid of tasks; click one to start it, and hover over it
+to see what it does. Every task that writes a card ends with the same
+boot-partition customisation pass, and **Export drives as .hdf** writes no card
+at all. A drive image can reach a card two ways, and the difference is the
+whole point: **Write an image to a card** puts it on as it is, keeping its own
+partitions and file systems and adding nothing, while **A new PiStorm card**
+can take the *files* out of that same image, put them on a layout of your
+choosing, and add the Workbench disks and software to them. That is why a
+ClassicWB card is built with the second: its drive brings no Workbench, so it
+needs the floppies alongside it.
 
 Everything starts from a **task**, chosen on the first screen and fixed for the
 journey. The task decides the shape of what is written - whether there is a
@@ -39,8 +40,7 @@ build adds up to, what is still needed, and Write once nothing is.
 | **A PiStorm with its drives elsewhere** | the same | [Two things written by one build](#a-pistorm-with-its-drives-elsewhere): the Pi's boot card with Emu68, and the Amiga drives - Workbench and your software - on a CF card or disk for the IDE port, or an image of one. |
 | **A PiStorm boot card only** | Machine, Emu68, Target, Review | Emu68 and its settings and nothing else, for drives that already exist elsewhere. |
 | **A drive for the Amiga's IDE or SCSI port** | Machine, System, Drives, Software, Target, Review | Amiga drives with no boot partition: the Rigid Disk Block at block 0, where the controller looks for it. |
-| **Write a prepared system** | Machine, System, Drives, Emu68, Target, Review | Streams PiMiga, an Emu68 Hatcher image or a backup of your own card onto the target, then re-applies your Emu68 build and settings. Optionally turns the card's leftover space into a new Amiga partition. |
-| **Put a drive image on a card** | Machine, System, Drives, Emu68, Target, Review | Takes a WinUAE/FS-UAE/HstWB `.hdf` - the Amiga drive on its own - and builds the boot partition around it. Images with no Rigid Disk Block get one generated, and every imported drive is checked for PiStorm compatibility and repaired. |
+| **Write an image to a card** | Machine, System, Drives, Emu68, Target, Review | One chooser for any image; the file says which it is. **A whole card** - PiMiga, an Emu68 Hatcher image, a backup of your own card - is streamed onto the target as it is, then your Emu68 build and settings are re-applied, optionally turning leftover space into a new Amiga partition. **An Amiga drive** - a WinUAE/FS-UAE/HstWB `.hdf`, the drive on its own - gets the boot partition built around it; one with no Rigid Disk Block gets one generated, and every imported drive is checked for PiStorm compatibility and repaired. The start of the file decides, compressed or not, because both kinds are often called `.img`. |
 | **Rebuild one drive** | Target, Machine, System, Software, Review | Formats one Amiga drive on a card or image you already have and fills it again, leaving the partition table, the boot partition and every other drive [exactly as they were](#rebuilding-one-drive). |
 | **Update an existing card** | Target, Machine, Emu68, Review | Touches only the boot partition: another Emu68, another Kickstart, the HDMI mode, WiFi. |
 | **Export drives as .hdf** | Export | Reads the Amiga drives back out of a card or an image. |
@@ -65,7 +65,7 @@ by hand with no `kick.rom` does.
 
 The quick start that used to sit beside all this went with it. It built a whole
 configuration a second way, and the two disagreed: applying it on "Write a
-prepared system" turned the job into a new card, dropped a CD source and the
+prepared system" (now *Write an image to a card*) turned the job into a new card, dropped a CD source and the
 chosen software, and kept a second set of target controls in step with the
 first by mirroring them both ways.
 

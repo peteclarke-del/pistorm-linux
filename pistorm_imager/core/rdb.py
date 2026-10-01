@@ -90,6 +90,23 @@ def _verify(block: bytes, summed_longs: int) -> bool:
     return total == 0
 
 
+def has_rigid_disk_block(head: bytes) -> bool:
+    """Whether the start of a disk holds a RigidDiskBlock, without reading on.
+
+    The block may be in any of the first sixteen; its checksum is what tells
+    it from a file that happens to contain the letters.
+    """
+    for probe in range(16):
+        block = head[probe * BLOCK:(probe + 1) * BLOCK]
+        if len(block) < BLOCK:
+            return False
+        if block[0:4] == ID_RDSK:
+            summed = struct.unpack_from(">I", block, 4)[0]
+            if 0 < summed <= BLOCK // 4 and _verify(block, summed):
+                return True
+    return False
+
+
 def _bstr(name: str, field_len: int = 32) -> bytes:
     """Amiga BSTR: a length byte followed by the characters, zero padded."""
     raw = name.encode("latin-1", errors="replace")[: field_len - 2]

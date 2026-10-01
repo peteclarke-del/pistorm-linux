@@ -28,6 +28,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import enum
+import io
 import os
 import re
 import shutil
@@ -3261,6 +3262,43 @@ def find_rdb(handle) -> tuple[int, "rdb.Rdb"] | None:
         except (ValueError, OSError):
             continue
     return None
+
+
+#  How much of an image is read to tell what it is: the RDB may sit in any of
+#  the first sixteen blocks, and the MBR is the first.
+SNIFF_BYTES = 16 * 512
+
+
+class ImageKind(enum.Enum):
+    CARD = "card"       # a whole card: a partition table and its partitions
+    DRIVE = "drive"     # the Amiga drive alone: an RDB, or one file system
+
+
+def image_kind(path: str | Path) -> ImageKind | None:
+    """Whether a file is a whole card or an Amiga drive, read off its start.
+
+    The two are written differently - a card as it is, a drive with a boot
+    partition built around it - and which one a download is cannot be told
+    from its name: PiMiga is an .img, and so is many an HstWB drive. So the
+    file says, compressed or not, and None means it says neither.
+    """
+    source = imgsrc.inspect(path)
+    stream, proc = imgsrc.open_stream(source)
+    try:
+        head = stream.read(SNIFF_BYTES)
+    finally:
+        stream.close()
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+    if rdb.has_rigid_disk_block(head) \
+            or BARE_SIGNATURES.get(head[:4]) is not None:
+        return ImageKind.DRIVE
+    try:
+        parts = mbr.read_table(io.BytesIO(head))
+    except (ValueError, OSError):
+        return None
+    return ImageKind.CARD if any(not p.empty for p in parts) else None
 
 
 @dataclasses.dataclass
