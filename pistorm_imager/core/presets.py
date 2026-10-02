@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from . import amigaos, builder, emu68, kickstart, machines, packages, rdb
-from .util import GIB, MIB, human_size
+from .util import GIB, HUNK_HEADER, MIB, human_size
 
 DEFAULT_BOOT_SIZE = 256 * MIB
 DEFAULT_SYSTEM_SIZE = 1 * GIB
@@ -62,7 +62,6 @@ def _search_roots(extra: list[str] | None = None) -> list[Path]:
 #  Names the PFS3 handler goes by.  The "aio" build is the all-in-one one that
 #  serves both the PFS3 and PDS3 DosTypes.
 PFS3_HANDLER_NAMES = ["pfs3aio", "pfs3", "pfs3aio020-60", "pfs3ds"]
-HUNK_HEADER = b"\x00\x00\x03\xf3"
 
 
 def _read_handler(path: Path, attempts: int = 3) -> bytes | None:
@@ -189,7 +188,7 @@ def best_rom(roms: list[kickstart.RomInfo],
     def score(rom: kickstart.RomInfo) -> tuple:
         return (
             1 if rom.usable else 0,
-            1 if rom.aga else 0,
+            _aga_rank(rom),
             2 if wanted and (rom.version, rom.revision) == wanted else 0,
             1 if (rom.version, rom.revision) in kickstart.KNOWN_ROMS else 0,
             #  Prefer the plain A1200 build over A4000/A3000 dumps of the same
@@ -283,7 +282,21 @@ def _describe_imported_drive(path: str) -> tuple[list[str], bool]:
 
 def describe(config: builder.BuildConfig, detected: Detected) -> str:
     """A plain account of what the build will actually put on the card."""
-    if getattr(config, "amiga_only", False):
+    if config.mode is builder.BuildMode.REWRITE:
+        return _describe_rebuild(config)
+    if config.drives_target:
+        #  Two things are written, and each is described as what it is.
+        boot = describe(config.boot_card_part(), detected)
+        #  Emu68's options go in the boot card's cmdline.txt, so they are
+        #  said there rather than after the drives.
+        cmdline = config.boot_options.cmdline()
+        if cmdline:
+            boot += f"\nEmu68 options: {cmdline}"
+        drives = describe(config.drives_part(), detected)
+        return (f"The Pi's boot card ({config.target or 'not chosen yet'}):\n"
+                f"{boot}\n\nThe Amiga drives ({config.drives_target}):\n"
+                f"{drives}")
+    if config.amiga_only:
         #  No boot partition and no MBR: the card is Amiga drives and nothing
         #  else, which is what a real accelerator's IDE controller reads.
         lines = ["No boot partition: the Rigid Disk Block starts at block 0, "
@@ -292,13 +305,14 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
         carries = "FAT32 with Emu68" if config.install_emu68 else \
             "FAT32, without Emu68 - only what is put on it below"
         lines = [f"Boot partition: {human_size(config.boot_size)} {carries}"]
-    if getattr(config, "amiga_only", False):
+    if config.amiga_only:
         pass                    # nothing here maps a ROM; the machine has its own
     elif config.kickstart_path:
         name = detected.kickstart.name if detected.kickstart else "Kickstart"
         lines.append(f"Kickstart: {name}")
     elif config.install_emu68:
-        lines.append("Kickstart: none found - Emu68 will not start without one")
+        lines.append("Kickstart: none chosen - Emu68 will use the ROM chip "
+                     "in the Amiga")
     else:
         #  Emu68 is not being installed, but the boot partition is still
         #  written and whatever Emu68 is already on the card will look for a
@@ -357,15 +371,53 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
             content = "left empty - format it on the Amiga"
         lines.append(f"{shown}: {size}, {spec.dostype} - {content}")
 
-    if not filled_system:
+    #  Only of a card that has Amiga drives: the Pi's boot card in a split
+    #  build has none, and was told to format its boot drive in HDToolBox.
+    if not filled_system and config.amiga_partitions:
         lines.append("Nothing will be installed onto the boot drive - partition "
                      "and format it with HDToolBox on the Amiga")
-    if config.pfs3_binary:
+    has_pfs3 = any(s.dostype.startswith(("PFS", "PDS"))
+                   for s in config.amiga_partitions)
+    if config.pfs3_binary and has_pfs3:
         origin = detected.pfs3_source or Path(config.pfs3_binary).name
         lines.append(f"PFS3 handler: found ({origin})")
-    elif any(s.dostype.startswith(("PFS", "PDS")) for s in config.amiga_partitions):
+    elif has_pfs3:
         lines.append("PFS3 handler: NOT FOUND - the PFS3 partitions will not "
                      "mount until one is supplied, or added from HDToolBox")
+    return "\n".join(lines)
+
+
+def _describe_rebuild(config: builder.BuildConfig) -> str:
+    """What rebuilding one drive will do, and - as plainly - what it will not.
+
+    Nothing about the boot partition, the Kickstart or the layout: none of it
+    is written, and describing it would read as though it were.
+    """
+    if not config.rewrite_drive:
+        return "Choose the card and the drive on it to rebuild"
+    spec = next((s for s in config.amiga_partitions
+                 if s.name.upper() == config.rewrite_drive.upper()), None)
+    label = spec.volume_name if spec and spec.volume_name else ""
+    shown = (f"{config.rewrite_drive} ({label}:)" if label
+             and label.upper() != config.rewrite_drive.upper()
+             else config.rewrite_drive)
+    size = (f", {human_size(spec.size)} {spec.dostype}"
+            if spec and spec.size else "")
+    lines = [f"Rebuilding {shown}{size}: erased, and filled again with:"]
+    if config.os_cd:
+        lines.append(f"  AmigaOS installed from {Path(config.os_cd).name}")
+    elif config.install_amigaos:
+        release = f"AmigaOS {config.adf_version}" if config.adf_version \
+            else "AmigaOS"
+        lines.append(f"  {release} installed from your floppy images")
+    if spec and spec.content_folder:
+        lines.append(f"  the contents of {Path(spec.content_folder).name}")
+    if spec and spec.bootable and config.package_keys:
+        lines.append(f"  {len(config.package_keys)} packages of software")
+    if len(lines) == 1:
+        lines.append("  nothing - it is left formatted and empty")
+    lines.append("Left exactly as they are: the partition table, the boot "
+                 "partition and every other drive")
     return "\n".join(lines)
 
 
@@ -543,6 +595,11 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
     return config
 
 
+def _aga_rank(rom: kickstart.RomInfo) -> int:
+    """An AGA ROM first, one whose machine nothing says next, then the rest."""
+    return {True: 2, None: 1}.get(rom.aga, 0)
+
+
 def best_rom_for_machine(roms: list[kickstart.RomInfo],
                          machine: machines.Machine) -> kickstart.RomInfo | None:
     """Pick the Kickstart this machine would prefer, from those available."""
@@ -551,7 +608,7 @@ def best_rom_for_machine(roms: list[kickstart.RomInfo],
     def score(rom: kickstart.RomInfo) -> tuple:
         pair = (rom.version or 0, rom.revision or 0)
         rank = len(wanted) - wanted.index(pair) if pair in wanted else 0
-        return (1 if rom.usable else 0, rank, 1 if rom.aga else 0)
+        return (1 if rom.usable else 0, rank, _aga_rank(rom))
 
     usable = [r for r in roms if r.usable]
     return max(usable, key=score) if usable else None
@@ -615,7 +672,8 @@ def describe_machine_setup(config: builder.BuildConfig,
     #  promised settings that were never going to be written - the same
     #  fault as claiming Emu68 itself would be there.
     cmdline = config.boot_options.cmdline()
-    if cmdline and not getattr(config, "amiga_only", False):
+    if cmdline and not config.amiga_only \
+            and not config.drives_target:
         lines.append(f"Emu68 options: {cmdline}")
     lines.append("")
     for note in machines.advice(machine, display):

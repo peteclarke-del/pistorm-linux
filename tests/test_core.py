@@ -3,6 +3,7 @@
 Run with:  python3 -m unittest discover -s tests -v
 """
 import dataclasses
+import hashlib
 import io
 import os
 import struct
@@ -16,8 +17,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from pistorm_imager.core import machines  # noqa: E402
 from pistorm_imager.core import bootcfg, builder, emu68, fat32, jobs, kickstart, mbr, rdb  # noqa: E402
 from pistorm_imager.core.util import GIB, MIB, Progress, parse_size  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from emu68_stub import EMU68  # noqa: E402
 
 QUIET = Progress()
 
@@ -696,6 +700,212 @@ class TestKickstart(_Scratch):
         self.assertTrue(info.usable)
         self.assertEqual(kickstart.prepare(info), plain)
 
+    def test_the_wrong_key_is_said_to_be_the_wrong_key(self):
+        #  Decrypting with another set's rom.key gives noise, which was
+        #  reported as "Not a Kickstart ROM" - true of the noise, and no
+        #  help to anybody holding a perfectly good ROM.
+        folder = self.scratch()
+        key = b"\x11\x22\x33\x44\x55"
+        plain = self.rom()
+        encrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(plain))
+        (folder / "kick.rom").write_bytes(b"AMIROMTYPE1" + encrypted)
+        (folder / "rom.key").write_bytes(b"\x99" * 7)
+        info = kickstart.identify(folder / "kick.rom")
+        self.assertFalse(info.usable)
+        self.assertNotIn("Not a Kickstart", info.name)
+        self.assertIn("rom.key", info.name)
+
+    def test_a_release_built_for_every_model_is_not_called_the_a1200s(self):
+        #  From 3.1.4 one version.revision is built for each machine; 47.96
+        #  was labelled A1200 and its A500 build offered as the AGA ROM.
+        folder = self.scratch()
+        unnamed = folder / "kick.rom"
+        unnamed.write_bytes(self.rom(47, 96))
+        info = kickstart.identify(unnamed)
+        self.assertNotIn("A1200", info.name)
+        self.assertIsNone(info.aga, "nothing says which machine it is for")
+        for name, aga, model in (("kicka500.rom", False, "A500"),
+                                 ("kicka1200.rom", True, "A1200"),
+                                 ("kickCDTVa1000a500a2000a600.rom", False,
+                                  "A500")):
+            with self.subTest(name):
+                path = folder / name
+                path.write_bytes(self.rom(47, 96))
+                info = kickstart.identify(path)
+                self.assertIs(info.aga, aga)
+                self.assertIn(model, info.name)
+
+    def test_a_known_build_is_known_by_its_contents_whatever_its_name(self):
+        plain = self.rom(47, 96)
+        digest = hashlib.sha1(plain).hexdigest()
+        path = self.scratch() / "kicka1200.rom"        # a misleading name
+        path.write_bytes(plain)
+        with unittest.mock.patch.dict(kickstart.ROM_MODELS,
+                                      {digest: ("A500",)}):
+            info = kickstart.identify(path)
+        self.assertIs(info.aga, False)
+        self.assertIn("A500", info.name)
+
+
+def checksummed(size: int, seed: int, version=34, revision=5) -> bytes:
+    """A ROM image whose own checksum adds up, as exec checks it."""
+    data = bytearray(hashlib.sha256(bytes([seed])).digest() * (size // 32))
+    data[0:4] = b"\x11\x11\x4e\xf9"
+    struct.pack_into(">HH", data, 12, version, revision)
+    struct.pack_into(">I", data, size - 24, 0)
+    total = 0
+    for (word,) in struct.iter_unpack(">I", bytes(data)):
+        total += word
+        if total > 0xFFFFFFFF:
+            total = (total & 0xFFFFFFFF) + 1
+    struct.pack_into(">I", data, size - 24, ~total & 0xFFFFFFFF)
+    return bytes(data)
+
+
+class KickstartsForWHDLoad(_Scratch):
+    """WHDLoad's own tables say which ROMs it can use, and what to call them.
+
+    Each .RTB begins with the checksum its ROM carries; a ROM in the chosen
+    folder that carries one of them goes into Devs/Kickstarts under the
+    table's name. Asked for as "select a folder for whdload kickstarts -
+    recognise them, copy and rename into the appropriate dir".
+    """
+
+    def tables(self, *roms: tuple[str, bytes]) -> Path:
+        folder = self.scratch() / "Kickstarts"
+        folder.mkdir()
+        for name, data in roms:
+            checksum = kickstart.stored_checksum(data)
+            (folder / f"{name}.RTB").write_bytes(
+                struct.pack(">I", checksum) + bytes(16))
+        return folder
+
+    def test_the_checksum_a_rom_carries(self):
+        rom = checksummed(256 * 1024, 1)
+        self.assertIsNotNone(kickstart.stored_checksum(rom))
+        damaged = bytearray(rom)
+        damaged[100] ^= 1
+        self.assertIsNone(kickstart.stored_checksum(bytes(damaged)),
+                          "a patched or damaged ROM is not the one a table "
+                          "is for")
+
+    def test_roms_are_recognised_and_named_by_the_tables(self):
+        one_three = checksummed(256 * 1024, 1)
+        three_oh = checksummed(512 * 1024, 2, 39, 106)
+        stranger = checksummed(512 * 1024, 3, 47, 96)
+        tables = kickstart.relocation_tables([self.tables(
+            ("kick34005.A500", one_three), ("kick39106.A1200", three_oh))])
+        roms = self.scratch()
+        #  Kept doubled to 512K, as 256K ROMs often are, and encrypted.
+        (roms / "Kickstart 1.3.rom").write_bytes(one_three * 2)
+        key = b"\x42\x17\x99"
+        (roms / "kick30.rom").write_bytes(b"AMIROMTYPE1" + bytes(
+            b ^ key[i % len(key)] for i, b in enumerate(three_oh)))
+        (roms / "rom.key").write_bytes(key)
+        (roms / "kick32.rom").write_bytes(stranger)
+        found = {name: data for name, data, _info
+                 in kickstart.whdload_images(roms, tables)}
+        self.assertEqual(found, {"kick34005.A500": one_three,
+                                 "kick39106.A1200": three_oh})
+
+    def test_the_build_takes_the_chosen_folder_over_the_kickstarts_own(self):
+        rom = checksummed(256 * 1024, 1)
+        drawer = self.tables(("kick34005.A500", rom))
+        boot_rom_folder, chosen = self.scratch(), self.scratch()
+        (boot_rom_folder / "kick.rom").write_bytes(checksummed(
+            512 * 1024, 4, 40, 68))
+        (chosen / "a500.rom").write_bytes(rom)
+        package = next(p for p in builder.packages.CATALOGUE
+                       if p.kickstart_drawer)
+        resolved = [(str(drawer), package.kickstart_drawer)]
+        config = builder.BuildConfig(
+            kickstart_path=str(boot_rom_folder / "kick.rom"))
+        self.assertEqual(builder._kickstart_images(config, package, QUIET,
+                                                   resolved), [],
+                         "the Kickstart's own folder has no 1.3")
+        config.whdload_kickstarts = str(chosen)
+        placed = builder._kickstart_images(config, package, QUIET, resolved)
+        self.assertEqual([(Path(s).name, d) for s, d in placed],
+                         [("kick34005.A500", package.kickstart_drawer)])
+        self.assertEqual(Path(placed[0][0]).read_bytes(), rom)
+
+    def test_a_folder_that_is_not_there_is_refused(self):
+        wanting = next(p.key for p in builder.packages.CATALOGUE
+                       if p.kickstart_drawer)
+        config = builder.BuildConfig(target="/tmp/x.img",
+                                     whdload_kickstarts="/nonexistent/roms")
+        self.assertFalse([p for p in config.validate() if "WHDLoad" in p],
+                         "not asked of a card WHDLoad is not going on")
+        config.package_keys = [wanting]
+        self.assertTrue([p for p in config.validate() if "WHDLoad" in p])
+
+
+class InputsRootCannotRead(_Scratch):
+    """A card is written by root, and root cannot read a network share.
+
+    A Kickstart folder on a NAS opened from the file manager stopped the
+    build with "Permission denied": gvfs, like any FUSE mount without
+    allow_other, refuses root whatever the file's permissions say. What is
+    on one is copied, as the user, to where root can read it.
+    """
+
+    MOUNTINFO = (
+        "36 25 0:31 / /run/user/1000/gvfs rw,nosuid,nodev - fuse.gvfsd-fuse "
+        "gvfsd-fuse rw,user_id=1000,group_id=1000\n"
+        "37 25 0:32 / /mnt/shared\\040disk rw - fuse.sshfs host: "
+        "rw,allow_other\n"
+        "38 25 0:33 / /sys/fs/fuse/connections rw - fusectl fusectl rw\n"
+        "39 25 8:1 / / rw - ext4 /dev/sda1 rw\n")
+
+    def test_the_mounts_only_the_user_can_read(self):
+        from pistorm_imager.core import prepare             # noqa: PLC0415
+        info = self.scratch() / "mountinfo"
+        info.write_text(self.MOUNTINFO)
+        self.assertEqual(prepare.user_only_mounts(info),
+                         [Path("/run/user/1000/gvfs")],
+                         "allow_other, fusectl and ordinary disks are fine")
+
+    def test_what_is_on_one_is_copied_and_pointed_at(self):
+        from pistorm_imager.core import prepare             # noqa: PLC0415
+        share, into = self.scratch(), self.scratch()
+        roms = share / "Firmware"
+        roms.mkdir()
+        (roms / "kick13.rom").write_bytes(checksummed(256 * 1024, 1))
+        (roms / "kick31.rom").write_bytes(checksummed(512 * 1024, 2, 40, 68))
+        (roms / "notes.txt").write_text("not a ROM")
+        games = share / "Games"
+        (games / "WHDLoad").mkdir(parents=True)
+        (games / "WHDLoad" / "Game.slave").write_bytes(b"slave")
+        wanting = next(p.key for p in builder.packages.CATALOGUE
+                       if p.kickstart_drawer)
+        config = builder.BuildConfig(
+            kickstart_path=str(roms / "kick31.rom"), package_keys=[wanting],
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH1", None, "PFS3", False, 0, content_folder=str(games))])
+        staged = prepare.stage_user_only_inputs(config, into, QUIET,
+                                                mounts=[share])
+        for path in (staged.kickstart_path, staged.whdload_kickstarts,
+                     staged.amiga_partitions[0].content_folder):
+            self.assertTrue(Path(path).is_relative_to(into), path)
+        self.assertEqual(Path(staged.kickstart_path).read_bytes(),
+                         (roms / "kick31.rom").read_bytes())
+        self.assertEqual(sorted(p.name for p in
+                                Path(staged.whdload_kickstarts).iterdir()),
+                         ["kick13.rom", "kick31.rom"],
+                         "the ROMs in the folder, not the whole folder")
+        self.assertTrue((Path(staged.amiga_partitions[0].content_folder)
+                         / "WHDLoad" / "Game.slave").is_file())
+
+    def test_nothing_moves_when_nothing_needs_to(self):
+        from pistorm_imager.core import prepare             # noqa: PLC0415
+        config = builder.BuildConfig(kickstart_path="/home/me/kick.rom")
+        self.assertEqual(prepare.stage_user_only_inputs(
+            config, self.scratch(), QUIET, mounts=[]), config)
+        #  Off the share, the WHDLoad folder keeps following the Kickstart.
+        staged = prepare.stage_user_only_inputs(
+            config, self.scratch(), QUIET, mounts=[Path("/run/user/1000/gvfs")])
+        self.assertEqual(staged, config)
+
 
 class TestJobs(_Scratch):
     def test_round_trip(self):
@@ -949,7 +1159,7 @@ class TestFullBuild(_Scratch):
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.HDF, target=str(target),
             image_size=512 * MIB, boot_size=96 * MIB,
-            hdf_image=str(hdf), install_emu68=False,
+            hdf_image=str(hdf), emu68_prepared_dir=EMU68,
             amiga_partitions=[builder.AmigaPartitionSpec("DH0", None, "FFS", True, 0)],
         ), QUIET)
 
@@ -985,7 +1195,7 @@ class TestFullBuild(_Scratch):
             builder.run_build(builder.BuildConfig(
                 mode=builder.BuildMode.HDF, target=str(target),
                 image_size=300 * MIB, boot_size=96 * MIB,
-                hdf_image=str(hdf), install_emu68=False), QUIET)
+                hdf_image=str(hdf), emu68_prepared_dir=EMU68), QUIET)
         self.assertIn("Amiga partition is only", str(caught.exception))
 
     def test_filesystem_driver_is_lifted_from_a_donor_image(self):
@@ -998,7 +1208,7 @@ class TestFullBuild(_Scratch):
         target = folder / "card.img"
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(target),
-            image_size=512 * MIB, boot_size=96 * MIB, install_emu68=False,
+            image_size=512 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
             pfs3_binary=str(donor),
             amiga_partitions=[builder.AmigaPartitionSpec("DH0", None, "PDS3", True, 0)],
         ), QUIET)
@@ -1028,3 +1238,304 @@ class TestFullBuild(_Scratch):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class RebuildingOneDrive(_Scratch):
+    """Rewrite one drive on a card that already exists, and nothing else.
+
+    Asked for as "choose to overwrite a partition on the target and only
+    write that partition out": a System drive rebuilt with new software,
+    without writing the 60 GB of games beside it again. The promise is that
+    every byte outside the chosen drive is left exactly as it was.
+    """
+
+    def tree(self, name: str, files: dict[str, bytes]) -> Path:
+        root = self.scratch() / name
+        for path, data in files.items():
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_bytes(data)
+        return root
+
+    def card(self, *, amiga_only: bool = False) -> tuple[Path, Path]:
+        system = self.tree("system", {
+            "S/Startup-Sequence": b"LoadWB\n", "C/Dir": b"dir",
+            "Libs/old.library": b"x" * 4000})
+        games = self.tree("games", {"Games/Old/Game": b"old game" * 500})
+        target = self.scratch() / "card.img"
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(target),
+            image_size=400 * MIB, boot_size=96 * MIB, emu68_prepared_dir=EMU68,
+            install_emu68=not amiga_only, amiga_only=amiga_only,
+            amiga_partitions=[
+                builder.AmigaPartitionSpec("DH0", 120 * MIB, "PFS3", True, 0,
+                                           content_folder=str(system),
+                                           volume_name="System"),
+                builder.AmigaPartitionSpec("DH1", 120 * MIB, "PFS3", False,
+                                           -128, content_folder=str(games),
+                                           volume_name="Games"),
+                builder.AmigaPartitionSpec("DH2", None, "PFS3", False, -128,
+                                           volume_name="Work")],
+        ), QUIET)
+        return target, games
+
+    def region(self, target: Path, drive: str) -> tuple[int, int]:
+        with open(target, "rb") as handle:
+            base, table = builder.find_rdb(handle)
+        part = next(p for p in table.partitions if p.drive_name == drive)
+        start = part.byte_offset(table.geometry, base)
+        return start, start + part.size_bytes(table.geometry)
+
+    def rebuild(self, target: Path, drive: str, folder: Path, **extra) -> None:
+        builder.run_build(builder.BuildConfig(
+            mode=builder.BuildMode.REWRITE, target=str(target),
+            rewrite_drive=drive, install_emu68=False,
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                drive, None, "PFS3", False, 0, content_folder=str(folder),
+                volume_name="Games")],
+            **extra), QUIET)
+
+    def check_only_the_drive_changed(self, amiga_only: bool) -> None:
+        target, _games = self.card(amiga_only=amiga_only)
+        before = target.read_bytes()
+        newer = self.tree("newer", {"Games/New/Game": b"new game" * 700})
+        self.rebuild(target, "DH1", newer)
+        after = target.read_bytes()
+        start, end = self.region(target, "DH1")
+        self.assertEqual(before[:start], after[:start],
+                         "nothing before the drive may change")
+        self.assertEqual(before[end:], after[end:],
+                         "nothing after the drive may change")
+        self.assertNotEqual(before[start:end], after[start:end])
+        names = [d.volume for d in builder.list_drives(target)]
+        self.assertEqual(names, ["System", "Games", "Work"])
+        from pistorm_imager.core import amigaos            # noqa: PLC0415
+        volume, _label = amigaos.open_amiga_volume(target, "DH1")
+        try:
+            found = {path for path, entry in volume.walk() if not entry.is_dir}
+        finally:
+            volume.f.close()
+        self.assertIn("Games/New/Game", found)
+        self.assertNotIn("Games/Old/Game", found,
+                         "the drive is rebuilt, not added to")
+
+    def test_only_the_chosen_drive_changes_on_a_card(self):
+        self.check_only_the_drive_changed(amiga_only=False)
+
+    def test_only_the_chosen_drive_changes_on_a_bare_amiga_drive(self):
+        #  The A1200's IDE CF card: no MBR, the RDB at block 0.
+        self.check_only_the_drive_changed(amiga_only=True)
+
+    def test_a_drive_the_card_has_not_got_is_refused(self):
+        target, games = self.card()
+        before = target.read_bytes()
+        with self.assertRaises(RuntimeError) as caught:
+            self.rebuild(target, "DH7", games)
+        self.assertIn("DH0, DH1, DH2", str(caught.exception))
+        self.assertEqual(before, target.read_bytes())
+
+    def test_amigaos_only_goes_on_the_drive_that_boots(self):
+        target, games = self.card()
+        with self.assertRaises(RuntimeError) as caught:
+            self.rebuild(target, "DH2", games, install_amigaos=True,
+                         adf_folder=str(self.scratch()))
+        self.assertIn("boots from", str(caught.exception))
+
+    def test_a_stray_write_is_refused_rather_than_made(self):
+        import io                                           # noqa: PLC0415
+        handle = io.BytesIO(bytes(1000))
+        confined = builder._Confined(handle, 100, 200, "DH1")
+        confined.seek(150)
+        confined.write(b"x" * 50)
+        confined.seek(190)
+        with self.assertRaises(RuntimeError):
+            confined.write(b"x" * 20)
+        confined.seek(10)
+        with self.assertRaises(RuntimeError):
+            confined.write(b"x")
+        self.assertEqual(handle.getvalue().count(b"x"), 50)
+
+    def test_the_drive_must_be_named(self):
+        config = builder.BuildConfig(mode=builder.BuildMode.REWRITE,
+                                     target="/tmp/card.img", rewrite_drive="")
+        self.assertTrue([p for p in config.validate() if "which drive" in p])
+
+
+class TheTaskDecidesTheShape(unittest.TestCase):
+    """Every task makes a card that can work; no switch can unmake it.
+
+    The build mode used to sit beside three switches - install Emu68, Emu68
+    only, Amiga drives only - and the rules that kept them apart were checked
+    for a new card alone. A drive image with "Emu68 only" left on was
+    silently not written, and a boot partition could be made with no Emu68.
+    """
+
+    def test_every_task_shape_is_allowed(self):
+        for task in builder.Task:
+            with self.subTest(task.name):
+                config = task.shape(builder.BuildConfig(
+                    target="/tmp/x.img",
+                    #  A split build is one with somewhere else to put the
+                    #  drives; without it, it is a new card.
+                    drives_target=("/tmp/drives.img"
+                                   if task is builder.Task.SPLIT else "")))
+                self.assertEqual(config.shape_problems(), [])
+                self.assertIs(config.task, task)
+
+    def test_the_combinations_no_task_makes_are_refused_in_every_mode(self):
+        bad = [
+            dict(mode=builder.BuildMode.HDF, boot_only=True),
+            dict(mode=builder.BuildMode.HDF, amiga_only=True,
+                 install_emu68=False),
+            dict(mode=builder.BuildMode.IMAGE, boot_only=True),
+            dict(mode=builder.BuildMode.REWRITE, amiga_only=True),
+            dict(mode=builder.BuildMode.FRESH, install_emu68=False),
+            dict(mode=builder.BuildMode.HDF, install_emu68=False),
+        ]
+        for given in bad:
+            with self.subTest(given):
+                config = builder.BuildConfig(target="/tmp/x.img", **given)
+                self.assertTrue(config.shape_problems())
+                self.assertTrue(config.validate())
+                self.assertIsNone(config.task)
+
+    def test_emu68_is_a_choice_only_where_a_boot_partition_exists(self):
+        for task in (builder.Task.PREPARED, builder.Task.UPDATE):
+            for emu68 in (True, False):
+                config = task.shape(builder.BuildConfig(
+                    target="/tmp/x.img", install_emu68=emu68))
+                self.assertEqual(config.install_emu68, emu68)
+                self.assertIs(config.task, task)
+
+    def test_software_that_cannot_go_on_is_said_before_the_build(self):
+        config = builder.Task.NEW_CARD.shape(builder.BuildConfig(
+            target="/tmp/x.img", package_keys=["scummvm"],
+            package_display="native"))
+        said = " ".join(config.concerns())
+        self.assertIn("ScummVM", said)
+        self.assertIn("left out", said)
+
+
+class APiStormWithItsDrivesElsewhere(_Scratch):
+    """The Pi boots from one card; Workbench is on another, on the IDE port.
+
+    Asked for as "split the installation to allow workbench etc. to be
+    installed into a different drive/image than the sd card that the pi
+    boots from". One set of choices, two targets, one build.
+    """
+
+    def test_one_build_writes_the_boot_card_and_the_drives(self):
+        folder = self.scratch()
+        system = folder / "system"
+        (system / "S").mkdir(parents=True)
+        (system / "S" / "Startup-Sequence").write_bytes(b"LoadWB\n")
+        (system / "C").mkdir()
+        (system / "C" / "Dir").write_bytes(b"dir")
+        boot, drives = folder / "boot.img", folder / "drives.img"
+        config = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target=str(boot), image_size=300 * MIB, boot_size=96 * MIB,
+            drives_target=str(drives), drives_image_size=200 * MIB,
+            emu68_prepared_dir=EMU68,
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0, content_folder=str(system),
+                volume_name="System")]))
+        self.assertIs(config.task, builder.Task.SPLIT)
+        builder.run_build(config, QUIET)
+        with open(boot, "rb") as handle:
+            parts = [p for p in mbr.read_table(handle) if not p.empty]
+        self.assertEqual([p.type_id for p in parts], [mbr.TYPE_FAT32_LBA],
+                         "the boot card is Emu68 and nothing else")
+        with open(drives, "rb") as handle:
+            base, table = builder.find_rdb(handle)
+        self.assertEqual(base, 0, "the drives start with their RDB, for the "
+                                  "IDE port")
+        self.assertEqual([p.drive_name for p in table.partitions], ["DH0"])
+        names = [d.volume for d in builder.list_drives(drives)]
+        self.assertEqual(names, ["System"])
+
+    def test_the_build_log_does_not_ask_for_it_either(self):
+        #  Each half used to log its own concerns, and the drives half said
+        #  the boot card had to be built separately - while writing it.
+        folder = self.scratch()
+        notes: list[str] = []
+
+        class Listening(Progress):
+            def log(self, message: str) -> None:
+                notes.append(message)
+
+        config = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target=str(folder / "boot.img"), image_size=300 * MIB,
+            boot_size=96 * MIB, drives_target=str(folder / "drives.img"),
+            drives_image_size=200 * MIB, emu68_prepared_dir=EMU68,
+            rtg_display=True, machine_key="a1200",
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0)]))
+        builder.run_build(config, Listening())
+        self.assertFalse([n for n in notes if "the Pi's half of that" in n],
+                         notes)
+
+    def test_the_drives_do_not_ask_for_the_boot_card_being_written(self):
+        #  An RTG drive on the IDE port needs the Pi's half on the boot card,
+        #  and a drives-only build says to build one. A split build is
+        #  building it, and was telling you to anyway.
+        shape = dict(target="/tmp/boot.img", rtg_display=True,
+                     machine_key="a1200",
+                     amiga_partitions=[builder.AmigaPartitionSpec(
+                         "DH0", None, "PFS3", True, 0)])
+        alone = builder.Task.AMIGA_DRIVE.shape(builder.BuildConfig(**shape))
+        split = builder.Task.SPLIT.shape(builder.BuildConfig(
+            drives_target="/tmp/drives.img", emu68_prepared_dir=EMU68,
+            **shape))
+        said = "the Pi's half of that lives"
+        self.assertTrue([c for c in alone.concerns() if said in c],
+                        "a drive on its own still says so")
+        self.assertFalse([c for c in split.concerns() if said in c])
+
+    def test_the_boot_card_does_not_miss_the_drives_software(self):
+        #  RTG on, the essential RTG driver ticked: it goes on the drives,
+        #  and the Pi's half - which installs no software - said it was
+        #  not being installed at all.
+        essential = [p.key for p in builder.packages.CATALOGUE
+                     if p.rtg_only and p.essential]
+        split = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target="/tmp/boot.img", drives_target="/tmp/drives.img",
+            rtg_display=True, machine_key="a1200", emu68_prepared_dir=EMU68,
+            package_display=next(d.value for d in machines.Display
+                                 if d.uses_rtg),
+            package_keys=essential,
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0)]))
+        self.assertFalse([c for c in split.concerns()
+                          if "Picasso96" in c or "is not being installed" in c],
+                         split.concerns())
+        missing = dataclasses.replace(split, package_keys=[])
+        self.assertTrue([c for c in missing.concerns()
+                         if "is not being installed" in c],
+                        "left off the drives, it is still said")
+
+    def test_the_plan_describes_each_half_as_what_it_is(self):
+        from pistorm_imager.core import presets                 # noqa: PLC0415
+        split = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target="/tmp/boot.img", drives_target="/tmp/drives.img",
+            machine_key="a1200", emu68_prepared_dir=EMU68,
+            boot_options=bootcfg.BootOptions(vc4_mem=64),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0)]))
+        text = presets.describe(split, presets.Detected())
+        boot, drives = text.split("The Amiga drives")
+        self.assertNotIn("HDToolBox", boot,
+                         "the Pi's card has no Amiga drive to format")
+        self.assertNotIn("PFS3", boot)
+        self.assertIn("Emu68 options", boot,
+                      "said with the card they are written to")
+        self.assertNotIn("Emu68 options", drives)
+
+    def test_the_two_targets_must_differ(self):
+        config = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target="/tmp/same.img", drives_target="/tmp/same.img"))
+        self.assertTrue([p for p in config.validate() if "same target" in p])
+
+    def test_only_a_new_card_can_split(self):
+        config = builder.BuildConfig(mode=builder.BuildMode.IMAGE,
+                                     target="/tmp/a.img",
+                                     drives_target="/tmp/b.img")
+        self.assertTrue(config.shape_problems())
