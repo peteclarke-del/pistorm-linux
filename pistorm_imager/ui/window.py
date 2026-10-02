@@ -2157,26 +2157,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.rom_info)
         page.add(group)
 
-        #  WHDLoad wants Commodore's ROMs under its own names beside its
-        #  relocation tables; these can be a different set from the one
-        #  Kickstart the card boots.
-        self.whdload_rom_group = Adw.PreferencesGroup(
-            title="Kickstarts for WHDLoad",
-            description="Games that boot their own Kickstart need the ROM "
-                        "it was written for. Every ROM in this folder that "
-                        "WHDLoad can use is recognised by its contents, "
-                        "decrypted, and copied to Devs/Kickstarts under the "
-                        "name WHDLoad looks for.")
-        self.whdload_rom_row = FileRow(
-            "Folder of Kickstart ROMs",
-            "The Kickstart ROM's own folder", folder=True,
-            on_change=lambda _p: self._scan_whdload_roms())
-        self.whdload_rom_group.add(self.whdload_rom_row)
-        self.whdload_rom_info = Adw.ActionRow(title="Recognised",
-                                              subtitle="Choose a folder")
-        self.whdload_rom_info.set_sensitive(False)
-        self.whdload_rom_group.add(self.whdload_rom_info)
-        page.add(self.whdload_rom_group)
 
         self.os_group = Adw.PreferencesGroup(
             title="Workbench floppy images",
@@ -2336,6 +2316,29 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.media_group.add(row)
         self.media_group.set_visible(False)
         page.add(self.media_group)
+
+        #  WHDLoad wants Commodore's ROMs under its own names beside its
+        #  relocation tables; these can be a different set from the one
+        #  Kickstart the card boots. Asked here, under the software, and only
+        #  while a package that wants them is ticked.
+        self.whdload_rom_group = Adw.PreferencesGroup(
+            title="Kickstarts for WHDLoad",
+            description="Games that boot their own Kickstart need the ROM "
+                        "it was written for. Every ROM in this folder that "
+                        "WHDLoad can use is recognised by its contents, "
+                        "decrypted, and copied to Devs/Kickstarts under the "
+                        "name WHDLoad looks for.")
+        self.whdload_rom_row = FileRow(
+            "Folder of Kickstart ROMs",
+            "The Kickstart ROM's own folder", folder=True,
+            on_change=lambda _p: self._scan_whdload_roms())
+        self.whdload_rom_group.add(self.whdload_rom_row)
+        self.whdload_rom_info = Adw.ActionRow(title="Recognised",
+                                              subtitle="Choose a folder")
+        self.whdload_rom_info.set_sensitive(False)
+        self.whdload_rom_group.add(self.whdload_rom_info)
+        self.whdload_rom_group.set_visible(False)
+        page.add(self.whdload_rom_group)
 
         #  A prepared drive can carry its own copy of a chosen program under
         #  a different name entirely - ClassicWB keeps SysInfo 3.24 from 1993
@@ -2624,6 +2627,13 @@ class ImagerWindow(Adw.ApplicationWindow):
                 row.set_visible(ticked)
                 shown |= ticked
             self.media_group.set_visible(shown)
+        if hasattr(self, "whdload_rom_group"):
+            wanted = any(self.package_rows[p.key].get_active()
+                         for p in packages.CATALOGUE
+                         if p.kickstart_drawer and p.key in self.package_rows)
+            if wanted and not self.whdload_rom_group.get_visible():
+                self._scan_whdload_roms()
+            self.whdload_rom_group.set_visible(wanted)
         ticked = {key for key, row in self.package_rows.items()
                   if row.get_active()}
         for view, label in self.software_counts.items():
@@ -3508,7 +3518,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  on, and where WHDLoad's images come from where drives are filled.
         self.group_kickstart.set_visible(task.writes_boot_partition
                                          or task.fills_drives)
-        self.whdload_rom_group.set_visible(task.fills_drives)
 
     def _on_variant_changed(self) -> None:
         if not self._ready:

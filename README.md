@@ -2760,9 +2760,10 @@ The new entries, and what was learned fitting them:
   not name its kind - Workbench 3.1's `picture 40.4`, `xadmaster 12.1` and
   `reqtools 38.1436` all used to read as no version at all.
 * **WHDLoad's Kickstarts come from your own ROMs, in a folder you choose.**
-  Commodore's images cannot be downloaded, so *Kickstarts for WHDLoad* on the
-  Machine step takes a folder of them - the card's own Kickstart's folder if
-  none is chosen - and says which it recognised before anything is built.
+  Commodore's images cannot be downloaded, so *Kickstarts for WHDLoad*, at the
+  foot of the Software step and shown only while WHDLoad is ticked, takes a
+  folder of them - the card's own Kickstart's folder if none is chosen - and
+  says which it recognised before anything is built.
   Each ROM is decrypted (with a `rom.key` in that folder, or the card's) and
   un-swapped, a 256K one kept doubled to 512K is halved, and it is copied to
   `Devs/Kickstarts` under the name WHDLoad looks for: `kick34005.A500`,

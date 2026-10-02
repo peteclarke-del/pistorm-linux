@@ -2129,6 +2129,22 @@ def on_activate(app: ImagerApplication) -> None:
                      and not value.get_use_subtitle())
         check(not cut, f"every combo row shows its value in full ({cut})")
 
+        #  WHDLoad's Kickstarts are asked for under the software, and only
+        #  while WHDLoad is ticked.
+        from pistorm_imager.core import packages as _pk          # noqa: PLC0415
+        whdload = next(p.key for p in _pk.CATALOGUE if p.kickstart_drawer)
+        page = window.whdload_rom_group.get_ancestor(Adw.PreferencesPage)
+        check(page is window._step_pages["packages"],
+              "the WHDLoad Kickstart folder is on the Software step")
+        was = window.package_rows[whdload].get_active()
+        for ticked in (True, False):
+            window.package_rows[whdload].set_active(ticked)
+            window._count_software()
+            check(window.whdload_rom_group.get_visible() is ticked,
+                  f"and shown only while WHDLoad is ticked ({ticked})")
+        window.package_rows[whdload].set_active(was)
+        window._count_software()
+
         #  One tile writes any image; the file decides whether it is a card
         #  written as it is or a drive with a boot partition built round it.
         check(builder.Task.DRIVE_IMAGE not in window.task_tiles
