@@ -603,6 +603,28 @@ class BuildConfig:
                     if self.accelerator_cpu else None)
         return self.machine().cpu_fitted(accelerator, card_cpu)
 
+    def _ide_reach_problems(self) -> list[str]:
+        """What stops a drive for the IDE port being read to its end.
+
+        Only what can be known before the build: behind a PiStorm with no
+        Kickstart chosen, Emu68 runs the disc's own, which the build finds;
+        and an install from a CD is checked against what it stages.  The
+        Workbench disks carry no scsi.device at all, so that is known now.
+        """
+        kickstart_version = None
+        if self.on_a_pistorm():
+            if not (self.kickstart_path
+                    and Path(self.kickstart_path).is_file()):
+                return []
+            kickstart_version = kickstart.identify(
+                self.kickstart_path, self.kickstart_key or None).version
+        reach = ide_reach(self, kickstart_version)
+        if reach is None:
+            return []
+        carried = None if self.os_cd \
+            else (False if self.install_amigaos else None)
+        return reach.problems(carried)
+
     def on_a_pistorm(self) -> bool:
         """Whether the machine has a PiStorm, whatever this card carries.
 
@@ -934,6 +956,7 @@ class BuildConfig:
             #  but a folder to find the disks in is not optional then.
             if self.install_amigaos and not self.adf_folder:
                 problems.append("No folder of Workbench disk images was given.")
+            problems += self._ide_reach_problems()
         if self.output_hdf:
             if self.mode is not BuildMode.FRESH:
                 problems.append(
@@ -3727,6 +3750,120 @@ def _expand(handle, config: BuildConfig, target_size: int, progress: Progress) -
 # ------------------------------------------------------------------- entry
 
 
+#  How far into a drive the commands every scsi.device answers can reach:
+#  io_Offset is a count of bytes in 32 bits.  Beyond it PFS3 needs TD64, NSD
+#  or direct SCSI, and the driver in an A600's or A1200's ROM has those only
+#  from Kickstart 3.1.4 (V46).  With an older one the file system cannot reach
+#  a drive past the line and the Amiga calls it uninitialised.
+TD32_REACH = 1 << 32
+LARGE_DRIVE_KICKSTART = 46
+
+
+@dataclasses.dataclass(frozen=True)
+class IdeReach:
+    """Whether a drive on an Amiga's own IDE port can be read to its end.
+
+    ``kickstart`` is the Kickstart that runs the drive where it is known -
+    the one Emu68 maps - and None where it is the ROM on the board, which
+    nothing here can see and which may be the oldest the machine came with.
+    """
+
+    machine: machines.Machine
+    beyond: tuple[str, ...]          # drives reaching past the first 4 GB
+    boot: str
+    boot_end: int                    # where the bootable drive ends, in bytes
+    kickstart: int | None
+
+    @property
+    def rom_reaches(self) -> bool:
+        return self.kickstart is not None \
+            and self.kickstart >= LARGE_DRIVE_KICKSTART
+
+    @property
+    def needs_driver(self) -> bool:
+        """Whether the drive has to bring the scsi.device that reaches."""
+        return bool(self.beyond) and not self.rom_reaches
+
+    @property
+    def driver(self) -> str:
+        """Where on the drive AmigaOS 3.2's LoadModule looks for it."""
+        return f"Devs/{self.machine.amiga_model}/scsi.device"
+
+    def problems(self, carries_driver: bool | None) -> list[str]:
+        """What stops the drive being read to its end; None is not known yet."""
+        if not self.needs_driver:
+            return []
+        problems = []
+        if self.boot_end > TD32_REACH:
+            #  The driver is loaded from the bootable drive, so the old one
+            #  has to be able to read all of it first.
+            problems.append(
+                f"{self.boot} ends {human_size(self.boot_end)} into the "
+                f"drive, but the {self.machine.label}'s own Kickstart reads "
+                f"its IDE port only as far as the first 4 GB, so it could "
+                f"not start {self.boot} to load a driver that reaches "
+                f"further. Keep {self.boot} within the first 4 GB.")
+        if carries_driver is False:
+            problems.append(
+                f"{_listed(self.beyond)} {'lies' if len(self.beyond) == 1 else 'lie'} "
+                f"past the first 4 GB of the {self.machine.label}'s IDE "
+                f"drive, which its own Kickstart cannot reach. AmigaOS 3.2 "
+                f"brings a scsi.device that can and loads it at boot: install "
+                f"from the AmigaOS 3.2 CD, or keep every drive within the "
+                f"first 4 GB.")
+        return problems
+
+    def summary(self) -> str:
+        """The requirement as it stands for this drive, for the build log."""
+        if not self.beyond:
+            return ("Every drive lies within the first 4 GB of the IDE "
+                    "drive, which any Kickstart's scsi.device reaches.")
+        where = f"{_listed(self.beyond)} reach past the first 4 GB of the " \
+                f"IDE drive"
+        if self.rom_reaches:
+            return (f"{where}; Kickstart V{self.kickstart}'s own scsi.device "
+                    f"reaches them.")
+        return (f"{where}, beyond the {self.machine.label}'s own Kickstart "
+                f"before 3.1.4: AmigaOS 3.2's scsi.device is on {self.boot} "
+                f"as {self.driver}, and LoadModule puts it in place at boot.")
+
+
+def _listed(names: tuple[str, ...]) -> str:
+    return names[0] if len(names) == 1 \
+        else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def ide_reach(config: BuildConfig, kickstart_version: int | None,
+              total_bytes: int | None = None) -> IdeReach | None:
+    """How far a new drive for an Amiga's own IDE port reaches; None if not one.
+
+    Laid out exactly as the build will lay it out, over ``total_bytes`` - the
+    card - or the image size asked for.
+    """
+    from . import machines                                   # noqa: PLC0415
+    machine = machines.MACHINES_BY_KEY.get(config.machine_key or "a1200")
+    if machine is None or not machine.ide_port or not config.amiga_only \
+            or config.mode is not BuildMode.FRESH \
+            or not config.amiga_partitions:
+        return None
+    geometry = rdb.Geometry()
+    try:
+        parts = rdb.layout(geometry,
+                           (total_bytes or config.image_size) // rdb.BLOCK,
+                           [(spec.name, spec.size, 0)
+                            for spec in config.amiga_partitions],
+                           reserved_blocks=RDB_RESERVED_BLOCKS)
+    except ValueError:
+        return None                     # what does not fit is refused already
+    ends = [(spec, (part.high_cyl + 1) * geometry.cyl_bytes)
+            for spec, part in zip(config.amiga_partitions, parts)]
+    boot, boot_end = next(((spec, end) for spec, end in ends if spec.bootable),
+                          ends[0])
+    return IdeReach(machine,
+                    tuple(spec.name for spec, end in ends if end > TD32_REACH),
+                    boot.name, boot_end, kickstart_version)
+
+
 def _prepare_os_cd(config: BuildConfig, workdir: Path,
                    progress: Progress) -> BuildConfig:
     """Stage AmigaOS from its CD, with its BoingBags on top.
@@ -3801,8 +3938,8 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     #  A drive for a PiStorm on the Amiga's own IDE port: the board's own
     #  Kickstart can start it before Emu68 has taken over, so it waits for
     #  the one Emu68 loads - the boot card's, or else the disc's own.
+    emu68_rom = None
     if accelerator is machines.Accelerator.PISTORM and config.amiga_only:
-        emu68_rom = None
         if config.kickstart_path and Path(config.kickstart_path).is_file():
             emu68_rom = kickstart.identify(config.kickstart_path,
                                            config.kickstart_key or None)
@@ -3811,6 +3948,16 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
                                                   workdir / "kickstart")
         if emu68_rom is not None and emu68_rom.version:
             wait_for_emu68(staged, emu68_rom.version, progress)
+
+    #  Whatever runs the drive has to reach all of it.  Emu68's Kickstart is
+    #  known; the ROM on the board is not, and is taken to be the oldest.
+    reach = ide_reach(config, emu68_rom.version if emu68_rom else rom_version,
+                      _target_size(config))
+    if reach is not None:
+        problems = reach.problems((staged / reach.driver).is_file())
+        if problems:
+            raise RuntimeError(" ".join(problems))
+        progress.log(reach.summary())
 
     #  The staged tree becomes the bootable partition's content.  A partition
     #  that already has content keeps it: somebody who pointed a drive at an
