@@ -1499,7 +1499,7 @@ CATALOGUE: list[Package] = [
         "wifipi", "The Pi's WiFi as an Amiga network card",
         "Emu68's own driver for the wireless chip on the Pi, so the Amiga "
         "has something for a TCP/IP stack to talk to. The network it joins "
-        "is the one set on the Amiga page; the firmware for every Pi model "
+        "is the one set on the Emu68 step; the firmware for every Pi model "
         "is installed with it.",
         category=Category.NETWORK,
         #  Where the network device used to come from was a donor's
@@ -1542,7 +1542,7 @@ CATALOGUE: list[Package] = [
         #  waited for ever instead of giving up after the minute its README
         #  promises, and the machine never reached Workbench. It is in C: for
         #  a script that wants it.
-        note="Needs the WiFi network filled in on the Amiga page: the driver "
+        note="Needs the WiFi network filled in on the Emu68 step: the driver "
              "reads the same wpa_supplicant.conf the Pi is given.",
         default=True,
     ),

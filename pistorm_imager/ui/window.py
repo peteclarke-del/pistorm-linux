@@ -1661,7 +1661,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 f"{found.kickstart.name} - {found.kickstart.path.name}")
         else:
             self.quick_found_rom.set_subtitle(
-                "None found. Add one on the Amiga page; Emu68 will not start "
+                "None found. Add one on the Machine step; Emu68 will not start "
                 "without a Kickstart.")
         if found.adf_folder:
             state = "complete set" if found.adf_complete else "incomplete"
@@ -1670,7 +1670,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         else:
             self.quick_found_adf.set_subtitle(
                 "None found. Put your Workbench ADFs in samples/ or choose a "
-                "folder on the Amiga page.")
+                "folder on the System step.")
         if found.pfs3_donor and not self.quick_donor.path:
             self.quick_donor.set_path(found.pfs3_donor)
             self.quick_donor.set_subtitle(
@@ -1900,7 +1900,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         if config.install_emu68 and not config.emu68_archive \
                 and not config.emu68_prepared_dir and not self.releases:
             missing.append("an Emu68 release - still looking, or choose a "
-                           "local archive on the Source page")
+                           "local archive on the Emu68 step")
         #  install_amigaos is only true once a folder has been chosen, so
         #  asking about it alone meant a card that needs the disks and has
         #  none said nothing at all - and built, unbootable. What decides it
@@ -2700,8 +2700,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.partition_group = Adw.PreferencesGroup(
             title="Amiga partitions",
             description="Written as a Rigid Disk Block inside the 0x76 partition. "
-                        "Each one can be filled from the Amiga page, or left "
-                        "empty to format from HDToolBox on the Amiga.")
+                        "Each one can be filled with the files of a drive image "
+                        "or folder, or left empty to format from HDToolBox on "
+                        "the Amiga.")
         add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER,
                          tooltip_text="Add a partition")
         add.add_css_class("flat")
@@ -3437,7 +3438,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             "Rigid Disk Block starts at block 0, where the controller looks "
             "for it, and there is no FAT32 partition."
             if not wants_emu68 else
-            "Turn off \u201cInstall Emu68\u201d on the Source page first - "
+            "Turn off \u201cInstall Emu68\u201d on the Emu68 step first - "
             "Emu68 needs the boot partition this would remove.")
 
         #  With no boot partition there is nowhere to put a Kickstart, a
@@ -4133,7 +4134,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                     and not emu68.at_least(tag or "", package.min_emu68):
                 version = ".".join(str(part) for part in package.min_emu68)
                 note += (f"  -  needs Emu68 {version} or newer; choose one on "
-                         f"the Source page.")
+                         f"the Emu68 step.")
             elif not fits and package.unsuited_need(
                     chipset, display, pi=pi, cpu=cpu, emu68_tag=tag):
                 need = package.unsuited_need(chipset, display, pi=pi, cpu=cpu,
@@ -4173,7 +4174,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                 #  about rather than read.
                 note = ("Required by the display you chose, so it is on and "
                         "cannot be turned off - change the display on the "
-                        "Amiga page to release it.  -  " + note)
+                        "Machine step to release it.  -  " + note)
             else:
                 row.set_sensitive(fits)
                 if not fits:

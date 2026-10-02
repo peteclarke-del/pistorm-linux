@@ -413,7 +413,7 @@ or install it from the published release and use the desktop entry:
 
 ```
 pipx install --system-site-packages \
-    "git+https://github.com/peteclarke-del/pistorm-linux@v0.11.0"
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.12.0"
 pistorm-imager-cli install-desktop
 ```
 
@@ -454,7 +454,7 @@ neither is offered. The release's tag, `vX.Y.Z`, is compared with the version
 About shows, which is the one in `pistorm_imager/__init__.py`. The answer
 appears under the button:
 
-- `PiStorm Imager 0.11.0 is the newest version` when no later release has been
+- `PiStorm Imager 0.12.0 is the newest version` when no later release has been
   published.
 - The newer version and the one you have, how this copy is updated, and an
   **Open Release Page** button that opens the release on GitHub.
@@ -481,23 +481,28 @@ keeps working because the command it runs keeps its name.
 
 ## The window
 
-The first screen is the choice of task, and nothing else:
+The first screen is the choice of task, and nothing else: a grid of tiles,
+clicked to start one, each saying what it does when the pointer rests on it.
 
-![The opening screen: the tasks, each with an icon and a button](docs/images/01-welcome.png)
+![The opening screen: a grid of tasks, each a tile to click](docs/images/01-welcome.png)
 
 Choosing one shows that task's steps along the top, in the order their choices
-gate one another, and Back and Next along the bottom walk them. A new card
-takes all seven:
+gate one another, and Back and Next along the bottom walk them. The bar between
+them keeps to one line: what is written where, or what is still needed - and,
+when something is worth a second look, how many such things the Review step
+lists. **What you have chosen is saved at every step**, not only when the
+window closes, so a window that has to be killed does not take the setup with
+it. A new card takes all seven steps:
 
 | Step | What it asks |
 | --- | --- |
 | **Machine** | Which Amiga, which Raspberry Pi is on its PiStorm board, how much chip RAM is fitted, how you look at it, and the Kickstart ROM. The processor is only asked about for a drive that may go into a machine without a PiStorm. |
 | **System** | Where the Amiga system comes from - a new drive, a PiMiga installation or a hard disk image - and what AmigaOS is installed from: the Workbench floppy images, or an AmigaOS CD image and what goes with it. |
 | **Drives** | The size of the system drive, whether the rest becomes a PFS3 work drive, and the Amiga partitions themselves. *Use the suggested layout* redraws them from the choices so far. |
-| **Software** | The optional software, a group at a time, with a search across all of them - and, where something chosen needs one, [which USB socket](#which-socket-and-the-two-files-that-have-to-agree) the Amiga is given, and whether to include the pictures and extras some software can bring. |
+| **Software** | The optional software, a group at a time, with a search across all of them - and, at the foot, what some of it needs answered: whether to include the pictures and extras some software can bring, the folder of [Kickstarts for WHDLoad](#software-to-add) while WHDLoad is ticked, and [which USB socket](#which-socket-and-the-two-files-that-have-to-agree) the Amiga is given. |
 | **Emu68** | The PiStorm board, the Emu68 release and kernel, HDMI output, the Raspberry Pi's own settings, the [boot partition add-ons](#add-ons-that-go-onto-the-boot-partition), and the Emu68 switches, which end up in `cmdline.txt` or, on Emu68 1.1 and later, as [device tree overlays](#emu68-11-moved-four-settings-out-of-cmdlinetxt) in `config.txt`. |
 | **Target** | Where the result goes - a card or an image file, and for a split build where the drives go - and how big the boot partition is. |
-| **Review** | What this will build, and what is still needed before Write is offered. |
+| **Review** | What this will build, what is still needed before Write is offered, and what is *worth checking*: choices that will build but probably do not do what was meant. |
 
 ![The Machine step: the Amiga, the Pi, the display, and the Kickstart](docs/images/05-amiga.png)
 
@@ -507,6 +512,8 @@ takes all seven:
 
 ![The Software step: the groups on the left, their software on the right](docs/images/06-packages.png)
 
+![The foot of the Software step with WHDLoad ticked: its Kickstart folder, and what was recognised in it](docs/images/14-software-extras.png)
+
 ![The Emu68 step: the release, the display and the Emu68 switches](docs/images/07-options.png)
 
 ![The Target step](docs/images/08-target.png)
@@ -515,7 +522,20 @@ takes all seven:
 
 Write is offered on Review once nothing is missing - there is no separate
 Apply to press first, so nothing has to be re-accepted after a change. What is
-still wanted is listed there, each item naming the step it is on.
+still wanted is listed there, each item naming the step it is on, and anything
+worth checking is listed under its own heading; the card is still written
+with those, as chosen.
+
+### Writing an image
+
+**Write an image to a card** takes one file of either kind. Its first sectors
+say which: a partition table is a whole card, written as it is; a Rigid Disk
+Block or an Amiga file system is a drive, and the task becomes putting that
+drive on a card with an Emu68 boot partition built around it - checked and
+repaired for PiStorm compatibility on the way. Compressed files are read the
+same way.
+
+![The System step of Write an image to a card, with an Amiga drive image recognised as a drive](docs/images/12-write-image.png)
 
 ### Exporting
 
@@ -607,6 +627,8 @@ pistorm_imager/
     presets.py   turns a machine and a source into a complete build
     packages.py  the optional software catalogue, fetched from each
                  publisher and cached between builds
+    ahi.py       AHI's saved settings, with the mode its driver lists
+    gamemenu.py  the AGS2 game selector's menu, built from the games
     content.py   what a games or demos tree is divided into, and what runs here
     distributions.py  recognising a prepared system and what it expects
     postwrite.py adapting a prepared system after it has been written
@@ -632,7 +654,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 915 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 941 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -746,8 +768,8 @@ is not the same as an Amiga drawing a screen from it.
 
 ## One primary source, not several
 
-Quick setup asks a single question about where the card's contents come from,
-because the answers are alternatives rather than additions:
+The System step asks a single question about where the card's contents come
+from, because the answers are alternatives rather than additions:
 
 - **Default** - a new drive, which can then have AmigaOS installed onto it
   from your floppy images or from an AmigaOS 3.2, 3.5 or 3.9 CD image, or be
@@ -762,27 +784,28 @@ image was chosen instead used to be carried into the build, producing a card
 that was neither one thing nor the other.
 
 Adding to a source rather than replacing it is a per-partition matter: any
-partition on the **Amiga partitions** page can be filled from a drive inside an
+partition on the **Drives** step can be filled from a drive inside an
 `.hdf`, so an image can be added as a fourth drive beside PiMiga's System,
 Games and Work rather than displacing them.
 
-### What Quick setup decides, and what it leaves alone
+### What the suggested layout decides, and what it leaves alone
 
-Applying a quick setup rebuilds the whole layout from the machine, the card and
-the source - that is what the page is for. It has no opinion about the settings
-made elsewhere, so those are carried through untouched: the WiFi network, the
-volume name, the Emu68 release and any local archive, a Cloanto Kickstart key,
-the source image and `.hdf` on the Source page, and the boot switches only a
-person can decide (overclock, CM4 antenna, swapping `DF0:` with `DF1:`, letting
-the Amiga write to the whole card). Applying used to return every one of them to
-its default and then save the session in that state, so they could not be kept
-at all.
+The drive layout is suggested from the machine, the card and the source, and
+redrawn as those change - until you arrange it yourself, and *Use the suggested
+layout* on the Drives step has the suggestion back. It has no opinion about
+the settings made elsewhere, so those are carried through untouched: the WiFi
+network, the volume name, the Emu68 release and any local archive, a Cloanto
+Kickstart key, the image or `.hdf` chosen on the System step, and the boot
+switches only a person can decide (overclock, CM4 antenna, swapping `DF0:` with
+`DF1:`, letting the Amiga write to the whole card). The Quick setup page this
+used to be returned every one of them to its default and then saved the
+session in that state, so they could not be kept at all.
 
 The one field the two share is **Additional cmdline.txt options**: the trapdoor
 switch owns `move_slow_to_chip` and anything else in the box was typed by hand.
 Both survive, and turning the switch off removes only its own option. The switch
-is asked when the configuration is gathered rather than only when a quick setup
-is applied - the two were separate records of one fact, so a setup loaded with
+is asked when the configuration is gathered rather than only when a layout is
+suggested - the two were separate records of one fact, so a setup loaded with
 the switch on and the option missing built a card without it: 512K of chip RAM
 on a machine that had been told to give it a megabyte, with the switch on screen
 still saying it was on.
@@ -814,7 +837,7 @@ options - `enable_c0_slow`, `enable_c8_slow`, `enable_d0_slow` - which Emu68
 takes for any OCS or ECS machine. Sent on its own, `move_slow_to_chip` is inert.
 
 Nothing on screen decides those: the *machine* does. `machines.boot_options()`
-set them, and that runs only where a quick setup is assembled - while the card
+set them, and that ran only where the old quick setup was assembled - while the card
 is written from `gather()`, which built its boot options from the widgets alone
 and so left the field at its default. **Every card this tool wrote went out
 without them**, and the symptom was the same 512K of chip RAM the paragraph
@@ -892,7 +915,7 @@ only `vc4.mem=64`.
 ### Three settings that only Emu68 1.1 has
 
 The overlays did not only move settings; they added some. Three are worth a
-control of their own, and they are on the Options page in a group called
+control of their own, and they are on the Emu68 step in a group called
 **Emu68 1.1 options**:
 
 | Setting | Overlay | What it is for |
@@ -904,7 +927,7 @@ control of their own, and they are on the Options page in a group called
 These have **no older spelling at all**, so unlike the four that moved there is
 nothing to fall back on: an Emu68 before 1.1 cannot be told about them. The
 group is therefore held off when the chosen release is older, and says why, on
-the same principle as the packages page - a control that cannot reach the card
+the same principle as the Software step - a control that cannot reach the card
 must not sit there looking as though it can. Where the release cannot be read
 at all, because the build is coming from a local zip or an unpacked folder, the
 settings are allowed through and the build reports what it could not honour.
@@ -927,7 +950,7 @@ It is published at
 [rondoval/Emu68](https://github.com/rondoval/Emu68/releases/tag/v1.1-alpha-with-rangeops)
 as a kernel and nothing else - no firmware, no device tree, no overlays, no
 `config.txt`. So it is not another release to choose instead of the official
-one; it is a **kernel laid over** one, and that is how the Source page offers
+one; it is a **kernel laid over** one, and that is how the Emu68 step offers
 it: a row under the release, not an entry in it. The release still supplies
 everything else on the boot partition.
 
@@ -1360,7 +1383,7 @@ had restored it, and the card size, which was written back into the box as
 Putting a loaded setup back is therefore one method rather than a sequence
 repeated at each call site, because the order is the whole of it: the machine
 and the display arrive with the interface state, and they decide which software
-suits the card and which board the Source page shows, so both of those are
+suits the card and which board the Emu68 step shows, so both of those are
 restored from the configuration afterwards.
 
 Two things are only true a moment later, and the summary has to be told when
@@ -1419,9 +1442,10 @@ repository, and the tests that use it skip when it is absent.
 
 Several people distribute a whole, finished AmigaOS installation as an image,
 and basing a card on one is far quicker than installing Workbench from six
-floppies. Download it from its author, point the **Pre-built image** source at
-the file, and the tool names what it found and says what that system expects of
-the machine.
+floppies. Download it from its author, choose **Write an image to a card** and
+point it at the file, and the tool names what it found and says what that
+system expects of the machine. The same tile takes an Amiga drive image: the
+file's first sectors say which it is, so there is nothing to choose.
 
 **CaffeineOS** is recognised: AmigaOS 3.9 built for Emu68 and the PiStorm, with
 Dopus Magellan as its Workbench replacement, its own custom Kickstart on the
@@ -1542,8 +1566,8 @@ A drive is judged to need the disks only when it was actually read and found to
 lack them. An image this reader cannot open says nothing either way, and
 treating that as "needs the disks" would demand floppies for a perfectly good
 drive on the strength of not having understood it. The images searched are the
-one chosen on the quick screen *and* whatever fills the bootable drive on the
-Storage page, because those are two routes to the same card; the answer is
+one chosen on the System step *and* whatever fills the bootable drive on the
+Drives step, because those are two routes to the same card; the answer is
 cached against the file's modification time, since the summary asks on every
 redraw and the question costs an image read. The plan says so
 too: an imported drive with the disks installed alongside it reads *"the files
@@ -1617,6 +1641,9 @@ the other with the same answers given twice.
 It is one task now, with one set of choices - the machine, the system, the
 drives, the software, Emu68 - and two destinations on the Target step: the
 Pi's boot card, and where the Amiga drives go, another card or an image file.
+
+![The Target step of a split build: the Pi's boot card, and where the Amiga drives go](docs/images/13-split-target.png)
+
 The build writes the boot card first and then the drives, each held to the
 rules of its own task: the boot card is Emu68 and nothing else, and the drives
 start with their Rigid Disk Block at block 0, where the IDE port reads it. The
@@ -1634,12 +1661,12 @@ spent putting back what was already there.
 
 **Rebuild one drive** reads the card's own Rigid Disk Block - at block 0 on a
 bare drive like that CF card, or inside the `0x76` partition on a PiStorm SD
-card - lists its drives on the Target page, and rebuilds the one chosen. The
+card - lists its drives on the Target step, and rebuilds the one chosen. The
 card decides where the drive is, how big and which file system; the build is
 narrowed to that drive and then does to it exactly what a new card's build
 does - installs AmigaOS from the floppies or the CD, copies a folder into it,
-adds the software - against the table that is already there. The Storage and
-Options pages are hidden, because there is no layout to choose and no boot
+adds the software - against the table that is already there. The task has no
+Drives or Emu68 step, because there is no layout to choose and no boot
 partition to write, and only the drive the Amiga boots from is offered a
 system and software.
 
@@ -2839,10 +2866,10 @@ The new entries, and what was learned fitting them:
 
 ### The software has a page of its own
 
-**Packages** is now a page in its own right. The list had been sharing the
-Amiga page with the model, the Kickstart and the Workbench disks - which are
-facts about the hardware - while being longer than everything else on that page
-put together.
+**Software** is a step in its own right. The list had been sharing a page
+with the model, the Kickstart and the Workbench disks - which are facts about
+the hardware - while being longer than everything else on that page put
+together.
 
 **Two packages that do the same job are alternatives, and you are asked.** A
 package can name the `role` it fills; ticking one while another with the same
@@ -3299,7 +3326,7 @@ further:
   `System/FWheel` is FreeWheel's C source. Neither is named, and a test asserts
   both are still there.
 
-Removing somebody's software is not a thing to do quietly, so the Packages page
+Removing somebody's software is not a thing to do quietly, so the Software step
 lists each older copy it actually found **on the drive in front of you** - the
 drive is asked, rather than the catalogue believed - and any one of them can be
 switched off and kept.
@@ -3377,7 +3404,7 @@ display is shown ticked and insensitive, and the reason used to be appended to
 its subtitle - after the description, the fetch note and the installation note,
 some three hundred characters in, where it was asked about rather than read. It
 now leads: *"Required by the display you chose, so it is on and cannot be turned
-off - change the display on the Amiga page to release it."*
+off - change the display on the Machine step to release it."*
 
 **An RTG display brings Picasso96 with it, and holds it on.** Picasso96 *is*
 the RTG subsystem; Emu68's driver is a card for it, and without it a card set
@@ -3626,8 +3653,8 @@ there, and stages the rest in `Storage/Install/Roadshow`. Two details matter:
 
 A PiStorm card can give the Amiga real USB: keyboards, mice, memory sticks,
 network adapters, audio, printers and MIDI. It takes two pieces that are
-useless apart, and the imager offers them as one choice on the packages page,
-in a group of their own called **Raspberry Pi hardware**.
+useless apart, and the imager offers them as one choice on the Software step,
+in the group called **Emu68 and the Pi**.
 
 - **[Poseidon](https://github.com/rondoval/poseidon-backport)** is the stack -
   the USB stack originally written for AmigaOS, developed in AROS for the
@@ -3651,7 +3678,7 @@ built for one Pi boots on another and the question was never worth asking.
 
 The USB controller is on the Pi, and a Pi 3 has not got one anything here can
 drive - its USB is a DWC OTG controller on the SoC, not xHCI. So the model is
-asked for on the Amiga page, beside the machine, and the software that needs
+asked for on the Machine step, beside the machine, and the software that needs
 one is refused where the answer says there is none, with the row saying which
 Pi it wanted rather than leaving a tick box that does nothing.
 
@@ -3836,7 +3863,7 @@ Everything under [Software to add](#software-to-add) goes onto an Amiga drive
 and is software the Amiga runs. There is another kind: something that belongs
 on the **FAT32 boot partition**, beside the Emu68 kernel and `config.txt`, and
 is finished on the Amiga afterwards by its own installer. Those are on the
-Options page, under **Boot partition add-ons**.
+Emu68 step, under **Boot partition add-ons**.
 
 The first of them is
 **[AGA-PISTORM](https://astair86.itch.io/aga-pistorm-10-experimental-prototype)**,
@@ -3917,7 +3944,7 @@ Chip RAM is the chipset's own memory and an Agnus decides how much of it there
 can be: an unexpanded A500 has 512K, an A500+ and an A600 have a megabyte, and
 the same A500 board with an ACE2B has two. Nothing on a card depended on that
 until an add-on that emulates a chipset did, so the machine now carries the
-sizes it can have and the Amiga page asks - only where there is more than one
+sizes it can have and the Machine step asks - only where there is more than one
 answer.
 
 It is deliberately **not** tied to the trapdoor switch. Emu68's
@@ -4078,7 +4105,7 @@ FULL carries thirty programs in `Programs` alone and seven little games in
 `WBGames`, some obsolete, some unfinished, some simply not to taste - and the
 only choice was all of it or none.
 
-The Packages page now lists what the chosen drive already holds, one row per
+The Software step now lists what the chosen drive already holds, one row per
 program, all on. Turn one off and it is left out: **the drawer, everything in
 it, and its icon**, by the same rule that removes a superseded older copy - the
 rule that had to be fixed once already, when leaving the files out but keeping
