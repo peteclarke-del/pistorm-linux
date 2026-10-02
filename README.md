@@ -719,7 +719,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 976 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 980 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1708,6 +1708,24 @@ drives, the software, Emu68 - and two destinations on the Target step: the
 Pi's boot card, and where the Amiga drives go, another card or an image file.
 
 ![The Target step of a split build: the Pi's boot card, and where the Amiga drives go](docs/images/13-split-target.png)
+
+**The drives wait for Emu68.** An A1200 keeps its own 68EC020 on the board,
+and while the Pi is still starting Emu68 that processor runs the Kickstart
+soldered to the board - 3.1 on most - before Emu68 takes the machine over and
+restarts it into the Kickstart it loads. The Pi's own card cannot be seen in
+those seconds, but a CF card on the IDE port can, so the board's 3.1 ROM
+booted it: a 3.2 system on a 3.1 Kickstart, which stopped with `Software
+Failure 8000 0008` before Emu68 ever took over. Without the CF card the same
+machine showed 3.1 and then 3.2, which is what gave it away.
+
+So a drive built for a PiStorm on the IDE side starts its Startup-Sequence by
+asking which Kickstart started it. If it is older than the one Emu68 loads -
+the boot card's, or the 3.2 disc's own - it says *This is the Amiga's own
+Kickstart: waiting for the PiStorm to start* and waits; Emu68's restart ends
+the wait and the drive boots on the right Kickstart. After a minute it carries
+on regardless, so a machine whose PiStorm never starts is not left hanging.
+Proved in FS-UAE with the card's own system drive: on the 3.1 ROM it waits,
+on the 3.2 ROM it boots straight through.
 
 The build writes the boot card first and then the drives, each held to the
 rules of its own task: the boot card is Emu68 and nothing else, and the drives
