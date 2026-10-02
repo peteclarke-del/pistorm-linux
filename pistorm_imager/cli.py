@@ -8,6 +8,7 @@ The same commands are perfectly usable by hand for a headless build.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -153,8 +154,8 @@ def _give_the_cache_back(config) -> None:
         gid = pwd.getpwuid(int(uid)).pw_gid
     except KeyError:
         return
-    for path in [Path(config.cache_root)] + list(
-            Path(config.cache_root).rglob("*")):
+    root = Path(config.cache_root)
+    for path in itertools.chain([root], root.rglob("*")):
         try:
             if path.lstat().st_uid == 0:
                 os.lchown(path, int(uid), gid)
