@@ -2249,7 +2249,7 @@ class ChoicesThatBuildAndMislead(unittest.TestCase):
         role, rivals = self._a_shared_role()
         said = self._config(
             package_keys=[p.key for p in rivals]).concerns()
-        clash = [s for s in said if role in s]
+        clash = [s for s in said if f"both a {role} system" in s]
         self.assertTrue(clash, said)
         #  Both are named, so the person can tell which to drop.
         for package in rivals:
@@ -2258,7 +2258,10 @@ class ChoicesThatBuildAndMislead(unittest.TestCase):
     def test_one_of_them_on_its_own_is_not(self):
         role, rivals = self._a_shared_role()
         said = self._config(package_keys=[rivals[0].key]).concerns()
-        self.assertFalse([s for s in said if role in s], said)
+        #  The clash itself, not any mention of the role: a clean machine
+        #  is also told that Roadshow, a TCP/IP stack, cannot be fetched.
+        self.assertFalse([s for s in said if f"both a {role} system" in s],
+                         said)
 
     def test_it_is_not_left_to_the_window_to_notice(self):
         """The defect this guards: the check living only in the GUI.
