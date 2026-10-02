@@ -731,7 +731,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 983 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 994 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1770,6 +1770,45 @@ start with their Rigid Disk Block at block 0, where the IDE port reads it. The
 WiFi network goes on the boot card, where Emu68 reads it, and the driver for it
 on the drives, so the two halves agree without being told twice. Review
 describes both, and the two targets must differ.
+
+### Drives past the first 4 GB of the IDE port
+
+An A600 or A1200 reads its IDE port through the `scsi.device` in its ROM, and
+before Kickstart 3.1.4 that driver reaches only the first 4 GB of a drive.
+PFS3 cannot get past that line through it, and every drive beyond it comes up
+*not formatted* or *Uninitialized* - on a 64 GB card, everything but DH0.
+Large cards work because AmigaOS 3.2 brings a driver that reaches the whole
+card: its installer puts it in `Devs/A1200` (or `Devs/A600`), and on an older
+Kickstart the hard drive Startup-Sequence's `LoadModule ROMUPDATE` loads it
+and restarts.
+
+Two things decide whether that works, and the build checks both:
+
+- **`LoadModule` takes the drawer named for the machine it is running on.** A
+  card built for an A1200 has only `Devs/A1200`, so in an A600 the old driver
+  stays and the far drives are lost. The A600's and A1200's drivers on the 3.2
+  disc are the same file, so a drive built for either now carries both, which
+  is found by comparing the two disks rather than assumed.
+- **The old driver has to read the whole bootable drive first**, because that
+  is where the new one is loaded from. A drive whose Kickstart is older than
+  3.1.4 is refused unless its bootable drive ends within the first 4 GB.
+
+Behind a PiStorm, Emu68's Kickstart runs the drive: with a 3.2 ROM its own
+driver reaches everything and neither rule applies. Without a PiStorm the ROM
+on the board is taken to be the oldest the machine came with, since nothing
+can see it. The Workbench disks carry no such driver, so a drive installed
+from them is refused if any of it lies past 4 GB. A 3.2 CD install is checked
+against what it actually stages, and the build log says which case the drive
+is in.
+
+Proved in FS-UAE through its IDE controller on the A1200's 3.1 ROM, with
+AmigaOS 3.2 installed:
+
+- a drive built for an A600 came up with DH2 to DH4 *Uninitialized*;
+- the same drive built with this change mounted every drive out to 16 GB;
+- a 20 GB PFS3 DH0 could not be started at all.
+
+On a 3.2 ROM the card's own 64 GB layout mounts all four drives.
 
 ## Rebuilding one drive
 

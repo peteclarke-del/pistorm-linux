@@ -43,6 +43,8 @@ from __future__ import annotations
 import dataclasses
 import fnmatch
 import os
+import shutil
+import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -98,6 +100,13 @@ class Layer:
     #  Copied only for a processor that is a chip on a board, and at least
     #  this one.  Never for Emu68, which is not one.
     real_cpu: Cpu | None = None
+    #  A per-model source whose files are also staged for the other models
+    #  the disc ships them byte for byte the same for.  AmigaOS 3.2 keeps the
+    #  A600's and the A1200's scsi.device in a drawer named for the model, and
+    #  LoadModule picks the drawer by the machine it finds itself on - so a
+    #  card written for one and put in the other would otherwise boot with
+    #  the ROM's own driver and lose every drive past 4 GB.
+    alike_models: bool = False
 
     def wanted(self, options: frozenset[str],
                kickstart_version: int | None,
@@ -314,7 +323,7 @@ OS32_LAYERS = (
     #  The ROM's own modules, for a Kickstart older than 3.2: the boot script
     #  below loads them over a 3.1 ROM with LoadModule.
     Layer(_MODULES, "Devs", "Kickstart modules (Devs)", 85, within="DEVS",
-          below_kickstart=47),
+          below_kickstart=47, alike_models=True),
     Layer(_MODULES, "L", "Kickstart modules (L)", 86, within="L",
           below_kickstart=47),
     Layer(_MODULES, "Libs", "Kickstart modules (Libs)", 87, within="LIBS",
@@ -723,6 +732,8 @@ def stage(match: CdMatch, into: str | Path,
                         amigaos.write_sidecar(target,
                                               **item.known.as_arguments())
                     count += 1
+            if layer.alike_models and model:
+                count += _stage_alike(disc, layer, model, staging, progress)
             written += count
             if progress is not None:
                 progress.log(f"  {layer.label}: {count} files -> "
@@ -738,6 +749,57 @@ def stage(match: CdMatch, into: str | Path,
                 icon.read_bytes(), x=place.x, y=place.y, left=place.left,
                 top=place.top, width=place.width, height=place.height))
     return written
+
+
+def _model_in(layer: Layer, entry: iso9660.Entry) -> str:
+    """The model a per-model source was found for, read from its name."""
+    before, _, after = layer.source.rpartition("/")[2].partition(MODEL)
+    name = entry.name
+    if not (name.lower().startswith(before.lower())
+            and name.lower().endswith(after.lower())):
+        return ""
+    return name[len(before):len(name) - len(after)]
+
+
+def _stage_alike(disc: _Disc, layer: Layer, model: str, staging: _Staging,
+                 progress: Progress | None) -> int:
+    """Stage another model's copy of each file it shares with ``model``.
+
+    Only a file kept in a drawer named for its model, and only where the
+    other model's disk has exactly the bytes already staged for this one:
+    the same driver under two names, never a different driver guessed at.
+    """
+    staged = 0
+    for entry in disc.sources(layer, "*"):
+        other = _model_in(layer, entry)
+        if not other or other.lower() == model.lower() \
+                or not disc.holds(layer, entry):
+            continue
+        for item in disc.items(layer, entry):
+            parts = item.relative.split("/")
+            if item.is_dir or len(parts) < 2 \
+                    or parts[0].lower() != other.lower():
+                continue
+            ours = staging.find(f"{layer.destination}/{model}/"
+                                + "/".join(parts[1:]))
+            if ours is None or not ours.is_file():
+                continue
+            relative = f"{layer.destination}/{item.relative}"
+            with tempfile.TemporaryDirectory() as scratch:
+                theirs = Path(scratch) / "file"
+                item.save(theirs)
+                if theirs.read_bytes() != ours.read_bytes():
+                    continue
+                target = staging.file(relative)
+                shutil.copyfile(theirs, target)
+            if item.known is not None:
+                amigaos.write_sidecar(target, **item.known.as_arguments())
+            staged += 1
+            if progress is not None:
+                progress.log(f"    {relative}: the same file as the "
+                             f"{model}'s, so a card moved to an {other} "
+                             f"loads it too")
+    return staged
 
 
 def kickstart_on_disc(match: CdMatch, machine: machines.Machine,
