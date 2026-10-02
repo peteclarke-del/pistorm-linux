@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -151,6 +152,35 @@ TASKS = [
      ("export",)),
 ]
 TASK_STEPS = {task: steps for task, _t, _s, _i, steps in TASKS}
+
+#  Which step a "still needed" item is settled on, by what it is about.
+#  Checked in order, after an item that names its step itself ("on the
+#  Target step"); the first that matches wins, so the narrow ones come
+#  before the broad - a boot partition's size is on Target, not Drives.
+NEEDED_ON = (
+    ("target", re.compile(r"(?i)\btarget\b|card or an image file|boot "
+                          r"partition must|rebuild|written to a file|does "
+                          r"not exist")),
+    ("export", re.compile(r"(?i)\bexport")),
+    ("packages", re.compile(r"(?i)whdload|\busb\b")),
+    ("options", re.compile(r"(?i)emu68|kernel|wifi")),
+    ("amiga", re.compile(r"(?i)kickstart")),
+    ("storage", re.compile(r"(?i)partition|drives? (add|with)|fixed size|"
+                           r"FFS or PFS3|^DH\d|^\w+: (image|folder) not")),
+    ("source", re.compile(r"(?i)image|\.hdf|\bCD\b|workbench|ADF|floppy|"
+                          r"boingbag|amigaos|nothing says what")),
+)
+
+
+def step_for(item: str) -> str | None:
+    """The step a still-needed item is settled on, or None if none says."""
+    for key, (title, _icon) in STEPS.items():
+        if re.search(rf"(?i)\bon the {re.escape(title)} step\b", item):
+            return key
+    for key, pattern in NEEDED_ON:
+        if pattern.search(item):
+            return key
+    return None
 TASK_STEPS[builder.Task.DRIVE_IMAGE] = TASK_STEPS[builder.Task.PREPARED]
 #  The tasks a chosen image can turn into: a card or a drive.
 IMAGE_TASKS = {builder.ImageKind.CARD: builder.Task.PREPARED,
@@ -5615,11 +5645,41 @@ class ImagerWindow(Adw.ApplicationWindow):
             try:
                 config, state, _reduced = jobs.load_session(file.get_path())
                 self._apply_saved(config, state)
+                self._take_up_loaded_setup()
                 self._toast("Settings loaded")
             except Exception as error:  # noqa: BLE001
                 self._toast(f"Could not load: {error}")
 
         dialog.open(self, None, done)
+
+    def _first_step_needing_attention(self) -> str:
+        """The earliest of this task's steps that still wants something.
+
+        Its last step - Review - when nothing does, since then the setup is
+        ready to look over and write. An item that cannot be placed sends
+        you to Review too, which lists it.
+        """
+        steps = self._steps
+        if not steps:
+            return "quick"
+        wanted = [step_for(item) for item in self._missing_choices()]
+        found = [steps.index(step) for step in wanted if step in steps]
+        return steps[min(found)] if found else steps[-1]
+
+    def _take_up_loaded_setup(self) -> None:
+        """Into the task a loaded setup describes, at the step it needs next.
+
+        Loading on the first screen left you there, with the setup applied
+        out of sight and every step to walk to find what, if anything, was
+        left to do.
+        """
+        try:
+            task = self.gather(require_target=False).task
+        except Exception:                        # noqa: BLE001 - incomplete
+            task = None
+        self._start_task(task or self._task or builder.Task.NEW_CARD)
+        self._update_summary()
+        self.stack.set_visible_child_name(self._first_step_needing_attention())
 
     def _on_forget_session(self, _button) -> None:
         """Forget the saved setup and put the window back as it opened.

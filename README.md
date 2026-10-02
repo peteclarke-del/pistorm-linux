@@ -553,7 +553,7 @@ button names the task too - it says `Export` here rather than `Write card`.
 | | |
 | --- | --- |
 | **Save settings…** | Writes exactly the job file that the `build` subcommand consumes. |
-| **Load settings…** | Reads one back into the window. |
+| **Load settings…** | Reads one back into the window and takes you into its task, at the first step that still needs something - or Review, when nothing does. |
 | **Forget saved setup** | Puts the window back to how it opens, discarding the session it remembered. |
 | **Inspect the target** | Shows the partitions and the Rigid Disk Block of the chosen card or image. |
 | **Check for Application Updates…** | Opens About and presses its Check for Application Updates button. |
