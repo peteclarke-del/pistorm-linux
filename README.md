@@ -731,7 +731,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1009 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1020 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1796,10 +1796,31 @@ Two things decide whether that works, and the build checks both:
 Behind a PiStorm, Emu68's Kickstart runs the drive: with a 3.2 ROM its own
 driver reaches everything and neither rule applies. Without a PiStorm the ROM
 on the board is taken to be the oldest the machine came with, since nothing
-can see it. The Workbench disks carry no such driver, so a drive installed
-from them is refused if any of it lies past 4 GB. A 3.2 CD install is checked
-against what it actually stages, and the build log says which case the drive
-is in.
+can see it. A 3.2 CD install is checked against what it actually stages, and
+the build log says which case the drive is in.
+
+**Any other system is given the driver too.** Workbench 3.1 from the floppies,
+3.9, or a drive imported from an image has none of its own, so the build gives
+it:
+
+- AmigaOS 3.2's `scsi.device`, from your own copy in `samples/drivers/<model>`
+  (see [samples/README.md](samples/README.md)), under every model it is found
+  for;
+- [LoadModule](https://aminet.net/package/util/boot/LoadModule) from Aminet, in
+  `C:`;
+- `C:LoadModule AUTO` above `IPrefs` in `S:Startup-Sequence`.
+
+LoadModule installs the copy for the machine it finds itself on, restarts
+once, and from then on the drive is read with the new driver. The driver is
+Hyperion's, so it is never downloaded. With no copy to hand, a drive reaching
+past 4 GB is refused, and the message says where the file comes from: the 3.2
+CD's `Modules<model>_3.2` disk.
+
+Aminet's LoadModule archive has a damaged `ExtractModule` inside: it fails the
+archive's own checksum, while `LoadModule` itself passes. An archive member
+that fails its checksum is now left out with a warning, instead of the whole
+archive being refused. Any other unpacking error still fails, and a package
+still checks by name for every file it needs.
 
 Proved in FS-UAE through its IDE controller on the A1200's 3.1 ROM, with
 AmigaOS 3.2 installed:
@@ -1808,7 +1829,10 @@ AmigaOS 3.2 installed:
 - the same drive built with this change mounted every drive out to 16 GB;
 - a 20 GB PFS3 DH0 could not be started at all.
 
-On a 3.2 ROM the card's own 64 GB layout mounts all four drives.
+On a 3.2 ROM the card's own 64 GB layout mounts all four drives. Workbench 3.1,
+built by this tool with the driver from `samples/drivers`, mounted PFS3 drives
+from 3.8 GB to 16 GB on the A1200's own 3.1 ROM: `Version scsi.device` answers
+47.4, and `LoadModule LIST` shows it resident.
 
 ## Software on a drive of its own
 
@@ -2007,7 +2031,7 @@ agree with perfectly:
 
 A Workbench installed from the original floppies is exactly what shipped in
 1994: no archiver, no installer, and no idea what WHDLoad is. The pieces most
-people add next are offered as a catalogue of 97 packages, grouped as Games,
+people add next are offered as a catalogue of 100 packages, grouped as Games,
 Files and archives, Internet, Workbench look, Pictures music and video, Speed
 and patches, Tools, Emu68 and the Pi, and the libraries the rest depend on.
 They are chosen [a group at a time](#choosing-the-software), with a search
