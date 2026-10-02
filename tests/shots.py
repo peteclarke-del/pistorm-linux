@@ -40,6 +40,9 @@ EXPORT_IMAGE = SCRATCH / "card-backup.img"
 #  machine has one, so the figures in the picture are the real ones.
 REAL_CD = Path("/media") / Path.home().name / "18TB" / "AmigaOS3.2CD.iso"
 
+#  The Kickstarts the user keeps for this checkout, if there are any.
+SAMPLE_ROMS = ROOT / "samples" / "kickstart"
+
 WIDTH = 900
 HEIGHT = 760
 
@@ -137,6 +140,42 @@ def on_activate(app: ImagerApplication) -> None:
         window.export_source.set_path(str(EXPORT_IMAGE))
         settle(900)
         shot(window, "09-export-drives")
+
+        #  One tile writes any image, and the file says which kind it is:
+        #  the export picture's image is an Amiga drive, so the task becomes
+        #  a drive's and says a boot partition is built around it.
+        window._start_task(builder.Task.PREPARED)
+        settle(450)
+        window.stack.set_visible_child_name("source")
+        window.image_row.set_path(str(EXPORT_IMAGE))
+        settle(900)
+        shot(window, "12-write-image")
+
+        #  A PiStorm with its drives elsewhere: the Pi's card and, under it,
+        #  where the drives go.
+        window._start_task(builder.Task.SPLIT)
+        settle(450)
+        window.stack.set_visible_child_name("target")
+        settle(450)
+        shot(window, "13-split-target")
+
+        #  The foot of the Software step, with WHDLoad ticked: its Kickstart
+        #  folder, which is only asked while it is.
+        window._start_task(builder.Task.NEW_CARD)
+        settle(450)
+        from pistorm_imager.core import packages             # noqa: PLC0415
+        wants = next(p.key for p in packages.CATALOGUE if p.kickstart_drawer)
+        window.package_rows[wants].set_active(True)
+        window._count_software()
+        if SAMPLE_ROMS.is_dir():
+            window.whdload_rom_row.set_path(str(SAMPLE_ROMS))
+        window.stack.set_visible_child_name("packages")
+        settle(1500)
+        scroller = window.whdload_rom_group.get_ancestor(Gtk.ScrolledWindow)
+        adjustment = scroller.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper())
+        settle(500)
+        shot(window, "14-software-extras")
 
         #  Last, because choosing a disc changes the Kickstart and says so,
         #  and neither belongs in any picture but this one.
