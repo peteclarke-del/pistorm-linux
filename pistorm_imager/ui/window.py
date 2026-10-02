@@ -318,17 +318,36 @@ class PartitionRow(Adw.ExpanderRow):
         #  Anything already excluded that the tree does not explain is kept
         #  rather than quietly dropped.
         self._extra_excludes: list[str] = list(spec.exclude or ())
+        #  The kinds of software kept here instead of on the drive the
+        #  machine boots from.  Libraries are not among them: they are
+        #  installed into AmigaOS, which keeps them on its own drive.
+        self.software_group = Adw.ExpanderRow(
+            title="Software kept on this drive",
+            subtitle="Programs of these kinds go here rather than on the "
+                     "drive the machine boots from")
+        self._software_rows: dict[str, Adw.SwitchRow] = {}
+        for category in packages.Category:
+            if category is packages.Category.SYSTEM:
+                continue
+            row = Adw.SwitchRow(title=category.value)
+            row.set_active(category.value in (spec.software or ()))
+            row.connect("notify::active", lambda *_a: self._refresh())
+            self._software_rows[category.value] = row
+            self.software_group.add_row(row)
+
         self.hdf_part_row = Adw.ComboRow(title="Which drive to import",
                                          model=combo([FIRST_DRIVE]))
         self._drive_keys: list[str] = [""]
-        #  Filling these in fires the callbacks, so both rows exist first.
+        #  Filling these in fires the callbacks, so every row they read
+        #  exists first.
         self.hdf_row.set_path(spec.content_hdf or "")
         self._reload_drives(spec.content_hdf_partition or "")
         self.hdf_part_row.connect("notify::selected", lambda *_a: self._refresh())
 
         for row in (self.name_row, self.volume_row, self.size_row, self.fs_row,
                     self.boot_row, self.priority_row, self.content_row,
-                    self.hdf_row, self.hdf_part_row, self.exclude_group):
+                    self.hdf_row, self.hdf_part_row, self.exclude_group,
+                    self.software_group):
             self.add_row(row)
         for row in (self.name_row, self.volume_row, self.size_row):
             row.connect("changed", lambda _r: self._refresh())
@@ -352,6 +371,8 @@ class PartitionRow(Adw.ExpanderRow):
             text = f"copied from {Path(spec.content_hdf).name}{where}"
         elif spec.bootable:
             text = "whatever the operating system choice installs"
+        elif spec.software:
+            text = f"the {', '.join(spec.software).lower()} software chosen"
         else:
             text = "left empty - format it on the Amiga"
         if spec.exclude:
@@ -518,6 +539,8 @@ class PartitionRow(Adw.ExpanderRow):
                              if spec.bootable else ""))
         self.content_row.set_subtitle(self._describe_contents(spec))
         self.priority_row.set_visible(spec.bootable)
+        #  The boot drive keeps whatever no other drive is given.
+        self.software_group.set_visible(not spec.bootable)
         self.hdf_part_row.set_visible(bool(self.hdf_row.path))
         if self._on_change:
             self._on_change()
@@ -554,6 +577,8 @@ class PartitionRow(Adw.ExpanderRow):
                             else "" if chosen
                             else self._source.content_folder),
             exclude=self._excluded(),
+            software=[kind for kind, row in self._software_rows.items()
+                      if row.get_active()],
         )
 
 
