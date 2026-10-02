@@ -415,7 +415,7 @@ same file serves every architecture. Download
 and install it with apt, which brings its dependencies:
 
 ```
-sudo apt install ./PiStorm-Imager_0.13.2_ubuntu24.04_all.deb
+sudo apt install ./PiStorm-Imager_0.13.3_ubuntu24.04_all.deb
 ```
 
 It installs into `/usr/lib/pistorm-imager`, starts with `pistorm-imager` or
@@ -444,7 +444,7 @@ then log out and back in, so the desktop's application grid is read again.
 
 ```
 pipx install --system-site-packages \
-    "git+https://github.com/peteclarke-del/pistorm-linux@v0.13.2"
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.13.3"
 pistorm-imager-cli install-desktop
 ```
 
@@ -482,7 +482,7 @@ neither is offered. The release's tag, `vX.Y.Z`, is compared with the version
 About shows, which is the one in `pistorm_imager/__init__.py`. The answer
 appears under the button:
 
-- `PiStorm Imager 0.13.2 is the newest version` when no later release has been
+- `PiStorm Imager 0.13.3 is the newest version` when no later release has been
   published.
 - The newer version and the one you have, and what can be done about it - see
   below.
@@ -731,7 +731,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 980 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 983 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1127,6 +1127,31 @@ every drive mounts and can be checked - and copy it *exactly*. A copy one
 mebibyte short of the partition made the last drive come up as `NDOS`, because
 PFS3 keeps a copy of its root block at the end; that looked exactly like a
 formatting bug in this tool and was not.
+
+
+### Boot it the way the Amiga does: through its IDE port
+
+FS-UAE mounts a hard drive image through its own `uaehf.device` unless told
+otherwise, and its own code then reads the RDB and loads the file system
+handler from it - more forgivingly than Kickstart does. For a long time that
+hid a fault in **every drive this tool built for an IDE port**: each
+LoadSegBlock in the RDB said it held 128 longs, so the last one handed the
+handler's zero padding to the loader after its final `HUNK_END`. Kickstart's
+own loader took that for another hunk and gave up; the handler was never
+loaded, a CF card booted from on an A600 or an A1200 stopped at once with
+`Software Failure 8000 0008`, and a drive it was not booting from said "not
+mounted". FS-UAE's loader stops at the last hunk and booted the same image
+happily. (The PiStorm's own SD card was never affected: Emu68's SD driver
+loads the handler its own way.)
+
+So a drive for an IDE port is tested with `hard_drive_0_controller = ide`,
+which gives the emulated A1200 its Gayle IDE port and leaves the RDB, the
+handler and the boot to the real Kickstart - the copy of the user's CF card
+gave the exact `8000 0008` that way, and booted to Workbench once the blocks
+were fixed. Each LoadSegBlock now records what it holds; the RDB reader
+honours that; and a handler is cut at its last `HUNK_END` before it is
+stored, because a handler lifted out of another drive's RDB carried that
+drive's padding too - PFS3AIO came back 412 bytes longer than Aminet's.
 
 ### Bisecting an intermittent fault: prove the control first
 
