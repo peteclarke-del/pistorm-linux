@@ -633,6 +633,12 @@ class Compatibility:
         """Called with each file's contents; may rewrite it."""
         if getattr(self, "_moves", None) and b"sys:" in data.lower():
             data = self._relocated(relative, data)
+        #  The lines that have to run before IPrefs, in whatever boot script
+        #  the drive is filled with - a CD install, PiMiga, an imported drive
+        #  - not only one the floppy install writes.  Like the relocation,
+        #  not a compatibility fix: without them LoadModule never runs.
+        if self._startup_editor is not None:
+            data = self._startup_editor.offer(relative, data)
         self._pending_data = data
         if not self.enabled:
             return data

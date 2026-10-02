@@ -87,6 +87,42 @@ class SoftwareKeptOnAnotherDrive(unittest.TestCase):
         self.assertEqual(self.fixer().offer("C/Tool", binary), binary)
 
 
+class TheBootScriptOfAnyDrive(unittest.TestCase):
+    """What must run before IPrefs reaches a CD install or an imported drive.
+
+    Only the floppy install used to pass its boot script through the editor,
+    so LoadModule was never run on a 3.2 CD card - nor on a 3.9 or imported
+    one, which is where the IDE driver it loads is needed.
+    """
+
+    SCRIPT = (b"SetPatch QUIET\nAddDataTypes REFRESH QUIET\nIPrefs\n"
+              b"LoadWB\n")
+
+    def fixer(self, enabled=True) -> compat.Compatibility:
+        from pistorm_imager.core import amigaos          # noqa: PLC0415
+        editor = amigaos.StartupSequenceEditor(
+            ["IF EXISTS C:LoadModule", "   C:LoadModule AUTO", "EndIF"],
+            QUIET)
+        return compat.Compatibility(QUIET, enabled=enabled,
+                                    startup_editor=editor)
+
+    def test_the_lines_go_in_above_iprefs_once(self):
+        fixer = self.fixer()
+        once = fixer.offer("S/Startup-Sequence", self.SCRIPT)
+        twice = fixer.offer("S/Startup-Sequence", once)
+        text = twice.decode("latin-1")
+        self.assertEqual(text.count("C:LoadModule AUTO"), 1)
+        self.assertLess(text.index("C:LoadModule AUTO"), text.index("\nIPrefs\n"))
+
+    def test_even_with_the_compatibility_pass_off(self):
+        self.assertIn(b"C:LoadModule AUTO", self.fixer(enabled=False).offer(
+            "S/Startup-Sequence", self.SCRIPT))
+
+    def test_no_other_file_is_touched(self):
+        self.assertEqual(self.fixer().offer("S/Other", self.SCRIPT),
+                         self.SCRIPT)
+
+
 class TestIconToolTypes(unittest.TestCase):
     def test_round_trip(self):
         icon = make_icon(["BOARDTYPE=uaegfx", "IGNOREMASK=Yes"])

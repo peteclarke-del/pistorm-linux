@@ -731,7 +731,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1020 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1029 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1868,6 +1868,11 @@ A drawer moves with its program when nothing else uses it:
 - **Programs and Utilities** are shared by many packages and by Workbench, so
   they never move as a whole. Only `Programs/AWeb_APL` and
   `Utilities/AmiTimeKeeper` do.
+- **Workbench's own drawers** - Tools, Utilities, the trashcan and AmigaOS's
+  places - never move whole, even when only one package uses them. Emu68's
+  tools are the only package in `Tools`, and 0.14.0 moved the whole drawer:
+  the boot script's `Path` then looked for `Tools/Commodities` on the
+  Programs drive.
 
 This is judged from the whole catalogue, not from this card: a card holding
 only AWeb in `Programs` still has a `Programs` drawer that iGame, or the drive
@@ -1884,6 +1889,52 @@ drive:
 - `AWEB_APL:` and `AmiSSL:` are assigned to `Programs:`;
 - TimeKeeper runs from `DH1:Utilities/AmiTimeKeeper` at boot;
 - the libraries are in System's `Libs`.
+
+## Every drawer and file is dated
+
+A drawer or file this tool makes without a date of its own is dated with the
+time it was made, as AmigaOS dates what it makes. Until 0.15.1 it was dated
+the first of January 1978, AmigaOS's day nought, and that mattered:
+
+- `AddDataTypes REFRESH` looks at the date of `DEVS:DataTypes` to decide
+  whether there is anything new to load;
+- a drawer dated day nought never looks new, so no picture type was ever
+  registered;
+- IPrefs then could not load the backdrop, and every AmigaOS 3.2 card stopped
+  at boot on *ERROR: can't load picture
+  Sys:Prefs/Presets/Backdrops/default_pal.iff* until **Continue** was pressed.
+
+The descriptors themselves were byte-identical to the disc's. Proved in FS-UAE:
+at the moment IPrefs ran, `AddDataTypes LIST` showed only the four built-in
+types; adding `DEVS:DataTypes/ILBM` by hand worked; and with dated drawers the
+same build boots straight to the AmigaOS 3.2 backdrop.
+
+## Known issue: AmigaOS 3.2 on an A1200's own Kickstart, with the Pi's WiFi
+
+A card for the IDE port behind a PiStorm can be started by the Amiga's own
+Kickstart if Emu68 never takes over. With AmigaOS 3.2 on it, and both lwIP and
+the Pi's WiFi driver installed, that machine crashes (8000 0004) as soon as
+3.2's ROM update restarts it, before anything on the card runs. In FS-UAE on
+the A1200's 3.1 ROM:
+
+- each of the two alone boots;
+- Workbench 3.1 with both boots;
+- a plain 3.2 card boots.
+
+Behind a working PiStorm this does not arise: Emu68 restarts the machine into
+its own Kickstart during the first "waiting for the PiStorm" minute, so 3.2's
+ROM update never runs on the board's ROM. The cause is not yet found.
+
+## What has to run before IPrefs, on every system drive
+
+The lines a build puts above `IPrefs` in `S:Startup-Sequence`, such as
+`C:LoadModule AUTO` for the IDE driver and icon.library, used to reach only a
+Workbench installed from the floppies, whose boot script the build writes
+itself. A drive filled from a folder or an image - AmigaOS 3.2 or 3.9 from the
+CD, PiMiga, an imported drive - came through the compatibility pass instead,
+which never added them. That is what kept LoadModule from running on those
+systems. Now the boot script of whatever fills the system drive gets the lines,
+once, whether or not the compatibility pass is switched on.
 
 ## Rebuilding one drive
 

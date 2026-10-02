@@ -1791,43 +1791,52 @@ class _BothPasses:
 def _startup_sequence_editor(config: BuildConfig, progress: Progress):
     """What has to run before Workbench draws its first icon.
 
-    Only ``icon.library`` so far, and only when it was chosen.  It has to be
-    soft-kicked before ``IPrefs`` opens the ROM one, which is why this cannot
-    live in ``S:User-Startup`` with the rest of the package startup lines.
+    LoadModule, putting the drive's newer copies of ROM modules in place of
+    the ROM's: icon.library, which has to be soft-kicked before ``IPrefs``
+    opens the ROM's, and the IDE driver that reaches past 4 GB.  Neither can
+    wait for ``S:User-Startup``.
     """
     chosen = packages.expand(config.package_keys)
-    if not any(p.boot_library and p.key in chosen for p in packages.CATALOGUE):
-        if any(p.loads_modules and p.key in chosen
+    if not any((p.boot_library or p.loads_modules) and p.key in chosen
                for p in packages.CATALOGUE):
-            #  AUTO alone: LoadModule finds the newer modules the drive
-            #  holds - the IDE driver in Devs/<model> - by itself.
-            return amigaos.StartupSequenceEditor(
-                ["IF EXISTS C:LoadModule",
-                 "   C:LoadModule AUTO",
-                 "EndIF"], progress)
         return None
+    if config.os_cd:
+        from . import amigacd                                 # noqa: PLC0415
+        release = amigacd.RELEASES_BY_KEY.get(config.os_cd_release)
+        if release is not None and release.loads_its_own_modules:
+            #  Its ROM update brings the driver and icon.library, and on a
+            #  3.1 ROM loading more over it crashed the machine.
+            return None
     #  LoadModule, not LoadResident.  LoadResident cannot displace a library
     #  that is already in the system list, and icon.library is there from the
     #  moment the machine starts; LoadModule loads the replacement and soft
     #  resets so it is in place from the next boot onwards.  This is exactly
     #  what the ready-made distributions do, early in their own startup.
-    #  AUTO, and a guard on LoadModule itself.
     #
-    #  LoadModule installs the modules and soft resets so they are in place
-    #  from the next boot.  Without AUTO it resets every time, and on a card
-    #  where the modules do not survive the reset that is a loop: the machine
-    #  resets, runs this again, resets again, and never reaches Workbench.
-    #  A card was left doing exactly that, two resets deep, with a black
-    #  screen.  AUTO resets only when it has actually installed something,
-    #  so the second pass finds them resident and carries on.
+    #  AUTO, and nothing named.  AUTO resets only when it has actually
+    #  installed something, so the second pass finds the modules resident and
+    #  carries on; without it a card whose modules did not survive the reset
+    #  looped, two resets deep, with a black screen.  It finds icon.library in
+    #  LIBS: and the IDE driver in Devs/<model> by itself.
     #
-    #  The IF EXISTS on C:LoadModule matters too: without the soft-kick the
-    #  icons still draw badly, but a Startup-Sequence that calls a command
-    #  that is not there is worse than one that skips it.
+    #  Only below Kickstart 3.1.4 (exec V46), which is the only Kickstart
+    #  either is for: from 3.1.4 the ROM's own icon.library draws colour icons
+    #  and its scsi.device reaches past 4 GB, and AmigaOS 3.2 loads its own
+    #  modules with its ROM update.  Run on a 3.2 ROM, LoadModule found 3.2's
+    #  disk copies of exec.library "already resident" and failed - and so
+    #  does naming LIBS:workbench.library there.  FailAt 21 around it as
+    #  well: a failing command ends the Startup-Sequence at a Shell prompt,
+    #  and a module that is already in place is no reason to stop a boot.
+    #
+    #  The IF EXISTS on C:LoadModule matters too: a Startup-Sequence that
+    #  calls a command that is not there is worse than one that skips it.
     return amigaos.StartupSequenceEditor(
-        ["IF EXISTS C:LoadModule",
-         "   IF EXISTS LIBS:icon.library",
-         "      C:LoadModule AUTO LIBS:workbench.library LIBS:icon.library",
+        [f"Version >NIL: exec.library {LARGE_DRIVE_KICKSTART}",
+         "IF WARN",
+         "   IF EXISTS C:LoadModule",
+         "      FailAt 21",
+         "      C:LoadModule AUTO",
+         "      FailAt 10",
          "   EndIF",
          "EndIF"], progress)
 
@@ -4207,6 +4216,8 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     if problems:
         raise RuntimeError(" ".join(problems))
 
+    #  Which release it was, for what is decided by it later on.
+    config = dataclasses.replace(config, os_cd_release=match.release.key)
     progress.step(f"Installing {match.release.label} from "
                   f"{Path(config.os_cd).name}")
     staged = workdir / "amigaos"
