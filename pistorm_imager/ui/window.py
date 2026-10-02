@@ -592,6 +592,13 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._refresh_devices()
         self._restore_session()
         self.connect("close-request", self._on_close)
+        #  Saved at every step too, not only on closing: a window that hung
+        #  and had to be killed took everything chosen in it with it.
+        #  Connected after the restore, so a half-applied setup is never
+        #  saved over the one being restored.
+        self.stack.connect("notify::visible-child-name",
+                           lambda *_a: self._task is not None
+                           and self._remember_session())
         self._load_releases_async()
         self._sync_visibility()
         #  Always on the choice of task. A restored session brings back what
@@ -3234,18 +3241,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         return self.drives_file_row.path, False, size
 
     def _drives_target_changed(self) -> None:
-        if not self._ready:
+        #  Writing the card's size into the size box changes the box, and
+        #  the box's change comes back here: choosing a card for the drives
+        #  recursed until Python gave up, and the window hung.
+        if not self._ready or getattr(self, "_drives_changing", False):
             return
-        on_card = self.drives_kind_row.get_selected() == 0
-        self.drives_device_row.set_visible(on_card)
-        self.drives_file_row.set_visible(not on_card)
-        card = self._drives_card()
-        #  A card's size is the card's, as on the boot card's own target.
-        self.drives_size_row.set_visible(not on_card)
-        if card is not None:
-            self.drives_size_row.set_text(exact_size_text(card.size))
-        self._relayout_partitions()
-        self._update_summary()
+        self._drives_changing = True
+        try:
+            on_card = self.drives_kind_row.get_selected() == 0
+            self.drives_device_row.set_visible(on_card)
+            self.drives_file_row.set_visible(not on_card)
+            card = self._drives_card()
+            #  A card's size is the card's, as on the boot card's own target.
+            self.drives_size_row.set_visible(not on_card)
+            if card is not None:
+                size = exact_size_text(card.size)
+                if self.drives_size_row.get_text() != size:
+                    self.drives_size_row.set_text(size)
+            self._relayout_partitions()
+            self._update_summary()
+        finally:
+            self._drives_changing = False
 
     def _making_hdf(self) -> bool:
         """Kept as False: the build no longer writes a bare Amiga drive.
