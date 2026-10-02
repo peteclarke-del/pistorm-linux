@@ -1010,7 +1010,36 @@ class ADriveForTheIdePort(_Scratch):
         self.assertTrue(set(loaders) <= set(given.package_keys))
         #  And the boot script runs it.
         editor = builder._startup_sequence_editor(given, Progress())
-        self.assertIn("   C:LoadModule AUTO", editor.lines)
+        self.assertIn("      C:LoadModule AUTO", editor.lines)
+
+    def test_loadmodule_names_no_module_whatever_it_is_for(self):
+        """On a 3.2 ROM LoadModule found modules already resident and failed,
+        and a failed command ends the Startup-Sequence at a Shell prompt: so
+        it runs only below 3.1.4, which is all it is for, and cannot fail."""
+        for keys in (["iconlib"], ["loadmodule"], ["iconlib", "loadmodule"]):
+            editor = builder._startup_sequence_editor(
+                builder.BuildConfig(package_keys=keys), Progress())
+            self.assertEqual(editor.lines, [
+                f"Version >NIL: exec.library {builder.LARGE_DRIVE_KICKSTART}",
+                "IF WARN",
+                "   IF EXISTS C:LoadModule",
+                "      FailAt 21",
+                "      C:LoadModule AUTO",
+                "      FailAt 10",
+                "   EndIF",
+                "EndIF"], keys)
+        self.assertIsNone(builder._startup_sequence_editor(
+            builder.BuildConfig(package_keys=["lha"]), Progress()))
+
+    def test_a_release_that_loads_its_own_modules_is_left_to_it(self):
+        """3.2's ROM update brings them; loading more over it on a 3.1 ROM
+        crashed the machine with 8000 0006 after the update's restart."""
+        def editor(release):
+            return builder._startup_sequence_editor(builder.BuildConfig(
+                package_keys=["iconlib", "loadmodule"], os_cd="/x/os.iso",
+                os_cd_release=release), Progress())
+        self.assertIsNone(editor("3.2"))
+        self.assertIsNotNone(editor("3.9"))
 
     def test_a_drive_that_brings_its_own_driver_is_left_alone(self):
         staged = self.scratch()
@@ -1196,6 +1225,18 @@ class ChoosingWhereSoftwareIsKept(unittest.TestCase):
                                   ("Programs", False), ("AmiSSL", False)):
             self.assertEqual(packages.in_amigaos(destination), ours,
                              destination)
+
+    def test_workbenchs_own_drawers_never_move_whole(self):
+        """Emu68's tools are the only package in Tools; Tools is Workbench's."""
+        self.assertEqual({p.key for p in packages.CATALOGUE
+                          if "tools" in packages.top_drawers(p)},
+                         {"emu68tools"})
+        self.assertFalse(packages.owns_drawer("emu68tools", "Tools"))
+        self.assertTrue(packages.owns_drawer("amissl", "AmiSSL"))
+        for drawer in ("Utilities", "Prefs", "System", "C", "Libs"):
+            for package in packages.CATALOGUE:
+                self.assertFalse(packages.owns_drawer(package.key, drawer),
+                                 (package.key, drawer))
 
     def test_a_saved_setup_remembers_it(self):
         config = self.config(builder.AmigaPartitionSpec(
