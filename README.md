@@ -731,7 +731,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1027 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1029 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1908,6 +1908,22 @@ The descriptors themselves were byte-identical to the disc's. Proved in FS-UAE:
 at the moment IPrefs ran, `AddDataTypes LIST` showed only the four built-in
 types; adding `DEVS:DataTypes/ILBM` by hand worked; and with dated drawers the
 same build boots straight to the AmigaOS 3.2 backdrop.
+
+## Known issue: AmigaOS 3.2 on an A1200's own Kickstart, with the Pi's WiFi
+
+A card for the IDE port behind a PiStorm can be started by the Amiga's own
+Kickstart if Emu68 never takes over. With AmigaOS 3.2 on it, and both lwIP and
+the Pi's WiFi driver installed, that machine crashes (8000 0004) as soon as
+3.2's ROM update restarts it, before anything on the card runs. In FS-UAE on
+the A1200's 3.1 ROM:
+
+- each of the two alone boots;
+- Workbench 3.1 with both boots;
+- a plain 3.2 card boots.
+
+Behind a working PiStorm this does not arise: Emu68 restarts the machine into
+its own Kickstart during the first "waiting for the PiStorm" minute, so 3.2's
+ROM update never runs on the board's ROM. The cause is not yet found.
 
 ## What has to run before IPrefs, on every system drive
 
