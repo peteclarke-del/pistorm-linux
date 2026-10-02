@@ -12,6 +12,7 @@ types, and comment out commands that can only work under an emulator.
 from __future__ import annotations
 
 import dataclasses
+import re
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
@@ -205,6 +206,26 @@ def fetch_videocore_card(progress: Progress) -> bytes | None:
     except Exception as error:  # noqa: BLE001 - offline is not fatal
         progress.log(f"Could not obtain {EMU68_CARD}: {error}")
         return None
+
+
+#  The largest file read as text when repointing paths.  Scripts and
+#  settings are kilobytes; anything near this is data, not a script.
+TEXT_LIMIT = 1024 * 1024
+
+
+def repath(text: str, moves: dict[str, str]) -> str:
+    """``text`` with each SYS: path into moved software on its own drive.
+
+    ``moves`` maps a landing path - a file or drawer, relative to the drive -
+    to the device now holding it.  The longest is tried first, so a drawer
+    inside a moved drawer is not taken for its parent.
+    """
+    for landing in sorted(moves, key=len, reverse=True):
+        text = re.sub(
+            rf"(?i)\bSYS:({re.escape(landing)})(?=$|[/\s\"';|,)])",
+            lambda found, drive=moves[landing]: f"{drive}:{found.group(1)}",
+            text)
+    return text
 
 
 class Compatibility:
@@ -598,8 +619,20 @@ class Compatibility:
             return True
         return False
 
+    def relocate(self, moves: dict[str, str]) -> None:
+        """Point SYS: paths at the drives software was moved to.
+
+        ``moves`` maps where each moved file or drawer lands, relative to the
+        drive, to the device it is on.  Not a compatibility rule: a path left
+        naming SYS: names nothing, so this is done whether the pass is on or
+        not.
+        """
+        self._moves = dict(moves)
+
     def offer(self, relative: str, data: bytes) -> bytes:
         """Called with each file's contents; may rewrite it."""
+        if getattr(self, "_moves", None) and b"sys:" in data.lower():
+            data = self._relocated(relative, data)
         self._pending_data = data
         if not self.enabled:
             return data
@@ -640,6 +673,39 @@ class Compatibility:
         if name == GAMES_REPOS:
             return self._filter_repositories(posix, data)
         return data
+
+    def _relocated(self, relative: str, data: bytes) -> bytes:
+        """``data`` with its SYS: paths into moved software repointed.
+
+        Only where a path is a string of its own: an icon's default tool and
+        tool types, and text.  A program is never edited - a path inside one
+        is a fixed-length string, and a longer device name would overwrite
+        whatever follows it.
+        """
+        def moved(text: str) -> str:
+            return repath(text, self._moves)
+
+        if relative.lower().endswith(".info"):
+            try:
+                fixed = data
+                tool = amigainfo.read_default_tool(data)
+                if tool and moved(tool) != tool:
+                    fixed = amigainfo.set_default_tool(fixed, moved(tool))
+                for entry in amigainfo.read_tooltypes(data):
+                    key, equals, value = entry.partition("=")
+                    if equals and moved(value) != value:
+                        fixed = amigainfo.set_tooltype(fixed, key,
+                                                       moved(value))
+            except amigainfo.InfoError:
+                return data
+        elif b"\0" in data or len(data) > TEXT_LIMIT:
+            return data
+        else:
+            fixed = moved(data.decode("latin-1")).encode("latin-1")
+        if fixed != data:
+            self.note("edited", f"{relative}: points at the drive its "
+                                f"software was put on")
+        return fixed
 
     # -------------------------------------------------- iGame's games list
 

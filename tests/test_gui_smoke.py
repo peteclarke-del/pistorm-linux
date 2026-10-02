@@ -2076,6 +2076,26 @@ def on_activate(app: ImagerApplication) -> None:
             builder.AmigaPartitionSpec("DH4", None, "PFS\\3",
                                        content_folder="/somewhere/Games"),
             on_remove=lambda _r: None, on_change=None)
+        #  Which software a drive keeps survives being built and edited -
+        #  and the row is built with a source, whose callbacks read it.
+        keeper = PartitionRow(
+            builder.AmigaPartitionSpec("DH1", None, "PFS\\3",
+                                       content_folder="/somewhere/Programs",
+                                       software=["Internet"]),
+            on_remove=lambda _r: None, on_change=None)
+        check(keeper.spec().software == ["Internet"],
+              "a drive's software survives being shown")
+        keeper._software_rows["Tools"].set_active(True)
+        check(set(keeper.spec().software) == {"Internet", "Tools"},
+              "ticking a kind keeps it on that drive")
+        check(keeper.software_group.get_visible(),
+              "a drive other than the boot drive offers to keep software")
+        keeper.boot_row.set_active(True)
+        check(not keeper.software_group.get_visible(),
+              "the boot drive does not: it keeps what no other drive is given")
+        check("Libraries (ticked for you)" not in keeper._software_rows,
+              "libraries are AmigaOS's and are never offered")
+
         #  Either a folder or an image is a valid answer for a partition's
         #  contents - PiMiga's Games and Demos drives are folders - so the row
         #  offers both and works out which was chosen.

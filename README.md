@@ -731,7 +731,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 994 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1009 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1809,6 +1809,57 @@ AmigaOS 3.2 installed:
 - a 20 GB PFS3 DH0 could not be started at all.
 
 On a 3.2 ROM the card's own 64 GB layout mounts all four drives.
+
+## Software on a drive of its own
+
+Every drive on the Drives page has a **Software kept on this drive** list:
+the kinds of software on the Software page - Internet, Tools, Pictures,
+music and video, Workbench look, Games, and the rest. Tick a kind on DH1 and
+every package of that kind goes onto DH1 rather than onto the drive the
+machine boots from. That drive keeps whatever no other drive is given, so a
+card can be laid out as System, Programs, Games, Demos and Work, with System
+small enough for an old Kickstart to start.
+
+Only a program's own drawers move. What a package puts into AmigaOS's own
+places - C, Libs, Devs, L, S, Prefs, WBStartup, Classes, Fonts, Locale,
+System, Storage - stays on the system drive, because AmigaOS finds those
+through assigns it makes itself, or by position. YAM goes to DH1 while the
+MUI classes and the libraries it needs stay in `LIBS:`.
+
+Everything that names a moved program follows it:
+
+- the lines added to `S:User-Startup`;
+- scripts and settings files;
+- an icon's default tool and tool types;
+- the record of what was installed, in `S:PiStorm-Installed`.
+
+So `Assign AmiSSL: SYS:AmiSSL` is written as `Assign AmiSSL: DH1:AmiSSL`.
+Programs are never edited: a path inside a program is a fixed-length string,
+and a longer name would overwrite what follows it.
+
+A drawer moves with its program when nothing else uses it:
+
+- **AmiSSL** is the only package that ever puts anything in `AmiSSL`, so the
+  drawer itself moves, and so does any path naming it.
+- **Programs and Utilities** are shared by many packages and by Workbench, so
+  they never move as a whole. Only `Programs/AWeb_APL` and
+  `Utilities/AmiTimeKeeper` do.
+
+This is judged from the whole catalogue, not from this card: a card holding
+only AWeb in `Programs` still has a `Programs` drawer that iGame, or the drive
+you started from, uses.
+
+Each kind can be kept on only one drive, and a drive keeping software must be
+FFS or PFS3. Rebuilding a single drive keeps every drive's choice, so a
+rebuilt System still points at the programs on DH1.
+
+Proved in FS-UAE through its IDE controller, with AmigaOS 3.2 from the CD,
+YAM, AWeb, AmiTimeKeeper, SysInfo, ClickToFront and HippoPlayer on a Programs
+drive:
+
+- `AWEB_APL:` and `AmiSSL:` are assigned to `Programs:`;
+- TimeKeeper runs from `DH1:Utilities/AmiTimeKeeper` at boot;
+- the libraries are in System's `Libs`.
 
 ## Rebuilding one drive
 

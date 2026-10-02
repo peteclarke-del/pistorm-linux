@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import machines  # noqa: E402
-from pistorm_imager.core import bootcfg, builder, emu68, fat32, jobs, kickstart, mbr, rdb  # noqa: E402
+from pistorm_imager.core import bootcfg, builder, emu68, fat32, jobs, kickstart, mbr, packages, rdb  # noqa: E402
 from pistorm_imager.core.util import GIB, MIB, Progress, parse_size  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from emu68_stub import EMU68  # noqa: E402
@@ -1028,6 +1028,72 @@ class ADriveForTheIdePort(_Scratch):
         self.assertEqual(
             [m.key for m in machines.MACHINES if m.ide_port],
             ["a600", "a1200"])
+
+
+class ChoosingWhereSoftwareIsKept(unittest.TestCase):
+    """Each kind of software on one drive, and a drive that can hold it."""
+
+    def config(self, *drives) -> builder.BuildConfig:
+        return builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target="/tmp/x.img",
+            amiga_partitions=[
+                builder.AmigaPartitionSpec("DH0", 1 * GIB, "PFS3", True, 0),
+                *drives])
+
+    @staticmethod
+    def about_software(config) -> list[str]:
+        return [p for p in config._software_problems()]
+
+    def test_each_kind_goes_to_the_drive_chosen_for_it(self):
+        config = self.config(
+            builder.AmigaPartitionSpec("DH1", 1 * GIB, "PFS3",
+                                       software=["Internet", "Tools"]),
+            builder.AmigaPartitionSpec("DH2", None, "PFS3",
+                                       software=["Games"]))
+        self.assertEqual(builder.software_homes(config),
+                         {"Internet": "DH1", "Tools": "DH1",
+                          "Games": "DH2"})
+        self.assertEqual(self.about_software(config), [])
+
+    def test_the_boot_drive_keeps_what_no_other_is_given(self):
+        config = self.config()
+        config.amiga_partitions[0].software = ["Internet"]
+        self.assertEqual(builder.software_homes(config), {})
+
+    def test_one_kind_on_two_drives_is_refused(self):
+        problems = self.about_software(self.config(
+            builder.AmigaPartitionSpec("DH1", 1 * GIB, "PFS3",
+                                       software=["Internet"]),
+            builder.AmigaPartitionSpec("DH2", None, "PFS3",
+                                       software=["Internet"])))
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("DH1 and DH2", problems[0])
+
+    def test_a_kind_this_tool_does_not_have_is_refused(self):
+        problems = self.about_software(self.config(
+            builder.AmigaPartitionSpec("DH1", None, "PFS3",
+                                       software=["Spreadsheets"])))
+        self.assertIn("Spreadsheets", problems[0])
+
+    def test_a_drive_that_cannot_be_written_is_refused(self):
+        problems = self.about_software(self.config(
+            builder.AmigaPartitionSpec("DH1", None, "SFS",
+                                       software=["Internet"])))
+        self.assertIn("SFS", problems[0])
+
+    def test_amigaos_keeps_its_own_places(self):
+        for destination, ours in (("Libs", True), ("C", True),
+                                  ("Devs/AHI", True), ("WBStartup", True),
+                                  ("Prefs/Env-Archive/Sys", True), ("", True),
+                                  ("Utilities/ClickToFront", False),
+                                  ("Programs", False), ("AmiSSL", False)):
+            self.assertEqual(packages.in_amigaos(destination), ours,
+                             destination)
+
+    def test_a_saved_setup_remembers_it(self):
+        config = self.config(builder.AmigaPartitionSpec(
+            "DH1", None, "PFS3", software=["Internet"]))
+        self.assertEqual(jobs.from_dict(jobs.to_dict(config)), config)
 
 
 class TestJobs(_Scratch):
