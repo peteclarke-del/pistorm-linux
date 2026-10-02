@@ -17,6 +17,7 @@ work partition is created and formatted on the Amiga.
 from __future__ import annotations
 
 import dataclasses
+import re
 import time
 from pathlib import Path
 
@@ -128,6 +129,63 @@ def find_pfs3_handler(extra_folders: list[str] | None = None) -> tuple[Path, str
                         return (_cache_handler(filesystem.seglist),
                                 f"{candidate.name} (from its RDB)")
     return None
+
+
+#  What an IDE driver that reaches past 4 GB says it is: the A600's and
+#  A1200's scsi.device names itself IDE_scsidisk, and Kickstart 3.1.4 (V45 of
+#  the driver) is where it learned TD64 and NSD.  Proved with 3.2's 47.4.
+IDE_DRIVER_NAME = "scsi.device"
+IDE_DRIVER_ID = re.compile(rb"IDE_scsidisk (\d+)\.(\d+)")
+IDE_DRIVER_FIRST_LARGE = 45
+#  The models a driver can be for: the machines with an IDE port, by the
+#  name AmigaOS and LoadModule give them.
+IDE_MODELS = frozenset(machine.amiga_model for machine in machines.MACHINES
+                       if machine.ide_port)
+
+
+def ide_driver_version(data: bytes) -> tuple[int, int] | None:
+    """The version an IDE scsi.device reports, or None if it is not one."""
+    if data[:4] != HUNK_HEADER:
+        return None
+    found = IDE_DRIVER_ID.search(data)
+    return (int(found.group(1)), int(found.group(2))) if found else None
+
+
+def _driver_cache() -> Path:
+    return emu68.cache_dir() / "drivers"
+
+
+def find_ide_drivers(extra_folders: list[str] | None = None
+                     ) -> dict[str, Path]:
+    """The IDE drivers that reach past 4 GB, by the model each is for.
+
+    Found in a drawer named for its model - ``drivers/A1200/scsi.device`` -
+    which is how LoadModule lays them out and the only way a file can say
+    which machine it suits.  Anything found is kept in the cache, so the
+    installed application finds it again without the samples folder.
+    """
+    cache = _driver_cache()
+    found = {path.parent.name: path
+             for path in cache.glob(f"*/{IDE_DRIVER_NAME}") if path.is_file()}
+    if found:
+        return found
+    for root in _search_roots(extra_folders):
+        for candidate in root.rglob(IDE_DRIVER_NAME):
+            model = candidate.parent.name
+            if model not in IDE_MODELS or model in found:
+                continue
+            try:
+                data = candidate.read_bytes()
+            except OSError:
+                continue
+            version = ide_driver_version(data)
+            if version is None or version[0] < IDE_DRIVER_FIRST_LARGE:
+                continue
+            kept = cache / model / IDE_DRIVER_NAME
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            kept.write_bytes(data)
+            found[model] = kept
+    return found
 
 
 def _cache_handler(data: bytes) -> Path:
