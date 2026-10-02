@@ -415,12 +415,24 @@ same file serves every architecture. Download
 and install it with apt, which brings its dependencies:
 
 ```
-sudo apt install ./PiStorm-Imager_0.13.0_ubuntu24.04_all.deb
+sudo apt install ./PiStorm-Imager_0.13.2_ubuntu24.04_all.deb
 ```
 
 It installs into `/usr/lib/pistorm-imager`, starts with `pistorm-imager` or
 from the desktop's application grid, and **updates itself** from About (see
 [Updating PiStorm Imager](#updating-pistorm-imager)).
+
+**Coming from a pipx install,** remove that first: its `~/.local/bin` copy
+comes before `/usr/bin`, and the menu entry `install-desktop` wrote in your home
+folder comes before the package's, so the menu goes on starting the old version:
+
+```
+pipx uninstall pistorm-imager
+rm ~/.local/share/applications/pistorm-imager.desktop
+rm ~/.local/share/icons/hicolor/scalable/apps/pistorm-imager.svg
+```
+
+then log out and back in, so the desktop's application grid is read again.
 
 **From a checkout**, without installing anything:
 
@@ -432,7 +444,7 @@ from the desktop's application grid, and **updates itself** from About (see
 
 ```
 pipx install --system-site-packages \
-    "git+https://github.com/peteclarke-del/pistorm-linux@v0.13.0"
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.13.2"
 pistorm-imager-cli install-desktop
 ```
 
@@ -470,7 +482,7 @@ neither is offered. The release's tag, `vX.Y.Z`, is compared with the version
 About shows, which is the one in `pistorm_imager/__init__.py`. The answer
 appears under the button:
 
-- `PiStorm Imager 0.13.0 is the newest version` when no later release has been
+- `PiStorm Imager 0.13.2 is the newest version` when no later release has been
   published.
 - The newer version and the one you have, and what can be done about it - see
   below.
