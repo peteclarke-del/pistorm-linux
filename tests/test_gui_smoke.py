@@ -1267,6 +1267,27 @@ def on_activate(app: ImagerApplication) -> None:
         check("125" in window.file_size_row.get_title()
               and "GB" in window.file_size_row.get_title(),
               f"the card is named with both readings ({window.file_size_row.get_title()!r})")
+        #  Choosing a card for a split build's drives wrote its size into
+        #  the size box, whose change came back round and wrote it again:
+        #  the window recursed until Python stopped it, and hung.
+        was_task = window._task
+        window._start_task(builder.Task.SPLIT)
+        window.drives_device_row.set_model(_combo(["Select a card",
+                                                   card.description]))
+        window.drives_kind_row.set_selected(0)
+        calls = []
+        real = window._drives_target_changed
+        window._drives_target_changed = lambda: (calls.append(1), real())
+        window.drives_device_row.set_selected(1)
+        window._drives_target_changed = real
+        #  The size box's own change comes back a pass or two and is turned
+        #  away; with the bug this never returned at all.
+        check(len(calls) <= 4 and window._drives_target()[0] == card.path,
+              f"choosing the drives' card settles at once ({len(calls)} "
+              f"passes, {window._drives_target()})")
+        window.drives_device_row.set_selected(0)
+        window._start_task(was_task or builder.Task.NEW_CARD)
+
         window.device_row.set_selected(0)
         window.target_row.set_selected(1)
         window.target_row.set_selected(1)
@@ -1854,9 +1875,14 @@ def on_activate(app: ImagerApplication) -> None:
         check(window.next_button.get_visible()
               and not window.write_button.get_visible(),
               "the first step offers Next, not Write")
+        #  Each step is saved as it is left, so a window that has to be
+        #  killed does not take the setup with it.
+        from pistorm_imager.core import jobs as _jobs           # noqa: PLC0415
+        _jobs.session_file().unlink(missing_ok=True)
         for _ in TASK_STEPS[_bt.Task.NEW_CARD][1:]:
             window._go_next()
         pump()
+        check(_jobs.have_session(), "moving between steps saves the session")
         check(window.stack.get_visible_child_name() == "review"
               and window.write_button.get_visible()
               and not window.next_button.get_visible(),
