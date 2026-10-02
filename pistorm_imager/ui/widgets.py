@@ -233,6 +233,18 @@ def _full_text_factory() -> Gtk.SignalListItemFactory:
     return factory
 
 
+def select_matching(row: Adw.ComboRow, items, matches) -> bool:
+    """Select the first of ``items`` that ``matches``; say whether any did.
+
+    ``items`` are what the row's choices stand for, in the row's order.
+    """
+    for index, item in enumerate(items):
+        if matches(item):
+            row.set_selected(index)
+            return True
+    return False
+
+
 def show_full_value(*rows) -> None:
     """Make a combo row show its options and its value in full.
 
