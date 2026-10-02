@@ -575,6 +575,14 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.hdmi_row,
             self.overclock_row, self.antenna_row, self.target_row,
             self.device_row, self.os_version_row,
+            #  The split build's drives target was added without this, and
+            #  its card names were cut off before the part that tells two
+            #  USB readers apart.
+            self.drives_kind_row, self.drives_device_row,
+            self.rewrite_drive_row, self.kernel_row, self.usb_port_row,
+            self.video_row, self.quick_pi, self.quick_workbench_screen,
+            self.quick_chip_ram, self.quick_accelerator,
+            self.quick_accelerator_cpu,
         )
         self._ready = True
         self._refresh_packages()

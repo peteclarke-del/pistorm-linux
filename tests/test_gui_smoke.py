@@ -2067,6 +2067,14 @@ def on_activate(app: ImagerApplication) -> None:
 
         _check_application_updates(window)
 
+        #  A combo row cuts its value off on the right and its items at the
+        #  popup's width, which hid the end of every card name in the split
+        #  build's drives chooser. Every one on the window shows them whole.
+        cut = sorted(name for name, value in vars(window).items()
+                     if isinstance(value, Adw.ComboRow)
+                     and not value.get_use_subtitle())
+        check(not cut, f"every combo row shows its value in full ({cut})")
+
         #  One tile writes any image; the file decides whether it is a card
         #  written as it is or a drive with a boot partition built round it.
         check(builder.Task.DRIVE_IMAGE not in window.task_tiles
