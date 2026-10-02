@@ -163,6 +163,49 @@ class SaveRow(FileRow):
             self.set_path(file.get_path())
 
 
+class PackageCheck(Gtk.CheckButton):
+    """One package in the software list: a tick box, its name, and one line.
+
+    The line under the name is the row's subtitle, cut to fit - the
+    description, or the reason first where the package is held on or cannot
+    be had - and the whole of it is the tooltip and the details strip. It
+    keeps a switch row's ``title`` and ``subtitle``, so the code that
+    explains why a package is held or refused did not have to learn a second
+    widget.
+    """
+
+    def __init__(self, title: str, subtitle: str = ""):
+        super().__init__()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1,
+                      margin_start=4)
+        self._title = Gtk.Label(label=title, xalign=0,
+                                ellipsize=Pango.EllipsizeMode.END)
+        self._line = Gtk.Label(xalign=0, use_markup=True, single_line_mode=True,
+                               ellipsize=Pango.EllipsizeMode.END)
+        self._line.add_css_class("dim-label")
+        self._line.add_css_class("caption")
+        box.append(self._title)
+        box.append(self._line)
+        self.set_child(box)
+        self._subtitle = ""
+        self.set_subtitle(subtitle)
+
+    def get_title(self) -> str:
+        return self._title.get_label() or ""
+
+    def set_title(self, title: str) -> None:
+        self._title.set_label(title)
+
+    def get_subtitle(self) -> str:
+        return self._subtitle
+
+    def set_subtitle(self, subtitle: str) -> None:
+        """Markup, as a switch row's subtitle is - callers escape it."""
+        self._subtitle = subtitle or ""
+        self._line.set_markup(self._subtitle.replace("\n", " "))
+        self.set_tooltip_markup(self._subtitle or None)
+
+
 def combo(items: list[str], selected: int = 0) -> Gtk.StringList:
     model = Gtk.StringList()
     for item in items:
@@ -188,6 +231,18 @@ def _full_text_factory() -> Gtk.SignalListItemFactory:
     factory.connect("setup", setup)
     factory.connect("bind", bind)
     return factory
+
+
+def select_matching(row: Adw.ComboRow, items, matches) -> bool:
+    """Select the first of ``items`` that ``matches``; say whether any did.
+
+    ``items`` are what the row's choices stand for, in the row's order.
+    """
+    for index, item in enumerate(items):
+        if matches(item):
+            row.set_selected(index)
+            return True
+    return False
 
 
 def show_full_value(*rows) -> None:

@@ -25,9 +25,11 @@ the same config.txt handling as one we partitioned ourselves.
 """
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import datetime
 import enum
+import io
 import os
 import re
 import shutil
@@ -60,11 +62,88 @@ class BuildMode(enum.Enum):
     IMAGE = "image"
     HDF = "hdf"
     CUSTOMISE = "customise"
+    #  One drive on a card that already exists, formatted and filled again;
+    #  the partition table, the boot partition and every other drive are left
+    #  exactly as they are.
+    REWRITE = "rewrite"
     #  Not a build at all: reading the Amiga drives back out of a card as
     #  separate .hdf files. It lives here so that it reaches the card through
     #  the same job, the same progress and the same button as everything else,
     #  rather than growing a second way to run.
     EXPORT = "export"
+
+
+#  The tasks that format Amiga drives and fill them, and so can install
+#  AmigaOS and software: a new card, and one drive rebuilt on an existing one.
+FILLS_DRIVES = (BuildMode.FRESH, BuildMode.REWRITE)
+
+
+class Task(enum.Enum):
+    """What somebody came to do, which decides the shape of everything else.
+
+    The window used to offer the build mode as one setting among many, beside
+    three switches - install Emu68, Emu68 only, Amiga drives only - that
+    between them could describe a card nobody could boot: a boot partition
+    with no Emu68 on it, or an .hdf chosen and then silently not written. A
+    task fixes all four at once, so the combinations that do not work cannot
+    be asked for; the build checks the same rules, whichever way a job
+    reached it.
+    """
+
+    NEW_CARD = "new-card"           # Emu68 boot partition and Amiga drives
+    SPLIT = "split"                 # a boot card, and the drives elsewhere
+    BOOT_CARD = "boot-card"         # Emu68 only: the drives are elsewhere
+    AMIGA_DRIVE = "amiga-drive"     # drives only, for the IDE or SCSI port
+    PREPARED = "prepared"           # a finished image written as it is
+    DRIVE_IMAGE = "drive-image"     # an .hdf with a boot partition around it
+    REBUILD = "rebuild"             # one drive on an existing card
+    UPDATE = "update"               # the boot partition of an existing card
+    EXPORT = "export"               # drives read back out as .hdf files
+
+    @property
+    def mode(self) -> BuildMode:
+        return {Task.NEW_CARD: BuildMode.FRESH, Task.SPLIT: BuildMode.FRESH,
+                Task.BOOT_CARD: BuildMode.FRESH,
+                Task.AMIGA_DRIVE: BuildMode.FRESH,
+                Task.PREPARED: BuildMode.IMAGE,
+                Task.DRIVE_IMAGE: BuildMode.HDF,
+                Task.REBUILD: BuildMode.REWRITE,
+                Task.UPDATE: BuildMode.CUSTOMISE,
+                Task.EXPORT: BuildMode.EXPORT}[self]
+
+    @property
+    def emu68(self) -> bool | None:
+        """Whether Emu68 goes on the card: decided, or None for a choice.
+
+        Only where a boot partition already exists is leaving it alone a
+        real choice - a prepared image or a card being updated keeps the
+        Emu68 it has. A boot partition this build creates without one is a
+        card that cannot start.
+        """
+        if self in (Task.PREPARED, Task.UPDATE):
+            return None
+        return self in (Task.NEW_CARD, Task.SPLIT, Task.BOOT_CARD,
+                        Task.DRIVE_IMAGE)
+
+    @property
+    def writes_boot_partition(self) -> bool:
+        return self not in (Task.AMIGA_DRIVE, Task.REBUILD, Task.EXPORT)
+
+    @property
+    def fills_drives(self) -> bool:
+        """Whether AmigaOS and software can be put on a drive."""
+        return self in (Task.NEW_CARD, Task.SPLIT, Task.AMIGA_DRIVE,
+                        Task.REBUILD)
+
+    def shape(self, config: "BuildConfig") -> "BuildConfig":
+        """``config`` made the shape this task says, keeping everything else."""
+        emu68 = self.emu68
+        return dataclasses.replace(
+            config, mode=self.mode,
+            drives_target=config.drives_target if self is Task.SPLIT else "",
+            boot_only=self is Task.BOOT_CARD,
+            amiga_only=self is Task.AMIGA_DRIVE,
+            install_emu68=config.install_emu68 if emu68 is None else emu68)
 
 
 @dataclasses.dataclass
@@ -134,6 +213,24 @@ class BuildConfig:
     #  be used. Distinct from an empty partition, which still takes the rest
     #  of the card and still appears on the desktop asking to be initialised.
     boot_only: bool = False
+    #  The drive to rebuild, by its device name, when the task is to rewrite
+    #  one drive on an existing card. Its size, file system and whether it is
+    #  the one the machine boots from are read off the card, not chosen.
+    rewrite_drive: str = ""
+    #  A folder of Kickstart ROMs for WHDLoad, each recognised and copied to
+    #  Devs/Kickstarts under the name WHDLoad looks for. Empty: the folder
+    #  the card's own Kickstart was chosen from.
+    whdload_kickstarts: str = ""
+    #  Packages whose optional media - screenshots, descriptions - was asked
+    #  for, by key. Offered, never assumed.
+    with_media: list[str] = dataclasses.field(default_factory=list)
+    #  A PiStorm whose Amiga drives are not on the card it boots from - a CF
+    #  card on an A1200's IDE port, say. The Pi's boot card is ``target``;
+    #  the drives, with Workbench and the software on them, go here, and the
+    #  two are written by one build from one set of choices.
+    drives_target: str = ""
+    drives_target_is_device: bool = False
+    drives_image_size: int = 8 * 1024 * MIB
     #  The mirror of boot_only: Amiga drives and no Emu68 boot partition at
     #  all.  A real accelerator with an IDE interface reads a Rigid Disk Block
     #  at block 0 and knows nothing about an MBR, so a card for one carries no
@@ -265,7 +362,7 @@ class BuildConfig:
         default_factory=lambda: [AmigaPartitionSpec("DH1", None, "PFS3", False, -128)])
     extra_boot_files: list[str] = dataclasses.field(default_factory=list)
 
-    def concerns(self) -> list[str]:
+    def concerns(self, boot_card_built: bool = False) -> list[str]:
         """Choices that will build, and probably are not what was meant.
 
         Distinct from validate(), which refuses. These are combinations that
@@ -274,8 +371,37 @@ class BuildConfig:
         told to use an RTG screen with no RTG driver on it. They are said
         before anything is written, and the build goes ahead anyway.
         """
+        if self.drives_target and not self.shape_problems():
+            #  The drives half is told its boot card is being written too,
+            #  so it does not ask for one to be built separately.
+            said = self.drives_part().concerns(boot_card_built=True)
+            said += [c for c in self.boot_card_part().concerns()
+                     if c not in said]
+            return said
         said: list[str] = []
         keys = set(self.package_keys or ())
+        left_out = self.unsuited_packages()
+        if left_out:
+            said.append(f"{', '.join(left_out)} cannot go on this card - not "
+                        f"for this machine, screen, Raspberry Pi or Emu68 - "
+                        f"and will be left out.")
+        said.extend(self.boot_option_concerns())
+        #  Floppies chosen, and the drive they would go on filled from
+        #  somewhere else: the drive wins and the install is skipped. That is
+        #  right when it was meant - a drive that brings its own Workbench -
+        #  and a surprise when a layout from an earlier choice was kept.
+        if self.install_amigaos and _boot_drive_is_filled(self):
+            boot = next((p for p in self.amiga_partitions if p.bootable), None)
+            source = (boot.content_folder or boot.content_hdf) if boot else ""
+            said.append(f"Workbench from the floppy images is chosen, but the "
+                        f"drive it would go on is filled from "
+                        f"{Path(source).name}, so the floppies only fill in "
+                        f"what that does not bring.")
+        dropped = [key for key in (self.boot_addons or [])
+                   if key not in {a.key for a in self.chosen_addons()}]
+        if dropped:
+            said.append(f"{', '.join(dropped)} cannot go on this card's boot "
+                        f"partition and will be left out.")
         filled = [p for p in self.amiga_partitions
                   if p.content_folder or p.content_hdf]
         names = " ".join((p.volume_name or p.name) + " " + (p.content_folder or "")
@@ -333,8 +459,12 @@ class BuildConfig:
         for package in packages.CATALOGUE:
             if not (package.rtg_only and package.essential):
                 continue
+            #  Not asked of a card with no Amiga drive: it installs no
+            #  software, so it has none missing. The Pi's half of a split
+            #  build was saying Picasso96 was not being installed while the
+            #  drives half was installing it.
             if self.rtg_display and package.key not in keys \
-                    and not self.os_cd \
+                    and not self.boot_only and not self.os_cd \
                     and not any(p.content_hdf or p.content_folder
                                 for p in self.amiga_partitions if p.bootable):
                 said.append(
@@ -346,6 +476,28 @@ class BuildConfig:
             said.append(
                 "Workbench is set to open on the RTG screen, and this card "
                 "has no RTG display configured.")
+        #  A drive for the IDE port behind a PiStorm carries Picasso96 and
+        #  Emu68's driver for it, but the Pi's side of the screen - its HDMI
+        #  mode and the memory the driver draws in - is in config.txt on the
+        #  PiStorm's own card, which this build does not write.
+        if self.amiga_only and self.rtg_display and self.on_a_pistorm() \
+                and not boot_card_built:
+            said.append(
+                "This drive is set up for an RTG screen on the Pi's HDMI, "
+                "and the Pi's half of that lives on the PiStorm's own card. "
+                "Build that one with “Emu68 only, no Amiga drive” "
+                "and the same display, or RTG will have no memory to draw in.")
+        #  RTG is still offered without a PiStorm - the drive may go into a
+        #  machine with an RTG card of its own - but the board Picasso96 is
+        #  told to drive is Emu68's, which only a PiStorm has.
+        if self.rtg_display and not self.on_a_pistorm() and any(
+                packages.CATALOGUE_BY_KEY[key].rtg_only
+                for key in keys if key in packages.CATALOGUE_BY_KEY):
+            said.append(
+                "This machine has no PiStorm, and Picasso96 is installed with "
+                "Emu68's VideoCore as its board. An RTG card of its own needs "
+                "that card's driver in Devs/Monitors and its BOARDTYPE in the "
+                "Picasso96 monitor icon.")
         if not self.install_amigaos and not filled and not self.os_cd \
                 and not self.boot_only \
                 and self.mode is BuildMode.FRESH:
@@ -416,6 +568,14 @@ class BuildConfig:
                 f"the line is left out rather than written with a gap in it.")
         return said
 
+    def package_screen(self) -> tuple["machines.Chipset", "machines.Display"]:
+        """The chipset and display the software is chosen for."""
+        from . import machines                              # noqa: PLC0415
+        return ((machines.Chipset(self.package_chipset)
+                 if self.package_chipset else machines.Chipset.AGA),
+                (machines.Display(self.package_display)
+                 if self.package_display else machines.Display.NATIVE))
+
     def machine(self) -> "machines.Machine":
         """The Amiga this card is for, defaulting the way the rest of the tool does."""
         from . import machines                              # noqa: PLC0415
@@ -442,6 +602,16 @@ class BuildConfig:
         card_cpu = (machines.Cpu(self.accelerator_cpu)
                     if self.accelerator_cpu else None)
         return self.machine().cpu_fitted(accelerator, card_cpu)
+
+    def on_a_pistorm(self) -> bool:
+        """Whether the machine has a PiStorm, whatever this card carries.
+
+        Not the same as installing Emu68: a drive for the IDE port behind a
+        PiStorm carries no Emu68 and is still watched through the Pi.
+        """
+        from . import machines                              # noqa: PLC0415
+        return (machines.Accelerator(self.accelerator or "pistorm")
+                is machines.Accelerator.PISTORM)
 
     def chip_ram_fitted(self) -> int:
         """How much chip RAM this card is being built for, in KB."""
@@ -512,13 +682,150 @@ class BuildConfig:
         was missed - its saved screen mode is just as much somebody else's as
         the other two, and nothing was ever done about it.
         """
-        if self.mode is not BuildMode.FRESH:
+        if self.mode not in FILLS_DRIVES:
             return True
         return any(p.content_hdf for p in self.amiga_partitions)
 
+    @property
+    def task(self) -> Task | None:
+        """The task this job describes, or None for one no task can make."""
+        if self.shape_problems():
+            return None
+        if self.drives_target:
+            return Task.SPLIT
+        for task in Task:
+            if task is Task.SPLIT:
+                continue
+            if task.mode is not self.mode:
+                continue
+            if task.mode is BuildMode.FRESH and (
+                    self.boot_only != (task is Task.BOOT_CARD)
+                    or self.amiga_only != (task is Task.AMIGA_DRIVE)):
+                continue
+            if task.emu68 is not None and task.mode is not BuildMode.REWRITE \
+                    and task.mode is not BuildMode.EXPORT \
+                    and self.install_emu68 != task.emu68:
+                continue
+            return task
+        return None
+
+    def boot_card_part(self) -> "BuildConfig":
+        """The Pi's boot card of a split build: Emu68 and its settings."""
+        return dataclasses.replace(
+            self, drives_target="", boot_only=True, amiga_only=False,
+            install_emu68=True, amiga_partitions=[], package_keys=[],
+            install_amigaos=False, os_cd="", extra_partitions=[],
+            boingbag_archives=[], leave_out=[], off_desktop=[])
+
+    def drives_part(self) -> "BuildConfig":
+        """The Amiga drives of a split build, on their own target.
+
+        The same choices as the boot card, so the drives are installed for
+        the machine and the Emu68 that will run them - and with no boot
+        partition, which is what an IDE port reads.
+        """
+        return dataclasses.replace(
+            self, target=self.drives_target,
+            target_is_device=self.drives_target_is_device,
+            image_size=self.drives_image_size, drives_target="",
+            boot_only=False, amiga_only=True, install_emu68=False,
+            boot_addons=[])
+
+    def shape_problems(self) -> list[str]:
+        """What no task allows: the combinations that build a dead card.
+
+        Checked for every mode, not only a new card's - the rules that used
+        to live behind ``if self.mode is BuildMode.FRESH`` let a drive image
+        be dropped by a boot-only switch nobody could see, and let a boot
+        partition be made with no Emu68 on it.
+        """
+        problems: list[str] = []
+        if self.drives_target and (self.mode is not BuildMode.FRESH
+                                   or self.boot_only or self.amiga_only):
+            problems.append("Only a new PiStorm card can have its drives "
+                            "written somewhere else.")
+        if self.mode in (BuildMode.EXPORT, BuildMode.REWRITE,
+                         BuildMode.CUSTOMISE, BuildMode.IMAGE):
+            if self.boot_only:
+                problems.append("Only a new card can be Emu68 and nothing "
+                                "else.")
+            if self.amiga_only:
+                problems.append("Only a new drive can be Amiga drives and "
+                                "nothing else.")
+        if self.mode is BuildMode.HDF:
+            if self.boot_only:
+                problems.append("A drive image needs an Amiga drive to go "
+                                "into; a boot-only card has none.")
+            if self.amiga_only:
+                problems.append("A drive image is put on a card with a boot "
+                                "partition built around it; a drives-only "
+                                "card has none.")
+        if self.mode in (BuildMode.FRESH, BuildMode.HDF) \
+                and not self.amiga_only and not self.install_emu68 \
+                and not self.output_hdf:
+            problems.append("This card would have a boot partition with no "
+                            "Emu68 on it, and could not start.")
+        return problems
+
+    def boot_option_concerns(self) -> list[str]:
+        """Emu68 settings set against what the machine and screen decide.
+
+        The machine decides these - ``machines.boot_options`` - and they can
+        still be changed by hand. Changed, they are said here, because each
+        one breaks something specific that nothing on the card will explain.
+        """
+        if not self.install_emu68 or self.amiga_only \
+                or self.mode in (BuildMode.EXPORT, BuildMode.REWRITE):
+            return []
+        from . import machines                              # noqa: PLC0415
+        machine = self.machine()
+        _chipset, display = self.package_screen()
+        wanted = machines.boot_options(machine, display)
+        options = self.boot_options
+        said = []
+        if wanted.chip_slowdown and not options.chip_slowdown:
+            said.append(f"Chip RAM slowdown is off on an "
+                        f"{machine.chipset.value} machine: software that "
+                        f"busy-waits on the chipset runs too fast to work.")
+        if options.vbr_move and not wanted.vbr_move:
+            said.append("The vector base is moved to fast RAM: games and "
+                        "demos that take over the machine put their own "
+                        "vectors at address 0 and will crash.")
+        return said
+
+    def unsuited_packages(self) -> list[str]:
+        """Chosen packages that cannot go on this card, and are left out.
+
+        The build has always skipped them; the job did not say so, and a tick
+        restored from a saved setup could carry one in from a machine or a
+        screen it suited.
+        """
+        from . import machines                              # noqa: PLC0415
+        if not self.package_keys:
+            return []
+        chipset, display = self.package_screen()
+        out = []
+        for key in packages.expand(self.package_keys):
+            package = packages.CATALOGUE_BY_KEY.get(key)
+            if package is not None and not package.suits(
+                    chipset, display, pi=self.pi(), cpu=self.cpu(),
+                    emu68_tag=self.release_tag or None):
+                out.append(package.label)
+        return out
+
     def validate(self) -> list[str]:
         """Return a list of problems; an empty list means the config is usable."""
-        problems: list[str] = []
+        if self.drives_target and not self.shape_problems():
+            #  Each half is held to the rules of its own task, and the two
+            #  must not be the same thing.
+            problems = self.boot_card_part().validate()
+            problems += [p for p in self.drives_part().validate()
+                         if p not in problems]
+            if self.drives_target == self.target:
+                problems.append("The boot card and the Amiga drives are the "
+                                "same target; they have to be two.")
+            return problems
+        problems: list[str] = self.shape_problems()
         if self.mode is BuildMode.EXPORT:
             #  Nothing is written to a card here, so the target is not the
             #  question - the image to read and the folder to fill are.
@@ -538,6 +845,19 @@ class BuildConfig:
         if self.mode is BuildMode.IMAGE and self.source_image \
                 and not Path(self.source_image).is_file():
             problems.append(f"Source image not found: {self.source_image}")
+        if self.mode is BuildMode.REWRITE:
+            if not self.rewrite_drive:
+                problems.append("Choose which drive on the card to rebuild.")
+            if not self.target_is_device and self.target \
+                    and not Path(self.target).is_file():
+                problems.append(
+                    f"{self.target} does not exist: rebuilding a drive needs "
+                    f"the card or image that already has it.")
+            named = [p for p in self.amiga_partitions
+                     if p.name.upper() == self.rewrite_drive.upper()]
+            if self.rewrite_drive and len(named) != 1:
+                problems.append(f"Nothing says what {self.rewrite_drive} is "
+                                f"to be filled with.")
         if self.mode is BuildMode.HDF:
             if not self.hdf_image:
                 problems.append("No Amiga hard disk image (.hdf) selected.")
@@ -547,6 +867,13 @@ class BuildConfig:
                 problems.append("The boot partition must be at least 64 MiB.")
         if self.kickstart_path and not Path(self.kickstart_path).is_file():
             problems.append(f"Kickstart ROM not found: {self.kickstart_path}")
+        #  Only asked of a card WHDLoad is going on: the folder is set
+        #  under its tick, and stays set if the tick is taken off.
+        if self.whdload_kickstarts \
+                and packages.chosen_with(self.package_keys, "kickstart_drawer") \
+                and not Path(self.whdload_kickstarts).is_dir():
+            problems.append(f"Folder of Kickstarts for WHDLoad not found: "
+                            f"{self.whdload_kickstarts}")
         if self.emu68_archive and not Path(self.emu68_archive).is_file():
             problems.append(f"Emu68 archive not found: {self.emu68_archive}")
         if self.mode is BuildMode.FRESH:
@@ -627,19 +954,18 @@ class BuildConfig:
                 problems.append(
                     f"{spec.name} is set to {spec.dostype}; content can only be "
                     f"written to an FFS or PFS3 partition.")
-        if self.os_cd:
-            if self.mode is not BuildMode.FRESH:
-                problems.append(
-                    "AmigaOS can only be installed when building a new card.")
-            elif not Path(self.os_cd).is_file():
-                problems.append(f"CD image not found: {self.os_cd}")
+        installs = (self.os_cd or self.install_amigaos) \
+            and self.mode in FILLS_DRIVES
+        if (self.os_cd or self.install_amigaos) and not installs:
+            problems.append(
+                "AmigaOS can only be installed when building a new card "
+                "or rebuilding a drive.")
+        if self.os_cd and installs and not Path(self.os_cd).is_file():
+            problems.append(f"CD image not found: {self.os_cd}")
         for archive in self.boingbag_archives:
             if not Path(archive).is_file():
                 problems.append(f"BoingBag archive not found: {archive}")
         if self.install_amigaos:
-            if self.mode is not BuildMode.FRESH:
-                problems.append(
-                    "AmigaOS can only be installed when building a new card.")
             if not self.adf_folder:
                 problems.append("No folder of Workbench ADF disks selected.")
             elif not Path(self.adf_folder).is_dir():
@@ -654,10 +980,126 @@ class BuildConfig:
                 )
         if self.wifi_ssid and not self.wifi_password:
             problems.append("A WiFi network was given without a password.")
+        #  A kernel built for a later Emu68 than the release it is laid over.
+        kernel = emu68.KERNELS_BY_KEY.get(self.kernel_key)
+        if kernel is not None and self.install_emu68 and self.release_tag \
+                and kernel.min_release \
+                and not emu68.at_least(self.release_tag, kernel.min_release):
+            wanted = ".".join(str(part) for part in kernel.min_release)
+            problems.append(f"The {kernel.label} kernel needs Emu68 {wanted} "
+                            f"or newer, and {self.release_tag} was chosen.")
         return problems
 
 
 # ---------------------------------------------------------------- helpers
+
+
+class _Confined:
+    """A card that can only be written between two offsets.
+
+    Rebuilding one drive must not touch any other, and that is too important
+    to rest on every writer underneath getting its arithmetic right: a write
+    that strays outside the drive is refused, and the build stops, rather
+    than landing in somebody's Games drive. Reading is unrestricted - the
+    partition table has to be read to find the drive at all.
+    """
+
+    def __init__(self, handle, start: int, end: int, label: str):
+        self._handle = handle
+        self._start = start
+        self._end = end
+        self._label = label
+
+    def write(self, data) -> int:
+        at = self._handle.tell()
+        if at < self._start or at + len(data) > self._end:
+            raise RuntimeError(
+                f"refused a write of {len(data)} bytes at {at}, outside "
+                f"{self._label} ({self._start}-{self._end}); nothing else on "
+                f"the card has been changed")
+        return self._handle.write(data)
+
+    def truncate(self, *_args) -> None:
+        raise RuntimeError(f"refused to resize the card while rebuilding "
+                           f"{self._label}")
+
+    def __getattr__(self, name):
+        return getattr(self._handle, name)
+
+
+def _rewrite_drive(config: BuildConfig, handle, target_size: int,
+                   progress: Progress) -> None:
+    """Format one drive on an existing card and fill it again.
+
+    The card's own Rigid Disk Block decides where the drive is, how big and
+    which file system; the build is narrowed to that one drive and then does
+    exactly what a new card's build does to it - install AmigaOS, fill it,
+    add the software - against the table that is already there. Everything
+    outside the drive is left byte for byte as it was, and ``_Confined``
+    makes that a guarantee rather than an intention.
+    """
+    located = find_rdb(handle)
+    if located is None:
+        raise RuntimeError(f"{config.target} has no Amiga partition table, so "
+                           f"there is no {config.rewrite_drive} on it")
+    base, table = located
+    partition = next((p for p in table.partitions
+                      if p.drive_name.upper() == config.rewrite_drive.upper()),
+                     None)
+    if partition is None:
+        names = ", ".join(p.drive_name for p in table.partitions)
+        raise RuntimeError(f"{config.target} has no {config.rewrite_drive}; "
+                           f"its drives are {names}")
+    dostype = partition.dostype
+    if not amigafs.is_ffs(dostype) and dostype not in (rdb.DOSTYPE_PFS3,
+                                                       rdb.DOSTYPE_PDS3):
+        raise RuntimeError(f"{partition.drive_name} is "
+                           f"{rdb.dostype_name(dostype)}, and only FFS and "
+                           f"PFS3 drives can be written here")
+    spec = next(s for s in config.amiga_partitions
+                if s.name.upper() == partition.drive_name.upper())
+    if not partition.bootable and (config.install_amigaos or config.os_cd):
+        raise RuntimeError(f"{partition.drive_name} is not the drive the "
+                           f"Amiga boots from, so AmigaOS cannot be "
+                           f"installed onto it")
+    #  What the card says the drive is, not what anything else assumed.
+    spec = dataclasses.replace(
+        spec, name=partition.drive_name, bootable=partition.bootable,
+        size=partition.size_bytes(table.geometry),
+        dostype=rdb.dostype_name(dostype))
+    config = dataclasses.replace(config, amiga_partitions=[spec])
+    if not partition.bootable:
+        #  Software goes on the drive the machine boots from; on any other it
+        #  would be an install nothing ever starts.
+        config = dataclasses.replace(config, package_keys=[])
+
+    start = partition.byte_offset(table.geometry, base)
+    end = start + partition.size_bytes(table.geometry)
+    label = spec.volume_name or partition.drive_name
+    progress.step(f"Rebuilding {partition.drive_name} on the card")
+    progress.log(f"Only {partition.drive_name} is written: "
+                 f"{human_size(end - start)} at byte {start}, "
+                 f"{rdb.dostype_name(dostype)}. The partition table, the "
+                 f"boot partition and every other drive are left as they are.")
+    confined = _Confined(handle, start, end, partition.drive_name)
+    #  The file system's first blocks are cleared, so nothing below takes the
+    #  drive for one that is already formatted and leaves it alone.
+    confined.seek(start)
+    confined.write(b"\0" * min(64 * 1024, end - start))
+    amiga = mbr.MbrPartition(0, 0x00, mbr.TYPE_AMIGA, base // SECTOR,
+                             (target_size - base) // SECTOR)
+    if config.install_amigaos and not _boot_drive_is_filled(config):
+        _install_amigaos(config, confined, amiga, table, progress)
+    if spec.content_folder or spec.content_hdf:
+        _check_the_system_can_boot(config, progress)
+        _install_content(config, confined, amiga, table, progress)
+    _format_empty_partitions(config, confined, amiga, table, progress)
+    if partition.bootable and config.patch_display \
+            and config.brings_a_system_from_elsewhere():
+        progress.step("Adapting the display setup on the drive")
+        postwrite.adapt_display(confined, base, table, config.rtg_display,
+                                progress)
+    progress.log(f'{partition.drive_name} rebuilt as "{label}"')
 
 
 def _target_size(config: BuildConfig) -> int:
@@ -919,7 +1361,7 @@ def _populate_boot(fs: Fat32, config: BuildConfig, emu68_files: list[Path],
         progress.step("Installing the Kickstart ROM")
         info = kickstart.identify(config.kickstart_path, config.kickstart_key or None)
         progress.log(f"{info.name}" + (f" ({info.note})" if info.note else ""))
-        if not info.aga:
+        if info.aga is False:
             progress.log("WARNING: this is not an AGA (A1200) Kickstart. "
                          "Emu68 expects an A1200 ROM.")
         data = kickstart.prepare(info, config.kickstart_key or None)
@@ -1652,19 +2094,20 @@ def _write_manifest_now(volume, config: "BuildConfig",
     progress.log(f"  S:{name} written: {lines} path(s) this build added")
 
 
-def _landing_paths(pairs: list[tuple[str, str]]) -> list[str]:
+def _landing_paths(pairs: list[tuple[str, str]]) -> dict[str, str | None]:
     """Where a set of overlays will put single files on the drive.
 
     Only files: a whole drawer is merged into whatever is already there, and
     refusing one during the copy would take out the drive's own contents
-    along with it.
+    along with it. Each file is mapped to the package's copy of it, so the
+    copy pass can keep the system's own where that is the newer release.
     """
-    out: list[str] = []
+    out: dict[str, str | None] = {}
     for source, destination in pairs:
         path = Path(source)
         if path.is_file():
-            out.append(f"{destination}/{path.name}" if destination
-                       else path.name)
+            out[f"{destination}/{path.name}" if destination
+                else path.name] = str(path)
         elif destination:
             #  A drawer going onto the card needs its name free. ClassicWB
             #  keeps Visage as a *file* in Utilities, and this build wants a
@@ -1672,7 +2115,7 @@ def _landing_paths(pairs: list[tuple[str, str]]) -> list[str]:
             #  outright. Only a file can ever be refused by this: the copy
             #  asks about files and never about drawers, so a drawer of the
             #  same name is merged into as before.
-            out.append(destination)
+            out.setdefault(destination, None)
     return out
 
 
@@ -1726,21 +2169,24 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     """
     if not config.package_keys:
         return []
-    from . import machines
-    chipset = (machines.Chipset(config.package_chipset)
-               if config.package_chipset else machines.Chipset.AGA)
-    display = (machines.Display(config.package_display)
-               if config.package_display else machines.Display.NATIVE)
+    chipset, display = config.package_screen()
     progress.step("Adding the software you chose")
     by_package = packages.overlays_by_package(
         config.package_keys, chipset=chipset, display=display,
         progress=progress, pi=config.pi(), cpu=config.cpu(),
         emu68_tag=config.release_tag, kernel=config.driver_flavour())
     resolved = [pair for _key, pairs in by_package for pair in pairs]
-    if credit is not None:
-        for key, pairs in by_package:
+
+    def credited(pairs: list[tuple[str, str]],
+                 key: str) -> list[tuple[str, str]]:
+        """``pairs``, noted in ``credit`` as ``key``'s."""
+        if credit is not None:
             for pair in pairs:
                 credit.setdefault(pair, key)
+        return pairs
+
+    for key, pairs in by_package:
+        credited(pairs, key)
     #  The quick setup resolves the same packages while it assembles the
     #  configuration, so those pairs may already be on the partition. Adding
     #  them twice would copy every file twice; leaving them out of this list
@@ -1755,11 +2201,111 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
             continue
         its_pairs = [pair for key, pairs in by_package if key == launcher.key
                      for pair in pairs]
-        extra = _igame_instances(config, progress, its_pairs, launcher)
-        if credit is not None:
-            for pair in extra:
-                credit.setdefault(pair, launcher.key)
-        out += extra
+        out += credited(_igame_instances(config, progress, its_pairs,
+                                         launcher), launcher.key)
+    for key, _pairs in by_package:
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is not None and package.content_menu:
+            out += credited(_content_menu(config, package, resolved, progress),
+                            key)
+        if package is not None and package.kickstart_drawer:
+            out += credited(_kickstart_images(config, package, progress,
+                                              resolved), key)
+    return out
+
+
+def _content_menu(config: "BuildConfig", package: "packages.Package",
+                  resolved: list[tuple[str, str]],
+                  progress: Progress) -> list[tuple[str, str]]:
+    """A launcher's menu, written from the games on the drives being filled.
+
+    The drives are the content partitions the build fills from a folder on
+    this computer; what is left off them is left out of the menu as well.
+    WHDLoad's own binary - one of the files being installed - says which
+    icon settings are WHDLoad options.
+    """
+    from . import gamemenu                                  # noqa: PLC0415
+    boot = {spec.name.upper() for spec in config.amiga_partitions
+            if spec.bootable}
+    drives = [gamemenu.Drive((spec.volume_name or spec.name).strip(),
+                             Path(spec.content_folder),
+                             tuple(spec.exclude or ()), WHDLOAD_DRAWER)
+              for spec in config.amiga_partitions
+              if spec.content_folder and spec.name.upper() not in boot
+              and Path(spec.content_folder).is_dir()]
+    if not drives:
+        progress.log(f"  {package.label}: no drive is being filled with "
+                     f"games, so its menu is empty")
+        return []
+    whdload = next((Path(source) for source, destination in resolved
+                    if Path(source).name.lower() == "whdload"
+                    and destination.lower() == "c"), None)
+    words = gamemenu.option_words(whdload) if whdload is not None else set()
+    layout = (gamemenu.AGA if config.machine().aga else gamemenu.NATIVE)
+    into = _scratch("pistorm-menu-")
+    count = gamemenu.build(drives, into, layout, words,
+                           package.key in (config.with_media or []), progress)
+    progress.log(f"  {package.label}: a menu of {count} game(s), in the "
+                 f"{layout.name} layout")
+    return [(str(into), package.content_menu)]
+
+
+def whdload_rom_source(config: "BuildConfig") -> tuple[str, str | None]:
+    """Where WHDLoad's Kickstarts are taken from, and the rom.key for them.
+
+    The folder chosen for them, or else the one the card's own Kickstart
+    came from - where people keep the rest of theirs. A rom.key in that
+    folder is the one for its ROMs; the card's own is only used where the
+    folder has none.
+    """
+    folder = config.whdload_kickstarts or (
+        str(Path(config.kickstart_path).parent) if config.kickstart_path
+        else "")
+    if not folder:
+        return "", None
+    key = None if (Path(folder) / "rom.key").exists() \
+        else (config.kickstart_key or None)
+    return folder, key
+
+
+def _kickstart_images(config: "BuildConfig", package: "packages.Package",
+                      progress: Progress,
+                      resolved: list[tuple[str, str]]
+                      ) -> list[tuple[str, str]]:
+    """The user's own ROMs a package can use, decrypted, under its names.
+
+    Which ROMs, and the names, are read from the relocation tables the
+    build is putting in the same drawer: WHDLoad uses an image only beside
+    its table. Nothing but the one folder is searched: these are somebody's
+    own ROMs, and the place they said they keep them is the place to look.
+    """
+    folder, key = whdload_rom_source(config)
+    if not folder:
+        progress.log(f"  {package.label}: no folder of Kickstarts was chosen, "
+                     f"so {package.kickstart_drawer} has no images")
+        return []
+    tables = packages.kickstart_tables(package, resolved)
+    if not tables:
+        progress.log(f"  {package.label}: no relocation tables are being "
+                     f"installed, so no Kickstart image would be used")
+        return []
+    found = kickstart.whdload_images(folder, tables, key)
+    if not found:
+        progress.log(f"  {package.label}: none of the ROMs in {folder} is one "
+                     f"it can use, so {package.kickstart_drawer} is left "
+                     f"without Kickstart images")
+        return []
+    #  A folder of this build's own: the images are the user's ROMs, made
+    #  afresh each time, and a fixed folder in the cache was left owned by
+    #  root after a card was written with administrator rights - so the next
+    #  build could neither clear it nor write into it, and stopped.
+    staged = _scratch("pistorm-kickstarts-")
+    out = []
+    for name, data, info in found:
+        (staged / name).write_bytes(data)
+        out.append((str(staged / name), package.kickstart_drawer))
+        progress.log(f"  {package.label}: {package.kickstart_drawer}/{name} "
+                     f"from {info.path.name}")
     return out
 
 
@@ -1854,7 +2400,7 @@ def _igame_instances(config: "BuildConfig", progress: Progress,
             out += [(source, dest.replace(home, where, 1))
                     for source, dest in launcher_pairs]
         line = f"{volume}:{inside}" if inside else f"{volume}:"
-        written = (Path(tempfile.mkdtemp(prefix="pistorm-launcher-"))
+        written = (_scratch("pistorm-launcher-")
                    / launcher.content_list)
         written.write_text(line + "\n")
         out.append((str(written), where))
@@ -2043,7 +2589,7 @@ def _drawer_icons_from_the_drive(spec: AmigaPartitionSpec,
     """The imported drive's own drawer icons, to copy the desktop's style."""
     if not spec.content_hdf:
         return None
-    borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drive-icon-"))
+    borrowed = _scratch("pistorm-drive-icon-")
     try:
         reader, _label = amigaos.open_amiga_volume(spec.content_hdf,
                                                    spec.content_hdf_partition)
@@ -2098,7 +2644,7 @@ def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
     if borrowed_from_drive is not None:
         sources.append(borrowed_from_drive)
     if config.adf_folder:
-        borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drawer-icon-"))
+        borrowed = _scratch("pistorm-drawer-icon-")
         if amigaos.drawer_icon_from_disks(config.adf_folder, borrowed):
             sources.append(borrowed)
 
@@ -2755,6 +3301,43 @@ def find_rdb(handle) -> tuple[int, "rdb.Rdb"] | None:
     return None
 
 
+#  How much of an image is read to tell what it is: the RDB may sit in any of
+#  the first sixteen blocks, and the MBR is the first.
+SNIFF_BYTES = rdb.RDB_SEARCH_BYTES
+
+
+class ImageKind(enum.Enum):
+    CARD = "card"       # a whole card: a partition table and its partitions
+    DRIVE = "drive"     # the Amiga drive alone: an RDB, or one file system
+
+
+def image_kind(path: str | Path) -> ImageKind | None:
+    """Whether a file is a whole card or an Amiga drive, read off its start.
+
+    The two are written differently - a card as it is, a drive with a boot
+    partition built around it - and which one a download is cannot be told
+    from its name: PiMiga is an .img, and so is many an HstWB drive. So the
+    file says, compressed or not, and None means it says neither.
+    """
+    source = imgsrc.inspect(path)
+    stream, proc = imgsrc.open_stream(source)
+    try:
+        head = stream.read(SNIFF_BYTES)
+    finally:
+        stream.close()
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+    if rdb.has_rigid_disk_block(head) \
+            or BARE_SIGNATURES.get(head[:4]) is not None:
+        return ImageKind.DRIVE
+    try:
+        parts = mbr.read_table(io.BytesIO(head))
+    except (ValueError, OSError):
+        return None
+    return ImageKind.CARD if any(not p.empty for p in parts) else None
+
+
 @dataclasses.dataclass
 class HdfInfo:
     """What we learned about an Amiga hard disk image before writing it."""
@@ -3304,7 +3887,36 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
         raise
 
 
-def _run_build(config: BuildConfig, progress: Progress) -> None:
+#  The build's own scratch folder while one runs, so what is made on the
+#  way - the user's decrypted Kickstarts among it - goes when the build does,
+#  rather than staying in /tmp, owned by root after a write under pkexec.
+_BUILD_SCRATCH: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "build_scratch", default=None)
+
+
+def _scratch(prefix: str) -> Path:
+    """A fresh folder for something the build makes, inside its own."""
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=_BUILD_SCRATCH.get()))
+
+
+def _run_build(config: BuildConfig, progress: Progress,
+               checked: bool = False) -> None:
+    if config.drives_target:
+        #  Said and checked once, for the build as a whole: the halves on
+        #  their own each thought the other was not being written, and the
+        #  drives half logged that the boot card had to be built separately.
+        for concern in config.concerns():
+            progress.log(f"NOTE: {concern}")
+        problems = config.validate()
+        if problems:
+            raise RuntimeError("; ".join(problems))
+        progress.step(f"The boot card: {config.target}")
+        progress.log(f"Writing the Pi's boot card to {config.target}, then "
+                     f"the Amiga drives to {config.drives_target}")
+        _run_build(config.boot_card_part(), progress, checked=True)
+        progress.step(f"The Amiga drives: {config.drives_target}")
+        _run_build(config.drives_part(), progress, checked=True)
+        return
     if config.mode is BuildMode.EXPORT:
         from . import export as export_module                # noqa: PLC0415
         written = export_module.export(config.source_image, config.export_drives,
@@ -3314,13 +3926,14 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
         return
     if config.cache_root:
         emu68.use_cache(config.cache_root)
-    for concern in config.concerns():
-        #  Said before anything is written, and the build goes ahead: these
-        #  are choices that work and probably were not meant.
-        progress.log(f"NOTE: {concern}")
-    problems = config.validate()
-    if problems:
-        raise RuntimeError("; ".join(problems))
+    if not checked:
+        for concern in config.concerns():
+            #  Said before anything is written, and the build goes ahead:
+            #  these are choices that work and probably were not meant.
+            progress.log(f"NOTE: {concern}")
+        problems = config.validate()
+        if problems:
+            raise RuntimeError("; ".join(problems))
 
     if config.target_is_device:
         device = next((d for d in devices.list_devices(only_removable=False)
@@ -3336,10 +3949,13 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
     progress.log(f"Target {config.target} - {human_size(target_size)}")
 
     workdir = Path(tempfile.mkdtemp(prefix="pistorm-imager-"))
+    scratch = _BUILD_SCRATCH.set(workdir)
     try:
         emu68_files: list[Path] = []
         emu68_root: Path | None = None
-        if config.install_emu68:
+        #  Rebuilding one Amiga drive writes nothing to the boot partition,
+        #  so there is no Emu68 to fetch.
+        if config.install_emu68 and config.mode is not BuildMode.REWRITE:
             emu68_files, emu68_root = _prepare_emu68(config, workdir, progress)
         #  A CD install becomes an ordinary folder of content, so everything
         #  that already happens to a filled drive - the compatibility pass, the
@@ -3362,7 +3978,9 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
             if config.mode is BuildMode.IMAGE:
                 _write_image(config, handle, target_size, progress)
 
-            if config.mode in (BuildMode.FRESH, BuildMode.HDF):
+            if config.mode is BuildMode.REWRITE:
+                _rewrite_drive(config, handle, target_size, progress)
+            elif config.mode in (BuildMode.FRESH, BuildMode.HDF):
                 boot_part, amiga_part = _write_partition_table(
                     handle, config, target_size, progress)
                 #  An Amiga-drives-only card has no boot partition to make or
@@ -3433,7 +4051,7 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
                     check_and_repair(handle, amiga_part.start_bytes,
                                      amiga_part.size_bytes, config, progress)
 
-            if config.expand_to_fill:
+            if config.expand_to_fill and config.mode is not BuildMode.REWRITE:
                 _expand(handle, config, target_size, progress)
 
             handle.flush()
@@ -3446,4 +4064,5 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
         progress.fraction(1.0)
         progress.step("Done")
     finally:
+        _BUILD_SCRATCH.reset(scratch)
         shutil.rmtree(workdir, ignore_errors=True)

@@ -90,6 +90,28 @@ def _verify(block: bytes, summed_longs: int) -> bool:
     return total == 0
 
 
+#  A RigidDiskBlock may be in any of a disk's first sixteen blocks.
+RDB_SEARCH_BLOCKS = 16
+RDB_SEARCH_BYTES = RDB_SEARCH_BLOCKS * BLOCK
+
+
+def has_rigid_disk_block(head: bytes) -> bool:
+    """Whether the start of a disk holds a RigidDiskBlock, without reading on.
+
+    The block may be in any of the first sixteen; its checksum is what tells
+    it from a file that happens to contain the letters.
+    """
+    for probe in range(RDB_SEARCH_BLOCKS):
+        block = head[probe * BLOCK:(probe + 1) * BLOCK]
+        if len(block) < BLOCK:
+            return False
+        if block[0:4] == ID_RDSK:
+            summed = struct.unpack_from(">I", block, 4)[0]
+            if 0 < summed <= BLOCK // 4 and _verify(block, summed):
+                return True
+    return False
+
+
 def _bstr(name: str, field_len: int = 32) -> bytes:
     """Amiga BSTR: a length byte followed by the characters, zero padded."""
     raw = name.encode("latin-1", errors="replace")[: field_len - 2]
@@ -325,7 +347,7 @@ class Rdb:
     @classmethod
     def read(cls, handle: BinaryIO, base_offset: int = 0) -> "Rdb":
         """Parse an existing RDB whose block 0 lives at ``base_offset`` bytes."""
-        for probe in range(16):
+        for probe in range(RDB_SEARCH_BLOCKS):
             handle.seek(base_offset + probe * BLOCK)
             block = handle.read(BLOCK)
             if len(block) == BLOCK and block[0:4] == ID_RDSK:

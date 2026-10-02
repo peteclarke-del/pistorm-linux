@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import struct
 from collections.abc import Iterable
 from pathlib import Path
 
 from .machines import Chipset, Machine
+from .util import HUNK_HEADER
 
 #  Category names whose hardware requirement is known.  Matched on the folder
 #  name, case-insensitively; anything else is listed with no requirement, which
@@ -228,6 +230,55 @@ def version_of(data: bytes) -> tuple[int, int] | None:
     found = LIBRARY_ID.search(head)
     if found:
         return int(found.group(1)), int(found.group(2))
+    return resident_version(data)
+
+
+HUNK_CODE = 0x3E9
+RT_MATCHWORD = b"\x4a\xfc"
+
+
+def resident_version(data: bytes) -> tuple[int, int] | None:
+    """The version a library's Resident structure declares, read structurally.
+
+    The pattern above needs the ID string to name the file's kind, and not
+    every one does: Workbench 3.1's picture.datatype says "picture 40.4" and
+    xadmaster.library "xadmaster 12.1". Either then read as no version at
+    all, so a package's older copy could not be told apart from the system's
+    newer one. The Resident structure is unambiguous: a 0x4AFC match word
+    whose next long points back at itself, the version byte eleven bytes in,
+    and a pointer to the ID string, whose revision is the part after the dot.
+    Only the first code hunk is searched, which is where the structure lives.
+    """
+    if len(data) < 32 or data[:4] != HUNK_HEADER:
+        return None
+    try:
+        at = 4
+        while struct.unpack_from(">I", data, at)[0]:      # resident names
+            at += 4 + 4 * struct.unpack_from(">I", data, at)[0]
+        at += 4
+        _count, first, last = struct.unpack_from(">III", data, at)
+        at += 12 + 4 * (last - first + 1)
+        if struct.unpack_from(">I", data, at)[0] & 0x3FFFFFFF != HUNK_CODE:
+            return None
+        longs = struct.unpack_from(">I", data, at + 4)[0] & 0x3FFFFFFF
+        start = at + 8
+        code = data[start:start + 4 * longs]
+    except struct.error:
+        return None
+    offset = code.find(RT_MATCHWORD)
+    while offset != -1 and offset + 26 <= len(code):
+        if offset % 2 == 0 \
+                and struct.unpack_from(">I", code, offset + 2)[0] == offset:
+            version = code[offset + 11]
+            pointer = struct.unpack_from(">I", code, offset + 18)[0]
+            revision = 0
+            if pointer < len(code):
+                text = code[pointer:pointer + 80].split(b"\0")[0]
+                found = re.search(rb"\b%d\.(\d+)" % version, text)
+                if found:
+                    revision = int(found.group(1))
+            return version, revision
+        offset = code.find(RT_MATCHWORD, offset + 2)
     return None
 
 
@@ -504,7 +555,7 @@ def cannot_work(reader, volumes: Iterable[str],
                 why.append(f"{kid.name} is built for another processor")
                 continue
             #  Only small text files: a script, not a program or a payload.
-            if data[:4] == b"\x00\x00\x03\xf3" or len(data) > 20000:
+            if data[:4] == HUNK_HEADER or len(data) > BIGGEST_SCRIPT:
                 continue
             text = data.decode("latin-1", "replace")
             for found in MOUNTS.finditer(text):
@@ -724,7 +775,6 @@ class Clutter:
 #  Shared with the rest of the tool rather than spelled again here: an icon is
 #  ".info" everywhere, and an AmigaDOS executable starts with the hunk header.
 ICON_SUFFIX = ".info"
-HUNK_HEADER = b"\x00\x00\x03\xf3"
 
 #  Where Workbench keeps the list of icons it shows on the desktop.
 BACKDROP = ".backdrop"
