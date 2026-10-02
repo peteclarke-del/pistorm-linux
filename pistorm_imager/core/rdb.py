@@ -95,6 +95,80 @@ RDB_SEARCH_BLOCKS = 16
 RDB_SEARCH_BYTES = RDB_SEARCH_BLOCKS * BLOCK
 
 
+#  A LoadSegBlock: five longs of header, then the handler's next bytes.
+LSEG_HEADER_LONGS = 5
+LSEG_DATA = BLOCK - LSEG_HEADER_LONGS * 4
+
+HUNK_HEADER_ID = 0x3F3
+HUNK_END_ID = 0x3F2
+
+
+def loadable(binary: bytes) -> bytes:
+    """``binary`` up to its last HUNK_END: what a loader may be given.
+
+    A handler lifted out of another drive's RDB carried that drive's padding
+    - 412 zero bytes on PFS3AIO - and anything after the last hunk is read by
+    Kickstart's RDB loader as another hunk. A file that is not a hunk file,
+    or cannot be followed, is given back as it is.
+    """
+    import struct as _s                                     # noqa: PLC0415
+    try:
+        if _s.unpack_from(">I", binary, 0)[0] != HUNK_HEADER_ID:
+            return binary
+        at = 4
+        while _s.unpack_from(">I", binary, at)[0]:            # resident names
+            at += 4 + 4 * _s.unpack_from(">I", binary, at)[0]
+        at += 4
+        _table, first, last = _s.unpack_from(">III", binary, at)
+        hunks = last - first + 1
+        at += 12 + 4 * hunks
+        ended = 0
+        while ended < hunks:
+            kind = _s.unpack_from(">I", binary, at)[0] & 0x3FFFFFFF
+            at += 4
+            if kind in (0x3E9, 0x3EA):                         # CODE, DATA
+                at += 4 + 4 * (_s.unpack_from(">I", binary, at)[0] & 0x3FFFFFFF)
+            elif kind == 0x3EB:                                # BSS
+                at += 4
+            elif kind in (0x3EC, 0x3F7):                       # RELOC32, DREL32
+                while True:
+                    count = _s.unpack_from(">I", binary, at)[0]
+                    at += 4
+                    if not count:
+                        break
+                    at += 4 + 4 * count
+            elif kind in (0x3FC, 0x3FD):                       # RELOC32SHORT
+                while True:
+                    count = _s.unpack_from(">H", binary, at)[0]
+                    at += 2
+                    if not count:
+                        break
+                    at += 2 + 2 * count
+                at += at % 4
+            elif kind in (0x3F0,):                             # SYMBOL
+                while True:
+                    length = _s.unpack_from(">I", binary, at)[0]
+                    at += 4
+                    if not length:
+                        break
+                    at += 4 * (length & 0xFFFFFF) + 4
+            elif kind == 0x3F1:                                # DEBUG
+                at += 4 + 4 * _s.unpack_from(">I", binary, at)[0]
+            elif kind == HUNK_END_ID:
+                ended += 1
+            else:
+                return binary
+    except _s.error:
+        return binary
+    return binary[:at] if at <= len(binary) else binary
+
+
+def _lseg_chunks(seglist: bytes) -> list[bytes]:
+    data = loadable(seglist)
+    return [data[i:i + LSEG_DATA]
+            for i in range(0, len(data), LSEG_DATA)] or [b""]
+
+
 def has_rigid_disk_block(head: bytes) -> bool:
     """Whether the start of a disk holds a RigidDiskBlock, without reading on.
 
@@ -238,7 +312,7 @@ class Rdb:
         for fs in self.filesystems:
             fs_blocks.append(next_block)
             next_block += 1
-            chunks = [fs.seglist[i:i + 492] for i in range(0, len(fs.seglist), 492)] or [b""]
+            chunks = _lseg_chunks(fs.seglist)
             segs = list(range(next_block, next_block + len(chunks)))
             next_block += len(chunks)
             fs_segs.append(segs)
@@ -254,7 +328,7 @@ class Rdb:
             nxt = fs_blocks[index + 1] if index + 1 < len(fs_blocks) else END
             segs = fs_segs[index]
             put(block_no, self._fshd_block(fs, nxt, segs[0] if segs else END, len(segs)))
-            chunks = [fs.seglist[i:i + 492] for i in range(0, len(fs.seglist), 492)] or [b""]
+            chunks = _lseg_chunks(fs.seglist)
             for seg_index, (seg_block, chunk) in enumerate(zip(segs, chunks)):
                 seg_next = segs[seg_index + 1] if seg_index + 1 < len(segs) else END
                 put(seg_block, self._lseg_block(chunk, seg_next))
@@ -336,10 +410,22 @@ class Rdb:
         return bytes(block)
 
     def _lseg_block(self, chunk: bytes, next_block: int) -> bytes:
+        """A LoadSegBlock holding ``chunk`` - and saying how much that is.
+
+        lsb_SummedLongs is the length of the block's data as well as of its
+        checksum, and Kickstart's own RDB loader reads the handler by it. It
+        was written as 128 for every block, so the last one handed the loader
+        its padding as well: zeros after the final HUNK_END, which it took
+        for a hunk it did not know and gave up. The handler was never loaded,
+        a drive booting from it stopped with Software Failure 8000 0008, and
+        one that was not booted from said "not mounted". FS-UAE's own loader
+        stops at the last hunk, so no emulated run ever showed it.
+        """
         block = bytearray(BLOCK)
-        struct.pack_into(">4sIiII", block, 0, ID_LSEG, 128, 0, 7, next_block)
+        summed = LSEG_HEADER_LONGS + -(-len(chunk) // 4)
+        struct.pack_into(">4sIiII", block, 0, ID_LSEG, summed, 0, 7, next_block)
         block[20:20 + len(chunk)] = chunk
-        _checksum(block, 128)
+        _checksum(block, summed)
         return bytes(block)
 
     # -------------------------------------------------------------- reading
@@ -413,7 +499,9 @@ class Rdb:
                 sb = handle.read(BLOCK)
                 if len(sb) < BLOCK or sb[0:4] != ID_LSEG:
                     break
-                payload += sb[20:512]
+                summed = struct.unpack_from(">I", sb, 4)[0]
+                longs = max(0, min(summed, BLOCK // 4) - LSEG_HEADER_LONGS)
+                payload += sb[20:20 + longs * 4]
                 seg = struct.unpack_from(">i", sb, 16)[0]
                 if seg == -1:
                     break
