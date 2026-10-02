@@ -3305,6 +3305,25 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._toast(f"Tick {name or 'the drive'} and choose a folder to save "
                     f"it in; then come back to rebuild it")
 
+    def _restore_drives_target(self, config: builder.BuildConfig) -> None:
+        """Put a split build's drives target back.
+
+        It was saved and never restored, so a loaded split build came back
+        with nowhere for its drives to go - and so as a plain new card. A
+        card is found again by its path, if it is plugged in.
+        """
+        self.drives_size_row.set_text(
+            exact_size_text(config.drives_image_size))
+        if config.drives_target_is_device:
+            self.drives_kind_row.set_selected(0)
+            index = next((i for i, card in enumerate(self.device_list or [])
+                          if card.path == config.drives_target), None)
+            self.drives_device_row.set_selected(
+                0 if index is None else index + 1)
+        else:
+            self.drives_kind_row.set_selected(1)
+            self.drives_file_row.set_path(config.drives_target)
+
     def _drives_card(self):
         """The card chosen for a split build's drives, or None."""
         if self.drives_kind_row.get_selected() != 0:
@@ -5508,6 +5527,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         configuration, so the stale copy is the one that wins.
         """
         return {
+            #  The task, said outright: it is not always recoverable from
+            #  the configuration - a split build with its drives' target
+            #  not yet chosen reads as a new card.
+            "task": self._task.value if self._task is not None else "",
             "machine": self._machine().key,
             "display": self._display().name,
             "workbench_screen": "rtg" if self._prefer_rtg_screen() else "native",
@@ -5611,7 +5634,10 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _remember_session(self) -> None:
         try:
-            jobs.save_session(self.gather(), self.interface_state())
+            #  No card is needed to remember a setup: asking for one meant
+            #  nothing was saved until a target had been chosen.
+            jobs.save_session(self.gather(require_target=False),
+                              self.interface_state())
         except Exception:  # noqa: BLE001 - never block quitting over this
             pass
 
@@ -5626,8 +5652,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             except Exception:  # noqa: BLE001
                 return
             try:
-                jobs.save_session(self.gather(), self.interface_state(),
-                                  file.get_path())
+                jobs.save_session(self.gather(require_target=False),
+                                  self.interface_state(), file.get_path())
                 self._toast("Settings saved")
             except Exception as error:  # noqa: BLE001
                 self._toast(f"Could not save: {error}")
@@ -5645,7 +5671,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             try:
                 config, state, _reduced = jobs.load_session(file.get_path())
                 self._apply_saved(config, state)
-                self._take_up_loaded_setup()
+                self._take_up_loaded_setup(state)
                 self._toast("Settings loaded")
             except Exception as error:  # noqa: BLE001
                 self._toast(f"Could not load: {error}")
@@ -5666,17 +5692,22 @@ class ImagerWindow(Adw.ApplicationWindow):
         found = [steps.index(step) for step in wanted if step in steps]
         return steps[min(found)] if found else steps[-1]
 
-    def _take_up_loaded_setup(self) -> None:
+    def _take_up_loaded_setup(self, state: dict | None = None) -> None:
         """Into the task a loaded setup describes, at the step it needs next.
 
         Loading on the first screen left you there, with the setup applied
         out of sight and every step to walk to find what, if anything, was
-        left to do.
+        left to do. The task saved with it is taken; one saved before tasks
+        were recorded is read off the configuration.
         """
+        task = None
         try:
-            task = self.gather(require_target=False).task
-        except Exception:                        # noqa: BLE001 - incomplete
-            task = None
+            task = builder.Task((state or {}).get("task") or "")
+        except ValueError:
+            try:
+                task = self.gather(require_target=False).task
+            except Exception:                    # noqa: BLE001 - incomplete
+                task = None
         self._start_task(task or self._task or builder.Task.NEW_CARD)
         self._update_summary()
         self.stack.set_visible_child_name(self._first_step_needing_attention())
@@ -5829,6 +5860,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._on_os_cd_chosen()
         self.rom_key_row.set_path(config.kickstart_key)
         self.whdload_rom_row.set_path(config.whdload_kickstarts)
+        self._restore_drives_target(config)
         self.volume_row.set_text(config.amiga_volume_name)
         self.adf_row.set_path(config.adf_folder)
         #  The operating system combo is the only place this is recorded now,
