@@ -874,6 +874,8 @@ class BuildConfig:
                 and not Path(self.whdload_kickstarts).is_dir():
             problems.append(f"Folder of Kickstarts for WHDLoad not found: "
                             f"{self.whdload_kickstarts}")
+        if self.pfs3_binary and not Path(self.pfs3_binary).is_file():
+            problems.append(f"PFS3 handler not found: {self.pfs3_binary}")
         if self.emu68_archive and not Path(self.emu68_archive).is_file():
             problems.append(f"Emu68 archive not found: {self.emu68_archive}")
         if self.mode is BuildMode.FRESH:
