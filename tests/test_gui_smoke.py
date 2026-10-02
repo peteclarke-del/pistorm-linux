@@ -793,7 +793,7 @@ def on_activate(app: ImagerApplication) -> None:
                 builder.AmigaPartitionSpec(name="DH3", volume_name="Work",
                                       size=None),
             ])
-        window.apply(saved, keep_partitions=True)
+        window.apply(saved)
         check([r.spec().volume_name for r in window.partition_rows]
               == ["Workbench", "Games", "Demos", "Work"],
               "a loaded layout reaches the rows")
@@ -844,7 +844,7 @@ def on_activate(app: ImagerApplication) -> None:
         #  so loading a setup cleared every tick.
         with_packages = dataclasses.replace(
             saved, package_keys=["whdload", "lha"])
-        window.apply(with_packages, keep_partitions=True)
+        window.apply(with_packages)
         ticked = {k for k, r in window.package_rows.items() if r.get_active()}
         check({"whdload", "lha"} <= ticked,
               f"the chosen software is restored ({sorted(ticked)})")
@@ -1299,7 +1299,7 @@ def on_activate(app: ImagerApplication) -> None:
         said = ["A first concern. " * 12, "A second one."]
         with _mock.patch.object(builder.BuildConfig, "concerns",
                                 lambda self, **_k: said), \
-                _mock.patch.object(window, "_missing_choices", lambda: []), \
+                _mock.patch.object(window, "_missing_choices", lambda *_a: []), \
                 _mock.patch.object(builder.BuildConfig, "validate",
                                    lambda self: []):
             window._update_summary()
@@ -1392,12 +1392,12 @@ def on_activate(app: ImagerApplication) -> None:
         window.variant_row.set_selected(
             [v.key for v in _emu68.VARIANTS].index("pistorm"))
         beta = dataclasses.replace(window.gather(), release_tag="v1.1.0-beta.1")
-        window.apply(beta, keep_partitions=True)
+        window.apply(beta)
         check(window.gather().release_tag == "v1.1.0-beta.1",
               f"a saved Emu68 release is restored ({window.gather().release_tag!r})")
         #  And a setup that named none still gets the newest stable build.
         plain = dataclasses.replace(window.gather(), release_tag="")
-        window.apply(plain, keep_partitions=True)
+        window.apply(plain)
         check(window.gather().release_tag == "v1.0.7",
               f"with none saved, the newest stable is chosen ({window.gather().release_tag!r})")
         #  The summary is written before that list arrives, so it says an
@@ -1473,7 +1473,7 @@ def on_activate(app: ImagerApplication) -> None:
         big = dataclasses.replace(
             window.gather(), target=str(SCRATCH / "big.img"),
             target_is_device=False, image_size=125 * 1024 ** 3)
-        window.apply(big, keep_partitions=True)
+        window.apply(big)
         window.apply_interface_state(dict(saved, card_size="59.48G",
                                           target_kind=0,
                                           image_path="/tmp/somewhere-else.img"))
@@ -2633,7 +2633,8 @@ def on_activate(app: ImagerApplication) -> None:
         #  and reading drives back out is its own task now.
         check(window.target_row.get_model().get_n_items() == 2,
               "the bare .hdf output option is gone, not merely hidden")
-        check(not window._making_hdf(), "and nothing still asks for one")
+        check(not window.gather(require_target=False).output_hdf,
+              "and nothing still asks for one")
         window.target_row.set_selected(1)
         pump()
         check(not window.gather().target_is_device,
@@ -2646,7 +2647,7 @@ def on_activate(app: ImagerApplication) -> None:
         #  only write that partition out". The drives are read off the card,
         #  and only the one that boots is offered a system and software.
         print("\nrebuilding one drive")
-        was_customising = getattr(window, "_customising", False)
+        was_customising = window._task is not None
         was_mode = window.mode_row.get_selected()
         window._choose_rewrite()
         pump()
@@ -2697,7 +2698,7 @@ def on_activate(app: ImagerApplication) -> None:
         #  Put the window back exactly as it was afterwards: this task hides
         #  every other page while it is chosen, and the checks that follow
         #  are about the quick start.
-        was_customising = getattr(window, "_customising", False)
+        was_customising = window._task is not None
         was_mode = window.mode_row.get_selected()
         window._start_task(builder.Task.EXPORT)
         pump()
