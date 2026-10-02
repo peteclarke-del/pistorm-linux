@@ -2085,6 +2085,13 @@ def on_activate(app: ImagerApplication) -> None:
             on_remove=lambda _r: None, on_change=None)
         check(keeper.spec().software == ["Internet"],
               "a drive's software survives being shown")
+        system = PartitionRow(
+            builder.AmigaPartitionSpec("DH0", 4095 * 1024 * 1024, "PFS\\3",
+                                       bootable=True),
+            on_remove=lambda _r: None, on_change=None)
+        check(system.spec().size == 4095 * 1024 * 1024,
+              f"a drive's size survives being shown exactly "
+              f"({system.size_row.get_text()})")
         keeper._software_rows["Tools"].set_active(True)
         check(set(keeper.spec().software) == {"Internet", "Tools"},
               "ticking a kind keeps it on that drive")
