@@ -573,6 +573,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.releases: list[emu68.Release] = []
         self.device_list: list[devices.Device] = []
         self.process: subprocess.Popen | None = None
+        self._write_running = False
         self.cancel_flag = threading.Event()
         #  One for the life of the window, so the answer to a check is still
         #  there when the About dialog is opened again.
@@ -5195,6 +5196,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.progress_bar.set_fraction(0.0)
         self.step_label.set_text("Preparing…")
         self.progress_title.set_subtitle(config.target)
+        self._write_running = True
         self.cancel_button.set_visible(True)
         self.progress_back_button.set_visible(False)
         self.save_log_button.set_visible(False)
@@ -5349,6 +5351,7 @@ class ImagerWindow(Adw.ApplicationWindow):
 
     def _finished(self, success: bool, message: str) -> bool:
         self._remember_session()
+        self._write_running = False
         self.cancel_button.set_visible(False)
         self.progress_back_button.set_visible(True)
         self.save_log_button.set_visible(True)
@@ -5649,8 +5652,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         dialog.save(self, None, done)
 
     def writing(self) -> bool:
-        """Whether a card is being written: no update is installed then."""
-        return self.cancel_button.get_visible()
+        """Whether a card is being written: no update is installed then.
+
+        Said outright rather than read off the progress window's Cancel
+        button, which a button is from birth: every window counted as
+        writing until its first card was finished, and the update was
+        refused on every one of them.
+        """
+        return self._write_running
 
     def restart(self) -> bool:
         """Close, and have the application start again on the new version.

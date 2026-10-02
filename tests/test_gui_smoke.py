@@ -371,6 +371,11 @@ def _check_application_updates(window) -> None:
           "and checks there, once")
     close_about()
 
+    #  The real window is the host, and a window that has written nothing
+    #  is not writing: it read the progress window's Cancel button, visible
+    #  from birth, and refused every update until a card had been written.
+    check(not window.writing(), "a fresh window is not writing a card")
+
     #  A copy installed from a release package updates itself: the button
     #  installs, a card being written holds it back, and it ends in Restart.
     target = updates.PackageTarget("ubuntu24.04", "all",
@@ -418,6 +423,19 @@ def _check_application_updates(window) -> None:
     controls.button.emit("clicked")
     check(steps[-1] == "restart", "and Restart restarts")
     close_about()
+
+    #  And with the window itself deciding whether a card is being written.
+    real = app_updater.AppUpdater(
+        check=lambda: packaged, where=updates.Installation("package",
+                                                           target=target),
+        host=window, download=download,
+        install=lambda package: steps.append("installed by the window"))
+    real.update(packaged)
+    wait_for(lambda: real.state.phase in ("installed", "available"),
+             "the window-hosted install")
+    check(real.state.phase == "installed",
+          f"with the real window as host the update installs "
+          f"({real.state.phase}: {real.state.message})")
 
 
 def on_activate(app: ImagerApplication) -> None:
