@@ -858,7 +858,13 @@ class BuildConfig:
                 problems.append("The boot partition must be at least 64 MiB.")
         if self.kickstart_path and not Path(self.kickstart_path).is_file():
             problems.append(f"Kickstart ROM not found: {self.kickstart_path}")
-        if self.whdload_kickstarts \
+        #  Only asked of a card WHDLoad is going on: the folder is set
+        #  under its tick, and stays set if the tick is taken off.
+        wants_kickstarts = any(
+            packages.CATALOGUE_BY_KEY[key].kickstart_drawer
+            for key in packages.expand(self.package_keys or [])
+            if key in packages.CATALOGUE_BY_KEY)
+        if self.whdload_kickstarts and wants_kickstarts \
                 and not Path(self.whdload_kickstarts).is_dir():
             problems.append(f"Folder of Kickstarts for WHDLoad not found: "
                             f"{self.whdload_kickstarts}")

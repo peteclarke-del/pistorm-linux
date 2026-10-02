@@ -829,8 +829,13 @@ class KickstartsForWHDLoad(_Scratch):
         self.assertEqual(Path(placed[0][0]).read_bytes(), rom)
 
     def test_a_folder_that_is_not_there_is_refused(self):
+        wanting = next(p.key for p in builder.packages.CATALOGUE
+                       if p.kickstart_drawer)
         config = builder.BuildConfig(target="/tmp/x.img",
                                      whdload_kickstarts="/nonexistent/roms")
+        self.assertFalse([p for p in config.validate() if "WHDLoad" in p],
+                         "not asked of a card WHDLoad is not going on")
+        config.package_keys = [wanting]
         self.assertTrue([p for p in config.validate() if "WHDLoad" in p])
 
 
