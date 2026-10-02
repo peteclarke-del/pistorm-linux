@@ -576,7 +576,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         self.cancel_flag = threading.Event()
         #  One for the life of the window, so the answer to a check is still
         #  there when the About dialog is opened again.
-        self.app_updater = AppUpdater()
+        self.app_updater = AppUpdater(host=self)
         self.about_dialog: Adw.AboutDialog | None = None
 
         self.toasts = Adw.ToastOverlay()
@@ -5647,6 +5647,23 @@ class ImagerWindow(Adw.ApplicationWindow):
             self._toast("Log saved")
 
         dialog.save(self, None, done)
+
+    def writing(self) -> bool:
+        """Whether a card is being written: no update is installed then."""
+        return self.cancel_button.get_visible()
+
+    def restart(self) -> bool:
+        """Close, and have the application start again on the new version.
+
+        Not while a card is being written: the window refuses to close then.
+        """
+        if self.writing():
+            return False
+        self.get_application().restart_requested = True
+        if self.about_dialog is not None:
+            self.about_dialog.force_close()
+        self.close()
+        return True
 
     def _on_check_updates(self, _button) -> None:
         """Open the About dialog and check there, so there is one check."""
