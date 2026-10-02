@@ -1,13 +1,16 @@
 """Tests for hard disk image import/export and the PiStorm compatibility repair."""
+import dataclasses
 import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager.core import builder, hdfcheck, mbr, presets, rdb  # noqa: E402
+from pistorm_imager.core import (amigaos, builder, hdfcheck, mbr,  # noqa: E402
+                                  packages, presets, rdb)
 from pistorm_imager.core.util import MIB, Progress  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from emu68_stub import EMU68  # noqa: E402
@@ -321,6 +324,112 @@ class TestUserStartupOnBothFileSystems(_Scratch):
     @unittest.skipUnless(ADFS.is_dir(), "no Workbench disks available")
     def test_pfs3_system_drive(self):
         self.check("PFS3")
+
+
+class SoftwareKeptOnItsOwnDrive(_Scratch):
+    """Programs on a drive of their own, and AmigaOS's parts where it looks.
+
+    The packages are faked with files of the shapes the catalogue's own
+    produce, so this is the build itself and nothing downloaded.
+    """
+
+    def setUp(self):
+        here = self.scratch()
+        system = here / "system"
+        (system / "S").mkdir(parents=True)
+        (system / "S" / "Startup-Sequence").write_bytes(b"LoadWB\n")
+        program = here / "AmiTimeKeeper"
+        program.mkdir()
+        (program / "TimeKeeper").write_bytes(b"\0\0\x03\xf3 a program")
+        (program / "Go").write_bytes(
+            b"Run SYS:Utilities/AmiTimeKeeper/TimeKeeper\n")
+        library = here / "amisslmaster.library"
+        library.write_bytes(b"\0\0\x03\xf3 a library")
+        #  AWeb's shape: its own drawer inside one other software shares,
+        #  and the drawer's icon beside it.
+        aweb = here / "AWeb_APL"
+        aweb.mkdir()
+        (aweb / "AWeb").write_bytes(b"\0\0\x03\xf3 a browser")
+        aweb_icon = here / "AWeb_APL.info"
+        aweb_icon.write_bytes(b"\xe3\x10 an icon")
+        #  AmiSSL's: files straight into a drawer only it uses.
+        ssl = here / "OpenSSL"
+        ssl.write_bytes(b"\0\0\x03\xf3 a command")
+        self.faked = [("amitimekeeper",
+                       [(str(program), "Utilities/AmiTimeKeeper"),
+                        (str(library), "Libs")]),
+                      ("aweb", [(str(aweb), "Programs/AWeb_APL"),
+                                (str(aweb_icon), "Programs")]),
+                      ("amissl", [(str(ssl), "AmiSSL")])]
+        self.out = here / "card.hdf"
+        self.config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(self.out),
+            output_hdf=True, image_size=300 * MIB,
+            emu68_prepared_dir=EMU68, pfs3_binary=PFS3_HANDLER,
+            package_keys=["amitimekeeper", "aweb", "amissl"],
+            package_chipset="AGA", package_display="native",
+            amiga_partitions=[
+                builder.AmigaPartitionSpec(
+                    "DH0", 100 * MIB, "FFS-INTL", True, 0,
+                    content_folder=str(system), volume_name="System"),
+                builder.AmigaPartitionSpec(
+                    "DH1", None, "FFS-INTL", False, -128,
+                    volume_name="Programs",
+                    software=[packages.Category.NETWORK.value]),
+            ])
+
+    def faking(self):
+        return unittest.mock.patch.object(packages, "overlays_by_package",
+                                          return_value=self.faked)
+
+    def read(self, drive: str, path: str) -> bytes | None:
+        volume, _label = amigaos.open_amiga_volume(self.out, drive)
+        try:
+            entry = volume.find(path)
+            return volume.read_file(entry) if entry is not None else None
+        finally:
+            volume.f.close()
+
+    def test_the_program_goes_on_its_drive_and_its_library_into_libs(self):
+        with self.faking():
+            builder.run_build(self.config, QUIET)
+        program = "Utilities/AmiTimeKeeper/TimeKeeper"
+        self.assertIsNotNone(self.read("DH1", program))
+        self.assertIsNone(self.read("DH0", program))
+        self.assertIsNotNone(self.read("DH1", "Programs/AWeb_APL/AWeb"))
+        self.assertIsNotNone(self.read("DH0", "Libs/amisslmaster.library"))
+        self.assertIsNone(self.read("DH1", "Libs/amisslmaster.library"))
+        #  Every path to it names the drive it is on.
+        self.assertIn(b"Run DH1:Utilities/AmiTimeKeeper/TimeKeeper",
+                      self.read("DH1", "Utilities/AmiTimeKeeper/Go"))
+        startup = self.read("DH0", "S/User-Startup").decode("latin-1")
+        self.assertIn(f"Run >NIL: DH1:{program}", startup)
+        self.assertIn("AWEB_APL: DH1:Programs/AWeb_APL", startup)
+        self.assertIn("Assign AmiSSL: DH1:AmiSSL", startup)
+        self.assertIsNotNone(self.read("DH1", "Programs/AWeb_APL.info"))
+        self.assertNotIn("SYS:Utilities/AmiTimeKeeper", startup)
+        record = self.read("DH0", builder.MANIFEST_PATH).decode("latin-1")
+        self.assertIn("DH1:Utilities/AmiTimeKeeper", record)
+
+    def test_only_what_was_moved_is_repointed(self):
+        """AWeb shares Programs with software nobody moved."""
+        with self.faking():
+            moves = builder._software(self.config, QUIET).moves
+        self.assertEqual(moves["Programs/AWeb_APL"], "DH1")
+        self.assertEqual(moves["AmiSSL"], "DH1")
+        #  Shared with other software, so never moved whole.
+        self.assertNotIn("Programs", moves)
+        self.assertNotIn("Utilities", moves)
+        self.assertNotIn("Libs/amisslmaster.library", moves)
+
+    def test_without_a_drive_for_it_everything_stays(self):
+        config = dataclasses.replace(self.config, amiga_partitions=[
+            dataclasses.replace(spec, software=[])
+            for spec in self.config.amiga_partitions])
+        with self.faking():
+            software = builder._software(config, QUIET)
+        self.assertEqual(software.away, {})
+        self.assertEqual(software.moves, {})
 
 
 class TestEmptyPartitionsAreFormatted(_Scratch):

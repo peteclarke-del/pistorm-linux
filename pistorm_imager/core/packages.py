@@ -107,6 +107,52 @@ SYSTEM_DRAWERS = ("C", "L", "S", "Libs", "Devs", "Prefs", "Locale", "Rexxc",
                   "Utilities", "Expansion")
 
 
+#  Where AmigaOS finds things for itself: through the assigns it makes as it
+#  starts (C:, L:, S:, LIBS:, DEVS:, FONTS:, LOCALE:, ENVARC: under Prefs and
+#  the Classes LIBS: is extended with) or because Workbench looks there by
+#  position (WBStartup, Storage, System, Expansion).  A file a package puts in
+#  one of these is installed into AmigaOS, so it stays on the drive the
+#  machine boots from whichever drive keeps the program itself.
+AMIGAOS_PLACES = frozenset({
+    "c", "l", "s", "libs", "devs", "fonts", "locale", "prefs", "classes",
+    "wbstartup", "storage", "system", "expansion", "rexxc"})
+
+
+def in_amigaos(destination: str) -> bool:
+    """Whether a destination on the drive is one of AmigaOS's own places."""
+    top = destination.strip("/").partition("/")[0].lower()
+    return not top or top in AMIGAOS_PLACES
+
+
+def top_drawers(package: "Package") -> set[str]:
+    """The top-level drawers a package names for its files, lower case."""
+    download = package.download
+    if download is None:
+        return set()
+    named = ([destination for _inside, destination in download.items]
+             + [download.stage]
+             + [item.destination for item in download.write]
+             + [item.destination for item in download.made]
+             + [entry[1] for entry in download.rename]
+             + [entry[1] for entry in download.retool]
+             + [entry[1] for entry in download.tooltypes]
+             + [entry[-1] for entry in download.cpu_items])
+    return {name.strip("/").partition("/")[0].lower()
+            for name in named if name.strip("/")}
+
+
+def owns_drawer(key: str, top: str) -> bool:
+    """Whether a top-level drawer is this package's alone, in the catalogue.
+
+    AmiSSL is the only package that puts anything in AmiSSL; Programs is
+    shared by a dozen.  A drawer only one package uses can go with it to
+    another drive whole, and a path naming the drawer itself goes too.
+    """
+    users = {package.key for package in CATALOGUE
+             if top.lower() in top_drawers(package)}
+    return users == {key}
+
+
 @dataclasses.dataclass(frozen=True)
 class Written:
     """A file this tool writes itself, rather than taking from an archive.

@@ -39,6 +39,54 @@ class _Scratch(unittest.TestCase):
         return folder
 
 
+class SoftwareKeptOnAnotherDrive(unittest.TestCase):
+    """SYS: paths into software moved to another drive point at that drive."""
+
+    MOVES = {"Utilities/AmiTimeKeeper": "DH1", "AmiSSL": "DH1",
+             "Programs/AWeb_APL": "DH2"}
+
+    def test_a_path_into_moved_software_names_its_drive(self):
+        self.assertEqual(
+            compat.repath("Run >NIL: SYS:Utilities/AmiTimeKeeper/TimeKeeper\n"
+                          "Assign AmiSSL: SYS:AmiSSL\n"
+                          'Assign AWEB_APL: "sys:Programs/AWeb_APL"',
+                          self.MOVES),
+            "Run >NIL: DH1:Utilities/AmiTimeKeeper/TimeKeeper\n"
+            "Assign AmiSSL: DH1:AmiSSL\n"
+            'Assign AWEB_APL: "DH2:Programs/AWeb_APL"')
+
+    def test_anything_else_is_left_alone(self):
+        for text in ("SYS:Utilities/MultiView", "SYS:Programs/AWeb_APLX",
+                     "SYS:AmiSSLib", "DH0:AmiSSL", "LIBS:AmiSSL"):
+            self.assertEqual(compat.repath(text, self.MOVES), text)
+
+    def fixer(self, enabled=True) -> compat.Compatibility:
+        fixer = compat.Compatibility(QUIET, enabled=enabled)
+        fixer.relocate(self.MOVES)
+        return fixer
+
+    def test_an_icons_tool_and_tool_types_are_repointed(self):
+        icon = amigainfo.set_default_tool(
+            make_icon(["PROGDIR=SYS:AmiSSL/Libs", "SIZE=10"]),
+            "SYS:Utilities/AmiTimeKeeper/TimeKeeper")
+        fixed = self.fixer().offer("Prefs/TimeKeeper.info", icon)
+        self.assertEqual(amigainfo.read_default_tool(fixed),
+                         "DH1:Utilities/AmiTimeKeeper/TimeKeeper")
+        self.assertEqual(amigainfo.read_tooltypes(fixed),
+                         ["PROGDIR=DH1:AmiSSL/Libs", "SIZE=10"])
+
+    def test_a_script_is_repointed_even_with_the_pass_off(self):
+        """A path naming SYS: names nothing; it is not a compatibility fix."""
+        fixed = self.fixer(enabled=False).offer(
+            "S/Network-Startup", b"Run SYS:Utilities/AmiTimeKeeper/TimeKeeper\n")
+        self.assertEqual(fixed, b"Run DH1:Utilities/AmiTimeKeeper/TimeKeeper\n")
+
+    def test_a_program_is_never_edited(self):
+        """A path in a binary is a fixed-length string."""
+        binary = b"\0\0\x03\xf3SYS:AmiSSL/Libs\0"
+        self.assertEqual(self.fixer().offer("C/Tool", binary), binary)
+
+
 class TestIconToolTypes(unittest.TestCase):
     def test_round_trip(self):
         icon = make_icon(["BOARDTYPE=uaegfx", "IGNOREMASK=Yes"])
