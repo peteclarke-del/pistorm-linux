@@ -107,9 +107,8 @@ def stage_user_only_inputs(config: builder.BuildConfig, into: Path,
     #  Said outright before the Kickstart is moved: WHDLoad's images default
     #  to the folder the card's Kickstart came from, and that would become
     #  a folder holding the one ROM.
-    wants_roms = any(packages.CATALOGUE_BY_KEY[key].kickstart_drawer
-                     for key in packages.expand(config.package_keys or [])
-                     if key in packages.CATALOGUE_BY_KEY)
+    wants_roms = bool(packages.chosen_with(config.package_keys,
+                                           "kickstart_drawer"))
     whdload = config.whdload_kickstarts
     if not whdload and config.kickstart_path:
         whdload = str(Path(config.kickstart_path).parent)

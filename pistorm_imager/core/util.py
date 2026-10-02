@@ -13,6 +13,9 @@ KIB = 1024
 MIB = 1024 * KIB
 GIB = 1024 * MIB
 
+#  The first longword of every AmigaDOS executable, library and handler.
+HUNK_HEADER = b"\x00\x00\x03\xf3"
+
 
 def human_size(n: int) -> str:
     """Format a byte count the way disk tools do (1 GiB -> '1.00 GiB')."""

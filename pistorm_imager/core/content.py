@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import struct
 from collections.abc import Iterable
 from pathlib import Path
 
 from .machines import Chipset, Machine
+from .util import HUNK_HEADER
 
 #  Category names whose hardware requirement is known.  Matched on the folder
 #  name, case-insensitively; anything else is listed with no requirement, which
@@ -231,7 +233,6 @@ def version_of(data: bytes) -> tuple[int, int] | None:
     return resident_version(data)
 
 
-HUNK_HEADER_ID = 0x3F3
 HUNK_CODE = 0x3E9
 RT_MATCHWORD = b"\x4a\xfc"
 
@@ -248,15 +249,14 @@ def resident_version(data: bytes) -> tuple[int, int] | None:
     and a pointer to the ID string, whose revision is the part after the dot.
     Only the first code hunk is searched, which is where the structure lives.
     """
-    import struct                                         # noqa: PLC0415
-    if len(data) < 32 or struct.unpack_from(">I", data, 0)[0] != HUNK_HEADER_ID:
+    if len(data) < 32 or data[:4] != HUNK_HEADER:
         return None
     try:
         at = 4
         while struct.unpack_from(">I", data, at)[0]:      # resident names
             at += 4 + 4 * struct.unpack_from(">I", data, at)[0]
         at += 4
-        count, first, last = struct.unpack_from(">III", data, at)
+        _count, first, last = struct.unpack_from(">III", data, at)
         at += 12 + 4 * (last - first + 1)
         if struct.unpack_from(">I", data, at)[0] & 0x3FFFFFFF != HUNK_CODE:
             return None
@@ -265,7 +265,6 @@ def resident_version(data: bytes) -> tuple[int, int] | None:
         code = data[start:start + 4 * longs]
     except struct.error:
         return None
-    del count
     offset = code.find(RT_MATCHWORD)
     while offset != -1 and offset + 26 <= len(code):
         if offset % 2 == 0 \
@@ -556,7 +555,7 @@ def cannot_work(reader, volumes: Iterable[str],
                 why.append(f"{kid.name} is built for another processor")
                 continue
             #  Only small text files: a script, not a program or a payload.
-            if data[:4] == b"\x00\x00\x03\xf3" or len(data) > 20000:
+            if data[:4] == HUNK_HEADER or len(data) > BIGGEST_SCRIPT:
                 continue
             text = data.decode("latin-1", "replace")
             for found in MOUNTS.finditer(text):
@@ -776,7 +775,6 @@ class Clutter:
 #  Shared with the rest of the tool rather than spelled again here: an icon is
 #  ".info" everywhere, and an AmigaDOS executable starts with the hunk header.
 ICON_SUFFIX = ".info"
-HUNK_HEADER = b"\x00\x00\x03\xf3"
 
 #  Where Workbench keeps the list of icons it shows on the desktop.
 BACKDROP = ".backdrop"
