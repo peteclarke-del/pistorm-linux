@@ -673,22 +673,31 @@ class ImagerWindow(Adw.ApplicationWindow):
                          margin_top=10, margin_bottom=10, margin_start=12, margin_end=12)
         #  Back sits with Write, at the other end of the same bar: they are
         #  the two things you do when you have finished reading the page.
-        self.back_button = Gtk.Button(label="Back")
+        #  Centred, at their own height: the summary beside them can run to
+        #  several lines, and buttons left to fill the bar swelled with it.
+        self.back_button = Gtk.Button(label="Back", valign=Gtk.Align.CENTER)
         self.back_button.add_css_class("pill")
         self.back_button.connect("clicked", lambda _b: self._go_back())
         bottom.append(self.back_button)
-        self.summary = Gtk.Label(xalign=0.0, wrap=True, hexpand=True)
+        #  Two lines at most, the rest in its tooltip: every concern a build
+        #  raised made the bar taller, until it covered the page above it.
+        self.summary = Gtk.Label(xalign=0.0, wrap=True, hexpand=True,
+                                 lines=2, ellipsize=Pango.EllipsizeMode.END)
         self.summary.add_css_class("dim-label")
+        self.summary.connect(
+            "notify::label",
+            lambda label, _p: label.set_tooltip_text(label.get_text() or None))
         bottom.append(self.summary)
         #  Front to back: Next takes the task's steps in their order, and
         #  Write is only offered on the last of them, once everything before
         #  it has been seen.
-        self.next_button = Gtk.Button(label="Next")
+        self.next_button = Gtk.Button(label="Next", valign=Gtk.Align.CENTER)
         self.next_button.add_css_class("suggested-action")
         self.next_button.add_css_class("pill")
         self.next_button.connect("clicked", lambda _b: self._go_next())
         bottom.append(self.next_button)
-        self.write_button = Gtk.Button(label="Write card")
+        self.write_button = Gtk.Button(label="Write card",
+                                       valign=Gtk.Align.CENTER)
         self.write_button.add_css_class("suggested-action")
         self.write_button.add_css_class("pill")
         self.write_button.connect("clicked", self._on_write)
@@ -1181,6 +1190,22 @@ class ImagerWindow(Adw.ApplicationWindow):
         box.append(self.missing_label)
         self.missing_group.add(box)
         page.add(self.missing_group)
+        #  What will build but is probably not what was meant. These used to
+        #  be appended to the bar at the bottom, which grew a line for each
+        #  until it covered the page and swelled the buttons beside it.
+        self.concerns_group = Adw.PreferencesGroup(
+            title="Worth checking",
+            description="The card will still be written; these are choices "
+                        "that probably do not do what was meant.")
+        self.concerns_label = Gtk.Label(xalign=0.0, wrap=True,
+                                        margin_top=6, margin_bottom=6,
+                                        margin_start=12, margin_end=12)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.add_css_class("card")
+        box.append(self.concerns_label)
+        self.concerns_group.add(box)
+        self.concerns_group.set_visible(False)
+        page.add(self.concerns_group)
         page.add(self.group_plan)
         return page
 
@@ -4640,6 +4665,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             "Export" if self._mode() is builder.BuildMode.EXPORT
             else "Write card")
         missing = self._missing_choices()
+        if hasattr(self, "concerns_group"):
+            self.concerns_group.set_visible(False)
         if hasattr(self, "missing_group"):
             self.missing_group.set_visible(bool(missing))
             self.missing_label.set_text(
@@ -4690,7 +4717,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  here, where the setup is accepted, rather than discovered on the
         #  Amiga afterwards.
         concerns = config.concerns()
-        note = ("\n\n" + "\n".join(f"\u2022 {c}" for c in concerns)) if concerns else ""
+        self.concerns_group.set_visible(bool(concerns))
+        self.concerns_label.set_text(
+            "\n\n".join(f"\u2022 {c}" for c in concerns))
+        note = ""
+        if concerns:
+            count = len(concerns)
+            note = (f"  ·  {count} thing{'s' if count > 1 else ''} worth "
+                    f"checking on the Review step")
         self.summary.set_text(f"{what} → {target}{note}")
         self.write_button.set_sensitive(True)
         self._quick_preview()

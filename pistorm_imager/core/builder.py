@@ -357,7 +357,7 @@ class BuildConfig:
         default_factory=lambda: [AmigaPartitionSpec("DH1", None, "PFS3", False, -128)])
     extra_boot_files: list[str] = dataclasses.field(default_factory=list)
 
-    def concerns(self) -> list[str]:
+    def concerns(self, boot_card_built: bool = False) -> list[str]:
         """Choices that will build, and probably are not what was meant.
 
         Distinct from validate(), which refuses. These are combinations that
@@ -367,7 +367,9 @@ class BuildConfig:
         before anything is written, and the build goes ahead anyway.
         """
         if self.drives_target and not self.shape_problems():
-            said = self.drives_part().concerns()
+            #  The drives half is told its boot card is being written too,
+            #  so it does not ask for one to be built separately.
+            said = self.drives_part().concerns(boot_card_built=True)
             said += [c for c in self.boot_card_part().concerns()
                      if c not in said]
             return said
@@ -469,7 +471,8 @@ class BuildConfig:
         #  Emu68's driver for it, but the Pi's side of the screen - its HDMI
         #  mode and the memory the driver draws in - is in config.txt on the
         #  PiStorm's own card, which this build does not write.
-        if self.amiga_only and self.rtg_display and self.on_a_pistorm():
+        if self.amiga_only and self.rtg_display and self.on_a_pistorm() \
+                and not boot_card_built:
             said.append(
                 "This drive is set up for an RTG screen on the Pi's HDMI, "
                 "and the Pi's half of that lives on the PiStorm's own card. "

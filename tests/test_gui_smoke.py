@@ -274,10 +274,17 @@ def _check_application_updates(window) -> None:
               f"the About dialog has one set of update controls ({len(found)})")
         return found[0] if found else None
 
-    def close_about():
+    def closed() -> bool:
+        #  Asked again until it takes: a dialog still animating open ignores
+        #  force_close(), and being mapped does not mean it has finished -
+        #  so a single close lost the race now and then and timed out.
+        if window.get_visible_dialog() is None:
+            return True
         window.about_dialog.force_close()
-        if not wait_for(lambda: window.get_visible_dialog() is None,
-                        "the About dialog to close"):
+        return False
+
+    def close_about():
+        if not wait_for(closed, "the About dialog to close"):
             d = window.get_visible_dialog()
             print("DIAG dialog", d, getattr(d, "get_heading", lambda: "")(),
                   "mapped", window.get_mapped(), "active", window.is_active(),
@@ -1285,6 +1292,27 @@ def on_activate(app: ImagerApplication) -> None:
         check(len(calls) <= 4 and window._drives_target()[0] == card.path,
               f"choosing the drives' card settles at once ({len(calls)} "
               f"passes, {window._drives_target()})")
+        #  What will build but is probably not meant goes on the Review
+        #  page; the bar keeps to one line and counts them. Appended to the
+        #  bar, they grew it until it covered the page.
+        import unittest.mock as _mock                          # noqa: PLC0415
+        said = ["A first concern. " * 12, "A second one."]
+        with _mock.patch.object(builder.BuildConfig, "concerns",
+                                lambda self, **_k: said), \
+                _mock.patch.object(window, "_missing_choices", lambda: []), \
+                _mock.patch.object(builder.BuildConfig, "validate",
+                                   lambda self: []):
+            window._update_summary()
+            bar = window.summary.get_text()
+            check("\n" not in bar and "2 things worth checking" in bar
+                  and all(c in window.concerns_label.get_text() for c in said)
+                  and window.concerns_group.get_visible(),
+                  f"the bar is one line and the concerns are on Review "
+                  f"({bar!r})")
+        window._update_summary()
+        check(not window.concerns_group.get_visible()
+              or window.gather().concerns(),
+              "and the Review page lets them go when they are settled")
         window.drives_device_row.set_selected(0)
         window._start_task(was_task or builder.Task.NEW_CARD)
 
