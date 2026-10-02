@@ -71,6 +71,9 @@ class ImagerApplication(Adw.Application):
             flags |= Gio.ApplicationFlags.NON_UNIQUE
         super().__init__(application_id=application_id, flags=flags)
         self.window: ImagerWindow | None = None
+        #  Set by the window after an update is installed: main() then
+        #  starts the new version in place of this one.
+        self.restart_requested = False
 
     def do_activate(self) -> None:  # noqa: D102 - GObject vfunc naming
         if self.window is None:
@@ -84,8 +87,22 @@ class ImagerApplication(Adw.Application):
         return 0
 
 
+def restart_command(argv: list[str]) -> list[str]:
+    """The command that starts PiStorm Imager again, with the same arguments."""
+    return [sys.executable, "-m", "pistorm_imager", *argv[1:]]
+
+
 def main(argv: list[str] | None = None) -> int:
-    return ImagerApplication().run(argv if argv is not None else sys.argv)
+    argv = argv if argv is not None else sys.argv
+    application = ImagerApplication()
+    status = application.run(argv)
+    if application.restart_requested:
+        #  The process is replaced, so every module of the new version is
+        #  loaded afresh. The environment - the package launcher's
+        #  PYTHONPATH among it - is kept.
+        command = restart_command(argv)
+        os.execv(command[0], command)
+    return status
 
 
 if __name__ == "__main__":

@@ -392,28 +392,47 @@ currently violates it.
 
 ## Requirements
 
-Everything is either in the Python standard library or already on a normal
-GNOME desktop:
+Installed from the release package, everything it needs comes with it: apt
+installs PyGObject with GTK 4 and libadwaita, dosfstools, 7-Zip, udisks2 and
+pkexec as the package's dependencies.
+
+Running from a checkout, install those yourself:
 
 ```
-sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 dosfstools
+sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 dosfstools 7zip
 ```
 
-`p7zip-full` is only needed for `.7z`/`.rar` source images. There is no
-`mtools`, `amitools` or `parted` dependency: the FAT32 and RDB layers are
-implemented in this project.
+There is no `mtools`, `amitools` or `parted` dependency: the FAT32 and RDB
+layers are implemented in this project.
 
 ## Running it
+
+**The release package** is the way to install it. Each release publishes one
+for Ubuntu 24.04 (and Linux Mint 22, which shares it) - pure Python, so the
+same file serves every architecture. Download
+`PiStorm-Imager_<version>_ubuntu24.04_all.deb` from the
+[latest release](https://github.com/peteclarke-del/pistorm-linux/releases/latest)
+and install it with apt, which brings its dependencies:
+
+```
+sudo apt install ./PiStorm-Imager_0.13.0_ubuntu24.04_all.deb
+```
+
+It installs into `/usr/lib/pistorm-imager`, starts with `pistorm-imager` or
+from the desktop's application grid, and **updates itself** from About (see
+[Updating PiStorm Imager](#updating-pistorm-imager)).
+
+**From a checkout**, without installing anything:
 
 ```
 ./run.sh
 ```
 
-or install it from the published release and use the desktop entry:
+**With pipx**, from a release tag:
 
 ```
 pipx install --system-site-packages \
-    "git+https://github.com/peteclarke-del/pistorm-linux@v0.12.0"
+    "git+https://github.com/peteclarke-del/pistorm-linux@v0.13.0"
 pistorm-imager-cli install-desktop
 ```
 
@@ -425,16 +444,13 @@ The second line is the one that used to be missing. `pipx` and `pip` install a
 Python package and **nothing else** - they know nothing about
 `~/.local/share/applications` or the hicolor icon theme - so an installed copy
 had no menu entry and no icon, and appeared in the desktop's grid as a generic
-drive. The two files were in the repository all along, and the documented way
-to install them was a pair of `install -Dm644` lines run from a checkout, which
-is exactly what somebody installing from a tag does not have.
-
-They now travel **inside** the package, at `pistorm_imager/data`, rather than
-beside it: `site-packages` holds the package and nothing else, so a path
-relative to the repository root pointed at a directory that was not there. That
-is also what lets a checkout and an installed copy share one code path -
-`app.py` adds `pistorm_imager/data/icons` to GTK's search path either way, so
-running `./run.sh` from a checkout finds the icon without installing anything.
+drive. The two files now travel **inside** the package, at
+`pistorm_imager/data`, rather than beside it: `site-packages` holds the package
+and nothing else, so a path relative to the repository root pointed at a
+directory that was not there. That is also what lets a checkout and an
+installed copy share one code path - `app.py` adds `pistorm_imager/data/icons`
+to GTK's search path either way, so running `./run.sh` from a checkout finds
+the icon without installing anything.
 
 `install-desktop` takes `--prefix` if the files should go somewhere other than
 `$XDG_DATA_HOME`, and refreshes the desktop and icon caches afterwards. A
@@ -454,18 +470,43 @@ neither is offered. The release's tag, `vX.Y.Z`, is compared with the version
 About shows, which is the one in `pistorm_imager/__init__.py`. The answer
 appears under the button:
 
-- `PiStorm Imager 0.12.0 is the newest version` when no later release has been
+- `PiStorm Imager 0.13.0 is the newest version` when no later release has been
   published.
-- The newer version and the one you have, how this copy is updated, and an
-  **Open Release Page** button that opens the release on GitHub.
+- The newer version and the one you have, and what can be done about it - see
+  below.
 - `Could not check for a newer version`, followed by the reason, when GitHub
   could not be reached, refused the request or sent something that is not a
   release. That is never reported as being up to date. Try again later: GitHub
   answers 60 requests an hour from one address without an account.
 
-A release publishes no package, only its tag, so the application does not
-download or install anything, and it never runs git or pipx itself. It says how
-the copy in front of you is updated:
+**A copy installed from the release package updates itself.** The button
+becomes **Update to X.Y.Z**; pressing it shows the release's notes and asks
+before anything is done. Then:
+
+1. The package for this system is downloaded into `~/.cache/pistorm-imager/updates`,
+   with a progress bar and a Cancel button, and checked against the release's
+   `SHA256SUMS`. A package that does not match is removed, never installed; one
+   already downloaded and matching is used again rather than fetched twice.
+2. Your password is asked for, and `install-update` - installed with the
+   package, owned by root - copies the package into a folder only root can
+   write to, **checks it again there**, and gives that copy to apt. The check
+   that counts is the one root makes: the first one is made as you, in your
+   cache, and anything running as you could change the file while the
+   password prompt is open.
+3. The button becomes **Restart PiStorm Imager**, which closes the window and
+   starts the new version in its place.
+
+Nothing is installed, and no restart happens, while a card is being written.
+A dismissed password prompt installs nothing and says so; a refusal or a
+failure says what to run by hand (`sudo apt install <the package>`).
+
+The package records which system it was built for in
+`/usr/lib/pistorm-imager/package-target`, and the update asks the release for
+the file of that name; a release with no package for this system says so and
+offers its page instead.
+
+**Any other copy is told how to update itself**, with an **Open Release Page**
+button. The application never runs git or pipx itself:
 
 | This copy | Update it in a terminal with |
 | --- | --- |
@@ -473,11 +514,19 @@ the copy in front of you is updated:
 | Installed with pipx, as [Running it](#running-it) describes | `pipx install --force --system-site-packages "git+https://github.com/peteclarke-del/pistorm-linux@vX.Y.Z"` |
 | Anything else | Nothing is suggested: install the new release the way this copy was installed. |
 
-`--force` lets pipx replace the copy it already has, and
-`--system-site-packages` is needed for the reason given above. Neither command
-touches the saved setup in `~/.config/pistorm-imager` or the downloads in
-`~/.cache/pistorm-imager`, and the desktop entry that `install-desktop` wrote
-keeps working because the command it runs keeps its name.
+None of these touch the saved setup in `~/.config/pistorm-imager` or the
+downloads in `~/.cache/pistorm-imager`.
+
+### How a release is published
+
+Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`. It refuses a tag
+that disagrees with `__version__` (`packaging/check-release-tag.sh`), runs the
+tests, builds the package with `packaging/build-deb.sh`, installs it on a clean
+Ubuntu 24.04 and checks that the installed copy asks for the file just built,
+then publishes the package and `SHA256SUMS` on the release - creating it with
+the notes in `docs/releases/X.Y.Z.md`, or adding them to a release already
+written by hand. Pull requests run the same tests and build the package
+without publishing anything.
 
 ## The window
 
@@ -643,7 +692,8 @@ pistorm_imager/
     content.py   what a games or demos tree is divided into, and what runs here
     distributions.py  recognising a prepared system and what it expects
     postwrite.py adapting a prepared system after it has been written
-    updates.py   asking GitHub whether there is a newer release of this tool
+    updates.py   asking GitHub for a newer release, and downloading and
+                 installing its package
     devices.py   finding and describing removable drives
     prepare.py   what is done as you before a card is written as root:
                  Emu68 fetched, and inputs on a network share copied
@@ -656,6 +706,9 @@ pistorm_imager/
   app.py         the GTK application itself
 pistorm_imager/data/   the icon and desktop entry, in the layout they
                  install into, and shipped inside the wheel
+packaging/       the Debian package: build-deb.sh, the launcher, the root-side
+                 update installer, and the record of which package it is
+.github/workflows/release.yml   tests, the package and SHA256SUMS for each tag
 docs/images/     the screenshots above, rendered from the real window by
                  tests/shots.py rather than captured by hand
 tests/           unit tests plus a real end-to-end image build;
@@ -666,7 +719,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 947 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 976 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE

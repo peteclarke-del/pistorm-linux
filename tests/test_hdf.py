@@ -7,12 +7,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pistorm_imager.core import builder, hdfcheck, mbr, rdb  # noqa: E402
+from pistorm_imager.core import builder, hdfcheck, mbr, presets, rdb  # noqa: E402
 from pistorm_imager.core.util import MIB, Progress  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from emu68_stub import EMU68  # noqa: E402
 
 QUIET = Progress()
+#  The handler embedded in the RDB where one has been cached; these tests are
+#  about what goes onto the drives, and build just as well without it, as a
+#  clean machine has to.
+PFS3_HANDLER = str(presets.cached_pfs3_handler() or "")
 
 
 class _Scratch(unittest.TestCase):
@@ -160,7 +164,7 @@ class TestOverlaysGoThroughTheCompatibilityPass(_Scratch):
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
             image_size=200 * MIB, emu68_prepared_dir=EMU68, fix_compatibility=True,
-            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            pfs3_binary=PFS3_HANDLER,
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, volume_name="Sys",
                 content_folder=str(overlay_dir),
@@ -274,7 +278,7 @@ class TestUserStartupOnBothFileSystems(_Scratch):
             image_size=400 * MIB, emu68_prepared_dir=EMU68,
             install_amigaos=True, adf_folder=str(self.ADFS),
             amiga_volume_name="Workbench", fix_compatibility=False,
-            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            pfs3_binary=PFS3_HANDLER,
             #  fblit contributes a line to S:User-Startup, which is what
             #  makes that file get written at all; iconlib goes into
             #  S:Startup-Sequence instead, so both routes are covered here.
@@ -327,7 +331,7 @@ class TestEmptyPartitionsAreFormatted(_Scratch):
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
             image_size=300 * MIB, emu68_prepared_dir=EMU68,
-            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            pfs3_binary=PFS3_HANDLER,
             amiga_partitions=partitions), QUIET)
         return out
 
@@ -832,7 +836,7 @@ class TestABootableDriveFilledFromAnImage(_Scratch):
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(made), output_hdf=True,
             image_size=40 * MIB, emu68_prepared_dir=EMU68,
-            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            pfs3_binary=PFS3_HANDLER,
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, volume_name="Src",
                 content_folder=str(tree))]), QUIET)
@@ -844,7 +848,7 @@ class TestABootableDriveFilledFromAnImage(_Scratch):
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
             image_size=80 * MIB, emu68_prepared_dir=EMU68, fix_compatibility=True,
-            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            pfs3_binary=PFS3_HANDLER,
             amiga_partitions=[builder.AmigaPartitionSpec(
                 "DH0", None, "PFS3", True, 0, volume_name="Sys",
                 content_hdf=str(source))]), QUIET)
@@ -873,7 +877,7 @@ class EveryDriveWearsTheCardsIcon(_Scratch):
         builder.run_build(builder.BuildConfig(
             mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
             image_size=120 * MIB, emu68_prepared_dir=EMU68, fix_compatibility=True,
-            pfs3_binary=str(Path.home() / ".cache/pistorm-imager/pfs3aio"),
+            pfs3_binary=PFS3_HANDLER,
             amiga_partitions=[
                 builder.AmigaPartitionSpec(
                     "DH0", 60 * MIB, "PFS3", True, 0, volume_name="Sys",

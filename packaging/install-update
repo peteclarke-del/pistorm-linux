@@ -1,0 +1,54 @@
+#!/bin/sh
+#
+# Install a downloaded update. Run as root by pkexec, with the package and the
+# SHA-256 it must have.
+#
+#   install-update PACKAGE SHA256
+#
+# The application checks the download against the release's SHA256SUMS, but it
+# does so as the user, in the user's cache folder, and pkexec then waits for as
+# long as the password prompt is open. Anything running as the user could put a
+# different file at that path in the meantime, and its maintainer scripts would
+# run as root on the strength of a password given for something else.
+#
+# So the check that counts is made here. The package is copied into a folder
+# that only root can write to, the copy is hashed, and the copy is what apt is
+# given. What was checked and what is installed are then the same bytes.
+
+set -eu
+
+if [ "$#" -ne 2 ]; then
+    echo "usage: install-update PACKAGE SHA256" >&2
+    exit 64
+fi
+package="$1"
+expected="$2"
+
+case "${expected}" in
+    *[!0-9a-f]*|"")
+        echo "The checksum given for the package is not a SHA-256." >&2
+        exit 64
+        ;;
+esac
+if [ "${#expected}" -ne 64 ]; then
+    echo "The checksum given for the package is not a SHA-256." >&2
+    exit 64
+fi
+
+work="$(mktemp -d /var/tmp/pistorm-imager-update.XXXXXX)"
+trap 'rm -rf -- "${work}"' EXIT HUP INT TERM
+# apt reads the package as the unprivileged _apt user, so the copy is readable
+# by all. Only root can write to the folder, which is what matters.
+chmod 0755 "${work}"
+copy="${work}/update.deb"
+cp --no-preserve=all -- "${package}" "${copy}"
+chmod 0644 "${copy}"
+
+actual="$(sha256sum -- "${copy}" | cut -d ' ' -f 1)"
+if [ "${actual}" != "${expected}" ]; then
+    echo "The package changed after it was checked, so it was not installed." >&2
+    exit 65
+fi
+
+# Not exec, so that the trap still removes the copy afterwards.
+apt-get install --yes "${copy}"
