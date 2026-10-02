@@ -574,6 +574,17 @@ when the target is a real SD card the writing step alone is re-executed through
 `pkexec`, which means the privileged half is offline and only touches the card.
 Writing to an `.img` file needs no authentication at all.
 
+**Anything on a network share is copied first.** A share opened from the file
+manager is a gvfs mount, and like any FUSE mount without `allow_other` it
+refuses root whatever its permissions say - a Kickstart folder on a NAS
+stopped a build with "Permission denied". Which mounts do this is read from
+`/proc/self/mountinfo`, and whatever the build was given on one - a Kickstart,
+the Workbench disks, a CD image, a drive image, a folder of games - is copied,
+as you, into the cache before `pkexec` runs, and removed when the write is
+over. A folder of Kickstarts for WHDLoad is copied as the ROMs in it, and only
+when WHDLoad is going on the card, since it is often one corner of a large
+collection.
+
 The card chooser lists only removable drives, and a device currently providing
 `/`, `/home`, `/boot` and friends is refused outright.
 
@@ -634,7 +645,8 @@ pistorm_imager/
     postwrite.py adapting a prepared system after it has been written
     updates.py   asking GitHub whether there is a newer release of this tool
     devices.py   finding and describing removable drives
-    prepare.py   partitioning and formatting the target
+    prepare.py   what is done as you before a card is written as root:
+                 Emu68 fetched, and inputs on a network share copied
     util.py      sizes, progress reporting, stream copying, expanding
                  compress (.Z) files
     builder.py   the orchestrator
@@ -654,7 +666,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 943 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 947 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
