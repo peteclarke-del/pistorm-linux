@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from pistorm_imager.core import machines  # noqa: E402
 from pistorm_imager.core import bootcfg, builder, emu68, fat32, jobs, kickstart, mbr, rdb  # noqa: E402
 from pistorm_imager.core.util import GIB, MIB, Progress, parse_size  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1400,6 +1401,45 @@ class APiStormWithItsDrivesElsewhere(_Scratch):
         self.assertTrue([c for c in alone.concerns() if said in c],
                         "a drive on its own still says so")
         self.assertFalse([c for c in split.concerns() if said in c])
+
+    def test_the_boot_card_does_not_miss_the_drives_software(self):
+        #  RTG on, the essential RTG driver ticked: it goes on the drives,
+        #  and the Pi's half - which installs no software - said it was
+        #  not being installed at all.
+        essential = [p.key for p in builder.packages.CATALOGUE
+                     if p.rtg_only and p.essential]
+        split = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target="/tmp/boot.img", drives_target="/tmp/drives.img",
+            rtg_display=True, machine_key="a1200", emu68_prepared_dir=EMU68,
+            package_display=next(d.value for d in machines.Display
+                                 if d.uses_rtg),
+            package_keys=essential,
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0)]))
+        self.assertFalse([c for c in split.concerns()
+                          if "Picasso96" in c or "is not being installed" in c],
+                         split.concerns())
+        missing = dataclasses.replace(split, package_keys=[])
+        self.assertTrue([c for c in missing.concerns()
+                         if "is not being installed" in c],
+                        "left off the drives, it is still said")
+
+    def test_the_plan_describes_each_half_as_what_it_is(self):
+        from pistorm_imager.core import presets                 # noqa: PLC0415
+        split = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target="/tmp/boot.img", drives_target="/tmp/drives.img",
+            machine_key="a1200", emu68_prepared_dir=EMU68,
+            boot_options=bootcfg.BootOptions(vc4_mem=64),
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0)]))
+        text = presets.describe(split, presets.Detected())
+        boot, drives = text.split("The Amiga drives")
+        self.assertNotIn("HDToolBox", boot,
+                         "the Pi's card has no Amiga drive to format")
+        self.assertNotIn("PFS3", boot)
+        self.assertIn("Emu68 options", boot,
+                      "said with the card they are written to")
+        self.assertNotIn("Emu68 options", drives)
 
     def test_the_two_targets_must_differ(self):
         config = builder.Task.SPLIT.shape(builder.BuildConfig(

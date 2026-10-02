@@ -458,8 +458,12 @@ class BuildConfig:
         for package in packages.CATALOGUE:
             if not (package.rtg_only and package.essential):
                 continue
+            #  Not asked of a card with no Amiga drive: it installs no
+            #  software, so it has none missing. The Pi's half of a split
+            #  build was saying Picasso96 was not being installed while the
+            #  drives half was installing it.
             if self.rtg_display and package.key not in keys \
-                    and not self.os_cd \
+                    and not self.boot_only and not self.os_cd \
                     and not any(p.content_hdf or p.content_folder
                                 for p in self.amiga_partitions if p.bootable):
                 said.append(

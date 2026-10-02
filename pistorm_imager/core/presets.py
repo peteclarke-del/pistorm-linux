@@ -288,6 +288,11 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
     if config.drives_target:
         #  Two things are written, and each is described as what it is.
         boot = describe(config.boot_card_part(), detected)
+        #  Emu68's options go in the boot card's cmdline.txt, so they are
+        #  said there rather than after the drives.
+        cmdline = config.boot_options.cmdline()
+        if cmdline:
+            boot += f"\nEmu68 options: {cmdline}"
         drives = describe(config.drives_part(), detected)
         return (f"The Pi's boot card ({config.target or 'not chosen yet'}):\n"
                 f"{boot}\n\nThe Amiga drives ({config.drives_target}):\n"
@@ -367,13 +372,17 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
             content = "left empty - format it on the Amiga"
         lines.append(f"{shown}: {size}, {spec.dostype} - {content}")
 
-    if not filled_system:
+    #  Only of a card that has Amiga drives: the Pi's boot card in a split
+    #  build has none, and was told to format its boot drive in HDToolBox.
+    if not filled_system and config.amiga_partitions:
         lines.append("Nothing will be installed onto the boot drive - partition "
                      "and format it with HDToolBox on the Amiga")
-    if config.pfs3_binary:
+    has_pfs3 = any(s.dostype.startswith(("PFS", "PDS"))
+                   for s in config.amiga_partitions)
+    if config.pfs3_binary and has_pfs3:
         origin = detected.pfs3_source or Path(config.pfs3_binary).name
         lines.append(f"PFS3 handler: found ({origin})")
-    elif any(s.dostype.startswith(("PFS", "PDS")) for s in config.amiga_partitions):
+    elif has_pfs3:
         lines.append("PFS3 handler: NOT FOUND - the PFS3 partitions will not "
                      "mount until one is supplied, or added from HDToolBox")
     return "\n".join(lines)
@@ -659,7 +668,8 @@ def describe_machine_setup(config: builder.BuildConfig,
     #  promised settings that were never going to be written - the same
     #  fault as claiming Emu68 itself would be there.
     cmdline = config.boot_options.cmdline()
-    if cmdline and not getattr(config, "amiga_only", False):
+    if cmdline and not getattr(config, "amiga_only", False) \
+            and not config.drives_target:
         lines.append(f"Emu68 options: {cmdline}")
     lines.append("")
     for note in machines.advice(machine, display):
