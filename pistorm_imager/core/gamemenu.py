@@ -20,6 +20,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import re
+import shutil
 import struct
 import textwrap
 from pathlib import Path
@@ -112,11 +113,15 @@ def slave_header(data: bytes) -> tuple[str, str, str] | None:
     return texts[0], texts[1], texts[2]
 
 
+#  How far into an ILBM its BMHD can be looked for.
+BMHD_WITHIN = 4096
+
+
 def picture_size(data: bytes) -> tuple[int, int, int] | None:
     """An ILBM's width, height and planes, from its BMHD."""
     if data[:4] != b"FORM" or data[8:12] not in (b"ILBM", b"PBM "):
         return None
-    at = data.find(b"BMHD", 12, 4096)
+    at = data.find(b"BMHD", 12, BMHD_WITHIN)
     if at < 0:
         return None
     width, height = struct.unpack_from(">HH", data, at + 8)
@@ -220,7 +225,7 @@ def build(drives: list[Drive], into: Path, layout: Layout, words: set[str],
     is a few hundred kilobytes a game and not everybody wants pictures.
     """
     into.mkdir(parents=True, exist_ok=True)
-    (into / "AGS2.conf").write_text(layout.conf)
+    (into / "AGS2.conf").write_text(layout.conf, encoding="latin-1")
     for name, width, height, planes in layout.makes:
         (into / name).write_bytes(plain_picture(width, height, planes))
     several = len(drives) > 1
@@ -344,7 +349,8 @@ def _beside(entry: Path, suffix: str) -> Path:
     return entry.parent / (entry.name + suffix)
 
 
-def _media(drawer: Path, entry: Path, header, layout: Layout) -> None:
+def _media(drawer: Path, entry: Path,
+           header: tuple[str, str, str] | None, layout: Layout) -> None:
     """The entry's text, and its screenshot where the layout can show it."""
     if header is not None:
         name, copyright_, info = header
@@ -361,11 +367,12 @@ def _media(drawer: Path, entry: Path, header, layout: Layout) -> None:
         if picture.suffix.lower() not in IFF_EXTENSIONS:
             continue
         try:
-            data = picture.read_bytes()
+            #  The header says whether it fits; only one that does is read.
+            with open(picture, "rb") as handle:
+                size = picture_size(handle.read(BMHD_WITHIN))
         except OSError:
             continue
-        size = picture_size(data)
         if size and size[0] <= width and size[1] <= height \
                 and size[2] <= planes:
-            _beside(entry, ".iff").write_bytes(data)
+            shutil.copyfile(picture, _beside(entry, ".iff"))
             return

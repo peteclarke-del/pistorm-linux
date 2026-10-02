@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from . import amigainfo, emu68
-from .util import Progress
+from .util import HUNK_HEADER, Progress
 
 #  Picasso96 finds its board through the BOARDTYPE tool type of the icon in
 #  DEVS:Monitors, and loads LIBS:Picasso96/<BOARDTYPE>.card to drive it.
@@ -441,8 +441,8 @@ class Compatibility:
         the user's name.
         """
         source = self._displace_from.get(posix)
-        data = getattr(self, "_pending_data", None)
-        if not source or data is None:
+        data = self._pending_data
+        if not source:
             return False
         from .content import version_of                     # noqa: PLC0415
         try:
@@ -459,7 +459,7 @@ class Compatibility:
         #  akGIF's descriptor has none, and put over AmigaOS 3.2's GIF 47.1 it
         #  would hand GIFs to a 2008 class. Text - a script, a prefs file -
         #  says nothing about age either way, and is still replaced.
-        return mine[:4] == b"\x00\x00\x03\xf3" or (
+        return mine[:4] == HUNK_HEADER or (
             mine[:4] == b"FORM" and mine[8:12] == b"DTYP")
 
     def stop_displacing(self) -> None:

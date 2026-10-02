@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from . import amigaos, builder, emu68, kickstart, machines, packages, rdb
-from .util import GIB, MIB, human_size
+from .util import GIB, HUNK_HEADER, MIB, human_size
 
 DEFAULT_BOOT_SIZE = 256 * MIB
 DEFAULT_SYSTEM_SIZE = 1 * GIB
@@ -62,7 +62,6 @@ def _search_roots(extra: list[str] | None = None) -> list[Path]:
 #  Names the PFS3 handler goes by.  The "aio" build is the all-in-one one that
 #  serves both the PFS3 and PDS3 DosTypes.
 PFS3_HANDLER_NAMES = ["pfs3aio", "pfs3", "pfs3aio020-60", "pfs3ds"]
-HUNK_HEADER = b"\x00\x00\x03\xf3"
 
 
 def _read_handler(path: Path, attempts: int = 3) -> bytes | None:
