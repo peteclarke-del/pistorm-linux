@@ -967,7 +967,10 @@ class ADriveForTheIdePort(_Scratch):
         self.assertEqual(small.beyond, ("DH2",))
 
     def test_a_boot_drive_the_old_kickstart_cannot_read_is_refused(self):
-        problems = self.about_reach(self.drive())
+        #  With the driver to hand, so the boot drive is the only problem -
+        #  and so the answer does not depend on this computer's samples.
+        with self.with_drivers({"A600": Path("/x/A600/scsi.device")}):
+            problems = self.about_reach(self.drive())
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("DH0", problems[0])
         self.assertIn("first 4 GB", problems[0])
