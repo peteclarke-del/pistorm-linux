@@ -932,6 +932,104 @@ class WaitingForEmu68(_Scratch):
         self.assertFalse(builder.wait_for_emu68(self.scratch(), 47))
 
 
+class ADriveForTheIdePort(_Scratch):
+    """How far into a drive on an A600's or A1200's own IDE port is reached.
+
+    Proved in FS-UAE through its IDE controller: on a 3.1 ROM, a PFS3 drive
+    past the first 4 GB is uninitialised until AmigaOS 3.2's scsi.device is
+    loaded, and a 20 GB DH0 cannot even be started to load it.
+    """
+
+    def drive(self, sizes=(20 * GIB, 18 * GIB, None), machine="a600",
+              accelerator="accelerator", **given) -> builder.BuildConfig:
+        return builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target="/tmp/cf.img",
+            image_size=64 * GIB, amiga_only=True, install_emu68=False,
+            machine_key=machine, accelerator=accelerator,
+            accelerator_cpu="68020",
+            amiga_partitions=[
+                builder.AmigaPartitionSpec(f"DH{n}", size, "PFS3", n == 0,
+                                           0 if n == 0 else -128)
+                for n, size in enumerate(sizes)], **given)
+
+    @staticmethod
+    def about_reach(config) -> list[str]:
+        return [p for p in config.validate() if "4 GB" in p]
+
+    def test_the_drives_past_4gb_are_found_where_the_build_puts_them(self):
+        reach = builder.ide_reach(self.drive(), None)
+        self.assertEqual(reach.beyond, ("DH0", "DH1", "DH2"))
+        self.assertEqual(reach.boot, "DH0")
+        self.assertGreater(reach.boot_end, 20 * GIB)
+        self.assertEqual(reach.driver, "Devs/A600/scsi.device")
+        small = builder.ide_reach(self.drive((1 * GIB, 2 * GIB, None)), None,
+                                  16 * GIB)
+        self.assertEqual(small.beyond, ("DH2",))
+
+    def test_a_boot_drive_the_old_kickstart_cannot_read_is_refused(self):
+        problems = self.about_reach(self.drive())
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("DH0", problems[0])
+        self.assertIn("first 4 GB", problems[0])
+
+    def test_the_workbench_disks_cannot_bring_the_driver(self):
+        config = self.drive((1 * GIB, None), install_amigaos=True,
+                            adf_folder=str(self.scratch()))
+        problems = self.about_reach(config)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("AmigaOS 3.2", problems[0])
+        self.assertIn("DH1", problems[0])
+
+    def test_a_cd_install_is_judged_by_what_it_stages(self):
+        disc = self.scratch() / "os.iso"
+        disc.write_bytes(b"")
+        self.assertEqual(self.about_reach(
+            self.drive((1 * GIB, None), os_cd=str(disc))), [])
+
+    def test_a_kickstart_that_reaches_needs_no_driver(self):
+        machine = machines.MACHINES_BY_KEY["a1200"]
+        for version, needed in ((40, True), (45, True), (46, False),
+                                (47, False)):
+            reach = builder.IdeReach(machine, ("DH1",), "DH0", 20 * GIB,
+                                     version)
+            self.assertEqual(reach.needs_driver, needed, version)
+            self.assertEqual(bool(reach.problems(False)), needed, version)
+
+    def test_a_drive_carrying_the_driver_with_a_small_boot_is_fine(self):
+        reach = builder.ide_reach(self.drive((1 * GIB, None)), None)
+        self.assertEqual(reach.problems(True), [])
+        self.assertIn(reach.driver, reach.summary())
+
+    def test_behind_a_pistorm_emu68s_kickstart_decides(self):
+        rom = self.scratch() / "kick.rom"
+        rom.write_bytes(b"")
+        config = self.drive(machine="a1200", accelerator="pistorm",
+                            kickstart_path=str(rom))
+        for version, refused in ((47, False), (40, True)):
+            with unittest.mock.patch.object(
+                    builder.kickstart, "identify",
+                    return_value=unittest.mock.Mock(version=version)):
+                self.assertEqual(bool(self.about_reach(config)), refused,
+                                 version)
+        #  None chosen: Emu68 runs the disc's own, which the build finds.
+        self.assertEqual(self.about_reach(dataclasses.replace(
+            config, kickstart_path="")), [])
+
+    def test_within_the_first_4gb_nothing_is_needed(self):
+        reach = builder.ide_reach(self.drive((1 * GIB, None)), None, 4 * GIB)
+        self.assertEqual(reach.beyond, ())
+        self.assertFalse(reach.needs_driver)
+        self.assertIn("within the first 4 GB", reach.summary())
+
+    def test_only_a_drive_for_the_amigas_own_ide_port(self):
+        self.assertIsNone(builder.ide_reach(self.drive(machine="a500"), None))
+        self.assertIsNone(builder.ide_reach(
+            dataclasses.replace(self.drive(), amiga_only=False), None))
+        self.assertEqual(
+            [m.key for m in machines.MACHINES if m.ide_port],
+            ["a600", "a1200"])
+
+
 class TestJobs(_Scratch):
     def test_round_trip(self):
         config = builder.BuildConfig(
