@@ -118,6 +118,14 @@ AMIGAOS_PLACES = frozenset({
     "wbstartup", "storage", "system", "expansion", "rexxc"})
 
 
+#  The drawers a Workbench installation has at the top of its drive besides
+#  AmigaOS's own places: its tools, its utilities and the trashcan.  A
+#  package's drawer inside one of these can go to another drive, but the
+#  drawer itself never can - Workbench's own programs are in it, and moving
+#  "SYS:Tools" took Commodities off the boot script's command path.
+WORKBENCH_DRAWERS = AMIGAOS_PLACES | {"tools", "utilities", "trashcan"}
+
+
 def in_amigaos(destination: str) -> bool:
     """Whether a destination on the drive is one of AmigaOS's own places."""
     top = destination.strip("/").partition("/")[0].lower()
@@ -148,6 +156,8 @@ def owns_drawer(key: str, top: str) -> bool:
     shared by a dozen.  A drawer only one package uses can go with it to
     another drive whole, and a path naming the drawer itself goes too.
     """
+    if top.lower() in WORKBENCH_DRAWERS:
+        return False
     users = {package.key for package in CATALOGUE
              if top.lower() in top_drawers(package)}
     return users == {key}

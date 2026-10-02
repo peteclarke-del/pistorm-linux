@@ -282,8 +282,11 @@ class PartitionRow(Adw.ExpanderRow):
         self.volume_row = Adw.EntryRow(title="Volume name, as Workbench shows it")
         self.volume_row.set_text(spec.volume_name or "")
         self.size_row = Adw.EntryRow(title="Size (e.g. 2G, 512M, or 'rest')")
-        self.size_row.set_text("rest" if spec.size is None else human_size(spec.size)
-                               .replace(" GiB", "G").replace(" MiB", "M"))
+        #  Exactly, not rounded for reading: "4.00G" read back is 4 GiB, and
+        #  a 4095 MiB system drive that grew by a megabyte on being shown
+        #  ended past the 4 GB an A1200's own Kickstart can reach.
+        self.size_row.set_text("rest" if spec.size is None
+                               else exact_size_text(spec.size))
         self.fs_row = Adw.ComboRow(title="File system", model=combo(FILESYSTEMS))
         if spec.dostype in FILESYSTEMS:
             self.fs_row.set_selected(FILESYSTEMS.index(spec.dostype))

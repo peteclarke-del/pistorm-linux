@@ -173,6 +173,17 @@ class Release:
     roms: str = ""
 
     @property
+    def loads_its_own_modules(self) -> bool:
+        """Whether the release puts its Kickstart modules in place itself.
+
+        AmigaOS 3.2 carries a disk of them for older ROMs and loads them with
+        its own ROM update - the IDE driver that reaches past 4 GB among
+        them.  Anything else loading modules over it on a 3.1 ROM crashed the
+        machine with 8000 0006 after the update's restart.
+        """
+        return any(layer.below_kickstart for layer in self.layers)
+
+    @property
     def needs_kickstart(self) -> int:
         return self.kickstart_from
 
