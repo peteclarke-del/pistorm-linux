@@ -42,7 +42,7 @@ REAL_DISCS = {
 FLOPPY_BLOCKS = 1760
 SCRIPT, PURE = 0x40, 0x20
 #  The models whose Kickstart modules the synthetic 3.2 disc carries.
-MODELS = ("A500", "A1200")
+MODELS = ("A500", "A600", "A1200")
 
 
 def compress(data: bytes) -> bytes:
@@ -378,8 +378,11 @@ class AmigaOs32IsFloppiesOnADisc(unittest.TestCase):
             },
             "ADF/ModulesA500_3.2.adf": {
                 "LIBS/exec.library": b"for an A500"},
+            "ADF/ModulesA600_3.2.adf": {
+                "DEVS/A600/scsi.device": b"the Gayle driver"},
             "ADF/ModulesA1200_3.2.adf": {
-                "LIBS/exec.library": b"for an A1200"},
+                "LIBS/exec.library": b"for an A1200",
+                "DEVS/A1200/scsi.device": b"the Gayle driver"},
             "ADF/MMULibs.adf": {"Libs/68030.library": b"for a real 68030",
                                 "Configs/other": b"not wanted"},
             "ADF/GlowIcons3.2.adf": {"Prefs.info": b"in colour",
@@ -450,6 +453,34 @@ class AmigaOs32IsFloppiesOnADisc(unittest.TestCase):
             staged = self.stage(machine, kickstart_version=40)
             self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
                              f"for an {model}".encode(), machine)
+
+    def test_a_driver_two_models_share_is_staged_for_both(self):
+        """LoadModule picks the drawer by the machine it finds itself on.
+
+        A card written for an A1200 and put in an A600 has to find its
+        driver there too, or every drive past 4 GB is uninitialised.
+        """
+        for machine, other in (("a1200", "A600"), ("a600", "A1200")):
+            staged = self.stage(machine, kickstart_version=40)
+            self.assertEqual(
+                (staged / "Devs" / other / "scsi.device").read_bytes(),
+                b"the Gayle driver", machine)
+
+    def test_a_driver_that_differs_is_not_staged_for_another_model(self):
+        tree = make_disc_tree(self.release, self.scratch / "differs", {
+            "ADF/ModulesA600_3.2.adf": {
+                "DEVS/A600/scsi.device": b"another driver"},
+            "ADF/ModulesA1200_3.2.adf": {
+                "DEVS/A1200/scsi.device": b"the Gayle driver"},
+        })
+        match = amigacd.identify(make_iso(
+            tree, self.scratch / "differs.iso", rock_ridge=True,
+            volume=self.release.volume))
+        into = Path(tempfile.mkdtemp(dir=self.scratch))
+        amigacd.stage(match, into, machine=MACHINES_BY_KEY["a1200"],
+                      kickstart_version=40)
+        self.assertTrue((into / "Devs" / "A1200" / "scsi.device").is_file())
+        self.assertFalse((into / "Devs" / "A600").exists())
 
     def test_a_32_kickstart_is_given_no_modules(self):
         staged = self.stage(kickstart_version=47)
