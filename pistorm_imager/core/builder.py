@@ -176,6 +176,10 @@ class AmigaPartitionSpec:
     #  against the start of each entry's relative path.  Chipset-specific game
     #  collections are skipped this way on machines that cannot run them.
     exclude: list[str] = dataclasses.field(default_factory=list)
+    #  The kinds of software kept on this drive rather than the one the
+    #  machine boots from: packages.Category values.  Only a package's own
+    #  drawers move - what it puts into AmigaOS's places stays with AmigaOS.
+    software: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -603,6 +607,32 @@ class BuildConfig:
                     if self.accelerator_cpu else None)
         return self.machine().cpu_fitted(accelerator, card_cpu)
 
+    def _software_problems(self) -> list[str]:
+        """What stops software being kept on the drives chosen for it."""
+        problems: list[str] = []
+        kinds = {category.value for category in packages.Category}
+        keeper: dict[str, str] = {}
+        for spec in self.amiga_partitions:
+            if spec.bootable:
+                continue
+            for kind in spec.software:
+                if kind not in kinds:
+                    problems.append(f"{spec.name} is set to keep "
+                                    f"\"{kind}\", which is not a kind of "
+                                    f"software this tool installs.")
+                elif kind in keeper:
+                    problems.append(f"{kind} is set to be kept on both "
+                                    f"{keeper[kind]} and {spec.name}; "
+                                    f"choose one.")
+                else:
+                    keeper[kind] = spec.name
+            if spec.software and not spec.dostype.upper().startswith(
+                    ("FFS", "PFS", "PDS")):
+                problems.append(f"{spec.name} is set to {spec.dostype}; "
+                                f"software can only be put on an FFS or "
+                                f"PFS3 drive.")
+        return problems
+
     def _ide_reach_problems(self) -> list[str]:
         """What stops a drive for the IDE port being read to its end.
 
@@ -979,6 +1009,7 @@ class BuildConfig:
                 problems.append(
                     f"{spec.name} is set to {spec.dostype}; content can only be "
                     f"written to an FFS or PFS3 partition.")
+        problems += self._software_problems()
         installs = (self.os_cd or self.install_amigaos) \
             and self.mode in FILLS_DRIVES
         if (self.os_cd or self.install_amigaos) and not installs:
@@ -1092,10 +1123,13 @@ def _rewrite_drive(config: BuildConfig, handle, target_size: int,
         spec, name=partition.drive_name, bootable=partition.bootable,
         size=partition.size_bytes(table.geometry),
         dostype=rdb.dostype_name(dostype))
+    held = _BUILD_SOFTWARE.get()
+    if held is not None:
+        held["homes"] = software_homes(config)
     config = dataclasses.replace(config, amiga_partitions=[spec])
-    if not partition.bootable:
-        #  Software goes on the drive the machine boots from; on any other it
-        #  would be an install nothing ever starts.
+    if not partition.bootable and not spec.software:
+        #  Software goes on the drive the machine boots from, or one chosen
+        #  to keep it; on any other it would be an install nothing starts.
         config = dataclasses.replace(config, package_keys=[])
 
     start = partition.byte_offset(table.geometry, base)
@@ -1115,7 +1149,7 @@ def _rewrite_drive(config: BuildConfig, handle, target_size: int,
                              (target_size - base) // SECTOR)
     if config.install_amigaos and not _boot_drive_is_filled(config):
         _install_amigaos(config, confined, amiga, table, progress)
-    if spec.content_folder or spec.content_hdf:
+    if _fills(spec):
         _check_the_system_can_boot(config, progress)
         _install_content(config, confined, amiga, table, progress)
     _format_empty_partitions(config, confined, amiga, table, progress)
@@ -1665,8 +1699,12 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                  if s.name.upper() == partition.drive_name.upper()), None)
     credit: dict[tuple[str, str], str] = {}
     landings: dict = {}
-    extra = _package_overlays(config, list(spec.overlays), progress, credit) \
-        if spec is not None else []
+    extra: list[tuple[str, str]] = []
+    if spec is not None:
+        software = _software(config, progress)
+        credit.update(software.credit)
+        extra = software.here(software.resolved)
+        spec = dataclasses.replace(spec, overlays=software.here(spec.overlays))
     _refuse_other_processors(credit, fixer, progress)
     if extra and config.replace_older_software:
         fixer.displace(_landing_paths(extra))
@@ -1824,6 +1862,9 @@ def _package_startup_lines(config: "BuildConfig", boot: str = "",
                 progress.log(f"  {package.label} {why}, so it is not started")
             continue
         lines += filled
+    if _homes(config):
+        moves = _software(config, progress or Progress()).moves
+        lines = [compat.repath(line, moves) for line in lines]
     return lines
 
 
@@ -2024,6 +2065,15 @@ def _manifest_text(config: "BuildConfig", pairs: list[tuple[str, str]],
     on with ``Delete``.
     """
     entries = _manifest_entries(pairs, credit, landings)
+    #  Software kept on another drive is recorded here too, where somebody
+    #  looking for what was installed will look, under that drive's name.
+    if _homes(config):
+        software = _software(config, Progress())
+        for drive in sorted(set(software.away.values())):
+            entries += [(f"{label} (on {drive}:)",
+                         [f"{drive}:{line}" for line in landed])
+                        for label, landed in _manifest_entries(
+                            software.kept_on(drive), software.credit)]
     startup = _package_startup_lines(config, credit=credit)
     if not entries and not startup:
         return ""
@@ -2039,7 +2089,8 @@ def _manifest_text(config: "BuildConfig", pairs: list[tuple[str, str]],
         ";     Delete SYS:<path>          for a file",
         ";     Delete SYS:<path> ALL      for a drawer",
         ";",
-        "; Paths are relative to the drive this file is on.",
+        "; Paths are relative to the drive this file is on, unless they",
+        "; start with the name of another drive.",
     ]
     for label, landed in entries:
         out.append("")
@@ -2178,6 +2229,151 @@ def _refuse_other_processors(credit: dict[tuple[str, str], str],
         progress.log(f"  {len(refused)} build(s) for other processors will be "
                      f"left out, the one this machine runs having been "
                      f"installed under its own name")
+
+
+@dataclasses.dataclass
+class _Software:
+    """The chosen software, resolved once for the build and split by drive.
+
+    ``resolved`` is what the packages added to the boot drive's own overlays;
+    ``away`` maps each pair kept on another drive to that drive's device
+    name, and ``moves`` maps where each of those lands to the same device,
+    so every SYS: path to it can be pointed there instead.
+    """
+
+    resolved: list[tuple[str, str]]
+    credit: dict[tuple[str, str], str]
+    away: dict[tuple[str, str], str]
+    moves: dict[str, str]
+
+    def here(self, pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """The pairs that stay on the drive the machine boots from."""
+        return [pair for pair in pairs if pair not in self.away]
+
+    def kept_on(self, drive: str) -> list[tuple[str, str]]:
+        """The pairs kept on ``drive``."""
+        return [pair for pair, home in self.away.items()
+                if home.upper() == drive.upper()]
+
+
+_BUILD_SOFTWARE: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "build_software", default=None)
+
+
+def software_homes(config: "BuildConfig") -> dict[str, str]:
+    """Which drive keeps each kind of software, where one was chosen.
+
+    The drive the machine boots from keeps everything no other drive was
+    given, so choosing it changes nothing and is not counted.
+    """
+    return {kind: spec.name for spec in config.amiga_partitions
+            if not spec.bootable for kind in spec.software}
+
+
+def _lands_at(pair: tuple[str, str]) -> list[str]:
+    """Each file or drawer a pair puts on the drive, relative to it.
+
+    A drawer's contents, not the drawer it goes into: AWeb pours its
+    archive into Programs beside iGame's drawer, and saying all of Programs
+    had moved would send iGame's paths to the wrong drive.
+    """
+    source, destination = Path(pair[0]), pair[1].strip("/")
+    names = sorted(child.name for child in source.iterdir()) \
+        if source.is_dir() else [source.name]
+    return [f"{destination}/{name}" if destination else name
+            for name in names]
+
+
+def _drawers_moved_whole(pairs: list[tuple[str, str]],
+                         away: dict[tuple[str, str], str],
+                         credit: dict[tuple[str, str], str]) -> dict[str, str]:
+    """The drawers a moved package owns outright, so their own paths move.
+
+    "Assign AmiSSL: SYS:AmiSSL" names the drawer, not anything copied into
+    it.  A drawer moves whole only when everything this build puts in it
+    belongs to one package and went to the same drive, and - for a drawer
+    at the top of the drive - when no other package in the catalogue ever
+    uses it: Programs holding only AWeb on this card is still where iGame
+    and anything the drive already had live.
+    """
+    landed = {pair: _lands_at(pair) for pair in pairs}
+    candidates: dict[str, tuple[str, str]] = {}
+    for pair, home in away.items():
+        drawer = pair[1].strip("/")
+        while drawer:
+            candidates.setdefault(drawer, (home, credit.get(pair, "")))
+            drawer = drawer.rpartition("/")[0]
+    whole: dict[str, str] = {}
+    for drawer, (home, key) in candidates.items():
+        if packages.in_amigaos(drawer):
+            continue
+        if "/" not in drawer and not packages.owns_drawer(key, drawer):
+            continue
+        inside = [pair for pair, paths in landed.items()
+                  if any(path.lower() == drawer.lower()
+                         or path.lower().startswith(drawer.lower() + "/")
+                         for path in paths)]
+        if inside and all(away.get(pair) == home
+                          and credit.get(pair) == key for pair in inside):
+            whole[drawer] = home
+    return whole
+
+
+def _homes(config: "BuildConfig") -> dict[str, str]:
+    """``software_homes`` for the whole card, even while one drive is rebuilt.
+
+    Rebuilding a drive narrows the configuration to that drive, and the
+    others' choices still decide where the software lives.
+    """
+    held = _BUILD_SOFTWARE.get()
+    if held is not None and "homes" in held:
+        return held["homes"]
+    return software_homes(config)
+
+
+def _keeps_software(spec: AmigaPartitionSpec) -> bool:
+    return bool(spec.software) and not spec.bootable
+
+
+def _fills(spec: AmigaPartitionSpec) -> bool:
+    """Whether the build puts anything on this drive beyond formatting it."""
+    return bool(spec.content_folder or spec.content_hdf
+                or _keeps_software(spec))
+
+
+def _software(config: "BuildConfig", progress: Progress) -> _Software:
+    """The chosen software, resolved and placed - once per build.
+
+    Every drive asks, in whatever order they are written, and resolving it
+    a second time would fetch and unpack every archive again.
+    """
+    held = _BUILD_SOFTWARE.get()
+    if held is not None and "software" in held:
+        return held["software"]
+    boot = next((spec for spec in config.amiga_partitions if spec.bootable),
+                None)
+    existing = list(boot.overlays) if boot is not None else []
+    credit: dict[tuple[str, str], str] = {}
+    resolved = _package_overlays(config, existing, progress, credit)
+    homes = _homes(config)
+    away: dict[tuple[str, str], str] = {}
+    for pair in existing + resolved:
+        package = packages.CATALOGUE_BY_KEY.get(credit.get(pair, ""))
+        home = homes.get(package.category.value) if package else None
+        if home and not packages.in_amigaos(pair[1]):
+            away[pair] = home
+    moves = {landing: home for pair, home in away.items()
+             for landing in _lands_at(pair)}
+    moves.update(_drawers_moved_whole(existing + resolved, away, credit))
+    for home in sorted(set(away.values())):
+        progress.log(f"  Kept on {home}: "
+                     + ", ".join(sorted({packages.CATALOGUE_BY_KEY[
+                         credit[pair]].label for pair, drive in away.items()
+                         if drive == home})))
+    software = _Software(resolved, credit, away, moves)
+    if held is not None:
+        held["software"] = software
+    return software
 
 
 def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
@@ -2703,6 +2899,8 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
             name = (spec.volume_name or spec.name).strip().upper()
             fixer.content[name] = (Path(spec.content_folder),
                                    tuple(spec.exclude or ()))
+    if _homes(config):
+        fixer.relocate(_software(config, progress).moves)
     if config.spare_files_folder:
         found = fixer.add_spares(config.spare_files_folder)
         if found:
@@ -2809,7 +3007,7 @@ def _format_empty_partitions(config: BuildConfig, handle,
     """
     by_name = {p.drive_name.upper(): p for p in table.partitions}
     filled = {spec.name.upper() for spec in config.amiga_partitions
-              if spec.content_folder or spec.content_hdf}
+              if _fills(spec)}
     boot = next((p for p in table.partitions if p.bootable), None)
     card_icon = _card_icon(config, progress)
     for spec in config.amiga_partitions:
@@ -2955,7 +3153,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
     #  open it again.
     card_icon = _card_icon(config, progress)
     for spec in config.amiga_partitions:
-        if not spec.content_folder and not spec.content_hdf:
+        if not _fills(spec):
             continue
         partition = by_name.get(spec.name.upper())
         if partition is None:
@@ -2973,9 +3171,16 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         #  because this file system creates files and never overwrites them.
         if not spec.bootable and card_icon:
             fixer.displace([VOLUME_ICON])
-        extra = (_package_overlays(config, list(spec.overlays), progress,
-                                   credit)
-                 if spec.bootable else [])
+        extra: list[tuple[str, str]] = []
+        if spec.bootable or _keeps_software(spec):
+            software = _software(config, progress)
+            credit.update(software.credit)
+            if spec.bootable:
+                extra = software.here(software.resolved)
+                spec = dataclasses.replace(
+                    spec, overlays=software.here(spec.overlays))
+            else:
+                extra = software.kept_on(spec.name)
         extra = _drop_what_needs_the_boot_script(extra, config, fixer,
                                                  progress)
         _refuse_other_processors(credit, fixer, progress)
@@ -3049,6 +3254,13 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                 exclude=_follow_launchers(spec, None, source, progress))
             progress.log(f"{copied} files copied"
                          + (f", {renamed} renamed for AmigaDOS" if renamed else ""))
+        elif _keeps_software(spec):
+            progress.step(f"Putting the software kept on "
+                          f"{partition.drive_name} onto it")
+            volume = amigaos.make_volume(handle, offset,
+                                         partition.blocks(table.geometry),
+                                         spec.volume_name or partition.drive_name,
+                                         partition.dostype)
         else:
             #  Overlay-only partitions are handled where they were installed.
             continue
@@ -3081,6 +3293,8 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
             #  scripts, which belong in the system drive's S: and nowhere.
             fixer.finish(volume, progress)
         else:
+            if _keeps_software(spec):
+                _give_drawers_icons(volume, spec, config, progress)
             _give_volume_icon(volume, card_icon,
                               spec.volume_name or spec.name, progress)
         volume.close()
@@ -3570,8 +3784,7 @@ def _build_hdf_output(config: BuildConfig, handle, size: int,
     amiga = mbr.MbrPartition(0, 0, mbr.TYPE_AMIGA, 0, size // SECTOR)
     if config.install_amigaos and not _boot_drive_is_filled(config):
         _install_amigaos(config, handle, amiga, table, progress)
-    if any(p.content_folder or p.content_hdf
-                           for p in config.amiga_partitions):
+    if any(_fills(p) for p in config.amiga_partitions):
         _install_content(config, handle, amiga, table, progress)
     _format_empty_partitions(config, handle, amiga, table, progress)
     check_and_repair(handle, 0, size, config, progress)
@@ -4167,6 +4380,7 @@ def _run_build(config: BuildConfig, progress: Progress,
 
     workdir = Path(tempfile.mkdtemp(prefix="pistorm-imager-"))
     scratch = _BUILD_SCRATCH.set(workdir)
+    software = _BUILD_SOFTWARE.set({})
     try:
         emu68_files: list[Path] = []
         emu68_root: Path | None = None
@@ -4241,8 +4455,7 @@ def _run_build(config: BuildConfig, progress: Progress,
                     if config.install_amigaos \
                             and not _boot_drive_is_filled(config):
                         _install_amigaos(config, handle, amiga_part, table, progress)
-                    if any(p.content_folder or p.content_hdf
-                           for p in config.amiga_partitions):
+                    if any(_fills(p) for p in config.amiga_partitions):
                         _check_the_system_can_boot(config, progress)
                         _install_content(config, handle, amiga_part, table, progress)
                     _format_empty_partitions(config, handle, amiga_part, table,
@@ -4282,4 +4495,5 @@ def _run_build(config: BuildConfig, progress: Progress,
         progress.step("Done")
     finally:
         _BUILD_SCRATCH.reset(scratch)
+        _BUILD_SOFTWARE.reset(software)
         shutil.rmtree(workdir, ignore_errors=True)
