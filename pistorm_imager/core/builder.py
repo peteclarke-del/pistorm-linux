@@ -3798,6 +3798,20 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     _apply_boingbags(config, match.release, staged, machine, accelerator,
                      card_cpu, progress)
 
+    #  A drive for a PiStorm on the Amiga's own IDE port: the board's own
+    #  Kickstart can start it before Emu68 has taken over, so it waits for
+    #  the one Emu68 loads - the boot card's, or else the disc's own.
+    if accelerator is machines.Accelerator.PISTORM and config.amiga_only:
+        emu68_rom = None
+        if config.kickstart_path and Path(config.kickstart_path).is_file():
+            emu68_rom = kickstart.identify(config.kickstart_path,
+                                           config.kickstart_key or None)
+        else:
+            emu68_rom = amigacd.kickstart_on_disc(match, machine,
+                                                  workdir / "kickstart")
+        if emu68_rom is not None and emu68_rom.version:
+            wait_for_emu68(staged, emu68_rom.version, progress)
+
     #  The staged tree becomes the bootable partition's content.  A partition
     #  that already has content keeps it: somebody who pointed a drive at an
     #  image and *also* chose a CD meant both, and the CD is the base.
@@ -3816,6 +3830,60 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
             "There is no empty bootable partition for the CD install to go on.")
     return dataclasses.replace(config, amiga_partitions=partitions,
                                system_source="cd")
+
+
+#  Put at the top of the Startup-Sequence of a drive on the Amiga's own IDE
+#  port, built for a PiStorm. ``{version}`` is the Kickstart Emu68 loads.
+WAIT_FOR_EMU68 = """\
+; Added by the PiStorm imager. This drive is on the Amiga's own IDE port, so
+; the Amiga's own Kickstart can start it in the seconds before Emu68 has taken
+; the machine over - and the system on it needs the Kickstart Emu68 loads.
+; Emu68 restarts the machine into that one once it is running, so wait for it.
+; One Wait, not a counted loop: T:, which counting needs, is not assigned yet.
+Version >NIL: exec.library {version}
+If Warn
+  Echo "This is the Amiga's own Kickstart: waiting for the PiStorm to start."
+  Wait {seconds}
+  Echo "The PiStorm has not taken over, so the boot carries on as it is."
+EndIf
+
+"""
+#  How long a drive waits for Emu68 before booting on regardless: long enough
+#  for the Pi to start, short enough that a machine without one still boots.
+EMU68_WAIT_SECONDS = 60
+
+
+def wait_for_emu68(staged: Path, version: int,
+                   progress: Progress | None = None) -> bool:
+    """Make a staged system wait for Emu68 when the Amiga's own ROM starts it.
+
+    On an A1200 the board's own 68EC020 runs the Kickstart soldered to it
+    while the Pi is still starting Emu68, and Emu68 then restarts the
+    machine into the Kickstart it loads. Nothing on the Pi's own card can be
+    seen in those seconds, but a drive on the IDE port can, so it was booted
+    there: a 3.2 system on a 3.1 ROM, which stopped the machine with a
+    software failure before Emu68 ever took over.
+    """
+    sequence = staged / "S" / "Startup-Sequence"
+    try:
+        text = sequence.read_bytes().decode("latin-1")
+    except OSError:
+        return False
+    if "waiting for the PiStorm" in text:
+        return True
+    lines = text.splitlines(keepends=True)
+    #  After the script's own heading comments, before anything it runs.
+    at = next((i for i, line in enumerate(lines)
+               if line.strip() and not line.lstrip().startswith(";")),
+              len(lines))
+    block = WAIT_FOR_EMU68.format(version=version,
+                                  seconds=EMU68_WAIT_SECONDS)
+    sequence.write_bytes("".join(lines[:at] + [block] + lines[at:])
+                         .encode("latin-1"))
+    if progress is not None:
+        progress.log(f"S:Startup-Sequence waits for Emu68 if the Amiga's own "
+                     f"Kickstart, older than V{version}, starts this drive")
+    return True
 
 
 def _apply_boingbags(config: BuildConfig, release, staged: Path,

@@ -585,6 +585,41 @@ class AmigaOs32IsFloppiesOnADisc(unittest.TestCase):
         self.assertEqual((staged / "Libs" / "exec.library").read_bytes(),
                          b"for an A1200")
 
+    def test_a_pistorm_drive_on_the_ide_port_waits_for_emu68(self):
+        """The A1200's own 68EC020 starts first, on the ROM on the board.
+
+        While the Pi is still starting Emu68 it found the CF card on the IDE
+        port and booted it: a 3.2 system on a 3.1 ROM, which stopped with a
+        software failure before Emu68 took over. The drive now waits for
+        the Kickstart Emu68 loads - the boot card's, or the disc's own.
+        """
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        chosen = self.scratch / "boot-card.rom"
+        chosen.write_bytes(rom(47, 96))
+        for given in ({"kickstart_path": str(chosen)}, {}):
+            _config, staged = self.prepare(
+                machine_key="a1200", amiga_only=True, install_emu68=False,
+                **given)
+            sequence = (staged / "S" / "Startup-Sequence").read_text(
+                encoding="latin-1")
+            with self.subTest(given=given):
+                self.assertTrue(sequence.index("exec.library 47")
+                                < sequence.index("for a hard drive"),
+                                "asked before anything else is run")
+                self.assertIn(f"Wait {builder.EMU68_WAIT_SECONDS}", sequence)
+
+    def test_only_a_drive_the_boards_own_rom_can_reach_waits(self):
+        #  A PiStorm's own card is on the Pi, which nothing but Emu68 sees;
+        #  a real accelerator has no Emu68 to wait for.
+        for given in ({"install_emu68": True},
+                      {"accelerator": "accelerator", "accelerator_cpu": "68030",
+                       "amiga_only": True, "install_emu68": False}):
+            _config, staged = self.prepare(machine_key="a1200", **given)
+            with self.subTest(given=given):
+                self.assertNotIn("waiting for the PiStorm", (
+                    staged / "S" / "Startup-Sequence").read_text(
+                        encoding="latin-1"))
+
     def test_a_rom_chip_is_never_assumed_to_be_the_newer_one(self):
         """A file says nothing about what is soldered to the board.
 

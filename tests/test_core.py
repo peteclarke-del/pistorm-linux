@@ -907,6 +907,31 @@ class InputsRootCannotRead(_Scratch):
         self.assertEqual(staged, config)
 
 
+class WaitingForEmu68(_Scratch):
+    """The block a PiStorm's IDE drive starts with, and where it goes."""
+
+    def test_it_goes_after_the_heading_and_before_anything_run(self):
+        staged = self.scratch()
+        (staged / "S").mkdir()
+        (staged / "S" / "Startup-Sequence").write_bytes(
+            b"; $VER: Startup-Sequence 47.14\n; for hard drives\n\n"
+            b"Version exec.library version 47 >NIL:\nSetPatch\n")
+        self.assertTrue(builder.wait_for_emu68(staged, 47))
+        text = (staged / "S" / "Startup-Sequence").read_text(encoding="latin-1")
+        self.assertTrue(text.startswith("; $VER: Startup-Sequence 47.14\n"
+                                         "; for hard drives\n"))
+        self.assertLess(text.index("Version >NIL: exec.library 47"),
+                        text.index("SetPatch"))
+        #  Not a counted loop: T:, which a backtick needs, is not there yet.
+        self.assertNotIn("`", text)
+        builder.wait_for_emu68(staged, 47)
+        self.assertEqual(text, (staged / "S" / "Startup-Sequence")
+                         .read_text(encoding="latin-1"), "only once")
+
+    def test_without_a_startup_sequence_nothing_is_made(self):
+        self.assertFalse(builder.wait_for_emu68(self.scratch(), 47))
+
+
 class TestJobs(_Scratch):
     def test_round_trip(self):
         config = builder.BuildConfig(
