@@ -432,6 +432,58 @@ class SoftwareKeptOnItsOwnDrive(_Scratch):
         self.assertEqual(software.moves, {})
 
 
+class AWorkbenchDriveThatReachesPast4GB(_Scratch):
+    """Workbench 3.1 on an A600's IDE port, given the driver that reaches.
+
+    The driver and LoadModule are faked with files of their shapes; FS-UAE
+    booted the real ones on Kickstart 3.1 and mounted PFS3 drives to 16 GB.
+    """
+
+    ADFS = Path(__file__).resolve().parent.parent / "samples" / "workbench"
+
+    @unittest.skipUnless(ADFS.is_dir(), "no Workbench disks available")
+    def test_the_driver_loadmodule_and_its_line_are_on_the_drive(self):
+        from pistorm_imager.core import util            # noqa: PLC0415
+        here = self.scratch()
+        driver = here / "A1200" / "scsi.device"
+        driver.parent.mkdir()
+        driver.write_bytes(b"\0\0\x03\xf3 the driver")
+        loader = here / "LoadModule"
+        loader.write_bytes(b"\0\0\x03\xf3 LoadModule")
+        out = here / "cf.hdf"
+        config = builder.BuildConfig(
+            mode=builder.BuildMode.FRESH, target=str(out), output_hdf=True,
+            amiga_only=True, install_emu68=False, image_size=6 * util.GIB,
+            machine_key="a600", accelerator="accelerator",
+            install_amigaos=True, adf_folder=str(self.ADFS),
+            fix_compatibility=False, pfs3_binary=PFS3_HANDLER,
+            amiga_partitions=[
+                builder.AmigaPartitionSpec("DH0", 200 * MIB, "FFS-INTL",
+                                           True, 0),
+                builder.AmigaPartitionSpec("DH1", None, "PFS3", False,
+                                           -128)])
+        with unittest.mock.patch.object(
+                presets, "find_ide_drivers",
+                return_value={"A1200": driver, "A600": driver}), \
+                unittest.mock.patch.object(
+                    packages, "overlays_by_package",
+                    return_value=[("loadmodule", [(str(loader), "C")])]):
+            self.assertEqual(config.validate(), [])
+            builder.run_build(config, QUIET)
+        volume, _label = amigaos.open_amiga_volume(out, "DH0")
+        try:
+            for path in ("Devs/A600/scsi.device", "Devs/A1200/scsi.device",
+                         "C/LoadModule"):
+                self.assertIsNotNone(volume.find(path), path)
+            boot = volume.read_file(volume.find("S/Startup-Sequence")
+                                    ).decode("latin-1").lower()
+        finally:
+            volume.f.close()
+        self.assertLess(boot.index("c:loadmodule auto"),
+                        boot.index("c:iprefs"),
+                        "loaded before Workbench starts")
+
+
 class TestEmptyPartitionsAreFormatted(_Scratch):
     """A drive with nothing to put in it should still mount."""
 

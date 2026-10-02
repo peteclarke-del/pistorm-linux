@@ -638,8 +638,9 @@ class BuildConfig:
 
         Only what can be known before the build: behind a PiStorm with no
         Kickstart chosen, Emu68 runs the disc's own, which the build finds;
-        and an install from a CD is checked against what it stages.  The
-        Workbench disks carry no scsi.device at all, so that is known now.
+        and an install from a CD is checked against what it stages.  Any
+        other system is given the driver from the samples folder, so whether
+        there is one there is known now.
         """
         kickstart_version = None
         if self.on_a_pistorm():
@@ -651,8 +652,9 @@ class BuildConfig:
         reach = ide_reach(self, kickstart_version)
         if reach is None:
             return []
-        carried = None if self.os_cd \
-            else (False if self.install_amigaos else None)
+        from . import presets                     # noqa: PLC0415 - circular
+        carried = None if self.os_cd else (
+            reach.machine.amiga_model in presets.find_ide_drivers())
         return reach.problems(carried)
 
     def on_a_pistorm(self) -> bool:
@@ -1724,9 +1726,10 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                              dostype=dostype, close=False,
                              edit=_BothPasses(editor, fixer))
     if editor is not None and not editor.inserted:
-        progress.log("WARNING: S:Startup-Sequence could not be edited, so the "
-                     "icon.library on disk will not replace the one in ROM "
-                     "and OS3.5 colour icons will not be drawn")
+        progress.log("WARNING: S:Startup-Sequence could not be edited, so "
+                     "LoadModule is never run: the modules on disk - the IDE "
+                     "driver that reaches past 4 GB, and icon.library for "
+                     "OS3.5 colour icons - will not replace the ROM's")
     #  Overlays (WHDLoad and the like) go on while the volume is still open;
     #  reopening a finished volume would mean rebuilding its allocation state.
     fixer.stop_displacing()
@@ -1794,6 +1797,14 @@ def _startup_sequence_editor(config: BuildConfig, progress: Progress):
     """
     chosen = packages.expand(config.package_keys)
     if not any(p.boot_library and p.key in chosen for p in packages.CATALOGUE):
+        if any(p.loads_modules and p.key in chosen
+               for p in packages.CATALOGUE):
+            #  AUTO alone: LoadModule finds the newer modules the drive
+            #  holds - the IDE driver in Devs/<model> - by itself.
+            return amigaos.StartupSequenceEditor(
+                ["IF EXISTS C:LoadModule",
+                 "   C:LoadModule AUTO",
+                 "EndIF"], progress)
         return None
     #  LoadModule, not LoadResident.  LoadResident cannot displace a library
     #  that is already in the system list, and icon.library is there from the
@@ -4017,13 +4028,14 @@ class IdeReach:
                 f"not start {self.boot} to load a driver that reaches "
                 f"further. Keep {self.boot} within the first 4 GB.")
         if carries_driver is False:
+            model = self.machine.amiga_model
             problems.append(
                 f"{_listed(self.beyond)} {'lies' if len(self.beyond) == 1 else 'lie'} "
                 f"past the first 4 GB of the {self.machine.label}'s IDE "
-                f"drive, which its own Kickstart cannot reach. AmigaOS 3.2 "
-                f"brings a scsi.device that can and loads it at boot: install "
-                f"from the AmigaOS 3.2 CD, or keep every drive within the "
-                f"first 4 GB.")
+                f"drive, which its own Kickstart cannot reach. AmigaOS 3.2's "
+                f"scsi.device can: put it in samples/drivers/{model} (it is "
+                f"on the 3.2 CD's Modules{model}_3.2 disk), install from the "
+                f"AmigaOS 3.2 CD, or keep every drive within the first 4 GB.")
         return problems
 
     def summary(self) -> str:
@@ -4037,8 +4049,9 @@ class IdeReach:
             return (f"{where}; Kickstart V{self.kickstart}'s own scsi.device "
                     f"reaches them.")
         return (f"{where}, beyond the {self.machine.label}'s own Kickstart "
-                f"before 3.1.4: AmigaOS 3.2's scsi.device is on {self.boot} "
-                f"as {self.driver}, and LoadModule puts it in place at boot.")
+                f"before 3.1.4: a scsi.device that reaches them is on "
+                f"{self.boot} as {self.driver}, and LoadModule puts it in "
+                f"place at boot.")
 
 
 def _listed(names: tuple[str, ...]) -> str:
@@ -4075,6 +4088,67 @@ def ide_reach(config: BuildConfig, kickstart_version: int | None,
     return IdeReach(machine,
                     tuple(spec.name for spec, end in ends if end > TD32_REACH),
                     boot.name, boot_end, kickstart_version)
+
+
+def _drive_kickstart(config: BuildConfig, workdir: Path) -> int | None:
+    """The Kickstart that runs a drive for the IDE port, where it is known.
+
+    Behind a PiStorm it is the one Emu68 maps: the boot card's, or else the
+    one on the AmigaOS disc.  Anywhere else it is the ROM on the board,
+    which nothing here can see.
+    """
+    from . import amigacd, machines                           # noqa: PLC0415
+    if not (config.amiga_only and config.on_a_pistorm()):
+        return None
+    if config.kickstart_path and Path(config.kickstart_path).is_file():
+        return kickstart.identify(config.kickstart_path,
+                                  config.kickstart_key or None).version
+    if config.os_cd:
+        machine = machines.MACHINES_BY_KEY.get(
+            config.machine_key or "a1200", machines.MACHINES_BY_KEY["a1200"])
+        rom = amigacd.kickstart_on_disc(amigacd.identify(config.os_cd),
+                                        machine, workdir / "kickstart")
+        return rom.version if rom is not None else None
+    return None
+
+
+def _bring_ide_driver(config: BuildConfig, workdir: Path, progress: Progress,
+                      total: int) -> BuildConfig:
+    """Give a drive the IDE driver its machine's own Kickstart lacks.
+
+    Whatever runs the drive has to reach all of it.  An AmigaOS 3.2 install
+    from the CD brings the driver in its own Kickstart modules; any other
+    system is given the copy from the samples folder, every model's, and
+    LoadModule to put it in place at boot.
+    """
+    reach = ide_reach(config, _drive_kickstart(config, workdir), total)
+    if reach is None:
+        return config
+    boot = next((spec for spec in config.amiga_partitions if spec.bootable),
+                None)
+    staged = Path(boot.content_folder) if boot and boot.content_folder \
+        else None
+    if not reach.needs_driver or (staged is not None
+                                  and (staged / reach.driver).is_file()):
+        progress.log(reach.summary())
+        return config
+    from . import presets                         # noqa: PLC0415 - circular
+    drivers = presets.find_ide_drivers()
+    problems = reach.problems(reach.machine.amiga_model in drivers)
+    if problems:
+        raise RuntimeError(" ".join(problems))
+    overlays = [(str(path), f"Devs/{model}")
+                for model, path in sorted(drivers.items())]
+    loaders = [package.key for package in packages.CATALOGUE
+               if package.loads_modules]
+    progress.log(reach.summary())
+    return dataclasses.replace(
+        config,
+        package_keys=list(config.package_keys)
+        + [key for key in loaders if key not in config.package_keys],
+        amiga_partitions=[
+            dataclasses.replace(spec, overlays=list(spec.overlays) + overlays)
+            if spec is boot else spec for spec in config.amiga_partitions])
 
 
 def _prepare_os_cd(config: BuildConfig, workdir: Path,
@@ -4151,26 +4225,9 @@ def _prepare_os_cd(config: BuildConfig, workdir: Path,
     #  A drive for a PiStorm on the Amiga's own IDE port: the board's own
     #  Kickstart can start it before Emu68 has taken over, so it waits for
     #  the one Emu68 loads - the boot card's, or else the disc's own.
-    emu68_rom = None
-    if accelerator is machines.Accelerator.PISTORM and config.amiga_only:
-        if config.kickstart_path and Path(config.kickstart_path).is_file():
-            emu68_rom = kickstart.identify(config.kickstart_path,
-                                           config.kickstart_key or None)
-        else:
-            emu68_rom = amigacd.kickstart_on_disc(match, machine,
-                                                  workdir / "kickstart")
-        if emu68_rom is not None and emu68_rom.version:
-            wait_for_emu68(staged, emu68_rom.version, progress)
-
-    #  Whatever runs the drive has to reach all of it.  Emu68's Kickstart is
-    #  known; the ROM on the board is not, and is taken to be the oldest.
-    reach = ide_reach(config, emu68_rom.version if emu68_rom else rom_version,
-                      _target_size(config))
-    if reach is not None:
-        problems = reach.problems((staged / reach.driver).is_file())
-        if problems:
-            raise RuntimeError(" ".join(problems))
-        progress.log(reach.summary())
+    emu68_version = _drive_kickstart(config, workdir)
+    if emu68_version:
+        wait_for_emu68(staged, emu68_version, progress)
 
     #  The staged tree becomes the bootable partition's content.  A partition
     #  that already has content keeps it: somebody who pointed a drive at an
@@ -4394,6 +4451,7 @@ def _run_build(config: BuildConfig, progress: Progress,
         #  too, rather than needing a second version of all of that.
         if config.os_cd:
             config = _prepare_os_cd(config, workdir, progress)
+        config = _bring_ide_driver(config, workdir, progress, target_size)
 
         create_size = target_size if (config.mode in (BuildMode.FRESH, BuildMode.HDF)
                                       and not config.target_is_device) else None

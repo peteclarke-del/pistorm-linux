@@ -437,6 +437,10 @@ class Package:
     #  the wrong moment.  Naming the library here keeps the rule with the
     #  package it belongs to instead of in a table in the builder.
     boot_library: str = ""
+    #  Runs at the very top of S:Startup-Sequence, putting the newer copies
+    #  of ROM modules the drive holds - in the drawers named for the machine
+    #  - in place of the ROM's, and restarting once so they take over.
+    loads_modules: bool = False
     #  Installed once for every drive this build fills with content, so a card
     #  with a Games drive and a Demos drive arrives with a launcher for each.
     per_content_drive: bool = False
@@ -914,6 +918,18 @@ CATALOGUE: list[Package] = [
              ("Charsets", "Libs/Charsets"))),
         support_only=True,
         evidence=("Libs/codesets.library",),
+    ),
+    Package(
+        "loadmodule", "LoadModule",
+        "Puts a newer copy of a Kickstart module in place of the one in ROM "
+        "and keeps it there across a reset. It is how an A600 or A1200 on an "
+        "older Kickstart gets the IDE driver that reaches past 4 GB.",
+        category=Category.SYSTEM,
+        download=Download("util/boot/LoadModule.lha",
+                          (("LoadModule/LoadModule", "C"),)),
+        support_only=True,
+        evidence=("C/LoadModule",),
+        loads_modules=True,
     ),
     Package(
         "openurl", "OpenURL",
@@ -3124,11 +3140,43 @@ def unpack(archive: Path, progress: Progress) -> Path | None:
     result = subprocess.run(arguments + [str(archive)], cwd=destination,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE, check=False)
+    errors = result.stderr.decode("utf-8", "replace")
+    damaged = _damaged_members(errors) if result.returncode != 0 else []
+    if result.returncode != 0 and damaged and any(destination.iterdir()):
+        #  One bad file in an archive is not a bad archive: Aminet's
+        #  LoadModule carries an ExtractModule that fails its own checksum,
+        #  beside a LoadModule that passes.  What failed is deleted, never
+        #  used, and whatever a package needs from the rest is still checked
+        #  for by name as it is installed.
+        for member in damaged:
+            (destination / member).unlink(missing_ok=True)
+        progress.log(f"  WARNING: {archive.name} is damaged - "
+                     f"{', '.join(damaged)} failed the archive's own "
+                     f"checksum and was left out; the rest unpacked")
+        return destination
     if result.returncode != 0 or not any(destination.iterdir()):
         progress.log(f"  could not unpack {archive.name}: "
-                     f"{result.stderr.decode('utf-8', 'replace').strip()[:120]}")
+                     f"{errors.strip()[:120]}")
         return None
     return destination
+
+
+#  How 7-Zip names a member that failed its checksum.
+DAMAGED_MEMBER = re.compile(r"^ERROR: (?:Data Error|CRC Failed) : (.+)$",
+                            re.MULTILINE)
+
+
+def _damaged_members(errors: str) -> list[str]:
+    """The members 7-Zip reported damaged; empty unless every error is one.
+
+    Any other error - a truncated archive, an unknown method - means the
+    archive as a whole cannot be trusted, and that is still a failure.
+    """
+    lines = [line for line in errors.splitlines()
+             if line.startswith("ERROR")]
+    damaged = DAMAGED_MEMBER.findall("\n".join(lines))
+    return [member.strip() for member in damaged] \
+        if damaged and len(damaged) == len(lines) else []
 
 
 def _unpack_inner(package: Package, root: Path, parts: tuple[str, ...],
