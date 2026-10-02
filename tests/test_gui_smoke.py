@@ -2178,6 +2178,43 @@ def on_activate(app: ImagerApplication) -> None:
                   f"({window.stack.get_visible_child_name()})")
             window._apply_saved(saved, state)
 
+        #  The task is saved with the setup and comes back with it - a split
+        #  build came back as a plain new card, its drives' target lost.
+        from pistorm_imager.core import jobs as _jobs2           # noqa: PLC0415
+        split_file = SCRATCH / "split-setup.json"
+        window._start_task(builder.Task.SPLIT)
+        window.drives_kind_row.set_selected(1)               # an image file
+        window.drives_file_row.set_path(str(SCRATCH / "drives.hdf"))
+        window.drives_size_row.set_text("4GB")
+        window.target_row.set_selected(1)
+        window.file_row.set_path("")                         # no card yet
+        _jobs2.save_session(window.gather(require_target=False),
+                            window.interface_state(), split_file)
+        for drives in (True, False):
+            if not drives:
+                window._start_task(builder.Task.SPLIT)
+                window.drives_file_row.set_path("")
+                _jobs2.save_session(window.gather(require_target=False),
+                                    window.interface_state(), split_file)
+            window._start_task(builder.Task.NEW_CARD)
+            window._leave_task()
+            config, state, _r = _jobs2.load_session(split_file)
+            window._apply_saved(config, state)
+            window._take_up_loaded_setup(state)
+            pump()
+            check(window._task is builder.Task.SPLIT
+                  and (not drives or window._drives_target()[:2]
+                       == (str(SCRATCH / "drives.hdf"), False)),
+                  f"a split build loads as one, its drives' target "
+                  f"{'with' if drives else 'not yet'} chosen "
+                  f"({window._task}, {window._drives_target()})")
+        _jobs2.session_file().unlink(missing_ok=True)
+        window._remember_session()
+        check(_jobs2.have_session(),
+              "a setup with no card chosen yet is still remembered")
+        window._start_task(builder.Task.NEW_CARD)
+        window._apply_saved(saved, state)
+
         #  WHDLoad's Kickstarts are asked for under the software, and only
         #  while WHDLoad is ticked.
         from pistorm_imager.core import packages as _pk          # noqa: PLC0415
