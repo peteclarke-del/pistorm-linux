@@ -8,6 +8,7 @@ import dataclasses
 import os
 import sys
 import tempfile as _tempfile
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -368,6 +369,54 @@ def _check_application_updates(window) -> None:
     check(len(asked) == 4 and found
           and found[0].status.get_text().endswith("is the newest version"),
           "and checks there, once")
+    close_about()
+
+    #  A copy installed from a release package updates itself: the button
+    #  installs, a card being written holds it back, and it ends in Restart.
+    target = updates.PackageTarget("ubuntu24.04", "all",
+                                   "PiStorm-Imager_{version}_ubuntu24.04_all.deb")
+    packaged = updates.Release("99.0.0", "v99.0.0", "https://example/r",
+                               "PiStorm-Imager_99.0.0_ubuntu24.04_all.deb",
+                               "https://example/p.deb", 10, "https://example/s",
+                               "Notes.")
+    steps: list[str] = []
+    host = types.SimpleNamespace(writing=lambda: bool(steps and
+                                                      steps[-1] == "writing"),
+                                 restart=lambda: steps.append("restart") or True)
+
+    def download(release, progress, cancel):
+        progress(5, 10)
+        steps.append("downloaded")
+        return updates.VerifiedPackage(Path("/tmp/x.deb"), "a" * 64)
+
+    window.app_updater = app_updater.AppUpdater(
+        check=lambda: packaged, where=updates.Installation("package",
+                                                           target=target),
+        host=host, download=download,
+        install=lambda package: steps.append("installed"))
+    updater = window.app_updater
+    controls = open_about()
+    if controls is None:
+        return
+    controls.button.emit("clicked")
+    wait_for(lambda: updater.state.phase == "available", "the packaged check")
+    check(controls.button.get_label() == "_Update to 99.0.0",
+          f"a package copy is offered the update itself "
+          f"({controls.button.get_label()!r})")
+    steps.append("writing")
+    updater.update(packaged)
+    check(updater.state.phase == "available"
+          and updater.state.message == app_updater.BUSY_WRITING
+          and "downloaded" not in steps,
+          "nothing is installed while a card is being written")
+    steps.clear()
+    updater.update(packaged)
+    wait_for(lambda: updater.state.phase == "installed", "the install")
+    check(steps == ["downloaded", "installed"]
+          and controls.button.get_label() == app_updater.RESTART_LABEL,
+          f"it downloads, installs and offers the restart ({steps})")
+    controls.button.emit("clicked")
+    check(steps[-1] == "restart", "and Restart restarts")
     close_about()
 
 

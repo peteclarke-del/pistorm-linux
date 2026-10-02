@@ -1,0 +1,100 @@
+name: Release
+
+# A tag vX.Y.Z publishes the release: the Debian package the application
+# updates itself from, and SHA256SUMS, which it checks the download against.
+# Pull requests run the same tests and build the package without publishing,
+# so the packaging is known to work before a release depends on it.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag says the package's version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: packaging/check-release-tag.sh "${GITHUB_REF_NAME}"
+      - name: Install what the tests use
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
+            dosfstools 7zip genisoimage
+      - name: Unit tests
+        run: /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
+
+  package:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install what the build uses
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip python3-setuptools
+      - name: Build the package
+        run: packaging/build-deb.sh dist
+      - name: Inspect it
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+          writable="$(dpkg-deb --contents dist/*.deb | awk '$1 ~ /^.....w|^........w/ {print $NF}')"
+          if [ -n "${writable}" ]; then
+            echo "Group- or world-writable files in the package:" >&2
+            echo "${writable}" >&2
+            exit 1
+          fi
+      - name: Install it, and check it is what the update looks for
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          test "$(stat -c '%U %a' /usr/lib/pistorm-imager/bin/install-update)" = "root 755"
+          cd /tmp && PYTHONPATH=/usr/lib/pistorm-imager /usr/bin/python3 - <<'PY'
+          import os, glob
+          from pistorm_imager import __version__
+          from pistorm_imager.core import updates
+          target = updates.installed_target()
+          assert target is not None, "the package records no system"
+          built = os.path.basename(glob.glob(os.environ["GITHUB_WORKSPACE"] + "/dist/*.deb")[0])
+          assert target.package_name(__version__) == built, (target, built)
+          assert updates.installation().kind == "package"
+          print("The installed copy asks for", built)
+          PY
+      - name: Checksums
+        run: cd dist && sha256sum -- *.deb > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: dist/
+
+  publish:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: dist
+      - name: Publish the package and its checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME#v}.md"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/*.deb dist/SHA256SUMS --clobber
+          elif [ -f "${notes}" ]; then
+            gh release create "${GITHUB_REF_NAME}" dist/*.deb dist/SHA256SUMS \
+              --verify-tag --title "${GITHUB_REF_NAME}" --notes-file "${notes}"
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/*.deb dist/SHA256SUMS \
+              --verify-tag --title "${GITHUB_REF_NAME}" --generate-notes
+          fi
