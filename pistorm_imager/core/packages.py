@@ -650,9 +650,10 @@ CATALOGUE: list[Package] = [
         kickstart_drawer="Devs/Kickstarts",
         requires=("whdload_kickstarts",),
         note="Games that need a Kickstart image find it in Devs/Kickstarts: "
-             "every ROM WHDLoad can use is copied there from the folder the "
-             "card's Kickstart was chosen from. Add a 1.3 ROM to that folder "
-             "for the many games that want one.",
+             "every ROM WHDLoad has a relocation table for is copied there, "
+             "under the name it looks for, from the folder chosen for "
+             "WHDLoad's Kickstarts - or the card's Kickstart's own folder. "
+             "A 1.3 ROM is the one most games want.",
         content_words=("game", "demo", "whdload"),
         needed_for_content=True,
         evidence=("C/WHDLoad",),
@@ -2502,8 +2503,14 @@ CATALOGUE: list[Package] = [
         #  from; its own archive does not carry them. Without the matching
         #  .RTB, a correct Kickstart image is refused just the same.
         download=Download("util/boot/skick346.lha",
+                          #  Every released Kickstart it has a table for;
+                          #  the betas' are left out. Which ROMs are copied
+                          #  beside them is read from these tables.
                           (("Kickstarts/kick33180.A500.RTB", "Devs/Kickstarts"),
                            ("Kickstarts/kick34005.A500.RTB", "Devs/Kickstarts"),
+                           ("Kickstarts/kick36143.A3000.RTB", "Devs/Kickstarts"),
+                           ("Kickstarts/kick37175.A500.RTB", "Devs/Kickstarts"),
+                           ("Kickstarts/kick39106.A1200.RTB", "Devs/Kickstarts"),
                            ("Kickstarts/kick40063.A600.RTB", "Devs/Kickstarts"),
                            ("Kickstarts/kick40068.A1200.RTB", "Devs/Kickstarts"),
                            ("Kickstarts/kick40068.A4000.RTB", "Devs/Kickstarts"))),
@@ -3139,6 +3146,30 @@ def _made(package: Package, root: Path, progress: Progress,
         (made / item.name).write_bytes(data)
         out.append((str(made / item.name), item.destination))
         progress.log(f"  {package.label}: wrote {item.destination}/{item.name}")
+    return out
+
+
+def whdload_tables(progress: Progress | None = None) -> dict[int, str]:
+    """The Kickstarts WHDLoad has relocation tables for, by stored checksum.
+
+    The tables are whatever the packages a Kickstart-drawer package needs put
+    in that drawer - fetched, or taken from the cache - so the window can say
+    which of somebody's ROMs will be used before anything is built.
+    """
+    from . import kickstart                                 # noqa: PLC0415
+    progress = progress or Progress()
+    out: dict[int, str] = {}
+    for package in CATALOGUE:
+        if not package.kickstart_drawer:
+            continue
+        for key in package.requires:
+            needed = CATALOGUE_BY_KEY.get(key)
+            if needed is None or needed.download is None:
+                continue
+            pairs = fetch(needed, progress)
+            out.update(kickstart.relocation_tables(
+                source for source, destination in pairs
+                if destination == package.kickstart_drawer))
     return out
 
 

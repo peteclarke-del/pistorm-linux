@@ -2759,13 +2759,21 @@ The new entries, and what was learned fitting them:
 * **Versions are read out of the Resident structure** when the ID string does
   not name its kind - Workbench 3.1's `picture 40.4`, `xadmaster 12.1` and
   `reqtools 38.1436` all used to read as no version at all.
-* **WHDLoad's Kickstarts come from your own ROMs.** Commodore's images cannot
-  be downloaded, so every ROM in the folder the card's Kickstart was chosen
-  from is decrypted and matched by SHA-1 against the images WHDLoad's own
-  documentation names - `kick34005.A500`, `kick40068.A1200` and the rest - and
-  copied to `Devs/Kickstarts`, beside the `.RTB` relocation tables from
-  `util/boot/skick346.lha`. Matched by checksum, not version: 40.68 is three
-  different ROMs and WHDLoad accepts only the exact one.
+* **WHDLoad's Kickstarts come from your own ROMs, in a folder you choose.**
+  Commodore's images cannot be downloaded, so *Kickstarts for WHDLoad* on the
+  Machine step takes a folder of them - the card's own Kickstart's folder if
+  none is chosen - and says which it recognised before anything is built.
+  Each ROM is decrypted (with a `rom.key` in that folder, or the card's) and
+  un-swapped, a 256K one kept doubled to 512K is halved, and it is copied to
+  `Devs/Kickstarts` under the name WHDLoad looks for: `kick34005.A500`,
+  `kick39106.A1200` and so on. **Which ROMs, and those names, are read from
+  WHDLoad's relocation tables**, the `.RTB` files from `util/boot/skick346.lha`
+  that go beside them: each begins with the checksum its ROM stores 24 bytes
+  from its end, so a ROM whose checksum adds up and matches a table is that
+  table's Kickstart. The list used to be five SHA-1 hashes written in here,
+  which missed 2.04, 3.0 and the A3000's ROM that WHDLoad also takes; it is
+  now every released Kickstart there is a table for. A patched or damaged ROM
+  does not add up and is left out, as WHDLoad would refuse it.
 * **A rolling release is looked up, not named.** YAM's only build that speaks
   current TLS is a nightly release that keeps its three newest files, so a fixed
   address would stop working within weeks. A download can name a GitHub release

@@ -2157,6 +2157,27 @@ class ImagerWindow(Adw.ApplicationWindow):
         group.add(self.rom_info)
         page.add(group)
 
+        #  WHDLoad wants Commodore's ROMs under its own names beside its
+        #  relocation tables; these can be a different set from the one
+        #  Kickstart the card boots.
+        self.whdload_rom_group = Adw.PreferencesGroup(
+            title="Kickstarts for WHDLoad",
+            description="Games that boot their own Kickstart need the ROM "
+                        "it was written for. Every ROM in this folder that "
+                        "WHDLoad can use is recognised by its contents, "
+                        "decrypted, and copied to Devs/Kickstarts under the "
+                        "name WHDLoad looks for.")
+        self.whdload_rom_row = FileRow(
+            "Folder of Kickstart ROMs",
+            "The Kickstart ROM's own folder", folder=True,
+            on_change=lambda _p: self._scan_whdload_roms())
+        self.whdload_rom_group.add(self.whdload_rom_row)
+        self.whdload_rom_info = Adw.ActionRow(title="Recognised",
+                                              subtitle="Choose a folder")
+        self.whdload_rom_info.set_sensitive(False)
+        self.whdload_rom_group.add(self.whdload_rom_info)
+        page.add(self.whdload_rom_group)
+
         self.os_group = Adw.PreferencesGroup(
             title="Workbench floppy images",
             description="Used when the operating system above is set to "
@@ -3487,6 +3508,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  on, and where WHDLoad's images come from where drives are filled.
         self.group_kickstart.set_visible(task.writes_boot_partition
                                          or task.fills_drives)
+        self.whdload_rom_group.set_visible(task.fills_drives)
 
     def _on_variant_changed(self) -> None:
         if not self._ready:
@@ -4631,7 +4653,47 @@ class ImagerWindow(Adw.ApplicationWindow):
             self.hdf_check.set_subtitle(summary)
         self._update_summary()
 
+    def _scan_whdload_roms(self) -> None:
+        """Say which ROMs WHDLoad will be given, off the UI thread.
+
+        Its relocation tables say which Kickstarts it can use, and they come
+        from a download, so this cannot hold the window up.
+        """
+        folder = self.whdload_rom_row.path or (
+            str(Path(self.rom_row.path).parent) if self.rom_row.path else "")
+        if not folder:
+            self.whdload_rom_info.set_subtitle(
+                "Choose a folder, or a Kickstart above")
+            return
+        key = None if (Path(folder) / "rom.key").exists() \
+            else (self.rom_key_row.path or None)
+        self.whdload_rom_info.set_subtitle("Looking…")
+
+        def work() -> None:
+            try:
+                tables = packages.whdload_tables()
+                found = kickstart.whdload_images(folder, tables, key)
+                if not tables:
+                    text = ("WHDLoad's relocation tables could not be "
+                            "fetched; this is checked again when the card "
+                            "is built")
+                elif found:
+                    text = ", ".join(f"{name} ({info.path.name})"
+                                     for name, _data, info in found)
+                else:
+                    text = (f"None of the ROMs in {Path(folder).name} is one "
+                            f"WHDLoad can use - 1.3 (34.5) is the one most "
+                            f"games want")
+            except Exception as error:  # noqa: BLE001 - said, not raised
+                text = f"Could not look: {error}"
+            GLib.idle_add(self.whdload_rom_info.set_subtitle, text)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _on_rom_chosen(self) -> None:
+        #  The WHDLoad folder follows the Kickstart's own until one is chosen.
+        if hasattr(self, "whdload_rom_row") and not self.whdload_rom_row.path:
+            self._scan_whdload_roms()
         if not self.rom_row.path:
             self.rom_info.set_subtitle("No ROM selected")
             return
@@ -5141,6 +5203,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             boot_options=options,
             kickstart_path=self.rom_row.path,
             kickstart_key=self.rom_key_row.path,
+            whdload_kickstarts=self.whdload_rom_row.path,
             wifi_ssid=self.ssid_row.get_text().strip(),
             wifi_password=self.psk_row.get_text(),
             wifi_country=self.country_row.get_text().strip() or "GB",
@@ -5695,6 +5758,7 @@ class ImagerWindow(Adw.ApplicationWindow):
                     if key in boingbag.BAGS_BY_KEY))
         self._on_os_cd_chosen()
         self.rom_key_row.set_path(config.kickstart_key)
+        self.whdload_rom_row.set_path(config.whdload_kickstarts)
         self.volume_row.set_text(config.amiga_volume_name)
         self.adf_row.set_path(config.adf_folder)
         #  The operating system combo is the only place this is recorded now,
