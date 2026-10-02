@@ -2129,6 +2129,55 @@ def on_activate(app: ImagerApplication) -> None:
                      and not value.get_use_subtitle())
         check(not cut, f"every combo row shows its value in full ({cut})")
 
+        #  Loading a setup on the first screen goes into its task, at the
+        #  first step that still wants something - or Review, when nothing
+        #  does - rather than leaving the setup applied out of sight.
+        from pistorm_imager.ui.window import step_for            # noqa: PLC0415
+        routed = {
+            "a card or an image file to write to, on the Target step": "target",
+            "The boot partition must be at least 64 MiB": "target",
+            "Kickstart ROM not found: /x.rom": "amiga",
+            "Folder of Kickstarts for WHDLoad not found: /x": "packages",
+            "an Emu68 release - still looking, or choose a local archive on "
+            "the Emu68 step": "options",
+            "A WiFi network was given without a password": "options",
+            "No folder of Workbench disk images was given": "source",
+            "a CD image this recognises as AmigaOS": "source",
+            "Hard disk image not found: /x.hdf": "source",
+            "Define at least one Amiga partition": "storage",
+            "DH1: folder not found: /x": "storage",
+            "AmigaOS is installed onto DH0, which must use FFS or PFS3 (it "
+            "is set to FAT95)": "storage",
+            "The drives add up to 9 GiB, 1 GiB more than the 8 GiB card":
+                "storage",
+        }
+        wrong = {m: (step_for(m), want) for m, want in routed.items()
+                 if step_for(m) != want}
+        check(not wrong, f"each still-needed item is sent to its step ({wrong})")
+        saved = window.gather(require_target=False)
+        state = window.interface_state()
+        window._leave_task()
+        pump()
+        window._apply_saved(saved, state)
+        window._take_up_loaded_setup()
+        pump()
+        landed = window.stack.get_visible_child_name()
+        check(window._task is not None and landed in window._steps
+              and landed == window._first_step_needing_attention(),
+              f"loading from the first screen lands in the task, at the "
+              f"first step needing attention ({window._task}, {landed}, "
+              f"missing {window._missing_choices()[:2]})")
+        if landed == "review":
+            import dataclasses as _dc                            # noqa: PLC0415
+            window._leave_task()
+            window._apply_saved(_dc.replace(saved, target=""), state)
+            window._take_up_loaded_setup()
+            pump()
+            check(window.stack.get_visible_child_name() == "target",
+                  f"and one with no card chosen lands on Target "
+                  f"({window.stack.get_visible_child_name()})")
+            window._apply_saved(saved, state)
+
         #  WHDLoad's Kickstarts are asked for under the software, and only
         #  while WHDLoad is ticked.
         from pistorm_imager.core import packages as _pk          # noqa: PLC0415
