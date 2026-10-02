@@ -528,6 +528,68 @@ class AnImageSaysWhatItIs(_Scratch):
         self.assertIsNone(builder.image_kind(path))
 
 
+class TheHandlerKickstartLoads(_Scratch):
+    """The file system handler in the RDB, as Kickstart's own loader reads it.
+
+    Every LoadSegBlock said it held 128 longs, so the last one handed the ROM
+    its zero padding after the handler's final HUNK_END. The ROM took that
+    for another hunk and gave up: the handler never loaded, a CF card booted
+    through the IDE port stopped with Software Failure 8000 0008, and a drive
+    it did not boot from said "not mounted". FS-UAE's own loader stops at
+    the last hunk, so only an emulated IDE boot - Kickstart doing the work -
+    showed it.
+    """
+
+    HANDLER = Path(__file__).resolve().parent.parent / "samples" / "pfs3aio"
+
+    def handler(self) -> bytes:
+        #  A real hunk file: header, one code hunk, a reloc table, the end.
+        import struct
+        code = b"\x4e\x75" * 300                      # 600 bytes of RTS
+        return (struct.pack(">IIIII", 0x3F3, 0, 1, 0, 0) + struct.pack(">I", 150)
+                + struct.pack(">II", 0x3E9, 150) + code
+                + struct.pack(">IIII", 0x3EC, 1, 0, 4) + struct.pack(">I", 0)
+                + struct.pack(">I", 0x3F2))
+
+    def test_each_block_says_how_much_it_holds(self):
+        import struct
+        handler = self.handler()
+        table = rdb.Rdb(partitions=[rdb.Partition("DH0", 1, 9, rdb.DOSTYPE_PFS3)],
+                        filesystems=[rdb.FileSystem(rdb.DOSTYPE_PFS3, handler)],
+                        cylinders=10)
+        image = self.scratch() / "disk.hdf"
+        with open(image, "wb") as handle:
+            handle.truncate(10 * 1024 * 1024)
+            table.write(handle, 0)
+        with open(image, "rb") as handle:
+            area = handle.read(200 * 512)
+        lsegs = [area[n:n + 512] for n in range(0, len(area), 512)
+                 if area[n:n + 4] == b"LSEG"]
+        data = b"".join(
+            block[20:20 + (struct.unpack_from(">I", block, 4)[0] - 5) * 4]
+            for block in lsegs)
+        self.assertEqual(data[:len(handler)], handler)
+        self.assertLess(len(data) - len(handler), 4,
+                        "no padding after the last hunk beyond the long it ends in")
+        self.assertLess(struct.unpack_from(">I", lsegs[-1], 4)[0], 128)
+        with open(image, "rb") as handle:
+            self.assertEqual(rdb.Rdb.read(handle, 0).filesystems[0].seglist[
+                :len(handler)], handler)
+
+    def test_padding_after_the_last_hunk_is_never_stored(self):
+        handler = self.handler()
+        self.assertEqual(rdb.loadable(handler + bytes(412)), handler)
+        self.assertEqual(rdb.loadable(b"not a hunk file"), b"not a hunk file")
+
+    def test_the_real_pfs3aio_is_cut_at_its_end(self):
+        if not self.HANDLER.is_file():
+            self.skipTest("no PFS3 handler in samples/")
+        data = self.HANDLER.read_bytes()
+        cut = rdb.loadable(data)
+        self.assertEqual(cut[-4:], b"\x00\x00\x03\xf2", "ends at HUNK_END")
+        self.assertEqual(data[:len(cut)], cut)
+
+
 class TestHdfOutput(_Scratch):
     def test_creates_a_bare_amiga_drive(self):
         folder = self.scratch()
