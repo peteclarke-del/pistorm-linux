@@ -62,6 +62,52 @@ def new_volume(folder: Path, blocks: int, name: str = "Test",
     return volume, handle, path
 
 
+class WhatIsMadeIsDated(_Scratch):
+    """A drawer or file made here carries the time it was made.
+
+    Dated the first of January 1978, DEVS:DataTypes was never read by
+    AddDataTypes REFRESH, and every AmigaOS 3.2 card stopped at boot on
+    "can't load picture" - proved in FS-UAE, and gone once dated.
+    """
+
+    def entries(self, writer_for) -> dict:
+        path = self.scratch() / "vol.hdf"
+        with open(path, "w+b") as handle:
+            handle.truncate(4000 * amigafs.BLOCK)
+            volume = writer_for(handle)
+            made = volume.makedirs("Devs/DataTypes")
+            volume.write_file(made, "ILBM", b"FORM", check_existing=False)
+            volume.write_file(made, "Old", b"FORM", days=5000, mins=10,
+                              ticks=20, check_existing=False)
+            volume.close()
+        with open(path, "rb") as handle:
+            reader = (pfs3.Pfs3Volume(handle, 0) if handle.read(3) == b"PFS"
+                      else Volume(handle))
+            return {relative: (entry.days, entry.mins, entry.ticks)
+                    for relative, entry in reader.walk()}
+
+    def check(self, writer_for) -> None:
+        today = amigafs.amiga_now()[0]
+        found = self.entries(writer_for)
+        for relative in ("Devs", "Devs/DataTypes", "Devs/DataTypes/ILBM"):
+            self.assertIn(found[relative][0], (today, today + 1), relative)
+        self.assertEqual(found["Devs/DataTypes/Old"], (5000, 10, 20),
+                         "a date given is the date kept")
+
+    def test_on_ffs(self):
+        self.check(lambda handle: VolumeWriter.format(handle, 0, 4000, "T"))
+
+    def test_on_pfs3(self):
+        def writer(handle):
+            volume = pfs3.Pfs3Writer(handle, 0, 4000, "T")
+            volume.format()
+            return volume
+        self.check(writer)
+
+    def test_the_epoch_is_amigados_own(self):
+        self.assertEqual(amigafs.AMIGA_EPOCH.date().isoformat(), "1978-01-01")
+
+
 class TestHashing(_Scratch):
     def test_hash_is_case_insensitive(self):
         self.assertEqual(amigafs.hash_name("Startup-Sequence", True),

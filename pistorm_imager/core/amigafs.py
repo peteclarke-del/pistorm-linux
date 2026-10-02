@@ -15,6 +15,7 @@ files in place, because an install only ever adds.
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import struct
 from typing import BinaryIO, Iterator
 
@@ -49,6 +50,35 @@ DOSTYPE_BASE = 0x444F5300    # 'DOS\0'
 
 class AmigaFsError(RuntimeError):
     pass
+
+
+AMIGA_EPOCH = datetime.datetime(1978, 1, 1)
+TICKS_PER_SECOND = 50
+
+
+def amiga_now() -> tuple[int, int, int]:
+    """Now, as an AmigaDOS DateStamp: days, minutes and ticks since 1978.
+
+    Local time, because that is what an Amiga keeps.
+    """
+    since = datetime.datetime.now() - AMIGA_EPOCH
+    seconds = since.seconds
+    return (since.days, seconds // 60,
+            (seconds % 60) * TICKS_PER_SECOND
+            + since.microseconds * TICKS_PER_SECOND // 1_000_000)
+
+
+def stamped(days: int, mins: int, ticks: int) -> tuple[int, int, int]:
+    """A date as given, or now when none was.
+
+    A drawer or file this tool makes without a date of its own used to be
+    dated the first of January 1978, and AddDataTypes REFRESH looks at a
+    drawer's date to see whether there is anything to load: DEVS:DataTypes
+    dated day nought was never read, no picture could be loaded, and every
+    AmigaOS 3.2 card stopped at boot on "can't load picture". AmigaOS dates
+    what it makes with the time it was made, and so does this.
+    """
+    return (days, mins, ticks) if (days or mins or ticks) else amiga_now()
 
 
 def dostype_flags(dostype: int) -> int:
@@ -514,6 +544,7 @@ class VolumeWriter(Volume):
             if not existing.is_dir:
                 raise AmigaFsError(f"{name} already exists as a file")
             return existing.block
+        days, mins, ticks = stamped(days, mins, ticks)
         block_number = self.allocate()[0]
         block = bytearray(BLOCK)
         struct.pack_into(">II", block, 0, T_HEADER, block_number)
@@ -569,7 +600,7 @@ class VolumeWriter(Volume):
         struct.pack_into(">I", header, 320, protect)
         struct.pack_into(">I", header, 324, len(data))
         write_bstr(header, 328, comment, MAX_COMMENT)
-        struct.pack_into(">III", header, 420, days, mins, ticks)
+        struct.pack_into(">III", header, 420, *stamped(days, mins, ticks))
         write_bstr(header, 432, name)
         struct.pack_into(">I", header, 504, ext_numbers[0] if ext_numbers else 0)
         struct.pack_into(">i", header, 508, ST_FILE)
