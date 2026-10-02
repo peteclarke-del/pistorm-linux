@@ -154,7 +154,7 @@ class BootAddon:
                                                         self.min_emu68):
             version = ".".join(str(part) for part in self.min_emu68)
             return (f"needs Emu68 {version} or newer; choose one on the "
-                    f"Source page.")
+                    f"Emu68 step.")
         return ""
 
 

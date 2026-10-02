@@ -16,6 +16,26 @@ from pistorm_imager.core import (amigainfo, amigaos, compat, content,  # noqa: E
 from pistorm_imager.core.util import Progress  # noqa: E402
 
 
+
+def _resident(version: int, revision: int, name: bytes) -> bytes:
+    """A minimal hunk file whose code holds a Resident structure."""
+    import struct                                           # noqa: PLC0415
+    ident = name + b" %d.%d (1.1.99)\0" % (version, revision)
+    code = bytearray(b"\x70\xff\x4e\x75")               # moveq #-1,d0; rts
+    at = len(code)
+    code += b"\x4a\xfc" + struct.pack(">I", at) + struct.pack(">I", 0)
+    code += bytes([0x80, version, 9, 0]) + struct.pack(">II", 0, 0)
+    code += struct.pack(">I", 0)
+    pointer = len(code)
+    code += ident
+    while len(code) % 4:
+        code += b"\0"
+    struct.pack_into(">I", code, at + 18, pointer)
+    longs = len(code) // 4
+    return (struct.pack(">IIIIII", 0x3F3, 0, 1, 0, 0, longs)
+            + struct.pack(">II", 0x3E9, longs) + bytes(code)
+            + struct.pack(">I", 0x3F2))
+
 class TestDiscover(unittest.TestCase):
     def tree(self, container: str, *names: str) -> Path:
         folder = Path(tempfile.mkdtemp(prefix="pistorm-content-"))
@@ -459,7 +479,7 @@ class UpdatesForAnAcceleratedMachine(unittest.TestCase):
 
     def test_the_cpu_libraries_are_offered_as_an_update(self):
         keys = {p.key for p in
-                packages.in_category(packages.Category.UPDATES)}
+                packages.in_category(packages.Category.SPEED)}
         self.assertIn("mmulib", keys)
 
     def test_whdload_does_not_drag_in_what_stops_it_working(self):
@@ -498,9 +518,8 @@ class UpdatesForAnAcceleratedMachine(unittest.TestCase):
     def test_they_are_still_offered_for_a_machine_used_for_applications(self):
         #  Off by default is not the same as gone: the newer CPU support is
         #  a real improvement where WHDLoad is not the point.
-        keys = {p.key for p in
-                packages.in_category(packages.Category.UPDATES)}
-        self.assertEqual(keys, {"mmulib"})
+        self.assertIn(packages.CATALOGUE_BY_KEY["mmulib"],
+                      packages.in_category(packages.Category.SPEED))
 
 
 class NiceToHaves(unittest.TestCase):
@@ -543,11 +562,14 @@ class NiceToHaves(unittest.TestCase):
     def test_media_and_extras_are_offered_as_their_own_groups(self):
         for category, expected in ((packages.Category.MEDIA,
                                     {"amplifier", "hippoplayer",
-                                     "digibooster", "ahi"}),
+                                     "digibooster", "ahi", "amigaamp",
+                                     "riva", "frogger", "warpjpeg",
+                                     "warppng", "akgif"}),
                                    (packages.Category.EXTRAS,
                                     {"dockit", "visage", "snoopdos",
-                                     "kingcon", "sysinfo",
-                                     "adfdevice", "virusz"})):
+                                     "kingcon", "sysinfo", "virusz",
+                                     "scout", "installer",
+                                     "newinstaller"})):
             keys = {p.key for p in packages.in_category(category)}
             self.assertEqual(keys, expected)
 
@@ -560,6 +582,51 @@ class NiceToHaves(unittest.TestCase):
                 self.assertTrue(package.download.source,
                                 f"{package.key} cannot be fetched and does "
                                 f"not say where to get it")
+
+    def test_a_package_is_not_offered_when_what_it_needs_is_not(self):
+        #  A freeware adventure on a native screen: ScummVM is RTG only, so
+        #  the game could be ticked and dragged ScummVM onto the card.
+        from pistorm_imager.core.machines import Chipset, Display  # noqa
+        lure = packages.CATALOGUE_BY_KEY["scummvm_lure"]
+        self.assertFalse(lure.suits(Chipset.AGA, Display.NATIVE))
+        self.assertEqual(lure.unsuited_need(Chipset.AGA, Display.NATIVE).key,
+                         "scummvm")
+        self.assertTrue(lure.suits(Chipset.AGA, Display.RTG_HDMI))
+        self.assertIsNone(lure.unsuited_need(Chipset.AGA, Display.RTG_HDMI))
+
+    def test_nothing_this_tool_writes_is_mounted_at_boot(self):
+        #  fat95's mountlist for the SD card's boot partition went into
+        #  DEVS:DOSDrivers, which AmigaOS mounts near the top of the
+        #  Startup-Sequence. On a PiStorm it put a day-old file system onto
+        #  Emu68's SD driver before anything else had started, and the A1200
+        #  crashed at once. In an emulator the driver is not there, the mount
+        #  failed quietly, and the card booted - which is how it got onto a
+        #  card at all. A mountlist this tool writes is mounted when somebody
+        #  asks: it goes in Storage/DOSDrivers, never DEVS:DOSDrivers.
+        for package in packages.CATALOGUE:
+            for item in package.download.write:
+                self.assertNotEqual(
+                    item.destination.lower(), "devs/dosdrivers",
+                    f"{package.key} writes {item.name} where it is mounted "
+                    f"at every boot")
+
+    def test_nothing_from_emu68s_tools_holds_up_the_boot(self):
+        #  WaitUntilConnected ran before the TCP/IP stack and, where the WiFi
+        #  could not come up, waited for ever: the machine never reached
+        #  Workbench. Emu68's tools talk to the Pi's own hardware, which an
+        #  emulator does not have, so a boot check cannot prove them; anything
+        #  of theirs started at boot runs in the background, where it cannot
+        #  stop the machine starting.
+        for package in packages.CATALOGUE:
+            if package.download.path != packages.EMU68_TOOLS:
+                continue
+            for line in package.startup:
+                word = line.strip().split(" ", 1)[0].upper()
+                if word in ("IF", "ELSE", "ENDIF", "ASSIGN", ";", ""):
+                    continue
+                self.assertEqual(word, "RUN",
+                                 f"{package.key} starts {line.strip()!r} in "
+                                 f"the foreground at boot")
 
     def test_no_two_packages_share_a_key(self):
         keys = [p.key for p in packages.CATALOGUE]
@@ -1302,7 +1369,7 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
         (folder / "Visage").mkdir()
         paths = builder._landing_paths([(str(folder / "Visage"),
                                          "Utilities/Visage")])
-        self.assertEqual(paths, ["Utilities/Visage"])
+        self.assertEqual(list(paths), ["Utilities/Visage"])
         self.assertTrue(self.fixer(paths).skip("Utilities/Visage"))
 
     def test_a_drawer_going_to_the_volume_root_displaces_nothing(self):
@@ -1311,7 +1378,7 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
         self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
         (folder / "Stuff").mkdir()
         self.assertEqual(
-            builder._landing_paths([(str(folder / "Stuff"), "")]), [])
+            builder._landing_paths([(str(folder / "Stuff"), "")]), {})
 
     def test_a_drawers_contents_are_never_displaced_one_by_one(self):
         #  A drawer is merged into whatever is there. Only its own name is
@@ -1331,6 +1398,46 @@ class ChosenSoftwareCanDisplaceWhatIsAlreadyThere(unittest.TestCase):
                          "a file inside the drawer must survive")
         self.assertFalse(keeps.skip("Prefs/Env-Archive/Sys/anything"),
                          "and so must everything else already under it")
+
+    def test_a_newer_system_file_is_kept_over_an_older_package_copy(self):
+        #  AmigaOS 3.2 carries picture.datatype 47.5; a package bringing 43.41
+        #  under the same name must not put the older one over it. The
+        #  versions are read structurally, so an ID string that does not
+        #  name its kind - "picture 43.41" - still compares.
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-newer-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "picture.datatype").write_bytes(_resident(43, 41, b"picture"))
+        paths = builder._landing_paths([(str(folder / "picture.datatype"),
+                                         "Classes/DataTypes")])
+        fixer = self.fixer(paths)
+        landed = "Classes/DataTypes/picture.datatype"
+        fixer.offer(landed, _resident(47, 5, b"picture"))
+        self.assertFalse(fixer.skip(landed),
+                         "the system's newer copy is kept")
+        fixer.offer(landed, _resident(40, 4, b"picture"))
+        self.assertTrue(fixer.skip(landed),
+                        "an older system copy still gives way to the package")
+        fixer.offer(landed, b"no version at all")
+        self.assertTrue(fixer.skip(landed),
+                        "and one that cannot be compared gives way, as before")
+
+    def test_a_package_binary_with_no_version_does_not_replace_a_versioned_one(self):
+        #  akGIF's descriptor states no version; AmigaOS 3.2's GIF says 47.1.
+        from pistorm_imager.core import builder                # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-unversioned-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "GIF").write_bytes(b"FORM\x00\x00\x00\x20DTYPNAME\0GIF")
+        (folder / "Notes").write_bytes(b"just text")
+        paths = builder._landing_paths([(str(folder / "GIF"), "Devs/DataTypes"),
+                                        (str(folder / "Notes"), "S")])
+        fixer = self.fixer(paths)
+        fixer.offer("Devs/DataTypes/GIF", b"FORM....DTYPFVER$VER: GIF 47.1 (1.1.21)")
+        self.assertFalse(fixer.skip("Devs/DataTypes/GIF"),
+                         "the system's versioned descriptor is kept")
+        fixer.offer("S/Notes", b"$VER: Notes 1.0")
+        self.assertTrue(fixer.skip("S/Notes"),
+                        "text the package replaces is still replaced")
 
     def test_a_card_that_imports_nothing_has_no_clash_to_settle(self):
         from pistorm_imager.core import builder                # noqa: PLC0415
@@ -1814,6 +1921,24 @@ class TheNewestReleaseWins(unittest.TestCase):
         self.assertIn("C", places)
         self.assertIn("Libs", places)
 
+    def test_newinstaller_does_not_bring_an_openurl_with_no_handler(self):
+        #  Reported as iGame complaining of a missing library and asking for
+        #  a reinstall: NewInstaller's drawer carries openurl.library 3.0,
+        #  which loads L:OpenURL-Handler - not in the archive - and its own
+        #  script copies it only when asked to.  Copying the whole drawer
+        #  put it on every card, and every program that opens it stopped.
+        package = packages.CATALOGUE_BY_KEY["newinstaller"]
+        sources = [src for src, _dest in package.download.items]
+        self.assertNotIn("NewInstaller1_7/Libs", sources,
+                         "the drawer holds openurl.library as well")
+        self.assertFalse([s for s in sources if "openurl" in s.lower()])
+        #  The ones its script does copy are still there - reqtools by way
+        #  of its own package, so a ticked ReqTools is not outranked.
+        for name in ("guigfx", "render", "identify"):
+            self.assertIn(f"NewInstaller1_7/Libs/{name}.library", sources)
+        self.assertIn("reqtools", package.requires)
+        self.assertNotIn("NewInstaller1_7/Libs/reqtools.library", sources)
+
     def test_where_a_download_comes_from_is_named(self):
         self.assertEqual(
             packages.CATALOGUE_BY_KEY["newinstaller"].download.where, "Aminet")
@@ -1829,8 +1954,10 @@ class IgameNeedsNoDonor(unittest.TestCase):
         #  Not Guigfx: it and render.library are compiled for a processor
         #  with an FPU, which Emu68 does not give a PiStorm, and iGame lists
         #  them as optional.
+        #  WBRun, so a game added by hand starts as its icon would start it;
+        #  a system that has its own newer one keeps it.
         self.assertEqual(needs, {"mui", "mcc_nlist", "mcc_texteditor",
-                                 "mcc_urltext"})
+                                 "mcc_urltext", "wbrun"})
 
     def test_each_of_those_can_be_downloaded(self):
         for key in packages.CATALOGUE_BY_KEY["igame"].requires:
@@ -1848,7 +1975,8 @@ class IgameNeedsNoDonor(unittest.TestCase):
     def test_ticking_igame_brings_them_all(self):
         self.assertEqual(
             packages.expand(["igame"]),
-            ["mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext", "igame"])
+            ["mui", "mcc_nlist", "mcc_texteditor", "mcc_urltext", "wbrun",
+             "igame"])
 
 
 class TheFpuExplanationWasWrong(unittest.TestCase):
@@ -2049,6 +2177,32 @@ class ChoicesThatBuildAndMislead(unittest.TestCase):
     def test_an_rtg_card_with_no_rtg_driver(self):
         said = self._config(rtg_display=True).concerns()
         self.assertTrue([s for s in said if "no RTG screen to open on" in s])
+
+    def test_an_ide_drive_behind_a_pistorm_names_the_pistorms_own_card(self):
+        #  The drive carries Picasso96; the Pi's HDMI mode and video memory
+        #  are in config.txt on the PiStorm's card, which this does not write.
+        said = self._config(amiga_only=True, install_emu68=False,
+                            rtg_display=True,
+                            package_keys=["picasso96"]).concerns()
+        self.assertTrue([s for s in said if "PiStorm's own card" in s])
+        said = self._config(amiga_only=True, install_emu68=False,
+                            rtg_display=True, accelerator="accelerator",
+                            accelerator_cpu="68030",
+                            package_keys=["picasso96"]).concerns()
+        self.assertFalse([s for s in said if "PiStorm's own card" in s])
+
+    def test_rtg_without_a_pistorm_is_allowed_and_names_the_board(self):
+        #  The drive may go into a machine with an RTG card of its own, so it
+        #  is not refused - but Picasso96 is set up for Emu68's board.
+        config = self._config(amiga_only=True, install_emu68=False,
+                              rtg_display=True, accelerator="stock",
+                              package_keys=["picasso96"])
+        self.assertFalse([p for p in config.validate() if "RTG" in p])
+        said = config.concerns()
+        self.assertTrue([s for s in said if "VideoCore as its board" in s])
+        said = self._config(rtg_display=True,
+                            package_keys=["picasso96"]).concerns()
+        self.assertFalse([s for s in said if "VideoCore as its board" in s])
 
     def test_software_nobody_can_fetch_on_your_behalf(self):
         #  Roadshow's publisher serves the archive only to a browser, so the
@@ -5487,7 +5641,8 @@ class TheProcessorChoosesTheArchive(unittest.TestCase):
             with self.subTest(package.key):
                 for value, path in package.download.per_cpu:
                     machines.Cpu(value)          # raises if it is not one
-                    self.assertTrue(path.startswith("http"), path)
+                    chosen = package.archive(machines.Cpu(value))
+                    self.assertTrue(chosen.url.startswith("http"), path)
 
     def test_a_pistorm_gets_the_build_emu68_can_run(self):
         for package in self.per_cpu():
@@ -5503,8 +5658,13 @@ class TheProcessorChoosesTheArchive(unittest.TestCase):
                      for cpu, _path in
                      ((machines.Cpu(value), path)
                       for value, path in package.download.per_cpu)}
+            #  One archive may serve several processors - XAD's 020 build is
+            #  its author's answer for a 68020, 68030 and 68040 alike - but
+            #  every archive named has to be one some processor gets.
+            paths = {path.rsplit("/", 1)[-1]
+                     for _value, path in package.download.per_cpu}
             with self.subTest(package.key):
-                self.assertEqual(len(set(names.values())), len(names), names)
+                self.assertEqual(set(names.values()), paths, names)
 
     def test_a_processor_nobody_builds_for_falls_back_to_the_oldest(self):
         #  The oldest build is the one that runs anywhere, so an answer this
@@ -5513,6 +5673,138 @@ class TheProcessorChoosesTheArchive(unittest.TestCase):
             with self.subTest(package.key):
                 self.assertEqual(package.archive(None).path,
                                  package.download.per_cpu[0][1])
+
+
+class TheClockKeepsTheHostsTime(unittest.TestCase):
+    """The time zone is this computer's, read off it rather than asked.
+
+    UnZip's readme says that without TZ it treats archive times as local
+    time, and AmiTimeKeeper takes only the offset from Locale without one -
+    so a card that leaves it for the readme is an hour out half the year.
+    """
+
+    def zone_file(self, data: bytes) -> Path:
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-tz-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "localtime").write_bytes(data)
+        return folder / "localtime"
+
+    def test_the_rule_is_read_from_the_end_of_the_zone_file(self):
+        path = self.zone_file(b"TZif2" + bytes(60) + b"\nGMT0BST,M3.5.0/1,M10.5.0\n")
+        self.assertEqual(packages.host_time_zone(path),
+                         "GMT0BST,M3.5.0/1,M10.5.0")
+
+    def test_a_file_with_no_rule_gives_none(self):
+        self.assertEqual(packages.host_time_zone(
+            self.zone_file(b"TZif\0" + bytes(60))), "")
+        self.assertEqual(packages.host_time_zone(
+            self.zone_file(b"not a zone file\n")), "")
+        self.assertEqual(packages.host_time_zone(Path("/nonexistent")), "")
+
+    def test_the_settings_carry_it_and_go_without_it(self):
+        known = packages.hardware_settings(None, "CET-1CEST,M3.5.0,M10.5.0/3")
+        self.assertEqual(known[packages.TIME_ZONE],
+                         "CET-1CEST,M3.5.0,M10.5.0/3")
+        self.assertEqual(known[packages.TIME_ZONE_LINE],
+                         "TZ=CET-1CEST,M3.5.0,M10.5.0/3\n")
+        unknown = packages.hardware_settings(None, "")
+        self.assertNotIn(packages.TIME_ZONE, unknown,
+                         "ENVARC:TZ is left out rather than written empty")
+        self.assertEqual(unknown[packages.TIME_ZONE_LINE], "",
+                         "AmiTimeKeeper's settings are written without it")
+
+    def test_both_programs_are_given_it(self):
+        texts = {(w.destination, w.name): w.text
+                 for key in ("unzip", "amitimekeeper")
+                 for w in packages.CATALOGUE_BY_KEY[key].download.write}
+        self.assertEqual(texts[("Prefs/Env-Archive", "TZ")],
+                         "{" + packages.TIME_ZONE + "}")
+        self.assertIn("{" + packages.TIME_ZONE_LINE + "}",
+                      texts[("Prefs/Env-Archive/AmiTimeKeeper",
+                             "timekeeper.prefs")])
+
+
+class ScummVMKnowsItsGames(unittest.TestCase):
+    """The freeware games ticked with ScummVM are in its launcher.
+
+    Placed and not registered, they were on the card and ScummVM opened to
+    an empty list until each drawer was found with Add Game.
+    """
+
+    def ini(self, text: str = "[scummvm]\nsavepath=PROGDIR:saves/\n") -> Path:
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-scummvm-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        (folder / "scummvm.ini").write_text(text)
+        return folder / "scummvm.ini"
+
+    def games(self) -> list[packages.Package]:
+        return [p for p in packages.CATALOGUE if p.scummvm is not None]
+
+    def made(self, chosen, source=None) -> str:
+        scummvm = packages.CATALOGUE_BY_KEY["scummvm"]
+        (item,) = scummvm.download.made
+        return item.make(source or self.ini(), frozenset(chosen)).decode()
+
+    def test_every_freeware_game_gets_a_section_where_it_is(self):
+        self.assertTrue(self.games())
+        text = self.made([p.key for p in self.games()])
+        self.assertTrue(text.startswith("[scummvm]\nsavepath="),
+                        "its own settings are kept")
+        for package in self.games():
+            with self.subTest(package.key):
+                section = re.search(
+                    rf"(?ms)^\[{package.scummvm.game}\]\n(.*?)(?:\n\n|\Z)",
+                    text).group(1)
+                self.assertIn(f"engineid={package.scummvm.engine}", section)
+                drawer = package.download.items[0][1].split("/")[-1]
+                self.assertIn(f"path=PROGDIR:games/{drawer}/", section)
+
+    def test_only_the_games_chosen(self):
+        text = self.made([])
+        self.assertNotIn("engineid=", text)
+
+    def test_a_game_already_listed_is_not_listed_twice(self):
+        game = self.games()[0]
+        text = self.made([game.key], self.ini(
+            f"[scummvm]\n\n[{game.scummvm.game}]\npath=elsewhere\n"))
+        self.assertEqual(text.count(f"[{game.scummvm.game}]"), 1)
+
+
+class TheProcessorChoosesTheDrawer(unittest.TestCase):
+    """One archive, a drawer of same-named files per processor.
+
+    AmiSSL ships its libraries this way and its installer asks which drawer
+    to copy; the card gets the one for its machine, and only that one, since
+    two drawers onto one destination would leave whichever came last.
+    """
+
+    def per_cpu(self) -> list[packages.Package]:
+        return [p for p in packages.CATALOGUE
+                if p.download and p.download.cpu_items]
+
+    def test_each_processor_gets_exactly_one_processors_drawers(self):
+        self.assertTrue(self.per_cpu(), "AmiSSL at least is built this way")
+        for package in self.per_cpu():
+            listed = package.download.cpu_items
+            groups = {value: [(i, d) for v, i, d in listed if v == value]
+                      for value, _i, _d in listed}
+            for cpu in list(machines.Cpu) + [None]:
+                with self.subTest(package.key, cpu=cpu):
+                    chosen = package.archive(cpu)
+                    self.assertFalse(chosen.cpu_items)
+                    added = [pair for pair in chosen.items
+                             if pair not in package.download.items]
+                    self.assertIn(added, list(groups.values()))
+
+    def test_a_68060_gets_its_own_and_a_pistorm_the_68040s(self):
+        amissl = packages.CATALOGUE_BY_KEY["amissl"]
+        for cpu, build in ((machines.Cpu.M68060, "68060"),
+                           (machines.PISTORM_CPU, "68020-40"),
+                           (None, "68020-40")):
+            with self.subTest(cpu=cpu):
+                inside = [i for i, _d in amissl.archive(cpu).items
+                          if "/AmiSSL/" in i]
+                self.assertEqual(inside, [f"Libs/AmigaOS3/AmiSSL/{build}"])
 
 
 class AnArchiveThatWrapsItselfInADrawer(unittest.TestCase):
