@@ -972,13 +972,57 @@ class ADriveForTheIdePort(_Scratch):
         self.assertIn("DH0", problems[0])
         self.assertIn("first 4 GB", problems[0])
 
-    def test_the_workbench_disks_cannot_bring_the_driver(self):
+    def with_drivers(self, found):
+        from pistorm_imager.core import presets          # noqa: PLC0415
+        return unittest.mock.patch.object(presets, "find_ide_drivers",
+                                          return_value=found)
+
+    def test_without_the_driver_anywhere_it_is_refused(self):
         config = self.drive((1 * GIB, None), install_amigaos=True,
                             adf_folder=str(self.scratch()))
-        problems = self.about_reach(config)
+        with self.with_drivers({}):
+            problems = self.about_reach(config)
         self.assertEqual(len(problems), 1, problems)
-        self.assertIn("AmigaOS 3.2", problems[0])
+        self.assertIn("samples/drivers/A600", problems[0])
         self.assertIn("DH1", problems[0])
+
+    def test_with_the_driver_in_samples_any_system_can_have_it(self):
+        config = self.drive((1 * GIB, None), install_amigaos=True,
+                            adf_folder=str(self.scratch()))
+        with self.with_drivers({"A600": Path("/x/A600/scsi.device")}):
+            self.assertEqual(self.about_reach(config), [])
+
+    def test_the_build_gives_the_drive_every_models_copy_and_loadmodule(self):
+        config = self.drive((1 * GIB, None))
+        found = {"A600": Path("/x/A600/scsi.device"),
+                 "A1200": Path("/x/A1200/scsi.device")}
+        with self.with_drivers(found):
+            given = builder._bring_ide_driver(config, self.scratch(),
+                                              Progress(), 64 * GIB)
+        boot = given.amiga_partitions[0]
+        self.assertIn(("/x/A600/scsi.device", "Devs/A600"), boot.overlays)
+        self.assertIn(("/x/A1200/scsi.device", "Devs/A1200"), boot.overlays)
+        loaders = [p.key for p in packages.CATALOGUE if p.loads_modules]
+        self.assertTrue(loaders)
+        self.assertTrue(set(loaders) <= set(given.package_keys))
+        #  And the boot script runs it.
+        editor = builder._startup_sequence_editor(given, Progress())
+        self.assertIn("   C:LoadModule AUTO", editor.lines)
+
+    def test_a_drive_that_brings_its_own_driver_is_left_alone(self):
+        staged = self.scratch()
+        (staged / "Devs" / "A600").mkdir(parents=True)
+        (staged / "Devs" / "A600" / "scsi.device").write_bytes(b"3.2's")
+        config = self.drive((1 * GIB, None))
+        config.amiga_partitions[0].content_folder = str(staged)
+        with self.with_drivers({}):
+            self.assertIs(builder._bring_ide_driver(
+                config, self.scratch(), Progress(), 64 * GIB), config)
+
+    def test_a_drive_within_4gb_is_given_nothing(self):
+        config = self.drive((1 * GIB, None))
+        self.assertIs(builder._bring_ide_driver(
+            config, self.scratch(), Progress(), 4 * GIB), config)
 
     def test_a_cd_install_is_judged_by_what_it_stages(self):
         disc = self.scratch() / "os.iso"
@@ -1028,6 +1072,66 @@ class ADriveForTheIdePort(_Scratch):
         self.assertEqual(
             [m.key for m in machines.MACHINES if m.ide_port],
             ["a600", "a1200"])
+
+
+class FindingTheIdeDriver(_Scratch):
+    """The driver comes from the user's own AmigaOS, laid out by model."""
+
+    def driver(self, version: str = "47.4") -> bytes:
+        return (b"\x00\x00\x03\xf3" + b"\0" * 20
+                + f"IDE_scsidisk {version} (30.12.2019)".encode() + b"\0")
+
+    def find(self, layout: dict[str, bytes]) -> dict:
+        from pistorm_imager.core import presets          # noqa: PLC0415
+        root, cache = self.scratch(), self.scratch()
+        for relative, data in layout.items():
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            (root / relative).write_bytes(data)
+        with unittest.mock.patch.object(presets, "_search_roots",
+                                        return_value=[root]), \
+                unittest.mock.patch.object(presets.emu68, "cache_dir",
+                                           return_value=cache):
+            found = presets.find_ide_drivers()
+            again = presets.find_ide_drivers()
+        self.assertEqual(found, again, "kept, and found again in the cache")
+        for path in found.values():
+            self.assertTrue(path.is_relative_to(cache))
+        return found
+
+    def test_found_in_the_drawer_named_for_its_model(self):
+        found = self.find({"drivers/A1200/scsi.device": self.driver(),
+                           "drivers/A600/scsi.device": self.driver()})
+        self.assertEqual(sorted(found), ["A1200", "A600"])
+
+    def test_a_driver_that_does_not_say_its_model_is_not_guessed_at(self):
+        self.assertEqual(self.find({"drivers/scsi.device": self.driver(),
+                                    "A3000/scsi.device": self.driver()}), {})
+
+    def test_one_that_cannot_reach_past_4gb_is_not_taken(self):
+        """3.1's own is version 40; 3.1.4 is where the reach came in."""
+        self.assertEqual(self.find(
+            {"drivers/A1200/scsi.device": self.driver("40.12")}), {})
+
+    def test_something_else_by_that_name_is_not_taken(self):
+        self.assertEqual(self.find(
+            {"drivers/A1200/scsi.device": b"not a program"}), {})
+
+
+class AnArchiveWithOneBadFile(unittest.TestCase):
+    """A member that fails its checksum is not the whole archive."""
+
+    def test_only_checksum_failures_are_tolerated(self):
+        self.assertEqual(packages._damaged_members(
+            "ERROR: Data Error : LoadModule/ExtractModule\n"
+            "Sub items Errors: 1\n"), ["LoadModule/ExtractModule"])
+        self.assertEqual(packages._damaged_members(
+            "ERROR: CRC Failed : a/b\nERROR: Data Error : c\n"), ["a/b", "c"])
+
+    def test_anything_else_still_fails(self):
+        self.assertEqual(packages._damaged_members(
+            "ERROR: Data Error : a\nERROR: Unexpected end of archive\n"), [])
+        self.assertEqual(packages._damaged_members(
+            "ERROR: Can not open the file as archive\n"), [])
 
 
 class ChoosingWhereSoftwareIsKept(unittest.TestCase):
