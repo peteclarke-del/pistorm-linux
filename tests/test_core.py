@@ -746,6 +746,94 @@ class TestKickstart(_Scratch):
         self.assertIn("A500", info.name)
 
 
+def checksummed(size: int, seed: int, version=34, revision=5) -> bytes:
+    """A ROM image whose own checksum adds up, as exec checks it."""
+    data = bytearray(hashlib.sha256(bytes([seed])).digest() * (size // 32))
+    data[0:4] = b"\x11\x11\x4e\xf9"
+    struct.pack_into(">HH", data, 12, version, revision)
+    struct.pack_into(">I", data, size - 24, 0)
+    total = 0
+    for (word,) in struct.iter_unpack(">I", bytes(data)):
+        total += word
+        if total > 0xFFFFFFFF:
+            total = (total & 0xFFFFFFFF) + 1
+    struct.pack_into(">I", data, size - 24, ~total & 0xFFFFFFFF)
+    return bytes(data)
+
+
+class KickstartsForWHDLoad(_Scratch):
+    """WHDLoad's own tables say which ROMs it can use, and what to call them.
+
+    Each .RTB begins with the checksum its ROM carries; a ROM in the chosen
+    folder that carries one of them goes into Devs/Kickstarts under the
+    table's name. Asked for as "select a folder for whdload kickstarts -
+    recognise them, copy and rename into the appropriate dir".
+    """
+
+    def tables(self, *roms: tuple[str, bytes]) -> Path:
+        folder = self.scratch() / "Kickstarts"
+        folder.mkdir()
+        for name, data in roms:
+            checksum = kickstart.stored_checksum(data)
+            (folder / f"{name}.RTB").write_bytes(
+                struct.pack(">I", checksum) + bytes(16))
+        return folder
+
+    def test_the_checksum_a_rom_carries(self):
+        rom = checksummed(256 * 1024, 1)
+        self.assertIsNotNone(kickstart.stored_checksum(rom))
+        damaged = bytearray(rom)
+        damaged[100] ^= 1
+        self.assertIsNone(kickstart.stored_checksum(bytes(damaged)),
+                          "a patched or damaged ROM is not the one a table "
+                          "is for")
+
+    def test_roms_are_recognised_and_named_by_the_tables(self):
+        one_three = checksummed(256 * 1024, 1)
+        three_oh = checksummed(512 * 1024, 2, 39, 106)
+        stranger = checksummed(512 * 1024, 3, 47, 96)
+        tables = kickstart.relocation_tables([self.tables(
+            ("kick34005.A500", one_three), ("kick39106.A1200", three_oh))])
+        roms = self.scratch()
+        #  Kept doubled to 512K, as 256K ROMs often are, and encrypted.
+        (roms / "Kickstart 1.3.rom").write_bytes(one_three * 2)
+        key = b"\x42\x17\x99"
+        (roms / "kick30.rom").write_bytes(b"AMIROMTYPE1" + bytes(
+            b ^ key[i % len(key)] for i, b in enumerate(three_oh)))
+        (roms / "rom.key").write_bytes(key)
+        (roms / "kick32.rom").write_bytes(stranger)
+        found = {name: data for name, data, _info
+                 in kickstart.whdload_images(roms, tables)}
+        self.assertEqual(found, {"kick34005.A500": one_three,
+                                 "kick39106.A1200": three_oh})
+
+    def test_the_build_takes_the_chosen_folder_over_the_kickstarts_own(self):
+        rom = checksummed(256 * 1024, 1)
+        drawer = self.tables(("kick34005.A500", rom))
+        boot_rom_folder, chosen = self.scratch(), self.scratch()
+        (boot_rom_folder / "kick.rom").write_bytes(checksummed(
+            512 * 1024, 4, 40, 68))
+        (chosen / "a500.rom").write_bytes(rom)
+        package = next(p for p in builder.packages.CATALOGUE
+                       if p.kickstart_drawer)
+        resolved = [(str(drawer), package.kickstart_drawer)]
+        config = builder.BuildConfig(
+            kickstart_path=str(boot_rom_folder / "kick.rom"))
+        self.assertEqual(builder._kickstart_images(config, package, QUIET,
+                                                   resolved), [],
+                         "the Kickstart's own folder has no 1.3")
+        config.whdload_kickstarts = str(chosen)
+        placed = builder._kickstart_images(config, package, QUIET, resolved)
+        self.assertEqual([(Path(s).name, d) for s, d in placed],
+                         [("kick34005.A500", package.kickstart_drawer)])
+        self.assertEqual(Path(placed[0][0]).read_bytes(), rom)
+
+    def test_a_folder_that_is_not_there_is_refused(self):
+        config = builder.BuildConfig(target="/tmp/x.img",
+                                     whdload_kickstarts="/nonexistent/roms")
+        self.assertTrue([p for p in config.validate() if "WHDLoad" in p])
+
+
 class TestJobs(_Scratch):
     def test_round_trip(self):
         config = builder.BuildConfig(

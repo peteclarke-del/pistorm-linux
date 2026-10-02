@@ -216,6 +216,10 @@ class BuildConfig:
     #  one drive on an existing card. Its size, file system and whether it is
     #  the one the machine boots from are read off the card, not chosen.
     rewrite_drive: str = ""
+    #  A folder of Kickstart ROMs for WHDLoad, each recognised and copied to
+    #  Devs/Kickstarts under the name WHDLoad looks for. Empty: the folder
+    #  the card's own Kickstart was chosen from.
+    whdload_kickstarts: str = ""
     #  A PiStorm whose Amiga drives are not on the card it boots from - a CF
     #  card on an A1200's IDE port, say. The Pi's boot card is ``target``;
     #  the drives, with Workbench and the software on them, go here, and the
@@ -854,6 +858,10 @@ class BuildConfig:
                 problems.append("The boot partition must be at least 64 MiB.")
         if self.kickstart_path and not Path(self.kickstart_path).is_file():
             problems.append(f"Kickstart ROM not found: {self.kickstart_path}")
+        if self.whdload_kickstarts \
+                and not Path(self.whdload_kickstarts).is_dir():
+            problems.append(f"Folder of Kickstarts for WHDLoad not found: "
+                            f"{self.whdload_kickstarts}")
         if self.emu68_archive and not Path(self.emu68_archive).is_file():
             problems.append(f"Emu68 archive not found: {self.emu68_archive}")
         if self.mode is BuildMode.FRESH:
@@ -2196,7 +2204,7 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
             out += extra
         if package is None or not package.kickstart_drawer:
             continue
-        extra = _kickstart_images(config, package, progress)
+        extra = _kickstart_images(config, package, progress, resolved)
         if credit is not None:
             for pair in extra:
                 credit.setdefault(pair, key)
@@ -2240,22 +2248,44 @@ def _content_menu(config: "BuildConfig", package: "packages.Package",
     return [(str(into), package.content_menu)]
 
 
+def whdload_kickstart_folder(config: "BuildConfig") -> str:
+    """Where WHDLoad's Kickstarts are taken from: the folder chosen for them,
+    or else the one the card's own Kickstart came from - where people keep
+    the rest of theirs."""
+    if config.whdload_kickstarts:
+        return config.whdload_kickstarts
+    return str(Path(config.kickstart_path).parent) if config.kickstart_path \
+        else ""
+
+
 def _kickstart_images(config: "BuildConfig", package: "packages.Package",
-                      progress: Progress) -> list[tuple[str, str]]:
+                      progress: Progress,
+                      resolved: list[tuple[str, str]] = ()
+                      ) -> list[tuple[str, str]]:
     """The user's own ROMs a package can use, decrypted, under its names.
 
-    Taken from the folder the card's Kickstart was chosen from, which is
-    where people keep the rest of theirs. Nothing else is searched: these are
-    somebody's own ROMs, and the one place they said they keep them is the
-    place to look.
+    Which ROMs, and the names, are read from the relocation tables the
+    build is putting in the same drawer: WHDLoad uses an image only beside
+    its table. Nothing but the one folder is searched: these are somebody's
+    own ROMs, and the place they said they keep them is the place to look.
     """
-    if not config.kickstart_path:
-        progress.log(f"  {package.label}: no Kickstart was chosen, so there "
-                     f"is no folder of ROMs to copy into "
-                     f"{package.kickstart_drawer}")
+    folder = whdload_kickstart_folder(config)
+    if not folder:
+        progress.log(f"  {package.label}: no folder of Kickstarts was chosen, "
+                     f"so {package.kickstart_drawer} has no images")
         return []
-    folder = Path(config.kickstart_path).parent
-    found = kickstart.whdload_images(folder, config.kickstart_key or None)
+    tables = kickstart.relocation_tables(
+        source for source, destination in resolved
+        if destination == package.kickstart_drawer)
+    if not tables:
+        progress.log(f"  {package.label}: no relocation tables are being "
+                     f"installed, so no Kickstart image would be used")
+        return []
+    #  A rom.key in the folder is the one for its ROMs; the card's own is
+    #  only used where the folder has none.
+    key = None if (Path(folder) / "rom.key").exists() \
+        else (config.kickstart_key or None)
+    found = kickstart.whdload_images(folder, tables, key)
     if not found:
         progress.log(f"  {package.label}: none of the ROMs in {folder} is one "
                      f"it can use, so {package.kickstart_drawer} is left "

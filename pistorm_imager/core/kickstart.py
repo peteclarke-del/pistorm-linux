@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import re
 import struct
+from collections.abc import Iterable
 from pathlib import Path
 
 CLOANTO_MAGIC = b"AMIROMTYPE1"
@@ -222,28 +223,64 @@ def scan(folder: str | Path, key_file: str | Path | None = None) -> list[RomInfo
     return results
 
 
-#  The images WHDLoad will use, under the names it looks for them by in
-#  Devs:Kickstarts - its own documentation's table (docs/en/need.html). Keyed
-#  on the SHA-1 of the plain image, not on the version: 40.68 is the A1200's,
-#  the A3000's and the A4000's ROM, three different files, and WHDLoad refuses
-#  any image that is not exactly the one it names. The hashes are the ones
-#  WinUAE's ROM list gives; the A1200 one was checked against a real ROM.
-WHDLOAD_IMAGES = {
-    "11f9e62cf299f72184835b7b2a70a16333fc0d88": "kick33180.A500",
-    "891e9a547772fe0c6c19b610baf8bc4ea7fcb785": "kick34005.A500",
-    "3b7f1493b27e212830f989f26ca76c02049f09ca": "kick40063.A600",
-    "e21545723fe8374e91342617604f1b3d703094f1": "kick40068.A1200",
-    "5fe04842d04a489720f0f4bb0e46948199406f49": "kick40068.A4000",
-}
+#  WHDLoad's relocation tables - the .RTB files beside each image in
+#  Devs:Kickstarts - begin with the checksum their ROM stores 24 bytes from
+#  its end. So the tables name the images WHDLoad can use: a ROM whose stored
+#  checksum one of them begins with is that table's Kickstart, and goes on
+#  the card under its name. Read from the tables rather than written here,
+#  which held five hashes and so missed 3.0 and 2.04 that WHDLoad also takes.
+TABLE_SUFFIX = ".RTB"
 
 
-def whdload_images(folder: str | Path, key_file: str | Path | None = None
+def stored_checksum(data: bytes) -> int | None:
+    """The checksum a ROM image carries for itself, if it adds up.
+
+    Exec's own check: every longword summed with the carry wrapped round
+    comes to 0xFFFFFFFF. A ROM that does not is damaged or patched, and
+    WHDLoad's tables are for the untouched one.
+    """
+    if len(data) < 24 or len(data) % 4:
+        return None
+    total = 0
+    for (word,) in struct.iter_unpack(">I", data):
+        total += word
+        if total > 0xFFFFFFFF:
+            total = (total & 0xFFFFFFFF) + 1
+    if total != 0xFFFFFFFF:
+        return None
+    return struct.unpack_from(">I", data, len(data) - 24)[0]
+
+
+def relocation_tables(paths: Iterable[str | Path]) -> dict[int, str]:
+    """The checksum each relocation table is for, and the image name it wants.
+
+    ``paths`` may be tables or drawers holding them.
+    """
+    out: dict[int, str] = {}
+    for given in paths:
+        given = Path(given)
+        found = ([given] if given.is_file()
+                 else sorted(given.rglob("*")) if given.is_dir() else [])
+        for table in found:
+            if not table.name.upper().endswith(TABLE_SUFFIX) \
+                    or not table.is_file():
+                continue
+            head = table.read_bytes()[:4]
+            if len(head) == 4:
+                out.setdefault(struct.unpack(">I", head)[0],
+                               table.name[:-len(TABLE_SUFFIX)])
+    return out
+
+
+def whdload_images(folder: str | Path, tables: dict[int, str],
+                   key_file: str | Path | None = None
                    ) -> list[tuple[str, bytes, RomInfo]]:
     """Every ROM in ``folder`` WHDLoad can use, as (its name, image, source).
 
-    Each is decrypted and un-swapped first, so the card needs no rom.key. A
-    256K Kickstart is often kept doubled to fill 512K; the half is what is
-    compared, and what WHDLoad wants.
+    ``tables`` is ``relocation_tables``' answer: the images there are tables
+    for. Each ROM is decrypted and un-swapped first, so the card needs no
+    rom.key. A 256K Kickstart is often kept doubled to fill 512K; the half is
+    what is compared, and what WHDLoad wants.
     """
     found: dict[str, tuple[bytes, RomInfo]] = {}
     for info in scan(folder, key_file):
@@ -254,7 +291,8 @@ def whdload_images(folder: str | Path, key_file: str | Path | None = None
         half = len(data) // 2
         if len(data) == 512 * 1024 and data[:half] == data[half:]:
             data = data[:half]
-        name = WHDLOAD_IMAGES.get(hashlib.sha1(data).hexdigest())
+        checksum = stored_checksum(data)
+        name = tables.get(checksum) if checksum is not None else None
         if name is not None and name not in found:
             found[name] = (data, info)
     return [(name, data, info) for name, (data, info) in sorted(found.items())]
