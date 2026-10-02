@@ -23,6 +23,8 @@ import dataclasses
 import struct
 from typing import BinaryIO, Iterator
 
+from .amigafs import stamped
+
 SECTOR = 512
 
 DISKTYPE_PFS3 = 0x50465301          # 'PFS\1' - what a formatted volume carries
@@ -917,7 +919,7 @@ class Pfs3Writer:
         self.set_anode(anodenr, 1, sector)
         self._add_entry(parent_anode,
                         self._direntry(name, anodenr, True, 0, protection,
-                                       comment, days, mins, ticks))
+                                       comment, *stamped(days, mins, ticks)))
         return anodenr
 
     def makedirs(self, path: str, parent: int | None = None) -> int:
@@ -946,7 +948,8 @@ class Pfs3Writer:
             self.set_anode(anodenr, 0, 0)
         self._add_entry(parent_anode,
                         self._direntry(name, anodenr, False, len(data),
-                                       protection, comment, days, mins, ticks))
+                                       protection, comment,
+                                       *stamped(days, mins, ticks)))
         return anodenr
 
 

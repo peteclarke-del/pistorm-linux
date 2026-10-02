@@ -1444,6 +1444,11 @@ class StartupSequenceEditor:
         if not self.lines or posix != "s/startup-sequence":
             return data
         text = data.decode("latin-1")
+        if all(entry in text for entry in self.lines):
+            #  Already there: the same script can be offered by more than one
+            #  pass, and the lines must go in once.
+            self.inserted = True
+            return data
         out: list[str] = []
         done = False
         for line in text.splitlines(keepends=True):
