@@ -864,11 +864,8 @@ class BuildConfig:
             problems.append(f"Kickstart ROM not found: {self.kickstart_path}")
         #  Only asked of a card WHDLoad is going on: the folder is set
         #  under its tick, and stays set if the tick is taken off.
-        wants_kickstarts = any(
-            packages.CATALOGUE_BY_KEY[key].kickstart_drawer
-            for key in packages.expand(self.package_keys or [])
-            if key in packages.CATALOGUE_BY_KEY)
-        if self.whdload_kickstarts and wants_kickstarts \
+        if self.whdload_kickstarts \
+                and packages.chosen_with(self.package_keys, "kickstart_drawer") \
                 and not Path(self.whdload_kickstarts).is_dir():
             problems.append(f"Folder of Kickstarts for WHDLoad not found: "
                             f"{self.whdload_kickstarts}")
@@ -2284,9 +2281,7 @@ def _kickstart_images(config: "BuildConfig", package: "packages.Package",
         progress.log(f"  {package.label}: no folder of Kickstarts was chosen, "
                      f"so {package.kickstart_drawer} has no images")
         return []
-    tables = kickstart.relocation_tables(
-        source for source, destination in resolved
-        if destination == package.kickstart_drawer)
+    tables = packages.kickstart_tables(package, resolved)
     if not tables:
         progress.log(f"  {package.label}: no relocation tables are being "
                      f"installed, so no Kickstart image would be used")

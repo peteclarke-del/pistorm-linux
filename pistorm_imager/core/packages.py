@@ -41,7 +41,7 @@ from pathlib import Path
 from . import ahi, amigainfo
 from .compat import EMU68_BOARD
 from .machines import Chipset, Cpu, Display, Machine, Pi
-from .util import Progress, human_size
+from .util import HUNK_HEADER, Progress, human_size
 
 AMINET = "https://aminet.net/"
 
@@ -175,10 +175,6 @@ class Download:
     path: str
     items: tuple[tuple[str, str], ...] = ()
     stage: str = ""
-    #  Some Aminet uploads are self-extracting Amiga executables rather than
-    #  archives; nothing here can unpack one, so the file itself goes on the
-    #  card to be run there.
-    raw: bool = False
     #  Lay the archive out over the card by drawer name rather than by a list
     #  of files: everything in its C, Libs, Devs and S goes to the card's.
     merge: bool = False
@@ -253,6 +249,17 @@ class Download:
     #  self-extractors inside a zip - DOOM's split over two floppies' worth
     #  of parts - and the data a card needs is inside those.
     inner: tuple[str, ...] = ()
+
+    @property
+    def places_files(self) -> bool:
+        """Whether this names what goes where, rather than being placed whole.
+
+        Decided on everything that can name a file: deciding on ``items``
+        alone once sent a package that only renamed or wrote its files to
+        ``stage`` whole.
+        """
+        return bool(self.items or self.rename or self.write or self.retool
+                    or self.tooltypes or self.made)
 
     def for_kernel(self, flavour: str) -> "Download":
         """This download, built for the Emu68 kernel the card will run.
@@ -438,16 +445,6 @@ class Package:
     #  the card. Its path is where the package puts it.
     scummvm: ScummGame | None = None
 
-    @property
-    def manual(self) -> bool:
-        """Whether this one has to finish installing on the Amiga itself."""
-        return bool(self.download and not self.download.items
-                    and not self.download.merge)
-
-    @property
-    def downloadable(self) -> bool:
-        return self.download is not None
-
     def suits(self, chipset: Chipset, display: Display, *,
               pi: Pi | None = None, cpu: Cpu | None = None,
               emu68_tag: str | None = None) -> bool:
@@ -502,6 +499,7 @@ class Package:
 
 STAGING = "Storage/Install"          # where self-installing packages land
 AMISSL = "AmiSSL"                    # AmiSSL's own drawer on the system drive
+AGS2 = "Programs/AGS2"               # the game selector and its menu
 
 #  A ``{name}`` in a startup line, to be filled in before it is written.
 PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -1337,7 +1335,7 @@ CATALOGUE: list[Package] = [
              ("AHI/User/L/AHI-Handler", "L"),
              ("AHI/User/C/AddAudioModes", "C"),
              ("AHI/User/Prefs/AHI.info", "Prefs"),
-             ("AHI/User/Help/ahi.guide", "Storage/Install/AHI")),
+             ("AHI/User/Help/ahi.guide", STAGING + "/AHI")),
             #  The archive keeps two prefs programs side by side; the one
             #  that lands has to be called AHI for its icon to find it.
             rename=(("AHI/User/Prefs/AHI_MUI", "Prefs", "AHI"),),
@@ -1728,7 +1726,8 @@ CATALOGUE: list[Package] = [
                  "ACTIVE CX_POPUP=NO",
                  "EndIF"),
         note="Set to this computer's time zone, daylight saving included, "
-             "by the TZ= line in ENVARC:AmiTimeKeeper/timekeeper.prefs. "
+             "by the TZ= line in ENVARC:AmiTimeKeeper/timekeeper.prefs, "
+             "where this computer has one. "
              "Needs a TCP/IP stack.",
         evidence=("Utilities/AmiTimeKeeper/TimeKeeper",),
     ),
@@ -1937,18 +1936,18 @@ CATALOGUE: list[Package] = [
         download=Download(
             "https://github.com/MagerValp/ArcadeGameSelector/releases/"
             "download/v2020.04.14/AGS2-20200414.lha.zip",
-            (("AGS2/WB13-Background.iff", "Programs/AGS2"),
-             ("AGS2/WB13-Empty.iff", "Programs/AGS2"),
-             ("AGS2/README.txt", "Programs/AGS2")),
+            (("AGS2/WB13-Background.iff", AGS2),
+             ("AGS2/WB13-Empty.iff", AGS2),
+             ("AGS2/README.txt", AGS2)),
             inner=("AGS2-20200414.lha",),
             #  The release's own test-script icon, pointed at IconX, so the
             #  start script opens by double click; an invented icon would
             #  have no picture.
-            retool=(("AGS2/Test AGS2 OCS.info", "Programs/AGS2",
+            retool=(("AGS2/Test AGS2 OCS.info", AGS2,
                      "Game Selector.info", "C:IconX"),),
             source="https://github.com/MagerValp/ArcadeGameSelector/releases"),
         support_only=True,
-        evidence=("Programs/AGS2/WB13-Background.iff",),
+        evidence=(AGS2 + "/WB13-Background.iff",),
     ),
     Package(
         "ags2", "AGS2 game selector",
@@ -1967,16 +1966,16 @@ CATALOGUE: list[Package] = [
         download=Download(
             "https://github.com/Optiroc/ArcadeGameSelector/releases/"
             "download/v2022.08.26/AGS2-20220826.lha",
-            (("AGS2/AGS2", "Programs/AGS2"),
-             ("AGS2/AGS2menu", "Programs/AGS2"),
-             ("AGS2/AGS2helper", "Programs/AGS2")),
+            (("AGS2/AGS2", AGS2),
+             ("AGS2/AGS2menu", AGS2),
+             ("AGS2/AGS2helper", AGS2)),
             #  It finds its menu, its settings and its pictures through AGS:,
             #  so the script its icon runs makes the assign, and takes it
             #  away again on the way back to Workbench.
-            write=(Written("Game Selector", "Programs/AGS2",
+            write=(Written("Game Selector", AGS2,
                            "; Game Selector - written by the PiStorm imager.\n"
-                           "Assign >NIL: AGS: SYS:Programs/AGS2\n"
-                           "SYS:Programs/AGS2/AGS2\n"
+                           f"Assign >NIL: AGS: SYS:{AGS2}\n"
+                           f"SYS:{AGS2}/AGS2\n"
                            "Assign >NIL: AGS: REMOVE\n"),),
             source="https://github.com/Optiroc/ArcadeGameSelector/releases"),
         #  It opens a native screen sized from its background picture; an
@@ -1987,14 +1986,14 @@ CATALOGUE: list[Package] = [
         requires=("ags2_screens", "whdload"),
         content_words=("game",),
         wants_content=True,
-        content_menu="Programs/AGS2",
+        content_menu=AGS2,
         media="each game's screenshot and description in the menu, a few "
               "hundred kilobytes a game",
-        note="Double click Programs/AGS2/Game Selector; Esc or the CD32 blue "
+        note=f"Double click {AGS2}/Game Selector; Esc or the CD32 blue "
              "button returns to Workbench. Each game's icon settings were "
              "copied into its menu entry when the card was built, so games "
              "added later appear when the card is rebuilt.",
-        evidence=("Programs/AGS2/AGS2menu",),
+        evidence=(AGS2 + "/AGS2menu",),
     ),
     Package(
         "scummvm", "ScummVM",
@@ -3014,7 +3013,8 @@ def _newest_asset(package: Package, download: Download,
 
 #  The first word of an LhA header is the header size and its checksum; the
 #  method identifier sits two bytes in.  These are the ones Amiga archives use.
-LHA_METHODS = (b"-lh0-", b"-lh1-", b"-lh4-", b"-lh5-", b"-lh6-", b"-lh7-")
+#  The method in an LhA header, two bytes into it.
+LHA_METHOD = re.compile(rb"-lh[014567]-")
 
 
 def embedded_archive(path: Path) -> Path | None:
@@ -3034,8 +3034,8 @@ def embedded_archive(path: Path) -> Path | None:
         data = path.read_bytes()
     except OSError:
         return None
-    starts = [i for i in range(len(data) - 7)
-              if data[i + 2:i + 7] in LHA_METHODS]
+    starts = [found.start() - 2 for found in LHA_METHOD.finditer(data)
+              if found.start() >= 2]
     if len(starts) < 2:
         return None
     out = cache_dir() / (path.stem + "-payload.lha")
@@ -3129,6 +3129,20 @@ def _unpack_inner(package: Package, root: Path, parts: tuple[str, ...],
     return destination
 
 
+def _stage(package: Package, kind: str, destination: str, name: str,
+           data: bytes | Path) -> tuple[str, str]:
+    """A file this tool makes, or picks out, for a package - put in the cache
+    under ``<key>-<kind>/<destination>`` and paired with where it goes."""
+    folder = cache_dir() / f"{package.key}-{kind}" / destination
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / name
+    if isinstance(data, Path):
+        shutil.copy2(data, target)
+    else:
+        target.write_bytes(data)
+    return str(target), destination
+
+
 def _made(package: Package, root: Path, progress: Progress,
           chosen: Iterable[str] = ()) -> list[tuple[str, str]]:
     """The files made from the archive's own, for ``Download.made``."""
@@ -3141,12 +3155,34 @@ def _made(package: Package, root: Path, progress: Progress,
             progress.log(f"  {package.label}: {item.destination}/{item.name} "
                          f"not written - {error}")
             continue
-        made = cache_dir() / f"{package.key}-made" / item.destination
-        made.mkdir(parents=True, exist_ok=True)
-        (made / item.name).write_bytes(data)
-        out.append((str(made / item.name), item.destination))
+        out.append(_stage(package, "made", item.destination, item.name, data))
         progress.log(f"  {package.label}: wrote {item.destination}/{item.name}")
     return out
+
+
+def chosen_with(keys: Iterable[str], field: str) -> list[Package]:
+    """The chosen packages - with what they bring - that set ``field``.
+
+    By what a package says about itself, never by its key.
+    """
+    return [CATALOGUE_BY_KEY[key] for key in expand(keys)
+            if key in CATALOGUE_BY_KEY
+            and getattr(CATALOGUE_BY_KEY[key], field)]
+
+
+def kickstart_tables(package: Package,
+                     pairs: Iterable[tuple[str, str]]) -> dict[int, str]:
+    """The relocation tables among ``pairs`` that land in ``package``'s
+    Kickstart drawer, by the checksum of the ROM each is for."""
+    from . import kickstart                                 # noqa: PLC0415
+    return kickstart.relocation_tables(
+        source for source, destination in pairs
+        if destination == package.kickstart_drawer)
+
+
+#  whdload_tables' answers, by the archives they were read from: the window
+#  asks on every change of folder, and the answer only changes with them.
+_TABLES_SEEN: dict[tuple, dict[int, str]] = {}
 
 
 def whdload_tables(progress: Progress | None = None) -> dict[int, str]:
@@ -3156,7 +3192,6 @@ def whdload_tables(progress: Progress | None = None) -> dict[int, str]:
     in that drawer - fetched, or taken from the cache - so the window can say
     which of somebody's ROMs will be used before anything is built.
     """
-    from . import kickstart                                 # noqa: PLC0415
     progress = progress or Progress()
     out: dict[int, str] = {}
     for package in CATALOGUE:
@@ -3166,10 +3201,14 @@ def whdload_tables(progress: Progress | None = None) -> dict[int, str]:
             needed = CATALOGUE_BY_KEY.get(key)
             if needed is None or needed.download is None:
                 continue
-            pairs = fetch(needed, progress)
-            out.update(kickstart.relocation_tables(
-                source for source, destination in pairs
-                if destination == package.kickstart_drawer))
+            archive = download_archive(needed, progress)
+            if archive is None:
+                continue
+            seen = (needed.key, str(archive), archive.stat().st_mtime)
+            if seen not in _TABLES_SEEN:
+                _TABLES_SEEN[seen] = kickstart_tables(
+                    package, fetch(needed, progress))
+            out.update(_TABLES_SEEN[seen])
     return out
 
 
@@ -3239,10 +3278,9 @@ def _written(package: Package, progress: Progress,
                          f"{', '.join(unfilled)}, which depends on the "
                          f"Raspberry Pi, and none was chosen")
             continue
-        made = cache_dir() / f"{package.key}-written" / item.destination
-        made.mkdir(parents=True, exist_ok=True)
-        (made / item.name).write_text(text)
-        out.append((str(made / item.name), item.destination))
+        #  Amiga text: Latin-1, as the Amiga reads it.
+        out.append(_stage(package, "written", item.destination, item.name,
+                          text.encode("latin-1", "replace")))
         progress.log(f"  {package.label}: wrote {item.destination}/{item.name}")
     return out
 
@@ -3345,8 +3383,6 @@ def fetch(package: Package, progress: Progress,
     if archive is None:
         return []
     download = package.archive(cpu, kernel)
-    if download.raw:
-        return [(str(archive), download.stage)]
     root = unpack(archive, progress)
     if root is not None and download.inner:
         root = _unpack_inner(package, root, download.inner, progress)
@@ -3360,8 +3396,7 @@ def fetch(package: Package, progress: Progress,
     #  files by `rename` or wrote its own returned here instead, and its whole
     #  archive went to `stage` - which for such a package is "", the volume
     #  root.
-    if not (download.items or download.rename or download.write
-            or download.retool or download.tooltypes or download.made):
+    if not download.places_files:
         inner = [p for p in root.iterdir() if p.is_dir()]
         source = inner[0] if len(inner) == 1 else root
         whole = [(str(source), download.stage)]
@@ -3385,10 +3420,7 @@ def fetch(package: Package, progress: Progress,
             progress.log(f"  {package.label}: could not set the tool types on "
                          f"{inside} ({error}); copied as it is")
             icon = source.read_bytes()
-        staged = cache_dir() / f"{package.key}-tooltypes" / destination
-        staged.mkdir(parents=True, exist_ok=True)
-        (staged / newname).write_bytes(icon)
-        out.append((str(staged / newname), destination))
+        out.append(_stage(package, "tooltypes", destination, newname, icon))
         progress.log(f"  {package.label}: {newname} set to "
                      f"{', '.join(entries)}")
     for inside, destination, newname, tool in download.retool:
@@ -3403,20 +3435,14 @@ def fetch(package: Package, progress: Progress,
                          f"understands ({error}); leaving it out rather than "
                          f"writing one that opens the wrong thing")
             continue
-        staged = cache_dir() / f"{package.key}-retooled" / destination
-        staged.mkdir(parents=True, exist_ok=True)
-        (staged / newname).write_bytes(icon)
-        out.append((str(staged / newname), destination))
+        out.append(_stage(package, "retooled", destination, newname, icon))
         progress.log(f"  {package.label}: {newname} set to open with {tool}")
     for inside, destination, newname in download.rename:
         source = inside_archive(root, inside)
         if not source.exists():
             progress.log(f"  {package.label}: {inside} is not in the archive")
             continue
-        staged = cache_dir() / f"{package.key}-renamed" / destination
-        staged.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, staged / newname)
-        out.append((str(staged / newname), destination))
+        out.append(_stage(package, "renamed", destination, newname, source))
         progress.log(f"  {package.label}: {Path(inside).name} installed as "
                      f"{destination}/{newname}")
     for inside, destination in download.items:
@@ -3503,11 +3529,8 @@ def _named_icons(package: Package, pairs: list[tuple[str, str]],
             done.add(script)
             where = f"{destination}/{here}".rstrip("/.") if here.parts \
                 else destination
-            staged = cache_dir() / f"{package.key}-iconnames" / where
-            staged.mkdir(parents=True, exist_ok=True)
-            target = staged / (named + ".info")
-            target.write_bytes(icon.read_bytes())
-            out.append((str(target), where))
+            out.append(_stage(package, "iconnames", where, named + ".info",
+                              icon))
             progress.log(f"  {package.label}: {named} given the icon from "
                          f"{icon.name}, so it can be started from Workbench")
     return out
@@ -3722,7 +3745,6 @@ def suits(key: str, chipset: Chipset, display: Display, **hardware) -> bool:
     return package is not None and package.suits(chipset, display, **hardware)
 
 
-HUNK_HEADER = b"\x00\x00\x03\xf3"
 
 
 def principal_programs(keys: list[str], progress: Progress | None = None,
@@ -3769,10 +3791,11 @@ def principal_programs(keys: list[str], progress: Progress | None = None,
                 if not item.name:
                     continue
                 try:
-                    data = item.read_bytes()
+                    with open(item, "rb") as handle:
+                        if handle.read(4) != HUNK_HEADER:
+                            continue
+                        data = HUNK_HEADER + handle.read()
                 except OSError:
-                    continue
-                if data[:4] != HUNK_HEADER:
                     continue
                 wanted.setdefault(item.name.lower(),
                                   (key, package.label,
@@ -3828,6 +3851,8 @@ def overlays_by_package(keys: list[str],
 
     by_package: list[tuple[str, list[tuple[str, str]]]] = []
     wanted = expand(keys)
+    #  Once for the card, not per package: it reads the host's time zone.
+    settings = hardware_settings(pi)
     for key in wanted:
         package = CATALOGUE_BY_KEY.get(key)
         if package is None or not package.suits(chipset, display, pi=pi,
@@ -3835,9 +3860,8 @@ def overlays_by_package(keys: list[str],
             continue
         if not allow_download or package.download is None:
             continue
-        fetched = fetch(package, progress, cpu, wanted, kernel,
-                        hardware_settings(pi))
-        if not fetched and progress is not None:
+        fetched = fetch(package, progress, cpu, wanted, kernel, settings)
+        if not fetched:
             progress.log(f"  WARNING: {package.label} could not be fetched "
                          f"from {package.download.where}, so it is not on "
                          f"this card")
