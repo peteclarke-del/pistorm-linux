@@ -109,9 +109,7 @@ def stage_user_only_inputs(config: builder.BuildConfig, into: Path,
     #  a folder holding the one ROM.
     wants_roms = bool(packages.chosen_with(config.package_keys,
                                            "kickstart_drawer"))
-    whdload = config.whdload_kickstarts
-    if not whdload and config.kickstart_path:
-        whdload = str(Path(config.kickstart_path).parent)
+    whdload, _key = builder.whdload_rom_source(config)
     if wants_roms and _under(whdload, mounts):
         roms = into / str(next(count)) / Path(whdload).name
         roms.mkdir(parents=True)

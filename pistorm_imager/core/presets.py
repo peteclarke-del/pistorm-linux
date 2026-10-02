@@ -188,7 +188,7 @@ def best_rom(roms: list[kickstart.RomInfo],
     def score(rom: kickstart.RomInfo) -> tuple:
         return (
             1 if rom.usable else 0,
-            {True: 2, None: 1}.get(rom.aga, 0),
+            _aga_rank(rom),
             2 if wanted and (rom.version, rom.revision) == wanted else 0,
             1 if (rom.version, rom.revision) in kickstart.KNOWN_ROMS else 0,
             #  Prefer the plain A1200 build over A4000/A3000 dumps of the same
@@ -296,7 +296,7 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
         return (f"The Pi's boot card ({config.target or 'not chosen yet'}):\n"
                 f"{boot}\n\nThe Amiga drives ({config.drives_target}):\n"
                 f"{drives}")
-    if getattr(config, "amiga_only", False):
+    if config.amiga_only:
         #  No boot partition and no MBR: the card is Amiga drives and nothing
         #  else, which is what a real accelerator's IDE controller reads.
         lines = ["No boot partition: the Rigid Disk Block starts at block 0, "
@@ -305,7 +305,7 @@ def describe(config: builder.BuildConfig, detected: Detected) -> str:
         carries = "FAT32 with Emu68" if config.install_emu68 else \
             "FAT32, without Emu68 - only what is put on it below"
         lines = [f"Boot partition: {human_size(config.boot_size)} {carries}"]
-    if getattr(config, "amiga_only", False):
+    if config.amiga_only:
         pass                    # nothing here maps a ROM; the machine has its own
     elif config.kickstart_path:
         name = detected.kickstart.name if detected.kickstart else "Kickstart"
@@ -595,6 +595,11 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
     return config
 
 
+def _aga_rank(rom: kickstart.RomInfo) -> int:
+    """An AGA ROM first, one whose machine nothing says next, then the rest."""
+    return {True: 2, None: 1}.get(rom.aga, 0)
+
+
 def best_rom_for_machine(roms: list[kickstart.RomInfo],
                          machine: machines.Machine) -> kickstart.RomInfo | None:
     """Pick the Kickstart this machine would prefer, from those available."""
@@ -603,7 +608,7 @@ def best_rom_for_machine(roms: list[kickstart.RomInfo],
     def score(rom: kickstart.RomInfo) -> tuple:
         pair = (rom.version or 0, rom.revision or 0)
         rank = len(wanted) - wanted.index(pair) if pair in wanted else 0
-        return (1 if rom.usable else 0, rank, {True: 2, None: 1}.get(rom.aga, 0))
+        return (1 if rom.usable else 0, rank, _aga_rank(rom))
 
     usable = [r for r in roms if r.usable]
     return max(usable, key=score) if usable else None
@@ -667,7 +672,7 @@ def describe_machine_setup(config: builder.BuildConfig,
     #  promised settings that were never going to be written - the same
     #  fault as claiming Emu68 itself would be there.
     cmdline = config.boot_options.cmdline()
-    if cmdline and not getattr(config, "amiga_only", False) \
+    if cmdline and not config.amiga_only \
             and not config.drives_target:
         lines.append(f"Emu68 options: {cmdline}")
     lines.append("")

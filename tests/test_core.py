@@ -1452,6 +1452,27 @@ class APiStormWithItsDrivesElsewhere(_Scratch):
         names = [d.volume for d in builder.list_drives(drives)]
         self.assertEqual(names, ["System"])
 
+    def test_the_build_log_does_not_ask_for_it_either(self):
+        #  Each half used to log its own concerns, and the drives half said
+        #  the boot card had to be built separately - while writing it.
+        folder = self.scratch()
+        notes: list[str] = []
+
+        class Listening(Progress):
+            def log(self, message: str) -> None:
+                notes.append(message)
+
+        config = builder.Task.SPLIT.shape(builder.BuildConfig(
+            target=str(folder / "boot.img"), image_size=300 * MIB,
+            boot_size=96 * MIB, drives_target=str(folder / "drives.img"),
+            drives_image_size=200 * MIB, emu68_prepared_dir=EMU68,
+            rtg_display=True, machine_key="a1200",
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH0", None, "PFS3", True, 0)]))
+        builder.run_build(config, Listening())
+        self.assertFalse([n for n in notes if "the Pi's half of that" in n],
+                         notes)
+
     def test_the_drives_do_not_ask_for_the_boot_card_being_written(self):
         #  An RTG drive on the IDE port needs the Pi's half on the boot card,
         #  and a drives-only build says to build one. A split build is
