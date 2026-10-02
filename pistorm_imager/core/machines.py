@@ -275,6 +275,10 @@ class Machine:
     #  Kickstart modules are on a disk called ``ModulesA500_3.2``.  Several
     #  machines share one: to AmigaOS an A1000 and an A500+ are both an A500.
     amiga_model: str = "A500"
+    #  An IDE port on the board, run by the scsi.device in its ROM.  A drive
+    #  on it is read by that driver, which is what decides how far into the
+    #  drive the Amiga can reach.
+    ide_port: bool = False
 
     @property
     def aga(self) -> bool:
@@ -351,7 +355,7 @@ MACHINES: list[Machine] = [
             notes="ECS chipset; otherwise identical to an A500 for our purposes."),
     Machine("a600", "Amiga 600", Chipset.ECS, "pistorm32lite", "PiStorm16",
             ((40, 68), (40, 63)), pi_models=(Pi.CM4,),
-            chip_ram_options=(1024, 2048), amiga_model="A600",
+            chip_ram_options=(1024, 2048), amiga_model="A600", ide_port=True,
             notes="PiStorm16 is the board for the A600 and uses a Compute "
                   "Module 4. It shares Emu68's build with the PiStorm32-lite."),
     Machine("a1000", "Amiga 1000", Chipset.OCS, "pistorm", "PiStorm (classic)",
@@ -365,7 +369,7 @@ MACHINES: list[Machine] = [
     Machine("a1200", "Amiga 1200", Chipset.AGA, "pistorm32lite",
             "PiStorm32-lite", ((40, 68), (47, 111), (47, 96)),
             stock_cpu=Cpu.M68020, pi_models=(Pi.PI3, Pi.PI4, Pi.CM4),
-            chip_ram_options=(2048,), amiga_model="A1200",
+            chip_ram_options=(2048,), amiga_model="A1200", ide_port=True,
             notes="AGA, and the only model here that can show 256-colour "
                   "native screen modes. The only one that shipped with a "
                   "68020, so the only one that could run AmigaOS 3.5 or 3.9 "
