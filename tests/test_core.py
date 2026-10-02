@@ -840,6 +840,73 @@ class KickstartsForWHDLoad(_Scratch):
         self.assertTrue([p for p in config.validate() if "WHDLoad" in p])
 
 
+class InputsRootCannotRead(_Scratch):
+    """A card is written by root, and root cannot read a network share.
+
+    A Kickstart folder on a NAS opened from the file manager stopped the
+    build with "Permission denied": gvfs, like any FUSE mount without
+    allow_other, refuses root whatever the file's permissions say. What is
+    on one is copied, as the user, to where root can read it.
+    """
+
+    MOUNTINFO = (
+        "36 25 0:31 / /run/user/1000/gvfs rw,nosuid,nodev - fuse.gvfsd-fuse "
+        "gvfsd-fuse rw,user_id=1000,group_id=1000\n"
+        "37 25 0:32 / /mnt/shared\\040disk rw - fuse.sshfs host: "
+        "rw,allow_other\n"
+        "38 25 0:33 / /sys/fs/fuse/connections rw - fusectl fusectl rw\n"
+        "39 25 8:1 / / rw - ext4 /dev/sda1 rw\n")
+
+    def test_the_mounts_only_the_user_can_read(self):
+        from pistorm_imager.core import prepare             # noqa: PLC0415
+        info = self.scratch() / "mountinfo"
+        info.write_text(self.MOUNTINFO)
+        self.assertEqual(prepare.user_only_mounts(info),
+                         [Path("/run/user/1000/gvfs")],
+                         "allow_other, fusectl and ordinary disks are fine")
+
+    def test_what_is_on_one_is_copied_and_pointed_at(self):
+        from pistorm_imager.core import prepare             # noqa: PLC0415
+        share, into = self.scratch(), self.scratch()
+        roms = share / "Firmware"
+        roms.mkdir()
+        (roms / "kick13.rom").write_bytes(checksummed(256 * 1024, 1))
+        (roms / "kick31.rom").write_bytes(checksummed(512 * 1024, 2, 40, 68))
+        (roms / "notes.txt").write_text("not a ROM")
+        games = share / "Games"
+        (games / "WHDLoad").mkdir(parents=True)
+        (games / "WHDLoad" / "Game.slave").write_bytes(b"slave")
+        wanting = next(p.key for p in builder.packages.CATALOGUE
+                       if p.kickstart_drawer)
+        config = builder.BuildConfig(
+            kickstart_path=str(roms / "kick31.rom"), package_keys=[wanting],
+            amiga_partitions=[builder.AmigaPartitionSpec(
+                "DH1", None, "PFS3", False, 0, content_folder=str(games))])
+        staged = prepare.stage_user_only_inputs(config, into, QUIET,
+                                                mounts=[share])
+        for path in (staged.kickstart_path, staged.whdload_kickstarts,
+                     staged.amiga_partitions[0].content_folder):
+            self.assertTrue(Path(path).is_relative_to(into), path)
+        self.assertEqual(Path(staged.kickstart_path).read_bytes(),
+                         (roms / "kick31.rom").read_bytes())
+        self.assertEqual(sorted(p.name for p in
+                                Path(staged.whdload_kickstarts).iterdir()),
+                         ["kick13.rom", "kick31.rom"],
+                         "the ROMs in the folder, not the whole folder")
+        self.assertTrue((Path(staged.amiga_partitions[0].content_folder)
+                         / "WHDLoad" / "Game.slave").is_file())
+
+    def test_nothing_moves_when_nothing_needs_to(self):
+        from pistorm_imager.core import prepare             # noqa: PLC0415
+        config = builder.BuildConfig(kickstart_path="/home/me/kick.rom")
+        self.assertEqual(prepare.stage_user_only_inputs(
+            config, self.scratch(), QUIET, mounts=[]), config)
+        #  Off the share, the WHDLoad folder keeps following the Kickstart.
+        staged = prepare.stage_user_only_inputs(
+            config, self.scratch(), QUIET, mounts=[Path("/run/user/1000/gvfs")])
+        self.assertEqual(staged, config)
+
+
 class TestJobs(_Scratch):
     def test_round_trip(self):
         config = builder.BuildConfig(

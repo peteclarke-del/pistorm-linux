@@ -5,8 +5,10 @@ import dataclasses
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Iterable
 from pathlib import Path
@@ -5386,7 +5388,19 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _run_privileged(self, config: builder.BuildConfig) -> None:
         """Stage downloads as the user, then write the card under pkexec."""
         progress = self._progress()
+        #  Inputs root cannot read - a network share opened in the file
+        #  manager - are copied here first, as the user, and removed after.
+        staging = Path(tempfile.mkdtemp(prefix="pistorm-inputs-",
+                                        dir=emu68.cache_dir()))
         try:
+            self._write_as_root(config, progress, staging)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    def _write_as_root(self, config: builder.BuildConfig, progress,
+                       staging: Path) -> None:
+        try:
+            config = prepare.stage_user_only_inputs(config, staging, progress)
             staged = prepare.stage_emu68(config, progress)
             if staged is not None:
                 config = dataclasses.replace(config, emu68_prepared_dir=str(staged))
