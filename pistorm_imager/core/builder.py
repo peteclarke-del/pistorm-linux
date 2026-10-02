@@ -25,6 +25,7 @@ the same config.txt handling as one we partitioned ourselves.
 """
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import datetime
 import enum
@@ -220,13 +221,13 @@ class BuildConfig:
     #  Devs/Kickstarts under the name WHDLoad looks for. Empty: the folder
     #  the card's own Kickstart was chosen from.
     whdload_kickstarts: str = ""
+    #  Packages whose optional media - screenshots, descriptions - was asked
+    #  for, by key. Offered, never assumed.
+    with_media: list[str] = dataclasses.field(default_factory=list)
     #  A PiStorm whose Amiga drives are not on the card it boots from - a CF
     #  card on an A1200's IDE port, say. The Pi's boot card is ``target``;
     #  the drives, with Workbench and the software on them, go here, and the
     #  two are written by one build from one set of choices.
-    #  Packages whose optional media - screenshots, descriptions - was asked
-    #  for, by key. Offered, never assumed.
-    with_media: list[str] = dataclasses.field(default_factory=list)
     drives_target: str = ""
     drives_target_is_device: bool = False
     drives_image_size: int = 8 * 1024 * MIB
@@ -567,6 +568,14 @@ class BuildConfig:
                 f"the line is left out rather than written with a gap in it.")
         return said
 
+    def package_screen(self) -> tuple["machines.Chipset", "machines.Display"]:
+        """The chipset and display the software is chosen for."""
+        from . import machines                              # noqa: PLC0415
+        return ((machines.Chipset(self.package_chipset)
+                 if self.package_chipset else machines.Chipset.AGA),
+                (machines.Display(self.package_display)
+                 if self.package_display else machines.Display.NATIVE))
+
     def machine(self) -> "machines.Machine":
         """The Amiga this card is for, defaulting the way the rest of the tool does."""
         from . import machines                              # noqa: PLC0415
@@ -770,8 +779,7 @@ class BuildConfig:
             return []
         from . import machines                              # noqa: PLC0415
         machine = self.machine()
-        display = (machines.Display(self.package_display)
-                   if self.package_display else machines.Display.NATIVE)
+        _chipset, display = self.package_screen()
         wanted = machines.boot_options(machine, display)
         options = self.boot_options
         said = []
@@ -795,10 +803,7 @@ class BuildConfig:
         from . import machines                              # noqa: PLC0415
         if not self.package_keys:
             return []
-        chipset = (machines.Chipset(self.package_chipset)
-                   if self.package_chipset else machines.Chipset.AGA)
-        display = (machines.Display(self.package_display)
-                   if self.package_display else machines.Display.NATIVE)
+        chipset, display = self.package_screen()
         out = []
         for key in packages.expand(self.package_keys):
             package = packages.CATALOGUE_BY_KEY.get(key)
@@ -949,21 +954,18 @@ class BuildConfig:
                 problems.append(
                     f"{spec.name} is set to {spec.dostype}; content can only be "
                     f"written to an FFS or PFS3 partition.")
-        if self.os_cd:
-            if self.mode not in FILLS_DRIVES:
-                problems.append(
-                    "AmigaOS can only be installed when building a new card "
-                    "or rebuilding a drive.")
-            elif not Path(self.os_cd).is_file():
-                problems.append(f"CD image not found: {self.os_cd}")
+        installs = (self.os_cd or self.install_amigaos) \
+            and self.mode in FILLS_DRIVES
+        if (self.os_cd or self.install_amigaos) and not installs:
+            problems.append(
+                "AmigaOS can only be installed when building a new card "
+                "or rebuilding a drive.")
+        if self.os_cd and installs and not Path(self.os_cd).is_file():
+            problems.append(f"CD image not found: {self.os_cd}")
         for archive in self.boingbag_archives:
             if not Path(archive).is_file():
                 problems.append(f"BoingBag archive not found: {archive}")
         if self.install_amigaos:
-            if self.mode not in FILLS_DRIVES:
-                problems.append(
-                    "AmigaOS can only be installed when building a new card "
-                    "or rebuilding a drive.")
             if not self.adf_folder:
                 problems.append("No folder of Workbench ADF disks selected.")
             elif not Path(self.adf_folder).is_dir():
@@ -2167,21 +2169,24 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     """
     if not config.package_keys:
         return []
-    from . import machines
-    chipset = (machines.Chipset(config.package_chipset)
-               if config.package_chipset else machines.Chipset.AGA)
-    display = (machines.Display(config.package_display)
-               if config.package_display else machines.Display.NATIVE)
+    chipset, display = config.package_screen()
     progress.step("Adding the software you chose")
     by_package = packages.overlays_by_package(
         config.package_keys, chipset=chipset, display=display,
         progress=progress, pi=config.pi(), cpu=config.cpu(),
         emu68_tag=config.release_tag, kernel=config.driver_flavour())
     resolved = [pair for _key, pairs in by_package for pair in pairs]
-    if credit is not None:
-        for key, pairs in by_package:
+
+    def credited(pairs: list[tuple[str, str]],
+                 key: str) -> list[tuple[str, str]]:
+        """``pairs``, noted in ``credit`` as ``key``'s."""
+        if credit is not None:
             for pair in pairs:
                 credit.setdefault(pair, key)
+        return pairs
+
+    for key, pairs in by_package:
+        credited(pairs, key)
     #  The quick setup resolves the same packages while it assembles the
     #  configuration, so those pairs may already be on the partition. Adding
     #  them twice would copy every file twice; leaving them out of this list
@@ -2196,26 +2201,16 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
             continue
         its_pairs = [pair for key, pairs in by_package if key == launcher.key
                      for pair in pairs]
-        extra = _igame_instances(config, progress, its_pairs, launcher)
-        if credit is not None:
-            for pair in extra:
-                credit.setdefault(pair, launcher.key)
-        out += extra
+        out += credited(_igame_instances(config, progress, its_pairs,
+                                         launcher), launcher.key)
     for key, _pairs in by_package:
         package = packages.CATALOGUE_BY_KEY.get(key)
         if package is not None and package.content_menu:
-            extra = _content_menu(config, package, resolved, progress)
-            if credit is not None:
-                for pair in extra:
-                    credit.setdefault(pair, key)
-            out += extra
-        if package is None or not package.kickstart_drawer:
-            continue
-        extra = _kickstart_images(config, package, progress, resolved)
-        if credit is not None:
-            for pair in extra:
-                credit.setdefault(pair, key)
-        out += extra
+            out += credited(_content_menu(config, package, resolved, progress),
+                            key)
+        if package is not None and package.kickstart_drawer:
+            out += credited(_kickstart_images(config, package, progress,
+                                              resolved), key)
     return out
 
 
@@ -2247,7 +2242,7 @@ def _content_menu(config: "BuildConfig", package: "packages.Package",
                     and destination.lower() == "c"), None)
     words = gamemenu.option_words(whdload) if whdload is not None else set()
     layout = (gamemenu.AGA if config.machine().aga else gamemenu.NATIVE)
-    into = Path(tempfile.mkdtemp(prefix="pistorm-menu-"))
+    into = _scratch("pistorm-menu-")
     count = gamemenu.build(drives, into, layout, words,
                            package.key in (config.with_media or []), progress)
     progress.log(f"  {package.label}: a menu of {count} game(s), in the "
@@ -2255,19 +2250,27 @@ def _content_menu(config: "BuildConfig", package: "packages.Package",
     return [(str(into), package.content_menu)]
 
 
-def whdload_kickstart_folder(config: "BuildConfig") -> str:
-    """Where WHDLoad's Kickstarts are taken from: the folder chosen for them,
-    or else the one the card's own Kickstart came from - where people keep
-    the rest of theirs."""
-    if config.whdload_kickstarts:
-        return config.whdload_kickstarts
-    return str(Path(config.kickstart_path).parent) if config.kickstart_path \
-        else ""
+def whdload_rom_source(config: "BuildConfig") -> tuple[str, str | None]:
+    """Where WHDLoad's Kickstarts are taken from, and the rom.key for them.
+
+    The folder chosen for them, or else the one the card's own Kickstart
+    came from - where people keep the rest of theirs. A rom.key in that
+    folder is the one for its ROMs; the card's own is only used where the
+    folder has none.
+    """
+    folder = config.whdload_kickstarts or (
+        str(Path(config.kickstart_path).parent) if config.kickstart_path
+        else "")
+    if not folder:
+        return "", None
+    key = None if (Path(folder) / "rom.key").exists() \
+        else (config.kickstart_key or None)
+    return folder, key
 
 
 def _kickstart_images(config: "BuildConfig", package: "packages.Package",
                       progress: Progress,
-                      resolved: list[tuple[str, str]] = ()
+                      resolved: list[tuple[str, str]]
                       ) -> list[tuple[str, str]]:
     """The user's own ROMs a package can use, decrypted, under its names.
 
@@ -2276,7 +2279,7 @@ def _kickstart_images(config: "BuildConfig", package: "packages.Package",
     its table. Nothing but the one folder is searched: these are somebody's
     own ROMs, and the place they said they keep them is the place to look.
     """
-    folder = whdload_kickstart_folder(config)
+    folder, key = whdload_rom_source(config)
     if not folder:
         progress.log(f"  {package.label}: no folder of Kickstarts was chosen, "
                      f"so {package.kickstart_drawer} has no images")
@@ -2286,10 +2289,6 @@ def _kickstart_images(config: "BuildConfig", package: "packages.Package",
         progress.log(f"  {package.label}: no relocation tables are being "
                      f"installed, so no Kickstart image would be used")
         return []
-    #  A rom.key in the folder is the one for its ROMs; the card's own is
-    #  only used where the folder has none.
-    key = None if (Path(folder) / "rom.key").exists() \
-        else (config.kickstart_key or None)
     found = kickstart.whdload_images(folder, tables, key)
     if not found:
         progress.log(f"  {package.label}: none of the ROMs in {folder} is one "
@@ -2300,7 +2299,7 @@ def _kickstart_images(config: "BuildConfig", package: "packages.Package",
     #  afresh each time, and a fixed folder in the cache was left owned by
     #  root after a card was written with administrator rights - so the next
     #  build could neither clear it nor write into it, and stopped.
-    staged = Path(tempfile.mkdtemp(prefix="pistorm-kickstarts-"))
+    staged = _scratch("pistorm-kickstarts-")
     out = []
     for name, data, info in found:
         (staged / name).write_bytes(data)
@@ -2401,7 +2400,7 @@ def _igame_instances(config: "BuildConfig", progress: Progress,
             out += [(source, dest.replace(home, where, 1))
                     for source, dest in launcher_pairs]
         line = f"{volume}:{inside}" if inside else f"{volume}:"
-        written = (Path(tempfile.mkdtemp(prefix="pistorm-launcher-"))
+        written = (_scratch("pistorm-launcher-")
                    / launcher.content_list)
         written.write_text(line + "\n")
         out.append((str(written), where))
@@ -2590,7 +2589,7 @@ def _drawer_icons_from_the_drive(spec: AmigaPartitionSpec,
     """The imported drive's own drawer icons, to copy the desktop's style."""
     if not spec.content_hdf:
         return None
-    borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drive-icon-"))
+    borrowed = _scratch("pistorm-drive-icon-")
     try:
         reader, _label = amigaos.open_amiga_volume(spec.content_hdf,
                                                    spec.content_hdf_partition)
@@ -2645,7 +2644,7 @@ def _give_drawers_icons(volume, spec: AmigaPartitionSpec,
     if borrowed_from_drive is not None:
         sources.append(borrowed_from_drive)
     if config.adf_folder:
-        borrowed = Path(tempfile.mkdtemp(prefix="pistorm-drawer-icon-"))
+        borrowed = _scratch("pistorm-drawer-icon-")
         if amigaos.drawer_icon_from_disks(config.adf_folder, borrowed):
             sources.append(borrowed)
 
@@ -3304,7 +3303,7 @@ def find_rdb(handle) -> tuple[int, "rdb.Rdb"] | None:
 
 #  How much of an image is read to tell what it is: the RDB may sit in any of
 #  the first sixteen blocks, and the MBR is the first.
-SNIFF_BYTES = 16 * 512
+SNIFF_BYTES = rdb.RDB_SEARCH_BYTES
 
 
 class ImageKind(enum.Enum):
@@ -3888,17 +3887,35 @@ def run_build(config: BuildConfig, progress: Progress) -> None:
         raise
 
 
-def _run_build(config: BuildConfig, progress: Progress) -> None:
+#  The build's own scratch folder while one runs, so what is made on the
+#  way - the user's decrypted Kickstarts among it - goes when the build does,
+#  rather than staying in /tmp, owned by root after a write under pkexec.
+_BUILD_SCRATCH: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "build_scratch", default=None)
+
+
+def _scratch(prefix: str) -> Path:
+    """A fresh folder for something the build makes, inside its own."""
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=_BUILD_SCRATCH.get()))
+
+
+def _run_build(config: BuildConfig, progress: Progress,
+               checked: bool = False) -> None:
     if config.drives_target:
+        #  Said and checked once, for the build as a whole: the halves on
+        #  their own each thought the other was not being written, and the
+        #  drives half logged that the boot card had to be built separately.
+        for concern in config.concerns():
+            progress.log(f"NOTE: {concern}")
         problems = config.validate()
         if problems:
             raise RuntimeError("; ".join(problems))
         progress.step(f"The boot card: {config.target}")
         progress.log(f"Writing the Pi's boot card to {config.target}, then "
                      f"the Amiga drives to {config.drives_target}")
-        _run_build(config.boot_card_part(), progress)
+        _run_build(config.boot_card_part(), progress, checked=True)
         progress.step(f"The Amiga drives: {config.drives_target}")
-        _run_build(config.drives_part(), progress)
+        _run_build(config.drives_part(), progress, checked=True)
         return
     if config.mode is BuildMode.EXPORT:
         from . import export as export_module                # noqa: PLC0415
@@ -3909,13 +3926,14 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
         return
     if config.cache_root:
         emu68.use_cache(config.cache_root)
-    for concern in config.concerns():
-        #  Said before anything is written, and the build goes ahead: these
-        #  are choices that work and probably were not meant.
-        progress.log(f"NOTE: {concern}")
-    problems = config.validate()
-    if problems:
-        raise RuntimeError("; ".join(problems))
+    if not checked:
+        for concern in config.concerns():
+            #  Said before anything is written, and the build goes ahead:
+            #  these are choices that work and probably were not meant.
+            progress.log(f"NOTE: {concern}")
+        problems = config.validate()
+        if problems:
+            raise RuntimeError("; ".join(problems))
 
     if config.target_is_device:
         device = next((d for d in devices.list_devices(only_removable=False)
@@ -3931,6 +3949,7 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
     progress.log(f"Target {config.target} - {human_size(target_size)}")
 
     workdir = Path(tempfile.mkdtemp(prefix="pistorm-imager-"))
+    scratch = _BUILD_SCRATCH.set(workdir)
     try:
         emu68_files: list[Path] = []
         emu68_root: Path | None = None
@@ -4045,4 +4064,5 @@ def _run_build(config: BuildConfig, progress: Progress) -> None:
         progress.fraction(1.0)
         progress.step("Done")
     finally:
+        _BUILD_SCRATCH.reset(scratch)
         shutil.rmtree(workdir, ignore_errors=True)

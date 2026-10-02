@@ -4720,14 +4720,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         Its relocation tables say which Kickstarts it can use, and they come
         from a download, so this cannot hold the window up.
         """
-        folder = self.whdload_rom_row.path or (
-            str(Path(self.rom_row.path).parent) if self.rom_row.path else "")
+        folder, key = builder.whdload_rom_source(builder.BuildConfig(
+            whdload_kickstarts=self.whdload_rom_row.path,
+            kickstart_path=self.rom_row.path,
+            kickstart_key=self.rom_key_row.path))
         if not folder:
             self.whdload_rom_info.set_subtitle(
-                "Choose a folder, or a Kickstart above")
+                "Choose a folder, or a Kickstart on the Machine step")
             return
-        key = None if (Path(folder) / "rom.key").exists() \
-            else (self.rom_key_row.path or None)
         self.whdload_rom_info.set_subtitle("Looking…")
 
         def work() -> None:

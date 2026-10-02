@@ -103,7 +103,11 @@ def decrypt_cloanto(data: bytes, key: bytes) -> bytes:
     body = data[len(CLOANTO_MAGIC):]
     if not key:
         raise ValueError("rom.key is empty")
-    return bytes(b ^ key[i % len(key)] for i, b in enumerate(body))
+    #  As one number rather than a byte at a time: half a megabyte, for every
+    #  ROM in a folder, each time the folder is looked at.
+    stream = (key * (len(body) // len(key) + 1))[:len(body)]
+    return (int.from_bytes(body, "big") ^ int.from_bytes(stream, "big")
+            ).to_bytes(len(body), "big")
 
 
 def _header_version(data: bytes) -> tuple[int, int] | None:
@@ -134,7 +138,7 @@ def identify(path: str | Path, key_file: str | Path | None = None) -> RomInfo:
             try:
                 data = decrypt_cloanto(raw, key_path.read_bytes())
                 note = f"decrypted with {key_path.name}"
-            except Exception as error:  # noqa: BLE001 - report, do not crash a scan
+            except (OSError, ValueError) as error:  # reported, not raised
                 return RomInfo(path, size, None, None, "Encrypted ROM (decryption failed)",
                                False, True, False, sha1, False, str(error))
         else:
@@ -160,7 +164,7 @@ def identify(path: str | Path, key_file: str | Path | None = None) -> RomInfo:
         return RomInfo(path, size, None, None,
                        "Encrypted ROM (this rom.key does not fit it)", False,
                        True, False, sha1, False,
-                       f"Decrypting it with {note.split(' with ')[-1]} gives "
+                       f"Decrypting it with {key_path.name} gives "
                        f"no Kickstart: that key is for another set of ROMs. "
                        f"Use the rom.key that came with this one")
     if header is None:
@@ -241,11 +245,11 @@ def stored_checksum(data: bytes) -> int | None:
     """
     if len(data) < 24 or len(data) % 4:
         return None
-    total = 0
-    for (word,) in struct.iter_unpack(">I", data):
-        total += word
-        if total > 0xFFFFFFFF:
-            total = (total & 0xFFFFFFFF) + 1
+    #  Summed in one go and the carries folded back in after, which is the
+    #  same end-around-carry sum as adding a word at a time.
+    total = sum(struct.unpack(f">{len(data) // 4}I", data))
+    while total >> 32:
+        total = (total & 0xFFFFFFFF) + (total >> 32)
     if total != 0xFFFFFFFF:
         return None
     return struct.unpack_from(">I", data, len(data) - 24)[0]
@@ -265,7 +269,8 @@ def relocation_tables(paths: Iterable[str | Path]) -> dict[int, str]:
             if not table.name.upper().endswith(TABLE_SUFFIX) \
                     or not table.is_file():
                 continue
-            head = table.read_bytes()[:4]
+            with open(table, "rb") as handle:
+                head = handle.read(4)
             if len(head) == 4:
                 out.setdefault(struct.unpack(">I", head)[0],
                                table.name[:-len(TABLE_SUFFIX)])
