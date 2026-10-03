@@ -33,10 +33,12 @@ class Needs:
     cpu: Cpu
     fpu: bool
     rtg: bool
-    #  The Kickstart, as (lowest, highest) major version.  PiMiga's System is
-    #  AmigaOS 3.9, which runs on 3.1 - and PiMiga ships no ROM of its own,
-    #  only a placeholder asking for "your 1200 3.1 kickstart".
-    kickstart: tuple[int, int] = (40, 40)
+    #  The Kickstart, as (lowest, highest) major version.  PiMiga ships no ROM
+    #  of its own, only a placeholder asking for "your 1200 3.1 kickstart",
+    #  and its AmigaOS 3.9-era system runs on 3.1.  It boots on 3.2 too, in
+    #  FS-UAE, once the LoadModule on its first line cannot stop the boot -
+    #  which the compatibility pass sees to.
+    kickstart: tuple[int, int] = (40, 47)
     #  Where these were read from; "" when they are the defaults.
     source: str = ""
 
@@ -130,9 +132,10 @@ def problems(found: Needs, *, rtg_display: bool, on_a_pistorm: bool,
                    f"has a {cpu.label}.")
     if kickstart_version is not None and not (
             found.kickstart[0] <= kickstart_version <= found.kickstart[1]):
-        out.append(f"PiMiga's system is AmigaOS 3.9, which runs on Kickstart "
-                   f"3.1, and the chosen Kickstart is V{kickstart_version}. "
-                   f"Choose your machine's 3.1 ROM.")
+        out.append(f"PiMiga's system is AmigaOS 3.9-era, which runs on "
+                   f"Kickstart 3.1 or 3.2, and the chosen Kickstart is "
+                   f"V{kickstart_version}. Choose your machine's 3.1 or 3.2 "
+                   f"ROM.")
     return out
 
 

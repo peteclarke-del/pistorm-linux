@@ -39,7 +39,7 @@ build adds up to, what is still needed, and Write once nothing is.
 | **A new PiStorm card** | Machine, System, Drives, Software, Emu68, Target, Review | An MBR with a FAT32 boot partition (Emu68, the Raspberry Pi firmware, your Kickstart) and a `0x76` Amiga partition carrying a Rigid Disk Block, with AmigaOS installed from Workbench floppy images or an [AmigaOS 3.2, 3.5 or 3.9 CD](#amigaos-32-35-and-39), and the software you choose. |
 | **A PiStorm with its drives elsewhere** | the same | [Two things written by one build](#a-pistorm-with-its-drives-elsewhere): the Pi's boot card with Emu68, and the Amiga drives - Workbench and your software - on a CF card or disk for the IDE port, or an image of one. |
 | **A PiStorm boot card only** | Machine, Emu68, Target, Review | Emu68 and its settings and nothing else, for drives that already exist elsewhere. |
-| **A PiStorm card from PiMiga** | Machine, System, Drives, Software, Emu68, Target, Review | [PiMiga's System, Games, Demos and Work drives on a real Amiga](#a-pistorm-card-from-pimiga), taken from its `.img` or the folder it is mounted on. What only works in an emulator is left behind, the emulator's graphics driver is swapped for Emu68's, and PiMiga's own requirements - an RTG screen, a 68040 with an FPU, Kickstart 3.1 - are checked before anything is written. |
+| **A PiStorm card from PiMiga** | Machine, System, Drives, Software, Emu68, Target, Review | [PiMiga's System, Games, Demos and Work drives on a real Amiga](#a-pistorm-card-from-pimiga), taken from its `.img` or the folder it is mounted on. What only works in an emulator is left behind, the emulator's graphics driver is swapped for Emu68's, and PiMiga's own requirements - an RTG screen, a 68040 with an FPU, Kickstart 3.1 or 3.2 - are checked before anything is written. |
 | **A drive for the Amiga's IDE or SCSI port** | Machine, System, Drives, Software, Target, Review | Amiga drives with no boot partition: the Rigid Disk Block at block 0, where the controller looks for it. |
 | **Write an image to a card** | Machine, System, Drives, Emu68, Target, Review | One chooser for any image; the file says which it is. **A whole card** - PiMiga, an Emu68 Hatcher image, a backup of your own card - is streamed onto the target as it is, then your Emu68 build and settings are re-applied, optionally turning leftover space into a new Amiga partition. **An Amiga drive** - a WinUAE/FS-UAE/HstWB `.hdf`, the drive on its own - gets the boot partition built around it; one with no Rigid Disk Block gets one generated, and every imported drive is checked for PiStorm compatibility and repaired. The start of the file decides, compressed or not, because both kinds are often called `.img`. |
 | **Rebuild one drive** | Target, Machine, System, Software, Review | Formats one Amiga drive on a card or image you already have and fills it again, leaving the partition table, the boot partition and every other drive [exactly as they were](#rebuilding-one-drive). |
@@ -4368,7 +4368,7 @@ build holds the machine to it, whichever way it came to use PiMiga:
 | --- | --- |
 | A 68040 with its FPU | the processor that will run the card - Emu68 on a PiStorm |
 | A Zorro III RTG card | an RTG display, and a PiStorm to provide it through Emu68 |
-| Kickstart 3.1 | PiMiga ships no ROM, only a placeholder asking for "your 1200 3.1 kickstart"; its System is AmigaOS 3.9, which runs on 3.1 |
+| Kickstart 3.1 or 3.2 | PiMiga ships no ROM, only a placeholder asking for "your 1200 3.1 kickstart"; its AmigaOS 3.9-era System runs on 3.1, and on 3.2 once its boot script's `LoadModule` cannot stop the boot (below) |
 
 It does not need AGA. With RTG the desktop is drawn on the Pi's HDMI rather
 than by the chipset, so an A500 or A600 is as good as an A1200 for it; the AGA
@@ -4382,6 +4382,14 @@ free, so that does not matter either.
 - UAE's RTG driver (`uaegfx.card`) is replaced by Emu68's `VideoCore.card`,
   and the monitor retargeted to it;
 - emulator-only commands in its boot scripts are commented out;
+- a `LoadModule` in a boot script is wrapped in `FailAt 21` / `FailAt 10`.
+  PiMiga's Startup-Sequence opens with
+  `C:LoadModule LIBS:workbench.library LIBS:icon.library`; on a 3.2 ROM, whose
+  own workbench.library is newer, that fails with "already resident" (return
+  code 10), and a failed command ends the boot at a Shell prompt. Guarded, it
+  boots to PiMiga's desktop on 3.2 as it does on 3.1 (FS-UAE, A1200, 68040,
+  RTG). The command is recognised as the catalogue's module loader, not by a
+  name written into the check;
 - programs built for PowerPC, AROS or MorphOS are left out;
 - UAE's own bookkeeping files, `_UAEFSDB.___`, are never copied: they record
   what a Linux folder cannot, and are not Amiga files at all.

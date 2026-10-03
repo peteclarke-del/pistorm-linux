@@ -38,6 +38,14 @@ EMULATOR_MONITORS = {"uaegfx"}
 
 #  Commands that only exist inside an emulator.  Left in place they produce a
 #  failed command and, with a strict FAILAT, can stop the startup sequence.
+def _module_loaders() -> set[str]:
+    """The commands that load ROM modules, as the catalogue names them."""
+    from . import packages                                # noqa: PLC0415
+    return {Path(evidence).name.lower() for package in packages.CATALOGUE
+            if package.loads_modules for evidence in package.evidence
+            if evidence.lower().startswith("c/")}
+
+
 EMULATOR_COMMANDS = [
     "uae-configuration", "uaequit", "uaectrl", "uae-control",
     "amiberry_", "uaehf", "uaescsi",
@@ -946,7 +954,7 @@ class Compatibility:
     def _clean_startup(self, relative: str, data: bytes) -> bytes:
         text = data.decode("latin-1")
         out: list[str] = []
-        changed = 0
+        changed = guarded = 0
         for line in text.splitlines(keepends=True):
             stripped = line.strip().lower()
             command = stripped.lstrip(";").strip()
@@ -955,12 +963,28 @@ class Compatibility:
                         for name in EMULATOR_COMMANDS):
                 out.append("; [PiStorm] " + line)
                 changed += 1
+            elif stripped.split()[:1] and \
+                    stripped.split()[0].rsplit(":", 1)[-1].rsplit("/", 1)[-1] \
+                    in _module_loaders() \
+                    and not (out and out[-1].strip().lower() == "failat 21"):
+                #  A module already in the Kickstart, newer, makes LoadModule
+                #  fail - and a failed command ends the boot at a Shell
+                #  prompt. PiMiga's first line names its own workbench.library,
+                #  and on a 3.2 ROM that was the whole of its boot.
+                indent = line[:len(line) - len(line.lstrip())]
+                out += [f"{indent}FailAt 21\n", line if line.endswith("\n")
+                        else line + "\n", f"{indent}FailAt 10\n"]
+                guarded += 1
             else:
                 out.append(line)
         if changed:
             self.note("edited", f"{relative}: commented out {changed} "
                                 f"emulator-only command"
                                 f"{'s' if changed != 1 else ''}")
+        if guarded:
+            self.note("edited", f"{relative}: LoadModule can no longer stop "
+                                f"the boot, where the Kickstart already has "
+                                f"newer modules than the ones it names")
         return "".join(out).encode("latin-1")
 
     # ----------------------------------------------------------- extra files

@@ -64,11 +64,16 @@ class WhatPiMigaNeeds(_Scratch):
             pimiga.SHIPPED, rtg_display=True, on_a_pistorm=True,
             cpu=machines.PISTORM_CPU, kickstart_version=40), [])
 
+    def test_kickstart_32_is_enough_too(self):
+        self.assertEqual(pimiga.problems(
+            pimiga.SHIPPED, rtg_display=True, on_a_pistorm=True,
+            cpu=machines.PISTORM_CPU, kickstart_version=47), [])
+
     def test_each_requirement_is_refused_on_its_own(self):
         for given, said in (({"rtg_display": False}, "RTG display"),
                             ({"on_a_pistorm": False}, "PiStorm"),
                             ({"cpu": Cpu.M68020}, "68040"),
-                            ({"kickstart_version": 47}, "3.1")):
+                            ({"kickstart_version": 39}, "3.1")):
             ok = {"rtg_display": True, "on_a_pistorm": True,
                   "cpu": machines.PISTORM_CPU, "kickstart_version": 40}
             problems = pimiga.problems(pimiga.SHIPPED, **{**ok, **given})
