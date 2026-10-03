@@ -266,6 +266,10 @@ class BuildConfig:
     #  of ``.backdrop`` puts the icon back in its own drawer rather than
     #  removing anything.
     off_desktop: list[str] = dataclasses.field(default_factory=list)
+    #  Packages the user was told do not suit this card, or are a poor
+    #  choice on its AmigaOS, and chose to install anyway. Without this the
+    #  build leaves out what does not suit; with it, the user's word holds.
+    against_advice: list[str] = dataclasses.field(default_factory=list)
     package_chipset: str = ""          # a machines.Chipset value
     package_display: str = ""          # a machines.Display value
 
@@ -393,6 +397,11 @@ class BuildConfig:
             said.append(f"{', '.join(left_out)} cannot go on this card - not "
                         f"for this machine, screen, Raspberry Pi or Emu68 - "
                         f"and will be left out.")
+        #  Everything else advised against goes on - an AmigaOS concern is
+        #  advice, and a hardware one was overruled - but is always said.
+        for label, reasons in self.advised_against().items():
+            if label not in left_out:
+                said.append(f"{label} is not advised: " + " ".join(reasons))
         said.extend(self.boot_option_concerns())
         #  Floppies chosen, and the drive they would go on filled from
         #  somewhere else: the drive wins and the install is skipped. That is
@@ -916,6 +925,36 @@ class BuildConfig:
                         "vectors at address 0 and will crash.")
         return said
 
+    def os_release(self) -> tuple[int, ...] | None:
+        """The AmigaOS release this card installs, None when it is not said.
+
+        Only what is installed here - from a CD or from floppies. A drive
+        brought from elsewhere carries a release this does not know, and no
+        advice is better than advice made up.
+        """
+        if self.os_cd and self.os_cd_release:
+            return packages.os_release(self.os_cd_release)
+        if self.install_amigaos and self.adf_version:
+            return packages.os_release(
+                amigaos.normalise_version(self.adf_version))
+        return None
+
+    def advised_against(self) -> dict[str, list[str]]:
+        """Chosen packages that are a poor choice here, and why, by label."""
+        chipset, display = self.package_screen()
+        out: dict[str, list[str]] = {}
+        for key in packages.expand(self.package_keys or []):
+            package = packages.CATALOGUE_BY_KEY.get(key)
+            if package is None:
+                continue
+            said = package.advice(chipset, display, release=self.os_release(),
+                                  pi=self.pi(), cpu=self.cpu(),
+                                  emu68_tag=self.release_tag or None,
+                                  machine=self.machine())
+            if said:
+                out[package.label] = said
+        return out
+
     def unsuited_packages(self) -> list[str]:
         """Chosen packages that cannot go on this card, and are left out.
 
@@ -928,8 +967,11 @@ class BuildConfig:
             return []
         chipset, display = self.package_screen()
         out = []
+        insisted = set(packages.expand(list(self.against_advice or [])))
         for key in packages.expand(self.package_keys):
             package = packages.CATALOGUE_BY_KEY.get(key)
+            if key in insisted:
+                continue
             if package is not None and not package.suits(
                     chipset, display, pi=self.pi(), cpu=self.cpu(),
                     emu68_tag=self.release_tag or None,
@@ -2507,7 +2549,7 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
         config.package_keys, chipset=chipset, display=display,
         progress=progress, pi=config.pi(), cpu=config.cpu(),
         emu68_tag=config.release_tag, kernel=config.driver_flavour(),
-        machine=config.machine())
+        machine=config.machine(), insisted=config.against_advice or ())
     resolved = [pair for _key, pairs in by_package for pair in pairs]
 
     def credited(pairs: list[tuple[str, str]],

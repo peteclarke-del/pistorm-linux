@@ -1,0 +1,138 @@
+"""Software that is a poor choice on this card or this AmigaOS: said, never silent."""
+import sys
+import unittest
+import unittest.mock
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from pistorm_imager.core import builder, machines, packages  # noqa: E402
+from pistorm_imager.core.machines import Display  # noqa: E402
+
+OsAdvice = packages.OsAdvice
+
+
+class WhichReleases(unittest.TestCase):
+    """Release numbers are not in the order the releases came out."""
+
+    def test_a_named_release_covers_its_updates(self):
+        advice = OsAdvice("x", on=("3.2",))
+        self.assertTrue(advice.applies((3, 2)))
+        self.assertTrue(advice.applies((3, 2, 3)))
+
+    def test_3_5_is_not_later_than_3_2(self):
+        """3.5 and 3.9 are years older than 3.2, whatever the numbers say."""
+        advice = OsAdvice("x", on=("3.5", "3.9"))
+        self.assertFalse(advice.applies((3, 2)))
+        self.assertTrue(advice.applies((3, 9)))
+
+    def test_a_requirement_is_everything_older(self):
+        advice = OsAdvice("x", below="3.0")
+        self.assertTrue(advice.applies((1, 3)))
+        self.assertTrue(advice.applies((2, 1)))
+        self.assertFalse(advice.applies((3, 0)))
+        self.assertFalse(advice.applies((3, 9)))
+
+    def test_an_unknown_release_gets_no_advice(self):
+        """A drive brought from elsewhere: no advice rather than made-up advice."""
+        self.assertFalse(OsAdvice("x", on=("3.2",), below="9.9").applies(None))
+        self.assertIsNone(packages.os_release(""))
+        self.assertEqual(packages.os_release("3.1.4"), (3, 1, 4))
+
+
+class EveryReasonIsSourced(unittest.TestCase):
+    """Advice the user is asked to act on has to be checkable."""
+
+    def test_each_has_a_reason_and_where_it_was_read(self):
+        for package in packages.CATALOGUE:
+            for advice in package.os_advice:
+                where = f"{package.key}: {advice.why}"
+                self.assertTrue(advice.why.endswith("."), where)
+                self.assertTrue(advice.on or advice.below, where)
+                self.assertTrue(advice.source.startswith("https://"), where)
+                for named in advice.on + ((advice.below,) if advice.below
+                                          else ()):
+                    self.assertIsNotNone(packages.os_release(named), where)
+
+
+def config(**given) -> builder.BuildConfig:
+    given.setdefault("machine_key", "a1200")
+    return builder.BuildConfig(target="/tmp/card.img", variant="pistorm",
+                               rtg_display=True, **given)
+
+
+class TheReleaseBeingInstalled(unittest.TestCase):
+
+    def test_from_a_cd(self):
+        made = config(os_cd="/tmp/AmigaOS3.2CD.iso", os_cd_release="3.2")
+        self.assertEqual(made.os_release(), (3, 2))
+
+    def test_from_floppies(self):
+        made = config(install_amigaos=True, adf_folder="/tmp/adf",
+                      adf_version="3.1")
+        self.assertEqual(made.os_release(), (3, 1))
+
+    def test_a_drive_from_elsewhere_is_not_guessed(self):
+        self.assertIsNone(config(system_source="pimiga").os_release())
+
+
+class ToldNotRefused(unittest.TestCase):
+
+    def test_advice_on_this_release_is_said_before_the_build(self):
+        made = config(os_cd="/tmp/AmigaOS3.2CD.iso", os_cd_release="3.2",
+                      package_keys=["fblit"])
+        said = made.advised_against()
+        self.assertIn("FBlit", said)
+        self.assertTrue(any("3.2" in reason for reason in said["FBlit"]))
+        self.assertTrue(any("FBlit is not advised" in c
+                            for c in made.concerns()))
+
+    def test_the_same_package_on_another_release_is_not_advised_against(self):
+        made = config(os_cd="/tmp/AmigaOS3.9.iso", os_cd_release="3.9",
+                      package_keys=["fblit"])
+        self.assertNotIn("FBlit", made.advised_against())
+
+    def test_installed_anyway_is_not_left_out(self):
+        """The user was told it does not suit, and chose it: their word holds."""
+        a500 = dict(machine_key="a500", package_keys=["cardreset"])
+        self.assertIn("CardReset", config(**a500).unsuited_packages())
+        self.assertNotIn("CardReset", config(
+            **a500, against_advice=["cardreset"]).unsuited_packages())
+
+    def test_installed_anyway_reaches_the_card(self):
+        a500 = machines.MACHINES_BY_KEY["a500"]
+        package = packages.CATALOGUE_BY_KEY["cardreset"]
+        self.assertFalse(package.suits(a500.chipset, Display.RTG_HDMI,
+                                       machine=a500))
+        def fetch(package, *_args):
+            return [(f"cache/{package.key}", f"C/{package.key}")]
+        with unittest.mock.patch.object(packages, "fetch", fetch):
+            refused = packages.overlays_by_package(
+                ["cardreset"], chipset=a500.chipset,
+                display=Display.RTG_HDMI, machine=a500)
+            insisted = packages.overlays_by_package(
+                ["cardreset"], chipset=a500.chipset,
+                display=Display.RTG_HDMI, machine=a500,
+                insisted=["cardreset"])
+        self.assertEqual(refused, [])
+        #  And what it needs, which came with the choice.
+        self.assertEqual(sorted(key for key, _pairs in insisted),
+                         sorted(packages.expand(["cardreset"])))
+
+    def test_why_is_said_in_words(self):
+        a500 = machines.MACHINES_BY_KEY["a500"]
+        said = packages.CATALOGUE_BY_KEY["cardreset"].advice(
+            a500.chipset, Display.RTG_HDMI, machine=a500, release=(1, 3))
+        self.assertTrue(any("PCMCIA" in reason for reason in said))
+        self.assertTrue(any("AmigaOS 2.0" in reason for reason in said))
+
+    def test_a_suggestion_does_not_overrule_the_advice(self):
+        a1200 = machines.MACHINES_BY_KEY["a1200"]
+        on_32 = packages.suggested(a1200, Display.RTG_HDMI, release=(3, 2))
+        for key in on_32:
+            self.assertEqual(
+                packages.CATALOGUE_BY_KEY[key].os_reasons((3, 2)), [], key)
+
+
+if __name__ == "__main__":
+    unittest.main()

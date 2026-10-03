@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1045 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1068 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -3150,6 +3150,59 @@ The new entries, and what was learned fitting them:
   NList classes into `SYS:Libs/MUI`, which `LIBS:` searches before MUI's own
   drawer, so they shadowed the 2021 classes every other MUI program was built
   against. It now requires the shared packages instead.
+
+### Software that is not advised: always said, never silent
+
+Some software is a poor choice for the card being built. Either it does not
+suit the hardware (a PCMCIA driver on an A500, a USB stack on a Pi 3), or it
+is a bad idea on the AmigaOS being installed. Nothing is greyed out for either
+reason, and nothing is ticked or unticked behind anybody's back:
+
+- **The row says why, first**: *Not advised here.* and the reason, before the
+  description.
+- **Ticking it asks.** A dialog gives the reason, with **Leave it off** or
+  **Install anyway**. What a package brings with it is asked about in the same
+  question.
+- **Several at once** - choosing the 3.2 CD on the System step when the
+  suggested set is already ticked, say - are asked about when the Software page
+  is next open, in one dialog with a switch per package. Every switch starts
+  off, so only what is switched on goes on.
+- **The answer is kept.** "Install anyway" is saved in the setup
+  (`against_advice`) and the build honours it: what does not suit the hardware
+  is no longer left out. It is still listed on the Review page with its reason,
+  every time. Taking the tick off forgets the answer.
+- **A suggestion never overrules the advice**: the suggested load leaves out
+  anything advised against on the AmigaOS chosen.
+- **What the display needs is not a question.** Picasso96 is switched on and
+  held by an RTG display, and comes off again quietly if that display is
+  changed, because the display chose it, not you.
+
+**What the AmigaOS advice is.** Each catalogue entry can carry `os_advice`:
+the releases it is a poor choice on, the reason in plain words, and the
+source the reason was read from - an Aminet readme, the AmigaOS 3.2, 3.5 or
+3.9 FAQ, the author's own notes. Release numbers are not in date order (3.5
+and 3.9 are years older than 3.2), so advice names its releases ("3.2" covers
+3.2.1 to 3.2.3) rather than giving a range. Software that needs a newer
+AmigaOS gives the requirement instead: everything older than it. Examples:
+
+| Package | On | Why |
+| --- | --- | --- |
+| FBlit, FText | 3.2 | The AmigaOS 3.2 FAQ advises against FBlit: it makes the system unstable |
+| VisualPrefs | 3.2 | Its author says it does not get on with 3.2's Intuition |
+| MCP | 3.2 | The 3.2 FAQ names it among hacks that may crash the machine |
+| PeterK's icon.library | 3.2 | Only his 68020 "TC" v51 build works on 3.2, not the 46.4 installed |
+| PowerWindows, FreeWheel | 3.2 | 3.2 does this itself |
+| ClassAct | 3.2, 3.5, 3.9 | ReAction, its successor, is part of the OS |
+| Installer 43.3 | 3.2, 3.5, 3.9 | The OS ships a newer one |
+| NewIcons | 3.5, 3.9 | The OS shows NewIcons itself; the patch loses newer icon features |
+| WHDLoad, AHI, Roadshow, Scout | below 2.0 | Need AmigaOS 2.0 or newer |
+| MUI classes, AmiSSL, Picasso96 | below 3.0 | Need AmigaOS 3.0 or newer |
+
+Only what could be sourced is recorded, and a test holds every entry to having
+a source. Advice is given only for an AmigaOS installed here, from a CD or
+floppies. A drive brought from elsewhere - PiMiga, an imported `.hdf` - carries
+a release this tool does not know, and no advice is better than advice made up.
+3.1.4 floppies are read as 3.1, so advice for 3.1.4 alone cannot be given yet.
 
 ### The software has a page of its own
 
