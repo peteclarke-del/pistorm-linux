@@ -180,6 +180,22 @@ class TestStartupCleaning(unittest.TestCase):
         script = b"SetPatch QUIET\nLoadWB\n"
         self.assertEqual(self.fixer().offer("S/Startup-Sequence", script), script)
 
+    def test_a_loadmodule_cannot_stop_the_boot(self):
+        """PiMiga's first line, on a 3.2 ROM: "already resident", RC 10."""
+        script = (b"C:LoadModule LIBS:workbench.library LIBS:icon.library\n"
+                  b"SetPatch QUIET\n")
+        out = self.fixer().offer("S/Startup-Sequence", script).decode()
+        self.assertEqual(out.splitlines()[:3], [
+            "FailAt 21",
+            "C:LoadModule LIBS:workbench.library LIBS:icon.library",
+            "FailAt 10"])
+        self.assertIn("SetPatch QUIET", out)
+
+    def test_a_guarded_loadmodule_is_left_as_it_is(self):
+        script = b"FailAt 21\nLoadModule AUTO\nFailAt 10\n"
+        out = self.fixer().offer("S/Startup-Sequence", script).decode()
+        self.assertEqual(out.count("FailAt 21"), 1)
+
     def test_disabled_fixer_changes_nothing(self):
         fixer = compat.Compatibility(QUIET, enabled=False)
         script = b"uae-configuration cachesize 1\n"
