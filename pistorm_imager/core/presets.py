@@ -17,7 +17,9 @@ work partition is created and formatted on the Amiga.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -488,6 +490,28 @@ AGA_ONLY_CATEGORIES = ["WHDLOAD/AGA", "WHDLOAD/CD32"]
 #  PiMiga's System drive is around 9 GB, so give it headroom.
 PIMIGA_SYSTEM_SIZE = 11 * GIB
 
+#  Room on each PiMiga drive beyond what is copied onto it. PFS3 rounds every
+#  small file up to a whole block, and a games drive is one people add to: a
+#  fixed share of the card gave PiMiga's 11 GB of games an 11.4 GB drive.
+PIMIGA_HEADROOM = 1.25
+
+
+@functools.lru_cache(maxsize=16)
+def folder_size(folder: str) -> int:
+    """The bytes a folder holds, once per folder: PiMiga's do not change."""
+    try:
+        found = subprocess.run(["du", "-sb", folder], capture_output=True,
+                               text=True, check=False)
+        return int(found.stdout.split()[0])
+    except (OSError, ValueError, IndexError):
+        return sum(path.stat().st_size for path in Path(folder).rglob("*")
+                   if path.is_file())
+
+
+def _with_room(size: int) -> int:
+    """``size`` and its headroom, in whole MiB."""
+    return -(-int(size * PIMIGA_HEADROOM) // MIB) * MIB
+
 
 def choose_system_source(display: machines.Display, disks: "Path | None",
                          card_size: int, requested: str = "auto") -> str:
@@ -603,6 +627,13 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
         config.install_amigaos = False
         config.adf_folder = ""
         system_size = max(system_size, PIMIGA_SYSTEM_SIZE)
+        #  Its own stack was set up for the emulator's network; on a PiStorm
+        #  it needs one that drives the Pi's.
+        config.package_keys = list(
+            packages.to_get_online(machine, display)
+            if package_keys is None else package_keys)
+        config.package_chipset = machine.chipset.value
+        config.package_display = display.value
     elif source == "none":
         #  Leave the drive to be partitioned and formatted on the Amiga.
         config.install_amigaos = False
@@ -629,23 +660,32 @@ def machine_setup(machine: machines.Machine, display: machines.Display,
         #  The system partition must take a fixed size now: the PiMiga drives
         #  that follow need somewhere to fit, and only one partition can be
         #  left to soak up whatever is spare.
+        if source == "pimiga":
+            system_size = max(system_size,
+                              _with_room(folder_size(str(disks / "System"))))
         system.size = min(system_size, max(MIN_SYSTEM_SIZE,
                                            card_size - boot_size - 64 * MIB))
         exclude = excluded_for(machine)
         remaining = card_size - boot_size - system.size - 16 * MIB
-        if remaining <= 0:
-            raise ValueError(
-                f"A {human_size(card_size)} card leaves no room for the games "
-                f"and demos after a {human_size(system.size)} system drive.")
-        #  Games get the lion's share, then demos, then work.
-        extra: list[builder.AmigaPartitionSpec] = []
         present = [(name, drive, share) for name, drive, share in PIMIGA_DRIVES
                    if (disks / drive).is_dir()]
+        #  Each drive gets what is going on it, with room to spare; what is
+        #  left over is shared out as before - games the lion's share, then
+        #  demos - and work, the last, takes the rest.
+        needed = [_with_room(folder_size(str(disks / drive)))
+                  for _name, drive, _share in present]
+        if remaining <= 0 or sum(needed) > remaining:
+            raise ValueError(
+                f"A {human_size(card_size)} card is too small for PiMiga: its "
+                f"drives need about {human_size(system.size + sum(needed))} "
+                f"with room to add to them.")
+        spare = remaining - sum(needed)
+        extra: list[builder.AmigaPartitionSpec] = []
         for index, (name, drive, share) in enumerate(present):
             last = index == len(present) - 1
             extra.append(builder.AmigaPartitionSpec(
                 name=name, volume_name=drive,
-                size=None if last else int(remaining * share),
+                size=None if last else needed[index] + int(spare * share),
                 dostype="PFS3", bootable=False, boot_priority=-128,
                 content_folder=str(disks / drive),
                 exclude=exclude if drive in ("Games", "Demos") else []))
