@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import (bootcfg, builder, emu68, jobs,  # noqa: E402
-                                 machines, presets)
+                                 machines, packages, presets)
 from pistorm_imager.core.util import GIB, MIB  # noqa: E402
 
 Display = machines.Display
@@ -302,7 +302,7 @@ class TestMachineSetup(unittest.TestCase):
         self.assertIsNone(presets.pimiga_disks(self.folder / "nowhere"))
 
     def test_layout_is_valid_and_has_one_flexible_partition(self):
-        config = self.setup_for("a500")
+        config = self.setup_for("a500", Display.RTG_HDMI)
         self.assertEqual(config.validate(), [])
         flexible = [p for p in config.amiga_partitions if p.size is None]
         self.assertEqual(len(flexible), 1,
@@ -434,8 +434,18 @@ class TestMachineSetup(unittest.TestCase):
             str(self.folder / "c.img"), False, 64 * GIB, self.detected(),
             pimiga_folder=str(self.pimiga), system_source="adf")
         self.assertTrue(from_floppies.package_keys)
-        self.assertFalse(self.setup_for("a1200", Display.RTG_HDMI)
-                         .package_keys)
+        #  Only what it needs to reach a network on a PiStorm.
+        self.assertEqual(
+            self.setup_for("a1200", Display.RTG_HDMI).package_keys,
+            packages.to_get_online(machines.MACHINES_BY_KEY["a1200"],
+                                   Display.RTG_HDMI))
+
+    def test_pimiga_on_a_native_screen_is_refused(self):
+        """Its desktop was laid out for RTG; a native screen cannot show it."""
+        problems = self.setup_for("a500", Display.NATIVE).validate()
+        self.assertTrue(any("RTG display" in p for p in problems), problems)
+        self.assertIs(self.setup_for("a500", Display.RTG_HDMI).task,
+                      builder.Task.PIMIGA)
 
     def test_description_mentions_the_machine_and_display(self):
         config = self.setup_for("a500")
