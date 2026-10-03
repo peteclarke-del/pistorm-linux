@@ -134,5 +134,55 @@ class ToldNotRefused(unittest.TestCase):
                 packages.CATALOGUE_BY_KEY[key].os_reasons((3, 2)), [], key)
 
 
+class SoftwareThatClashes(unittest.TestCase):
+    """Two chosen packages that interact badly: said, on either of them."""
+
+    def test_two_doing_the_same_job(self):
+        said = packages.CATALOGUE_BY_KEY["lwip"].clash_reasons(["roadshow"])
+        self.assertEqual(len(said), 1)
+        self.assertIn("Roadshow", said[0])
+
+    def test_a_clash_is_read_both_ways(self):
+        for package in packages.CATALOGUE:
+            for clash in package.clashes:
+                other = packages.CATALOGUE_BY_KEY[clash.other]
+                self.assertTrue(other.clash_reasons([package.key]),
+                                f"{other.key} beside {package.key}")
+                self.assertTrue(package.clash_reasons([other.key]),
+                                f"{package.key} beside {other.key}")
+
+    def test_what_a_package_needs_is_never_a_clash(self):
+        """FText runs on FBlit."""
+        self.assertEqual(
+            packages.CATALOGUE_BY_KEY["ftext"].clash_reasons(["fblit"]), [])
+
+    def test_each_names_a_package_a_reason_and_a_source(self):
+        for package in packages.CATALOGUE:
+            for clash in package.clashes:
+                where = f"{package.key} / {clash.other}"
+                self.assertIn(clash.other, packages.CATALOGUE_BY_KEY, where)
+                self.assertNotEqual(clash.other, package.key, where)
+                self.assertTrue(clash.why.endswith("."), where)
+                self.assertTrue(clash.source.startswith("https://"), where)
+
+    def test_the_build_says_it_once_with_the_reason(self):
+        made = config(package_keys=["roadshow", "lwip"])
+        said = made.advised_against()
+        self.assertEqual(len(said), 1, said)
+        self.assertTrue(any("not advised" in c and "bsdsocket" in c
+                            for c in made.concerns()))
+
+    def test_a_suggestion_never_holds_a_clash(self):
+        for machine in machines.MACHINES:
+            for display in Display:
+                chosen = packages.expand(packages.suggested(
+                    machine, display, networking=True))
+                for key in chosen:
+                    self.assertEqual(
+                        packages.CATALOGUE_BY_KEY[key].clash_reasons(
+                            [k for k in chosen if k != key]), [],
+                        f"{key} on {machine.key}, {display.name}")
+
+
 if __name__ == "__main__":
     unittest.main()

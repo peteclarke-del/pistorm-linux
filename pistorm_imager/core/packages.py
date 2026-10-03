@@ -421,6 +421,20 @@ class OsAdvice:
 
 
 @dataclasses.dataclass(frozen=True)
+class Clash:
+    """Another package this one interacts badly with, and why.
+
+    Declared on either side and read both ways: ticking either of the two
+    with the other already chosen says so. ``source`` is where the reason
+    was read, so it can be checked again.
+    """
+
+    other: str
+    why: str
+    source: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
 class Package:
     key: str
     label: str
@@ -560,6 +574,8 @@ class Package:
     #  Releases of AmigaOS this is a poor choice on, and why: one that
     #  breaks there, or that the release already carries newer.
     os_advice: tuple[OsAdvice, ...] = ()
+    #  Other packages this one interacts badly with, and why.
+    clashes: tuple[Clash, ...] = ()
 
     def suits(self, chipset: Chipset, display: Display, *,
               pi: Pi | None = None, cpu: Cpu | None = None,
@@ -645,12 +661,33 @@ class Package:
         return [f"On AmigaOS {label}: {advice.why}"
                 for advice in self.os_advice if advice.applies(release)]
 
+    def clash_reasons(self, chosen: Iterable[str]) -> list[str]:
+        """Why this does not belong beside software already chosen."""
+        out: list[str] = []
+        for key in sorted(set(chosen) - {self.key}):
+            other = CATALOGUE_BY_KEY.get(key)
+            if other is None:
+                continue
+            #  Two that need each other are not a clash, whatever else is
+            #  said: FText runs on FBlit.
+            if key in expand([self.key]) or self.key in expand([key]):
+                continue
+            found = [c.why for c in self.clashes if c.other == key] \
+                + [c.why for c in other.clashes if c.other == self.key]
+            if not found and self.role and self.role == other.role:
+                found = [f"Both do the same job ({self.role}), and two at "
+                         f"once fight over it."]
+            out += [f"With {other.label}: {why}" for why in found]
+        return out
+
     def advice(self, chipset: Chipset, display: Display, *,
                release: tuple[int, ...] | None = None,
+               chosen: Iterable[str] = (),
                **hardware) -> list[str]:
         """Everything to tell somebody before this goes on the card."""
         said = self.why_unsuited(chipset, display, **hardware)
-        return ([said] if said else []) + self.os_reasons(release)
+        return (([said] if said else []) + self.os_reasons(release)
+                + self.clash_reasons(chosen))
 
     def unsuited_need(self, chipset: Chipset, display: Display, *,
                       pi: Pi | None = None, cpu: Cpu | None = None,
@@ -964,6 +1001,11 @@ CATALOGUE: list[Package] = [
         note="Started from S:User-Startup. It patches the operating "
              "system's chunky drawing, so if anything draws oddly, take that "
              "line out and reboot.",
+        clashes=(
+            Clash('picasso96',
+                  why='Its guide says it must start after SetPatch but before Picasso96, and that it is of little use with a graphics card.',
+                  source='https://aminet.net/util/boot/BlazeWCP178.lha'),
+        ),
     ),
     Package(
         "mmulib", "68k CPU libraries (MMULib)",
@@ -1269,6 +1311,14 @@ CATALOGUE: list[Package] = [
                      why="Its diskfont.library patch breaks 3.9's font cache, and its Processor option stops RAD: from being reset-proof.",
                      source='https://discmaster.textfiles.com/file/2003/AACD%2021.iso/AACD/Magazine/OS3.9/FAQ/compatibility.html'),
         ),
+        clashes=(
+            Clash('newicons',
+                  why="MCP's own notes say its QuickDraw must be off when NewIcons' NoIconBorder is on.",
+                  source='https://aminet.net/util/cdity/MCP130.lha'),
+            Clash('magicmenu',
+                  why='MCP\'s guide says its "Force NewLook-Menus" cannot be used with MagicMenu.',
+                  source='https://aminet.net/util/cdity/MCP130.lha'),
+        ),
     ),
     Package(
         "toolsdaemon", "ToolsDaemon",
@@ -1337,6 +1387,11 @@ CATALOGUE: list[Package] = [
                      why='It needs AmigaOS 2.0 or newer.',
                      source='https://aminet.net/util/wb/MagicMenu_3.1.readme'),
         ),
+        clashes=(
+            Clash('freewheel',
+                  why="MagicMenu's FAQ describes a lock-up with FreeWheel's Click2Front, and says to switch that feature off.",
+                  source='https://raw.githubusercontent.com/jens-maus/magicmenu/master/docu/MagicMenu.guide'),
+        ),
     ),
     Package(
         "visualprefs", "VisualPrefs",
@@ -1357,6 +1412,14 @@ CATALOGUE: list[Package] = [
             OsAdvice(below='3.0',
                      why='It needs AmigaOS 3.0 or newer.',
                      source='https://aminet.net/util/wb/VisualPrefs.readme'),
+        ),
+        clashes=(
+            Clash('mcp',
+                  why="VisualPrefs' guide says to switch off several of MCP's patches (FrameIHack, SysIHack, PropHack, CycleToMenu, NewGadTools), and that some combinations crash.",
+                  source='https://aminet.net/util/wb/VisualPrefs.readme'),
+            Clash('birdie',
+                  why='They work together only with VisualPrefs\' "Don\'t optimize border rendering" on and the background pen set to 0, and VisualPrefs must start before IPrefs, Birdie after.',
+                  source='https://aminet.net/util/wb/VisualPrefs.readme'),
         ),
     ),
     Package(
@@ -1406,6 +1469,11 @@ CATALOGUE: list[Package] = [
                      why='It needs AmigaOS 3.0 or newer.',
                      source='https://aminet.net/util/wb/NewIcons46.readme'),
         ),
+        clashes=(
+            Clash('deficons',
+                  why='NewIcons carries its own DefIcons, which DefIcons44 is a clone of, reading the same ENVARC:deficons.prefs - so both would run DefIcons twice.',
+                  source='https://aminet.net/util/wb/NewIcons46.readme'),
+        ),
     ),
     Package(
         "birdie", "Birdie",
@@ -1445,6 +1513,14 @@ CATALOGUE: list[Package] = [
             OsAdvice(below='3.0',
                      why='It needs AmigaOS 3.0 or newer.',
                      source='https://aminet.net/util/wb/birdie2000.readme'),
+        ),
+        clashes=(
+            Clash('mcp',
+                  why="Birdie's documentation says to switch off MCP's QuickDraw patch.",
+                  source='https://aminet.net/util/wb/birdie2000.lha'),
+            Clash('newicons',
+                  why="Birdie's documentation says to use its own NOICONBORDER and switch off the one in NewIcons' preferences.",
+                  source='https://aminet.net/util/wb/birdie2000.lha'),
         ),
     ),
     Package(
@@ -1771,6 +1847,14 @@ CATALOGUE: list[Package] = [
                      why='It needs AmigaOS 3.0 or newer.',
                      source='https://aminet.net/util/wb/Scalos.readme'),
         ),
+        clashes=(
+            Clash('mcp',
+                  why="Scalos installs a newer mcpgfx.library that its guide says is not compatible with MCP 1.30, and it breaks MCP's SysIHack.",
+                  source='https://aminet.net/util/wb/Scalos.lha'),
+            Clash('newicons',
+                  why='Its guide says the NewIcons patch stops left-out icons being transparent, and to remove it.',
+                  source='https://aminet.net/util/wb/Scalos.lha'),
+        ),
     ),
 
     # ------------------------------------------------------------- speed
@@ -1791,6 +1875,11 @@ CATALOGUE: list[Package] = [
             OsAdvice(on=('3.2',),
                      why='The AmigaOS 3.2 FAQ advises against it: it makes the system unstable.',
                      source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+        ),
+        clashes=(
+            Clash('picasso96',
+                  why="PeterK's icon.library manual says never to install FBlit with a Picasso96 driver: Picasso96 already does FBlit's job, and FBlit does nothing for an RTG screen.",
+                  source='https://aminet.net/util/libs/IconLib_46.4.lha'),
         ),
     ),
     Package(
@@ -3363,6 +3452,11 @@ CATALOGUE: list[Package] = [
              "network cards, the Pi's own socket and its WiFi among them, but "
              "not dial-up. It carries one interface at a time.",
         evidence=("Libs/bsdsocket.library", "C/AddNetInterface"),
+        clashes=(
+            Clash('roadshow',
+                  why="lwip-amiga replaces bsdsocket.library, so Roadshow stops working, and it overwrites Roadshow's commands in C:.",
+                  source='https://github.com/rondoval/emu68-driver-stack'),
+        ),
     ),
     Package(
         "nvme", "NVMe solid state drive (nvme.device)",
@@ -4540,7 +4634,7 @@ def suggested(machine: Machine, display: Display, *,
       it - an FTP client, an IRC client - stay off even then: they are a
       preference, not part of getting online.
     """
-    return [p.key for p in CATALOGUE
+    picked = [p.key for p in CATALOGUE
             if p.default
             and not p.support_only              # arrives via ``requires``
             and (networking or p.category is not Category.NETWORK)
@@ -4549,3 +4643,11 @@ def suggested(machine: Machine, display: Display, *,
             #  Nor anything advised against on the AmigaOS being installed:
             #  a suggestion is not the place to overrule the advice.
             and not p.os_reasons(release)]
+    #  Nor two that clash: the first in the catalogue stays, and anything
+    #  clashing with what is already in the set - or with what it brings -
+    #  is left for the user to choose, and be told about.
+    out: list[str] = []
+    for key in picked:
+        if not CATALOGUE_BY_KEY[key].clash_reasons(expand(out)):
+            out.append(key)
+    return out
