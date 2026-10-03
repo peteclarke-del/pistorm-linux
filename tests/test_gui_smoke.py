@@ -1059,21 +1059,20 @@ def on_activate(app: ImagerApplication) -> None:
             window.software_sidebar.get_row_at_index(games))
         pump()
 
-        #  Two packages doing one job are alternatives, and the user is asked
-        #  before either is taken away.
+        #  Two packages doing one job clash, and the user is told why before
+        #  either goes on - asked about on the tick that made the clash.
         check(packages_mod.CATALOGUE_BY_KEY["deficons"].role
               == packages_mod.CATALOGUE_BY_KEY["newicons"].role != "",
               "DefIcons and NewIcons are both a default-icon system")
         window.package_rows["newicons"].set_active(False)
         window.package_rows["deficons"].set_active(True)
-        window.package_rows["newicons"].set_active(True)
-        check(sorted(window._rivals("newicons")) == ["deficons"],
-              f"the rival is found ({window._rivals('newicons')})")
-        check(window.package_rows["deficons"].get_active(),
-              "and nothing is removed without being asked")
-        check(window._rivals("whdload") == [],
-              "a package with no rival raises no question")
-        window.package_rows["newicons"].set_active(False)
+        said = window._package_advice("newicons")
+        check(any("DefIcons" in reason for reason in said),
+              f"NewIcons is advised against beside DefIcons ({said})")
+        check(not any("same job" in r
+                      for r in window._package_advice("whdload")),
+              "a package with no rival raises no clash")
+        window.package_rows["deficons"].set_active(False)
 
         #  Software that does not suit this card, or is a poor choice on
         #  its AmigaOS, is never greyed out and never ticked in silence: the
