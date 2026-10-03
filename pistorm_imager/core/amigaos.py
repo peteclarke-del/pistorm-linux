@@ -232,6 +232,9 @@ def open_amiga_volume(path: str | Path, partition: str = ""):
     from . import builder as builder_module
 
     path = Path(path)
+    if path.is_dir():
+        #  A drive kept as a host folder, the way PiMiga keeps its own.
+        return FolderVolume(path), f"{path.name} (a folder)"
     handle = open(path, "rb")
     located = builder_module.find_rdb(handle)
     if located is None:
@@ -652,10 +655,105 @@ def read_sidecar(path: Path) -> Metadata | None:
                     fields[3] if len(fields) > 3 else "")
 
 
+#  UAE's own record of what a host folder cannot hold - Amiga names, the
+#  protection bits - one per drawer.  Amiberry and WinUAE keep it in every
+#  drawer of a folder they mount as a drive, PiMiga's included.  It is the
+#  emulator's bookkeeping, not an Amiga file, so it is never copied across.
+UAE_FSDB = "_uaefsdb.___"
+
+
 def _is_sidecar(path: Path) -> bool:
-    """Whether this is metadata for a file beside it, and not a file itself."""
+    """Whether this is metadata for the files beside it, not a file itself."""
+    if path.name.lower() == UAE_FSDB:
+        return True
     return (path.name.lower().endswith(SIDECAR_SUFFIX)
             and path.with_name(path.name[:-len(SIDECAR_SUFFIX)]).exists())
+
+
+#  A file a folder reader keeps once it has read it: the size of a script or
+#  a settings file.  Keeping more held two gigabytes of PiMiga in memory.
+FOLDER_SMALL_FILE = 32 * 1024
+
+
+@dataclasses.dataclass(frozen=True)
+class FolderEntry:
+    """An entry of a host folder, shaped like a volume reader's."""
+
+    name: str
+    is_dir: bool
+    size: int
+    block: int                  # where it is in the reader's own table
+
+
+class FolderVolume:
+    """A host folder read the way an Amiga volume is read.
+
+    PiMiga's drives are folders, and everything that looks at what a drive
+    holds - the clutter, the duplicates, the programs - was written against
+    the volume readers.  This answers the same four calls, ignoring case as
+    AmigaDOS does and leaving out the host's own metadata.
+    """
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root)
+        self._paths: list[Path] = [self.root]
+        #  Each drawer is listed once: a lookup by path walks down from the
+        #  top, and PiMiga's System is eighty thousand files.
+        self._listed: dict[int, list[FolderEntry]] = {}
+        #  Small files kept once read: scripts and settings are what the
+        #  checks read, and they read them more than once.
+        self._small: dict[int, bytes] = {}
+        self.f = self              # what callers close when they are done
+
+    def close(self) -> None:
+        """Nothing to close: there is no file handle behind a folder."""
+
+    def _entry(self, path: Path) -> FolderEntry:
+        self._paths.append(path)
+        is_dir = path.is_dir()
+        return FolderEntry(path.name, is_dir,
+                           0 if is_dir else path.stat().st_size,
+                           len(self._paths) - 1)
+
+    def listdir(self, block: int | None = None) -> list[FolderEntry]:
+        block = block or 0
+        listed = self._listed.get(block)
+        if listed is None:
+            try:
+                children = sorted(self._paths[block].iterdir(),
+                                  key=lambda p: p.name.lower())
+            except OSError:
+                children = []
+            listed = [self._entry(child) for child in children
+                      if not child.is_symlink() and not _is_sidecar(child)]
+            self._listed[block] = listed
+        return listed
+
+    def find(self, relative: str) -> FolderEntry | None:
+        entry = None
+        for part in [p for p in relative.replace("\\", "/").split("/") if p]:
+            entry = next((child for child in self.listdir(
+                entry.block if entry else None)
+                if child.name.lower() == part.lower()), None)
+            if entry is None:
+                return None
+        return entry
+
+    def read_file(self, entry: FolderEntry) -> bytes:
+        kept = self._small.get(entry.block)
+        if kept is not None:
+            return kept
+        data = self._paths[entry.block].read_bytes()
+        if len(data) <= FOLDER_SMALL_FILE:
+            self._small[entry.block] = data
+        return data
+
+    def walk(self, block: int | None = None, prefix: str = ""):
+        for entry in self.listdir(block):
+            relative = f"{prefix}/{entry.name}" if prefix else entry.name
+            yield relative, entry
+            if entry.is_dir:
+                yield from self.walk(entry.block, relative)
 
 
 @dataclasses.dataclass(frozen=True)
