@@ -378,6 +378,48 @@ class Download:
         return self.path.rsplit("/", 1)[-1]
 
 
+def os_release(text: str) -> tuple[int, ...] | None:
+    """An AmigaOS release as numbers to compare: "3.1.4" is (3, 1, 4).
+
+    None when nothing was said - a drive brought from elsewhere, whose
+    release is not known here - so no advice is given against it rather
+    than advice made up.
+    """
+    try:
+        found = tuple(int(part) for part in text.strip().split(".") if part)
+    except ValueError:
+        return None
+    return found or None
+
+
+@dataclasses.dataclass(frozen=True)
+class OsAdvice:
+    """Why a package is a poor choice on some releases of AmigaOS.
+
+    Advice, never a refusal: the user is told why and may install it anyway.
+
+    ``on`` names releases as "3.2" - which covers 3.2.1 to 3.2.3 - because
+    the numbers are not in the order the releases came out: 3.5 and 3.9
+    are years older than 3.2, so "3.5 and later" is not a range of numbers.
+    ``below`` is for software that needs a newer AmigaOS than some, where
+    the number is the requirement: everything older than it. ``source`` is
+    where the reason was read, so it can be checked again.
+    """
+
+    why: str
+    on: tuple[str, ...] = ()
+    below: str = ""
+    source: str = ""
+
+    def applies(self, release: tuple[int, ...] | None) -> bool:
+        if release is None:
+            return False
+        lowest = os_release(self.below)
+        if lowest is not None and release < lowest:
+            return True
+        return any(release[:2] == os_release(named)[:2] for named in self.on)
+
+
 @dataclasses.dataclass(frozen=True)
 class Package:
     key: str
@@ -515,6 +557,9 @@ class Package:
     #  A game for ScummVM, registered in its scummvm.ini when both are on
     #  the card. Its path is where the package puts it.
     scummvm: ScummGame | None = None
+    #  Releases of AmigaOS this is a poor choice on, and why: one that
+    #  breaks there, or that the release already carries newer.
+    os_advice: tuple[OsAdvice, ...] = ()
 
     def suits(self, chipset: Chipset, display: Display, *,
               pi: Pi | None = None, cpu: Cpu | None = None,
@@ -553,6 +598,59 @@ class Package:
         return self.unsuited_need(chipset, display, pi=pi, cpu=cpu,
                                   emu68_tag=emu68_tag,
                                   machine=machine) is None
+
+    def why_unsuited(self, chipset: Chipset, display: Display, *,
+                     pi: Pi | None = None, cpu: Cpu | None = None,
+                     emu68_tag: str | None = None,
+                     machine: Machine | None = None) -> str:
+        """Why this does not suit the card, in words; "" when it does."""
+        from . import emu68 as emu68_module                   # noqa: PLC0415
+        hardware = {"pi": pi, "cpu": cpu, "emu68_tag": emu68_tag,
+                    "machine": machine}
+        if self.suits(chipset, display, **hardware):
+            return ""
+        if self.rtg_only and not display.uses_rtg:
+            return "It is only useful with an RTG display."
+        if self.native_only and not display.uses_native:
+            return "It is only useful on the Amiga's own screen."
+        #  Before the chipset: the Pi and the Emu68 build are chosen here,
+        #  and the Amiga is what it is.
+        if self.pi_models and pi not in self.pi_models:
+            wanted = " or ".join(model.label for model in self.pi_models)
+            return (f"It needs {wanted} on the board, and this card is being "
+                    f"built for {pi.label if pi else 'another Pi'}.")
+        if self.min_emu68 and not emu68_module.at_least(emu68_tag or "",
+                                                        self.min_emu68):
+            version = ".".join(str(part) for part in self.min_emu68)
+            return (f"It needs Emu68 {version} or newer; choose one on the "
+                    f"Emu68 step.")
+        if self.needs_pcmcia and machine is not None \
+                and not machine.pcmcia_slot:
+            return (f"It is for the PCMCIA slot of an A600 or A1200, and the "
+                    f"{machine.label} has none.")
+        if self.needs_cpu is not None and cpu is not None \
+                and not cpu.at_least(self.needs_cpu):
+            return (f"It needs a {self.needs_cpu.label} or better, and this "
+                    f"machine has a {cpu.label}.")
+        need = self.unsuited_need(chipset, display, **hardware)
+        if need is not None:
+            return (f"It needs {need.label}, which does not suit this card: "
+                    + (need.why_unsuited(chipset, display, **hardware)
+                       or "it is not offered here."))
+        return "It does not suit this chipset."
+
+    def os_reasons(self, release: tuple[int, ...] | None) -> list[str]:
+        """Why this is a poor choice on this release of AmigaOS, if it is."""
+        label = ".".join(str(part) for part in release or ())
+        return [f"On AmigaOS {label}: {advice.why}"
+                for advice in self.os_advice if advice.applies(release)]
+
+    def advice(self, chipset: Chipset, display: Display, *,
+               release: tuple[int, ...] | None = None,
+               **hardware) -> list[str]:
+        """Everything to tell somebody before this goes on the card."""
+        said = self.why_unsuited(chipset, display, **hardware)
+        return ([said] if said else []) + self.os_reasons(release)
 
     def unsuited_need(self, chipset: Chipset, display: Display, *,
                       pi: Pi | None = None, cpu: Cpu | None = None,
@@ -762,6 +860,11 @@ CATALOGUE: list[Package] = [
         content_words=("game", "demo", "whdload"),
         needed_for_content=True,
         evidence=("C/WHDLoad",),
+        os_advice=(
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://whdload.de/docs/en/need.html'),
+        ),
     ),
     Package(
         "lha", "LhA",
@@ -786,6 +889,11 @@ CATALOGUE: list[Package] = [
         download=Download("util/misc/Installer-43_3.lha",
                           (("Installer43_3/Installer", "C"),)),
         default=True,
+        os_advice=(
+            OsAdvice(on=('3.2', '3.5', '3.9'),
+                     why='This AmigaOS ships a newer Installer, which this one (43.3) would replace with an older copy.',
+                     source='https://www.codewiz.org/projects/amiga/V44_Changes/V44_Changes_guide/'),
+        ),
     ),
     Package(
         "newinstaller", "NewInstaller",
@@ -875,6 +983,11 @@ CATALOGUE: list[Package] = [
         note="Do not install this on a card for games: it stops every "
              "WHDLoad title from starting. Worth having on a machine used "
              "for applications, where the newer CPU support is the point.",
+        os_advice=(
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://aminet.net/util/libs/MMULib.readme'),
+        ),
     ),
     Package(
         "mui", "MUI",
@@ -928,6 +1041,11 @@ CATALOGUE: list[Package] = [
             (("MCC_TextEditor/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
         requires=("mui",),
         support_only=True,
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/dev/mui/MCC_TextEditor-15.56.readme'),
+        ),
     ),
     Package(
         "mcc_urltext", "MUI UrlText class",
@@ -950,6 +1068,11 @@ CATALOGUE: list[Package] = [
             (("MCC_BetterString/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
         requires=("mui",),
         support_only=True,
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/dev/mui/MCC_BetterString-11.36.readme'),
+        ),
     ),
     Package(
         "mcc_thebar", "MUI TheBar class",
@@ -961,6 +1084,11 @@ CATALOGUE: list[Package] = [
             (("MCC_TheBar/Libs/MUI/AmigaOS3", "System/MUI/Libs/mui"),)),
         requires=("mui",),
         support_only=True,
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/dev/mui/MCC_TheBar-26.22.readme'),
+        ),
     ),
     Package(
         "codesets", "codesets.library",
@@ -975,6 +1103,11 @@ CATALOGUE: list[Package] = [
              ("Charsets", "Libs/Charsets"))),
         support_only=True,
         evidence=("Libs/codesets.library",),
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/libs/codesets-6.22.readme'),
+        ),
     ),
     Package(
         "loadmodule", "LoadModule",
@@ -987,6 +1120,11 @@ CATALOGUE: list[Package] = [
         support_only=True,
         evidence=("C/LoadModule",),
         loads_modules=True,
+        os_advice=(
+            OsAdvice(on=('3.2',),
+                     why='AmigaOS 3.2 carries LoadModule on its Modules disk.',
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+        ),
     ),
     Package(
         "openurl", "OpenURL",
@@ -1008,6 +1146,11 @@ CATALOGUE: list[Package] = [
              "while the browser is running a link goes straight to it. Set "
              "the browser's location in Prefs/OpenURL to have one started.",
         evidence=("Libs/openurl.library",),
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/comm/www/OpenURL-7.18.readme'),
+        ),
     ),
     Package(
         "filesysbox", "filesysbox.library",
@@ -1074,6 +1217,11 @@ CATALOGUE: list[Package] = [
         content_words=("game",),
         wants_content=True,
         content_list="repos.prefs",
+        os_advice=(
+            OsAdvice(below='2.1',
+                     why='It needs Kickstart 2.04 and Workbench 2.1 or newer.',
+                     source='https://aminet.net/util/misc/iGame.readme'),
+        ),
     ),
     Package(
         "identify", "identify.library",
@@ -1087,6 +1235,11 @@ CATALOGUE: list[Package] = [
         #  what a PiStorm is.
         download=Download("util/libs/IdentifyUsr.lha",
                           (("Identify/libs/identify.library", "Libs"),)),
+        os_advice=(
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://aminet.net/util/libs/IdentifyUsr.readme'),
+        ),
     ),
     Package(
         "copyicon", "CopyIcon",
@@ -1095,6 +1248,11 @@ CATALOGUE: list[Package] = [
         category=Category.LOOK,
         download=Download("util/wb/CopyIcon44.lha",
                           (("CopyIcon44/CopyIcon", "C"),)),
+        os_advice=(
+            OsAdvice(below='3.2',
+                     why='It needs the icon.library of AmigaOS 3.5 or newer (3.1.4 and 3.2 have one too).',
+                     source='https://aminet.net/util/wb/CopyIcon44.readme'),
+        ),
     ),
     Package(
         "mcp", "MCP",
@@ -1103,6 +1261,14 @@ CATALOGUE: list[Package] = [
         category=Category.SPEED,
         download=Download("util/cdity/MCP130.lha", stage=STAGING + "/MCP"),
         note="Run its Installer from Storage/Install on the Amiga.",
+        os_advice=(
+            OsAdvice(on=('3.2',),
+                     why='The AmigaOS 3.2 FAQ names MCP among the system hacks it warns may crash the machine.',
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+            OsAdvice(on=('3.9',),
+                     why="Its diskfont.library patch breaks 3.9's font cache, and its Processor option stops RAD: from being reset-proof.",
+                     source='https://discmaster.textfiles.com/file/2003/AACD%2021.iso/AACD/Magazine/OS3.9/FAQ/compatibility.html'),
+        ),
     ),
     Package(
         "toolsdaemon", "ToolsDaemon",
@@ -1112,6 +1278,11 @@ CATALOGUE: list[Package] = [
         download=Download("util/boot/ToolsDaemon22.lha",
                           stage=STAGING + "/ToolsDaemon"),
         note="Run its patch script from Storage/Install on the Amiga.",
+        os_advice=(
+            OsAdvice(on=('3.5', '3.9'),
+                     why='It does not work with the workbench.library of 3.5 BoingBag 2 and later.',
+                     source='https://aminet.net/util/boot/ToolsDaemon22.readme https://discmaster.textfiles.com/file/2003/AACD%2021.iso/AACD/Magazine/OS3.9/FAQ/compatibility.html'),
+        ),
     ),
 
     # ------------------------------------------------------ look and feel
@@ -1135,6 +1306,14 @@ CATALOGUE: list[Package] = [
              "is the only point early enough to replace the one in ROM.",
         default=True,
         boot_library="icon.library",
+        os_advice=(
+            OsAdvice(on=('3.2',),
+                     why='Only PeterK\'s 68020 "TC" build (v51) works on 3.2; the 46.4 build installed here does not.',
+                     source='https://www.amiga-news.de/en/news/AN-2021-06-00045-EN.html'),
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/libs/IconLib_46.4.readme'),
+        ),
     ),
     Package(
         "magicmenu", "MagicMenu",
@@ -1153,6 +1332,11 @@ CATALOGUE: list[Package] = [
                            ("MagicMenu/Icons/MagicWB/MagicMenu.info",
                             "WBStartup"))),
         default=True,
+        os_advice=(
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://aminet.net/util/wb/MagicMenu_3.1.readme'),
+        ),
     ),
     Package(
         "visualprefs", "VisualPrefs",
@@ -1163,6 +1347,17 @@ CATALOGUE: list[Package] = [
                           stage=STAGING + "/VisualPrefs"),
         note="Run its Installer from Storage/Install on the Amiga.",
         default=True,
+        os_advice=(
+            OsAdvice(on=('3.2',),
+                     why="VisualPrefs does not get on with the changes 3.2 made to Intuition - its author says so - and 3.2's own iconify gadget is not VisualPrefs-friendly.",
+                     source='https://aminet.net/util/wb/VP-QuickFix.readme https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+            OsAdvice(on=('3.9',),
+                     why='Window imagery is drawn corrupted unless the 1:1 aspect option in IControl is switched off.',
+                     source='https://discmaster.textfiles.com/file/2003/AACD%2021.iso/AACD/Magazine/OS3.9/FAQ/compatibility.html'),
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/wb/VisualPrefs.readme'),
+        ),
     ),
     Package(
         "fullpalette", "FullPalette",
@@ -1189,6 +1384,11 @@ CATALOGUE: list[Package] = [
                                    "WBStartup", "FPPrefs.info"),)),
         default=True,
         chipsets=(Chipset.OCS, Chipset.ECS, Chipset.AGA),
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/wb/FullPalette22.readme'),
+        ),
     ),
     Package(
         "newicons", "NewIcons",
@@ -1198,6 +1398,14 @@ CATALOGUE: list[Package] = [
         download=Download("util/wb/NewIcons46.lha", stage=STAGING + "/NewIcons"),
         note="Run its Installer from Storage/Install on the Amiga.",
         role="default icons",
+        os_advice=(
+            OsAdvice(on=('3.5', '3.9'),
+                     why='This AmigaOS shows NewIcons itself, and running NewIcons patches icon.library in a way that loses the newer icon features.',
+                     source='https://www.codewiz.org/projects/amiga/V44_Changes/V44_Changes_guide/'),
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/wb/NewIcons46.readme'),
+        ),
     ),
     Package(
         "birdie", "Birdie",
@@ -1230,6 +1438,14 @@ CATALOGUE: list[Package] = [
              "and started from S:User-Startup with the first of them. The "
              "patterns are JPEGs and are loaded through datatypes, so a "
              "system with no JPEG datatype simply gets plain borders.",
+        os_advice=(
+            OsAdvice(on=('3.9',),
+                     why='Run with NOICONBORDER or FLOODMASKWB it upsets the ReAction preferences editors.',
+                     source='https://discmaster.textfiles.com/file/2003/AACD%2021.iso/AACD/Magazine/OS3.9/FAQ/compatibility.html'),
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/wb/birdie2000.readme'),
+        ),
     ),
     Package(
         "powerwindows", "PowerWindows",
@@ -1243,6 +1459,14 @@ CATALOGUE: list[Package] = [
                           stage="Utilities/PowerWindows"),
         note="Installed into Utilities/PowerWindows. Drag PowerWindows into "
              "WBStartup on the Amiga to have it run at every boot.",
+        os_advice=(
+            OsAdvice(on=('3.2',),
+                     why='AmigaOS 3.2 does this itself; its FAQ lists PowerWindows as no longer necessary.',
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://aminet.net/util/misc/PowerWindows.readme'),
+        ),
     ),
     Package(
         "deficons", "DefIcons",
@@ -1258,6 +1482,14 @@ CATALOGUE: list[Package] = [
                             "Prefs/Env-Archive"))),
         default=True,
         role="default icons",
+        os_advice=(
+            OsAdvice(on=('3.2', '3.9'),
+                     why='This AmigaOS starts its own DefIcons, so this would be a second, older one.',
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+            OsAdvice(below='3.2',
+                     why='It needs AmigaOS 3.5 or newer.',
+                     source='https://aminet.net/util/wb/DefIcons44.readme'),
+        ),
     ),
     Package(
         "freewheel", "FreeWheel",
@@ -1278,6 +1510,11 @@ CATALOGUE: list[Package] = [
                                   ("FreeWheel/FreeWheel_020.info", "WBStartup",
                                    "FreeWheel.info"))),
         default=True,
+        os_advice=(
+            OsAdvice(on=('3.2',),
+                     why='AmigaOS 3.2 handles the mouse wheel itself; its FAQ lists FreeWheel as no longer necessary.',
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+        ),
     ),
     Package(
         "clicktofront", "ClickToFront",
@@ -1310,6 +1547,11 @@ CATALOGUE: list[Package] = [
         category=Category.EXTRAS,
         download=Download("gfx/show/Visage.lha", stage="Utilities/Visage"),
         note="Unpacked into Utilities/Visage, ready to run.",
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/gfx/show/Visage.readme'),
+        ),
     ),
     Package(
         "sysinfo", "SysInfo",
@@ -1468,6 +1710,11 @@ CATALOGUE: list[Package] = [
              "with a Paula 14-bit stereo++ mode on every unit. Only the "
              "Paula driver is copied - the Toccata and Delfina drivers are "
              "for sound cards this machine has not got.",
+        os_advice=(
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://aminet.net/driver/audio/ahiusr_4.18.readme'),
+        ),
     ),
     Package(
         "amplifier", "AMPlifier",
@@ -1519,6 +1766,11 @@ CATALOGUE: list[Package] = [
              "this installer over it is a step backwards.",
         default=True,
         evidence=("C/Scalos",),
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/wb/Scalos.readme'),
+        ),
     ),
 
     # ------------------------------------------------------------- speed
@@ -1535,6 +1787,11 @@ CATALOGUE: list[Package] = [
         startup=("C:FBlit >NIL:",),
         default=True,
         chipsets=(Chipset.OCS, Chipset.ECS, Chipset.AGA),
+        os_advice=(
+            OsAdvice(on=('3.2',),
+                     why='The AmigaOS 3.2 FAQ advises against it: it makes the system unstable.',
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+        ),
     ),
     Package(
         "ftext", "FText",
@@ -1545,6 +1802,11 @@ CATALOGUE: list[Package] = [
         startup=("C:FText >NIL:",),
         default=True,
         chipsets=(Chipset.OCS, Chipset.ECS, Chipset.AGA),
+        os_advice=(
+            OsAdvice(on=('3.2',),
+                     why='It runs on FBlit, which the AmigaOS 3.2 FAQ advises against because it makes the system unstable.',
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+        ),
     ),
     Package(
         "picasso96", "Picasso96",
@@ -1609,6 +1871,11 @@ CATALOGUE: list[Package] = [
              "datatypes and painting-program drivers as well.",
         default=True,
         evidence=("Libs/Picasso96",),
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/driver/video/Picasso96.readme'),
+        ),
     ),
 
     # -------------------------------------------------------- networking
@@ -1696,6 +1963,11 @@ CATALOGUE: list[Package] = [
              "card that also runs WHDLoad games, add C:NetShutdown to "
              "S:WHDLoad-Startup to take the stack down while a game runs.",
         default=True,
+        os_advice=(
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://www.amiga-news.de/en/news/AN-2016-09-00029-EN.html'),
+        ),
     ),
     Package(
         "amissl", "AmiSSL",
@@ -1733,6 +2005,11 @@ CATALOGUE: list[Package] = [
                  "Path AmiSSL: ADD"),
         evidence=(AMISSL + "/Libs/amisslmaster.library",),
         default=True,
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/libs/AmiSSL-v5-OS3.readme'),
+        ),
     ),
     Package(
         "netsurf", "NetSurf",
@@ -1746,6 +2023,11 @@ CATALOGUE: list[Package] = [
         requires=("mui",),
         note="Unpacked into Internet/NetSurf, ready to run.",
         default=True,
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/comm/www/netsurf-m68k.readme'),
+        ),
     ),
     Package(
         "aweb", "AWeb APL",
@@ -1776,6 +2058,11 @@ CATALOGUE: list[Package] = [
         note="Installed into Programs/AWeb_APL with its AWEB_APL: assign "
              "added to S:User-Startup, ready to run.",
         default=True,
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/comm/www/aweb3.5.09_68k_20070721.readme'),
+        ),
     ),
     Package(
         "amftp", "AmFTP",
@@ -1802,6 +2089,11 @@ CATALOGUE: list[Package] = [
             #  the same libraries at their current versions instead.
             (("WookieChat2.11_OS3_Installer", "Internet/WookieChat"),)),
         requires=("mui", "mcc_nlist", "mcc_betterstring", "codesets"),
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/comm/irc/WookieChat2.11_OS3.readme'),
+        ),
     ),
 
     Package(
@@ -1876,6 +2168,11 @@ CATALOGUE: list[Package] = [
         note="Edit the Startup line in Storage/DOSDrivers/SMB0 to name your "
              "server and share, then double click it. Needs a TCP/IP stack.",
         evidence=("L/smb2-handler",),
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/disk/misc/smb2fs.m68k-amigaos.readme'),
+        ),
     ),
     Package(
         "yam", "YAM (email)",
@@ -1941,6 +2238,11 @@ CATALOGUE: list[Package] = [
                                    "Libs", "mpega.library"),)),
         needs_cpu=Cpu.M68040,
         support_only=True,
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/libs/mpega_library.readme'),
+        ),
     ),
     Package(
         "sndfile", "sndfile.library",
@@ -1988,6 +2290,11 @@ CATALOGUE: list[Package] = [
              "preferences are drawn with ReAction, which ClassAct supplies on "
              "Workbench 3.1. AHI comes already set to the stereo++ mode it "
              "asks for.",
+        os_advice=(
+            OsAdvice(below='3.1',
+                     why='It needs AmigaOS 3.1 or newer.',
+                     source='https://aminet.net/mus/play/AmigaAMP3-68k.readme'),
+        ),
     ),
     Package(
         "riva", "RiVA",
@@ -2158,6 +2465,11 @@ CATALOGUE: list[Package] = [
              "Pi 3 it runs, slowly. The freeware games ticked with it are "
              "already in its launcher; add others with Add Game or Mass Add, "
              "pointed at Games/ScummVM/games.",
+        os_advice=(
+            OsAdvice(below='3.1',
+                     why='It needs AmigaOS 3.1 or newer.',
+                     source='https://aminet.net/game/misc/ScummVM_RTG_060.readme'),
+        ),
     ),
     Package(
         "scummvm_lure", "Lure of the Temptress (freeware)",
@@ -2245,6 +2557,11 @@ CATALOGUE: list[Package] = [
              "-directcgx to the icon's tool types. Music needs the instrument "
              "set from Aminet game/shoot/ADoom_Instr.lha, which is not "
              "installed.",
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/game/shoot/ADoom-1.4.readme'),
+        ),
     ),
     Package(
         "doom_shareware", "DOOM shareware episode",
@@ -2289,6 +2606,11 @@ CATALOGUE: list[Package] = [
         note="Installed into Games/AmiQuake, about 22 MB. Its author asks for "
              "a 32-bit screen mode and a Raspberry Pi 4. Music needs the "
              "digital music packs, which are not installed.",
+        os_advice=(
+            OsAdvice(below='3.1',
+                     why='It needs AmigaOS 3.1 or newer.',
+                     source='https://aminet.net/game/shoot/AmiQuake_RTG.readme'),
+        ),
     ),
     Package(
         "quake_shareware", "Quake shareware episode",
@@ -2350,6 +2672,11 @@ CATALOGUE: list[Package] = [
         #  it.  MUI is only for the window: from a Shell it works without.
         requires=("mui", "mcc_nlist", "mcc_urltext", "identify"),
         note="Installed into Utilities/Scout, ready to run.",
+        os_advice=(
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://aminet.net/util/moni/Scout_os3.readme'),
+        ),
     ),
 
     Package(
@@ -2565,6 +2892,11 @@ CATALOGUE: list[Package] = [
         startup=("C:CardPatch",),
         needs_pcmcia=True,
         evidence=("C/CardPatch",),
+        os_advice=(
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://aminet.net/util/boot/CardPatch.readme'),
+        ),
     ),
     Package(
         "cardreset", "CardReset",
@@ -2579,6 +2911,11 @@ CATALOGUE: list[Package] = [
         needs_pcmcia=True,
         note="Run CardReset from a Shell when a PCMCIA card stops answering.",
         evidence=("C/CardReset",),
+        os_advice=(
+            OsAdvice(below='2.0',
+                     why='It needs AmigaOS 2.0 or newer.',
+                     source='https://aminet.net/util/boot/CardReset.readme'),
+        ),
     ),
     Package(
         "muiunarc", "MUIUnArc",
@@ -2609,6 +2946,11 @@ CATALOGUE: list[Package] = [
             (("Picasso96Install/Classes/DataTypes/picture.datatype",
               "Classes/DataTypes"),)),
         support_only=True,
+        os_advice=(
+            OsAdvice(on=('3.2', '3.5', '3.9'),
+                     why='This AmigaOS already has a V43 or newer picture.datatype.',
+                     source='https://aminet.net/util/dtype/WarpJPEGdt.readme'),
+        ),
     ),
     Package(
         "warpjpeg", "JPEG pictures (WarpJPEG datatype)",
@@ -2636,6 +2978,11 @@ CATALOGUE: list[Package] = [
              "AmigaOS 3.5 and later ship, and only replaces it where it is "
              "the newer of the two.",
         evidence=("Classes/DataTypes/WarpJPEG.datatype",),
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/dtype/WarpJPEGdt.readme'),
+        ),
     ),
     Package(
         "warppng", "PNG pictures (WarpPNG datatype)",
@@ -2653,6 +3000,11 @@ CATALOGUE: list[Package] = [
         default=True,
         note="WarpPNG 45.27.",
         evidence=("Classes/DataTypes/WarpPNG.datatype",),
+        os_advice=(
+            OsAdvice(below='3.0',
+                     why='It needs AmigaOS 3.0 or newer.',
+                     source='https://aminet.net/util/dtype/WarpPNGdt.readme'),
+        ),
     ),
     Package(
         "akgif", "GIF pictures (akGIF datatype)",
@@ -2672,6 +3024,11 @@ CATALOGUE: list[Package] = [
              ("akGIF-Datatype/devs/Datatypes/GIF.info", "Devs/DataTypes"))),
         requires=("picturedt43",),
         note="akGIF 45.95.",
+        os_advice=(
+            OsAdvice(below='3.1',
+                     why='It needs AmigaOS 3.1 or newer.',
+                     source='https://aminet.net/util/dtype/akGIF-dt.readme'),
+        ),
     ),
     Package(
         "whdload_kickstarts", "Kickstart relocation tables for WHDLoad",
@@ -2716,6 +3073,11 @@ CATALOGUE: list[Package] = [
                           rename=(("Classes/gadgets/layout.gadget.020",
                                    "Classes/Gadgets", "layout.gadget"),)),
         support_only=True,
+        os_advice=(
+            OsAdvice(on=('3.2', '3.5', '3.9'),
+                     why="This AmigaOS carries ReAction, ClassAct's successor; ClassAct would put older classes over it.",
+                     source='https://aminet.net/docs/help/OS35FAQ.txt https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+        ),
     ),
     Package(
         "wbrun", "WBRun",
@@ -2893,6 +3255,11 @@ CATALOGUE: list[Package] = [
         needs_cpu=Cpu.M68020,
         note="Off by default: the driver underneath it is experimental.",
         evidence=("Libs/poseidon.library", "C/PsdStackLoader"),
+        os_advice=(
+            OsAdvice(below='3.1',
+                     why='It needs AmigaOS 3.1 or newer.',
+                     source='https://github.com/rondoval/poseidon-backport'),
+        ),
     ),
     Package(
         "genet", "The Pi's Ethernet socket as an Amiga network card",
@@ -4037,7 +4404,8 @@ def overlays_by_package(keys: list[str],
                         cpu: Cpu | None = None,
                         emu68_tag: str | None = None,
                         kernel: str = "",
-                        machine: Machine | None = None
+                        machine: Machine | None = None,
+                        insisted: Iterable[str] = ()
                         ) -> list[tuple[str, list[tuple[str, str]]]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
@@ -4064,13 +4432,16 @@ def overlays_by_package(keys: list[str],
 
     by_package: list[tuple[str, list[tuple[str, str]]]] = []
     wanted = expand(keys)
+    #  Installed although they do not suit: the user was told why and chose
+    #  them anyway - and so is what each needs, which came with the choice.
+    overruled = set(expand(list(insisted)))
     #  Once for the card, not per package: it reads the host's time zone.
     settings = hardware_settings(pi)
     for key in wanted:
         package = CATALOGUE_BY_KEY.get(key)
-        if package is None or not package.suits(chipset, display, pi=pi,
-                                                cpu=cpu, emu68_tag=emu68_tag,
-                                                machine=machine):
+        if package is None or (key not in overruled and not package.suits(
+                chipset, display, pi=pi, cpu=cpu, emu68_tag=emu68_tag,
+                machine=machine)):
             continue
         if not allow_download or package.download is None:
             continue
@@ -4134,8 +4505,8 @@ def to_get_online(machine: Machine, display: Display, *,
 
 def suggested(machine: Machine, display: Display, *,
               networking: bool = False, pi: Pi | None = None,
-              cpu: Cpu | None = None, emu68_tag: str | None = None
-              ) -> list[str]:
+              cpu: Cpu | None = None, emu68_tag: str | None = None,
+              release: tuple[int, ...] | None = None) -> list[str]:
     """A sensible set for this machine and this screen.
 
     Nothing is listed here.  Every package says for itself whether it is
@@ -4174,4 +4545,7 @@ def suggested(machine: Machine, display: Display, *,
             and not p.support_only              # arrives via ``requires``
             and (networking or p.category is not Category.NETWORK)
             and p.suits(machine.chipset, display, pi=pi, cpu=cpu,
-                        emu68_tag=emu68_tag, machine=machine)]
+                        emu68_tag=emu68_tag, machine=machine)
+            #  Nor anything advised against on the AmigaOS being installed:
+            #  a suggestion is not the place to overrule the advice.
+            and not p.os_reasons(release)]
