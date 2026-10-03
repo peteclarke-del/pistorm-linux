@@ -1075,6 +1075,44 @@ def on_activate(app: ImagerApplication) -> None:
               "a package with no rival raises no question")
         window.package_rows["newicons"].set_active(False)
 
+        #  Software that does not suit this card, or is a poor choice on
+        #  its AmigaOS, is never greyed out and never ticked in silence: the
+        #  user is told why, and may install it anyway.
+        unsuited = next((k for k, row in window.package_rows.items()
+                         if window._package_advice(k) and not row.get_active()
+                         and row.get_sensitive()), None)
+        check(unsuited is not None,
+              "something on offer does not suit this card, and can be ticked")
+        if unsuited is not None:
+            #  Asked with the Software page in front of somebody.
+            window.stack.set_visible_child_name("packages")
+            pump()
+            window.package_rows[unsuited].set_active(True)
+            pump()
+            check(getattr(window, "_advice_dialog", None) is not None,
+                  f"ticking {unsuited} asks first")
+            check(window.package_rows[unsuited].get_subtitle()
+                  .startswith("Not advised here."),
+                  "and its row says why before it is ticked")
+            dialog = window._advice_dialog
+            window._answer_advice(install=[unsuited])
+            if dialog is not None:
+                dialog.force_close()
+            check(unsuited in window.gather().against_advice,
+                  "installing anyway is kept, so the build installs it")
+            window.package_rows[unsuited].set_active(False)
+            pump()
+            check(unsuited not in window.gather().against_advice,
+                  "and taking it off forgets the answer")
+            window.package_rows[unsuited].set_active(True)
+            pump()
+            dialog = window._advice_dialog
+            window._answer_advice(leave=[unsuited])
+            if dialog is not None:
+                dialog.force_close()
+            check(not window.package_rows[unsuited].get_active(),
+                  "leaving it off unticks it")
+
         #  SysInfo, whose 4.0 carries a guru that Aminet still ships a
         #  patch for - fixed in 4.4, which its Aminet address serves.
         check("sysinfo" in window.package_rows, "SysInfo is on offer")
@@ -1146,8 +1184,10 @@ def on_activate(app: ImagerApplication) -> None:
 
         older = choose_release(lambda tag: not emu68.at_least(tag, (1, 1)))
         if older:
-            check(not rows["poseidon"].get_sensitive(),
-                  f"Emu68 {older} cannot reach the controller, so USB is refused")
+            check(rows["poseidon"].get_subtitle().startswith(
+                      "Not advised here.") and window._package_advice("poseidon"),
+                  f"Emu68 {older} cannot reach the controller, so USB is "
+                  f"advised against")
             check("Emu68 1.1" in rows["poseidon"].get_subtitle(),
                   f"and says which build it wants: "
                   f"{rows['poseidon'].get_subtitle()}")
@@ -1158,8 +1198,10 @@ def on_activate(app: ImagerApplication) -> None:
         window.quick_pi.set_selected(pi_choices.index(machines.Pi.PI3))
         window._on_pi_changed()
         pump()
-        check(not rows["poseidon"].get_sensitive(),
-              "a Pi 3 has no xHCI controller, so the USB stack is refused")
+        check(rows["poseidon"].get_subtitle().startswith("Not advised here.")
+              and "Pi" in rows["poseidon"].get_subtitle(),
+              "a Pi 3 has no xHCI controller, so the USB stack is advised "
+              "against, and says so")
         check("Raspberry Pi 4B" in rows["poseidon"].get_subtitle(),
               f"and says which Pi it wants: {rows['poseidon'].get_subtitle()}")
         check(not window.usb_group.get_visible(),
@@ -2498,7 +2540,9 @@ def on_activate(app: ImagerApplication) -> None:
             pump()
             wanted = set(_pk.suggested(
                 window._machine(), window._display(),
-                networking=bool(window.ssid_row.get_text().strip())))
+                networking=bool(window.ssid_row.get_text().strip()),
+                #  Nothing advised against on the AmigaOS being installed.
+                release=window._os_release()))
             chosen = set(window._chosen_packages())
             #  Everything suggested is on...
             short = sorted(k for k in wanted if k not in chosen)
