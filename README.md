@@ -4403,6 +4403,28 @@ empty drawers; and assigns to things that are not there. PiMiga's emulators
 of other computers - AmiCPC, AmiGameBoy, fMSX - are real Amiga programs, and
 stay.
 
+Not only whole drawers. Inside one AmigaOS owns, where the drawer itself is
+never offered, single files are:
+
+- **an emulator's control program**, by the name scripts call it by -
+  `C:uae-configuration`, `C:uaectrl`, `C:uae-control`, `C:host-run`,
+  `C:winuaeenforcer` (`compat.EMULATOR_COMMANDS`);
+- **a script whose every command is an emulator's** - PiMiga's `Tools/Power`
+  is the one line `host-run sudo shutdown -h now`, and
+  `Graphics/DPaintIV/copy_of_DPaintJS` opens a Linux desktop file. A script
+  that also does real work stays;
+- **a sound mode with no driver**: each file in `DEVS:AudioModes` names its
+  AHI driver, and PiMiga lists UAE's modes (and AHI's file-saving ones)
+  without `uae.audio` or `filesave.audio`, so choosing one in AHI Prefs leaves
+  the machine silent;
+- **a spare monitor for the emulator's graphics card**, kept in
+  `Storage/Monitors` - an icon whose `BOARDTYPE` is `uaegfx`.
+
+All of these are ticked by default. What is left out is also taken off
+PiMiga's dock: DockBot's settings in `ENVARC:` hold a block per button, and
+the compatibility pass drops the ones whose `path=` is no longer on the card -
+Firefox and Chromium on PiMiga.
+
 **Getting online.** PiMiga's TCP/IP stack was set up for the emulator's
 network. The card is given a stack that can be fetched and the Pi's own
 network interfaces (`packages.to_get_online`): lwIP and the WiFi driver, and
