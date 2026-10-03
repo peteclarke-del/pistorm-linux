@@ -107,6 +107,14 @@ SYSTEM_DRAWERS = ("C", "L", "S", "Libs", "Devs", "Prefs", "Locale", "Rexxc",
                   "Utilities", "Expansion")
 
 
+#  The job of a TCP/IP stack: the bsdsocket.library every network program
+#  opens.  Two packages do it, and a card wants one of them.
+ROLE_TCP_IP_STACK = "TCP/IP stack"
+
+#  Where a network interface's description goes - one file per device a
+#  stack is to bring up.  A package that writes one is a network interface.
+NET_INTERFACES = "Devs/NetInterfaces"
+
 #  Where AmigaOS finds things for itself: through the assigns it makes as it
 #  starts (C:, L:, S:, LIBS:, DEVS:, FONTS:, LOCALE:, ENVARC: under Prefs and
 #  the Classes LIBS: is extended with) or because Workbench looks there by
@@ -451,6 +459,9 @@ class Package:
     #  of ROM modules the drive holds - in the drawers named for the machine
     #  - in place of the ROM's, and restarting once so they take over.
     loads_modules: bool = False
+    #  For a card in the PCMCIA slot of an A600 or A1200, and nothing at all
+    #  on a machine without one.
+    needs_pcmcia: bool = False
     #  Installed once for every drive this build fills with content, so a card
     #  with a Games drive and a Demos drive arrives with a launcher for each.
     per_content_drive: bool = False
@@ -507,7 +518,8 @@ class Package:
 
     def suits(self, chipset: Chipset, display: Display, *,
               pi: Pi | None = None, cpu: Cpu | None = None,
-              emu68_tag: str | None = None) -> bool:
+              emu68_tag: str | None = None,
+              machine: Machine | None = None) -> bool:
         """Whether this package is worth having on the card being built.
 
         The three keyword arguments describe the Raspberry Pi side of the
@@ -517,6 +529,9 @@ class Package:
         some of them.
         """
         from . import emu68 as emu68_module                   # noqa: PLC0415
+        if self.needs_pcmcia and machine is not None \
+                and not machine.pcmcia_slot:
+            return False
         if self.rtg_only and not display.uses_rtg:
             return False
         if self.native_only and not display.uses_native:
@@ -536,16 +551,19 @@ class Package:
         #  needs ScummVM, which needs an RTG screen; offered on a native one
         #  it could be ticked, and dragged ScummVM onto the card with it.
         return self.unsuited_need(chipset, display, pi=pi, cpu=cpu,
-                                  emu68_tag=emu68_tag) is None
+                                  emu68_tag=emu68_tag,
+                                  machine=machine) is None
 
     def unsuited_need(self, chipset: Chipset, display: Display, *,
                       pi: Pi | None = None, cpu: Cpu | None = None,
-                      emu68_tag: str | None = None) -> "Package | None":
+                      emu68_tag: str | None = None,
+                      machine: Machine | None = None) -> "Package | None":
         """The first package this one needs that does not suit, if any."""
         for key in self.requires:
             other = CATALOGUE_BY_KEY.get(key)
             if other is not None and not other.suits(
-                    chipset, display, pi=pi, cpu=cpu, emu68_tag=emu68_tag):
+                    chipset, display, pi=pi, cpu=cpu, emu68_tag=emu68_tag,
+                    machine=machine):
                 return other
         return None
 
@@ -649,6 +667,35 @@ SMB_DOSDRIVER = (
     "Priority  = 5\n"
     "GlobVec   = -1\n"
     "Startup   = \"smb://server/share VOLUME=SMB\"\n")
+
+#  A CD-ROM drive in the PCMCIA slot, as PcmciaCD's own CD0 mountlist has it
+#  with the device and unit said outright - the archive's leaves them to its
+#  icon's tool types.  PCD0, because AmigaOS 3.2 already has a CD0, for the
+#  IDE port.
+PCMCIA_CD_MOUNTLIST = (
+    "/* PCD0: - a CD-ROM drive in the PCMCIA slot\n"
+    " * Written by the PiStorm imager from PcmciaCD's own CD0. Double click\n"
+    " * to mount it, or move it to DEVS:DOSDrivers to mount it at every boot.\n"
+    " * Only unit 0 exists on the PCMCIA bus.\n"
+    " */\n"
+    "Device         = pcmciacd.device\n"
+    "Unit           = 0\n"
+    "FileSystem     = L:AmiCDFS\n"
+    "Flags          = 0\n"
+    "BlocksPerTrack = 32\n"
+    "BlockSize      = 2048\n"
+    "Reserved       = 0\n"
+    "LowCyl         = 0\n"
+    "HighCyl        = 11000\n"
+    "Surfaces       = 1\n"
+    "Buffers        = 64\n"
+    "BufMemType     = 1\n"
+    "Mask           = 0x7fffffff\n"
+    "GlobVec        = -1\n"
+    "Priority       = 10\n"
+    "DosType        = 0x43444653\n"
+    "StackSize      = 600\n"
+    "Control        = \"LC BL=8 FB=32\"\n")
 
 #  The SD card's FAT32 boot partition as an Amiga volume. Emu68's SD driver
 #  hands AmigaOS the whole card as unit 0, and the imager puts the boot
@@ -1638,7 +1685,7 @@ CATALOGUE: list[Package] = [
         #  Two TCP/IP stacks on one card is not a preference: the second one
         #  replaces the first one's bsdsocket.library and eight of its
         #  commands, and there is no undo.
-        role="TCP/IP stack",
+        role=ROLE_TCP_IP_STACK,
         #  The lines Roadshow's installer would have added to User-Startup.
         startup=("IF EXISTS S:Network-Startup",
                  "   Execute S:Network-Startup",
@@ -2473,6 +2520,67 @@ CATALOGUE: list[Package] = [
         evidence=("L/fat95",),
     ),
     Package(
+        "pcmciacd", "PCMCIA CD-ROM drive (PcmciaCD)",
+        "Aidan Holmes' driver for Sony's PCMCIA CD-ROM drives - the PCGA-CD51 "
+        "and its relatives - which plug straight into the PCMCIA slot of an "
+        "A600 or A1200 and need no power of their own. Taking the card out "
+        "reads as ejecting the CD.",
+        category=Category.FILES,
+        download=Download(
+            "driver/media/PcmciaCD.lha",
+            (("Pcmciacd/pcmciacd.device", "Devs"),),
+            #  In Storage, mounted by double clicking it: nothing touches the
+            #  slot at boot unless it is moved to DEVS:DOSDrivers.
+            write=(Written("PCD0", "Storage/DOSDrivers",
+                           PCMCIA_CD_MOUNTLIST),),
+            retool=(("Pcmciacd/CD0.info", "Storage/DOSDrivers", "PCD0.info",
+                     "C:Mount"),)),
+        #  Its author recommends CardReset, which recommends CardPatch.
+        requires=("amicdfs", "cardpatch", "cardreset"),
+        needs_pcmcia=True,
+        note="Double click Storage/DOSDrivers/PCD0 to mount the drive, or "
+             "move it to Devs/DOSDrivers to have it mounted at every boot. "
+             "Reported working: Sony PCGA-CD51, CRX75A (16-bit switch on) and "
+             "PCGA-DVD51.",
+        evidence=("Devs/pcmciacd.device",),
+    ),
+    Package(
+        "amicdfs", "AmiCDFS",
+        "A CD-ROM file system, for a drive whatever port it is on. PcmciaCD's "
+        "author names it for Workbench 3.1, whose own CDFileSystem is too old, "
+        "and for 3.2.3, whose CDFileSystem hangs with that driver.",
+        category=Category.SYSTEM,
+        download=Download("disk/cdrom/amicdfs240.lha",
+                          (("AmiCDFS2/L/AmiCDFS", "L"),)),
+        support_only=True,
+        evidence=("L/AmiCDFS",),
+    ),
+    Package(
+        "cardpatch", "CardPatch",
+        "Fixes bugs in the A600's and A1200's PCMCIA support: with a card in "
+        "the slot and nothing using it the machine slows down, and a card is "
+        "not reset when it is plugged in.",
+        category=Category.SPEED,
+        download=Download("util/boot/CardPatch.lha", (("CardPatch", "C"),)),
+        startup=("C:CardPatch",),
+        needs_pcmcia=True,
+        evidence=("C/CardPatch",),
+    ),
+    Package(
+        "cardreset", "CardReset",
+        "Resets the card in the PCMCIA slot, as unplugging it and plugging it "
+        "back in would. PcmciaCD's author recommends it for a drive that stops "
+        "answering.",
+        category=Category.SPEED,
+        download=Download("util/boot/CardReset.lha", (("CardReset", "C"),)),
+        #  Not started at boot: it returns an error when another driver owns
+        #  the card, and in S:User-Startup that would stop every line after.
+        requires=("cardpatch",),
+        needs_pcmcia=True,
+        note="Run CardReset from a Shell when a PCMCIA card stops answering.",
+        evidence=("C/CardReset",),
+    ),
+    Package(
         "muiunarc", "MUIUnArc",
         "A window for XAD: drop an archive on it, see what is inside, and "
         "unpack all of it or just the files you pick. Disk archives such as "
@@ -2881,7 +2989,7 @@ CATALOGUE: list[Package] = [
         startup=("IF EXISTS S:Network-Startup",
                  "   Execute S:Network-Startup",
                  "EndIF"),
-        role="TCP/IP stack",
+        role=ROLE_TCP_IP_STACK,
         note="Installing it replaces bsdsocket.library and the Roadshow "
              "commands of the same name in C:, and there is no undo - going "
              "back means reinstalling the other stack. It drives Ethernet "
@@ -3928,7 +4036,8 @@ def overlays_by_package(keys: list[str],
                         pi: Pi | None = None,
                         cpu: Cpu | None = None,
                         emu68_tag: str | None = None,
-                        kernel: str = ""
+                        kernel: str = "",
+                        machine: Machine | None = None
                         ) -> list[tuple[str, list[tuple[str, str]]]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
@@ -3960,7 +4069,8 @@ def overlays_by_package(keys: list[str],
     for key in wanted:
         package = CATALOGUE_BY_KEY.get(key)
         if package is None or not package.suits(chipset, display, pi=pi,
-                                                cpu=cpu, emu68_tag=emu68_tag):
+                                                cpu=cpu, emu68_tag=emu68_tag,
+                                                machine=machine):
             continue
         if not allow_download or package.download is None:
             continue
@@ -3982,7 +4092,7 @@ def overlays_by_package(keys: list[str],
                        and other.download is not None
                        and not other.download.manual
                        and other.suits(chipset, display, pi=pi, cpu=cpu,
-                                       emu68_tag=emu68_tag)]
+                                       emu68_tag=emu68_tag, machine=machine)]
             if instead:
                 progress.log(f"  {' or '.join(instead)} does the same job and "
                              f"can be downloaded; tick it on the Packages "
@@ -3995,6 +4105,31 @@ def overlays_by_package(keys: list[str],
         if len(out) > before:
             by_package.append((key, out[before:]))
     return by_package
+
+
+def to_get_online(machine: Machine, display: Display, *,
+                  pi: Pi | None = None, cpu: Cpu | None = None,
+                  emu68_tag: str | None = None) -> list[str]:
+    """What a ready-made system needs added to reach a network on a PiStorm.
+
+    A TCP/IP stack that can be fetched - the recommended one, or another
+    doing the same job where that one is a manual download - and the Pi's
+    own network interfaces.  Everything else a system brings for itself:
+    PiMiga has its browsers, and its own stack was set up for an emulator.
+    """
+    def fits(package: Package) -> bool:
+        return package.suits(machine.chipset, display, pi=pi, cpu=cpu,
+                             emu68_tag=emu68_tag, machine=machine)
+
+    stacks = sorted((p for p in CATALOGUE
+                     if p.role == ROLE_TCP_IP_STACK and fits(p)
+                     and p.download is not None and not p.download.manual),
+                    key=lambda p: not p.default)
+    interfaces = [p for p in CATALOGUE
+                  if p.download is not None and fits(p)
+                  and any(item.destination.startswith(NET_INTERFACES)
+                          for item in p.download.write)]
+    return [p.key for p in stacks[:1] + interfaces]
 
 
 def suggested(machine: Machine, display: Display, *,
@@ -4039,4 +4174,4 @@ def suggested(machine: Machine, display: Display, *,
             and not p.support_only              # arrives via ``requires``
             and (networking or p.category is not Category.NETWORK)
             and p.suits(machine.chipset, display, pi=pi, cpu=cpu,
-                        emu68_tag=emu68_tag)]
+                        emu68_tag=emu68_tag, machine=machine)]

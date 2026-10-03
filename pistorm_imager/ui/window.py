@@ -24,7 +24,7 @@ from ..core import (amigacd, amigaos, boingbag, bootaddon, bootcfg,  # noqa: E40
                     builder, content, devices,
                     distributions,
                     emu68, hdfcheck, jobs, kickstart, machines, packages,
-                    prepare, presets)
+                    pimiga, prepare, presets)
 from ..core.util import (GIB, Progress, describe_size,  # noqa: E402
                          exact_size_text, human_size,  # noqa: E402
                          parse_size)
@@ -121,6 +121,17 @@ TASKS = [
      "drives are on a CF card or a disk on its own IDE port.",
      "media-removable-symbolic",
      ("amiga", "options", "target", "review")),
+    #  First on the second row.  PiMiga's own requirements - an RTG screen,
+    #  a 68040 with an FPU, Kickstart 3.1 - are read from PiMiga and checked
+    #  by the build, whichever way it came to use PiMiga; the tile only
+    #  starts from them.
+    (builder.Task.PIMIGA, "A PiStorm card from PiMiga",
+     "PiMiga's desktop, games, demos and work drive on a real Amiga: taken "
+     "from its image or the folder it is mounted on, with what only works "
+     "in an emulator left behind. Needs a PiStorm with an RTG screen.",
+     "applications-games-symbolic",
+     ("amiga", "source", "storage", "packages", "options", "target",
+      "review")),
     (builder.Task.AMIGA_DRIVE, "A drive for the Amiga's IDE or SCSI port",
      "Amiga drives with no boot partition: a CF card or disk for the IDE "
      "port, behind a PiStorm that boots from its own card or a real "
@@ -195,6 +206,7 @@ IMAGE_FILTERS = [
 ROM_FILTERS = [("Kickstart ROMs", ["*.rom", "*.ROM", "*.bin", "*.a1200"])]
 HDF_FILTERS = [("Amiga hard disk images", ["*.hdf", "*.HDF", "*.hdz", "*.rdsk", "*.img"])]
 ZIP_FILTERS = [("Emu68 release", ["*.zip"])]
+PIMIGA_FILTERS = [("PiMiga image", ["*.img", "*.IMG"])]
 
 
 #  The suggested layout is a whole configuration built from the machine and
@@ -804,6 +816,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         else: none of them is shown as a switch that a later page could
         turn into a card that cannot work.
         """
+        left = self._task
         self._task = task
         was, self._ready = self._ready, False
         try:
@@ -819,6 +832,19 @@ class ImagerWindow(Adw.ApplicationWindow):
                 self.quick_accelerator.set_selected(
                     list(machines.Accelerator).index(
                         machines.Accelerator.PISTORM))
+            if left is builder.Task.PIMIGA and task is not builder.Task.PIMIGA:
+                #  PiMiga was the tile's choice, not the user's: another task
+                #  starts from building a drive of its own again.
+                self.quick_primary.set_selected(
+                    PRIMARY_SOURCES.index("default"))
+            if task is builder.Task.PIMIGA:
+                #  PiMiga's system, on the screen it was laid out for.
+                self.quick_primary.set_selected(
+                    PRIMARY_SOURCES.index("pimiga"))
+                if not self._display().uses_rtg:
+                    select_matching(self.quick_display, machines.Display,
+                                    lambda display: display is
+                                    machines.Display.RTG_HDMI)
         finally:
             self._ready = was
         #  An image already chosen decides between a card and a drive again,
@@ -1101,11 +1127,13 @@ class ImagerWindow(Adw.ApplicationWindow):
                                    lambda *_a: self._on_primary_changed())
         group.add(self.quick_primary)
         self.quick_pimiga = FileRow(
-            "PiMiga folder",
-            "Its drives, games and demos are copied over, and its graphics "
-            "driver replaced.  Collections needing a chipset this machine "
-            "does not have are left out.",
-            folder=True, on_change=lambda _p: self._on_source_changed())
+            "PiMiga",
+            "Its image (.img), or the folder it is mounted on. Its drives, "
+            "games and demos are copied over, and its graphics driver "
+            "replaced. Collections needing a chipset this machine does not "
+            "have are left out.",
+            both=True, filters=PIMIGA_FILTERS,
+            on_change=lambda _p: self._on_source_changed())
         group.add(self.quick_pimiga)
         self.quick_pimiga_info = Adw.ActionRow(title="Content",
                                                subtitle="No folder selected")
@@ -1278,11 +1306,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  Both lists describe the drive that was chosen, so dropping the
             #  drive has to drop them: left standing, they would leave
             #  software out of a build that is no longer using that drive.
-            self._refresh_older_copies()
-            self._refresh_what_cannot_work()
-            self._refresh_clutter()
-            self._refresh_desktop()
-            self._refresh_what_arrives()
+            self._refresh_drive_lists()
             self._quick_preview()
             return
         scheme = presets.describe_image_scheme(path)
@@ -1699,7 +1723,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         return self._keep_other_pages(presets.machine_setup(
             self._machine(), self._display(), base.target,
             base.target_is_device, size, detected,
-            pimiga_folder=self.quick_pimiga.path,
+            pimiga_folder=str(self._pimiga_disks() or ""),
             hdmi=(hdmi_choice[1], hdmi_choice[2]),
             system_size=system, boot_size=self._boot_size(),
             trapdoor_to_chip=self.quick_trapdoor.get_active(),
@@ -1745,6 +1769,21 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         self._on_layout_changed()
         self._sync_visibility()
+        self._refresh_drive_lists()
+
+    def _refresh_drive_lists(self) -> None:
+        """Re-read every list the Software page builds from the chosen drive.
+
+        An image or PiMiga's System: whichever the card is built around, the
+        offers follow it, and they follow it away when it is dropped.
+        """
+        if not self._ready:
+            return
+        self._refresh_older_copies()
+        self._refresh_what_cannot_work()
+        self._refresh_clutter()
+        self._refresh_desktop()
+        self._refresh_what_arrives()
 
     def _relayout_partitions(self) -> None:
         """Replace the partition rows with the layout the choices imply.
@@ -1792,17 +1831,42 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._relayout_partitions()
         self._update_summary()
 
+    def _pimiga_disks(self) -> Path | None:
+        """PiMiga's drives, from the folder or image chosen for it.
+
+        An image is mounted once, read-only, the first time it is asked for;
+        why it could not be is what the row then says.
+        """
+        chosen = self.quick_pimiga.path
+        if not chosen:
+            return None
+        if Path(chosen).is_dir():
+            #  A folder is looked at afresh: it is cheap, and it may have
+            #  been filled since it was last asked about.
+            self._pimiga_cache = (chosen, None, "")
+            return presets.pimiga_disks(chosen)
+        cached = getattr(self, "_pimiga_cache", None)
+        if cached is not None and cached[0] == chosen and cached[1]:
+            return cached[1]
+        try:
+            disks, why = pimiga.disks_in(chosen), ""
+        except RuntimeError as error:
+            disks, why = None, str(error)
+        self._pimiga_cache = (chosen, disks, why)
+        return disks
+
     def _update_pimiga_info(self) -> None:
-        """Describe the chosen PiMiga folder, whatever else is still missing."""
-        folder = self.quick_pimiga.path
-        if not folder:
-            self.quick_pimiga_info.set_subtitle("No folder selected")
+        """Describe the chosen PiMiga, whatever else is still missing."""
+        if not self.quick_pimiga.path:
+            self.quick_pimiga_info.set_subtitle("Nothing chosen")
             return
-        disks = presets.pimiga_disks(folder)
+        disks = self._pimiga_disks()
         if disks is None:
+            why = self._pimiga_cache[2]
             self.quick_pimiga_info.set_subtitle(
-                "No PiMiga drives found there - expected System and Games "
-                "folders, or a 'disks' folder containing them")
+                why or "No PiMiga drives found there - expected its image, "
+                "or a folder holding System and Games or a 'disks' folder "
+                "containing them")
             return
         drives = [name for name in ("System", "Games", "Demos", "Work")
                   if (disks / name).is_dir()]
@@ -1819,8 +1883,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  When a source dictates the partition scheme this switch does nothing,
         #  so do not offer it: leaving it visible implied it was being obeyed.
         from_source = bool(self.quick_hdf.path) or (
-            self.quick_pimiga.path
-            and presets.pimiga_disks(self.quick_pimiga.path) is not None)
+            self._pimiga_disks() is not None)
         self.quick_work.set_visible(not from_source)
         self.quick_system.set_visible(not self.quick_hdf.path)
         detected = dataclasses.replace(
@@ -3336,6 +3399,9 @@ class ImagerWindow(Adw.ApplicationWindow):
             return
         mode = self._mode()
         primary = self._primary()
+        #  The PiMiga card is PiMiga's: what it is built around is not a
+        #  choice there.
+        self.quick_primary.set_sensitive(self._task is not builder.Task.PIMIGA)
         for row in (self.quick_pimiga, self.quick_pimiga_info):
             row.set_visible(primary == "pimiga")
         for row in (self.quick_hdf, self.quick_hdf_info):
@@ -3465,6 +3531,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  The partition layout is the task's to make only on a new card or
         #  drive; elsewhere the drives come from what is being written.
         self.group_sizes.set_visible(task in (builder.Task.NEW_CARD,
+                                              builder.Task.PIMIGA,
                                               builder.Task.AMIGA_DRIVE))
         #  A PiStorm is the processor wherever Emu68 is written; the
         #  question is only asked of a drive that goes elsewhere.
@@ -3661,15 +3728,32 @@ class ImagerWindow(Adw.ApplicationWindow):
         return [spec.volume_name or spec.name
                 for spec in (row.spec() for row in self.partition_rows)]
 
-    def _read_drive(self, read, default):
+    def _drive_source(self) -> str:
+        """The drive the Software page looks at: an image, or PiMiga's System."""
+        if self.quick_hdf.path:
+            return self.quick_hdf.path
+        if self._primary() == "pimiga":
+            disks = self._pimiga_disks()
+            if disks is not None:
+                return str(disks / "System")
+        return ""
+
+    def _read_drive(self, read, default, key=(), then=None):
         """``read`` of the chosen drive's volume, or ``default``.
 
         Opened, read and closed in one place. These lists are offers, so a
         drive that cannot be opened or followed simply offers nothing.
+
+        An image is read there and then. A folder - PiMiga's System, eighty
+        thousand files - is read away from the window: ``default`` is
+        answered at once, the answer for ``key``, the caller's inputs, is
+        kept, and ``then`` is called to show it when it arrives.
         """
-        path = self.quick_hdf.path
+        path = self._drive_source()
         if not path:
             return default
+        if Path(path).is_dir():
+            return self._read_folder(path, read, default, key, then)
         try:
             reader, _label = amigaos.open_amiga_volume(path, "")
         except Exception:                                    # noqa: BLE001
@@ -3684,6 +3768,39 @@ class ImagerWindow(Adw.ApplicationWindow):
             except OSError:
                 pass
 
+    def _read_folder(self, path, read, default, key, then):
+        answers = self.__dict__.setdefault("_folder_answers", {})
+        asked = (path, key)
+        if asked in answers:
+            return answers[asked]
+        running = self.__dict__.setdefault("_folder_reads", set())
+        if asked in running:
+            return default
+        running.add(asked)
+        #  One reader per folder for the session, so its listings are made
+        #  once; one read at a time, because it is not made for two threads.
+        readers = self.__dict__.setdefault("_folder_readers", {})
+        reader = readers.setdefault(path, amigaos.FolderVolume(path))
+        lock = self.__dict__.setdefault("_folder_lock", threading.Lock())
+
+        def work() -> None:
+            with lock:
+                try:
+                    answer = read(reader)
+                except Exception:                            # noqa: BLE001
+                    answer = default
+            GLib.idle_add(arrived, answer)
+
+        def arrived(answer) -> bool:
+            answers[asked] = answer
+            running.discard(asked)
+            if then is not None:
+                then()
+            return False
+
+        threading.Thread(target=work, daemon=True).start()
+        return default
+
     def _older_copies_on_the_drive(self) -> dict[str, tuple[str, str]]:
         """Copies of chosen software already on the drive, somewhere else.
 
@@ -3693,7 +3810,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         somebody checked by hand. Each answer is (drawer, what to say).
         """
         found: dict[str, tuple[str, str]] = {}
-        path = self.quick_hdf.path
+        path = self._drive_source()
         chosen = self._chosen_packages()
         if not path or not chosen:
             return found
@@ -3728,15 +3845,17 @@ class ImagerWindow(Adw.ApplicationWindow):
                 found[copy.drawer] = (shown, "sure" if copy.certain else "ask")
             return found
 
-        return self._read_drive(read, found)
+        return self._read_drive(read, found, key=("older", tuple(sorted(chosen))),
+                                then=self._refresh_older_copies)
 
     def _refresh_what_arrives(self) -> None:
         """List the programs the chosen drive already carries."""
         if not hasattr(self, "arrives_group"):
             return
-        path = self.quick_hdf.path
+        path = self._drive_source()
         found: list[tuple[str, str]] = self._read_drive(
-            lambda reader: self._installed_on_the_drive(path, reader), [])
+            lambda reader: self._installed_on_the_drive(path, reader), [],
+            key=("arrives",), then=self._refresh_what_arrives)
         #  Not what another list is already dropping. FMSsys was in both - on
         #  here meaning "keep it", on there meaning "remove it" - so the page
         #  said two opposite things about the same program, and the one that
@@ -3766,8 +3885,10 @@ class ImagerWindow(Adw.ApplicationWindow):
         """List software the drive carries that this card cannot run."""
         if not hasattr(self, "broken_group"):
             return
+        names = tuple(self._volume_names())
+
         def read(reader) -> list:
-            volumes = content.volumes_on_the_card(reader, self._volume_names())
+            volumes = content.volumes_on_the_card(reader, names)
             drivers = []
             entry = reader.find("Devs/DOSDrivers")
             if entry is not None and entry.is_dir:
@@ -3775,7 +3896,9 @@ class ImagerWindow(Adw.ApplicationWindow):
                            reader.listdir(content._locator(entry))]
             return content.cannot_work(reader, volumes, drivers)
 
-        found = self._read_drive(read, [])
+        found = self._read_drive(read, [],
+                                 key=("cannot", names),
+                                 then=self._refresh_what_cannot_work)
         wanted = {b.drawer: b for b in found}
         for key, row in list(self.broken_rows.items()):
             if key not in wanted:
@@ -3801,31 +3924,38 @@ class ImagerWindow(Adw.ApplicationWindow):
         """
         if not hasattr(self, "clutter_group"):
             return
-        def read(reader) -> list:
-            #  What the packages are about to fill is never offered: a
-            #  drawer empty now is not empty on the finished card.
-            _wanted, filling = self._principal(self._chosen_packages())
-            #  ...and whatever the Workbench disks will add. A drawer empty
-            #  on the drive being built from is not empty on the finished
-            #  card: ClassicWB ships Rexxc and Expansion with nothing in them
-            #  and the floppy install fills both, so offering to remove one
-            #  took Commodore's own files with it and the card came out with
-            #  no ARexx commands at all.
-            keep = set(filling)
-            if self.adf_row.path:
-                keep |= amigaos.drawers_on_the_disks(self.adf_row.path)
-            #  Libraries this build soft-kicks for itself. A distribution's
-            #  own installer for one of them is a second, riskier route to
-            #  something already done.
-            chosen = set(self._chosen_packages())
-            provided = [p.boot_library for p in packages.CATALOGUE
-                        if p.boot_library and p.key in chosen]
-            return content.clutter(
-                reader, content.volumes_on_the_card(reader,
-                                                    self._volume_names()),
-                keep=keep, going=self._already_leaving(), provided=provided)
+        #  Everything the read needs is gathered here, on the window's own
+        #  thread: a folder is read on another, which must not touch widgets.
+        #  What the packages are about to fill is never offered: a drawer
+        #  empty now is not empty on the finished card.
+        _wanted, filling = self._principal(self._chosen_packages())
+        #  ...and whatever the Workbench disks will add. A drawer empty on
+        #  the drive being built from is not empty on the finished card:
+        #  ClassicWB ships Rexxc and Expansion with nothing in them and the
+        #  floppy install fills both, so offering to remove one took
+        #  Commodore's own files with it and the card came out with no ARexx
+        #  commands at all.
+        keep = set(filling)
+        if self.adf_row.path:
+            keep |= amigaos.drawers_on_the_disks(self.adf_row.path)
+        #  Libraries this build soft-kicks for itself. A distribution's own
+        #  installer for one of them is a second, riskier route to something
+        #  already done.
+        chosen = set(self._chosen_packages())
+        provided = sorted(p.boot_library for p in packages.CATALOGUE
+                          if p.boot_library and p.key in chosen)
+        names = tuple(self._volume_names())
+        going = tuple(sorted(self._already_leaving()))
 
-        found = self._read_drive(read, [])
+        def read(reader) -> list:
+            return content.clutter(
+                reader, content.volumes_on_the_card(reader, names),
+                keep=keep, going=going, provided=provided)
+
+        found = self._read_drive(
+            read, [], key=("clutter", frozenset(keep), going, tuple(provided),
+                           names),
+            then=self._refresh_clutter)
         wanted = {c.path: c for c in found}
         for key, row in list(self.clutter_rows.items()):
             if key not in wanted:
@@ -3863,7 +3993,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         """Offer each icon the drive keeps on the Workbench desktop."""
         if not hasattr(self, "desktop_group"):
             return
-        found = self._read_drive(content.desktop_icons, [])
+        found = self._read_drive(content.desktop_icons, [], key=("desktop",),
+                                 then=self._refresh_desktop)
         wanted = {i.path: i for i in found}
         for key, row in list(self.desktop_rows.items()):
             if key not in wanted:
@@ -4026,7 +4157,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
             fits = package.suits(chipset, display, pi=pi, cpu=cpu,
-                                 emu68_tag=tag)
+                                 emu68_tag=tag, machine=self._machine())
             note = package.description
             if not fits and package.rtg_only:
                 note += "  -  only useful with an RTG display."
@@ -4047,10 +4178,16 @@ class ImagerWindow(Adw.ApplicationWindow):
                 version = ".".join(str(part) for part in package.min_emu68)
                 note += (f"  -  needs Emu68 {version} or newer; choose one on "
                          f"the Emu68 step.")
+            elif not fits and package.needs_pcmcia \
+                    and not self._machine().pcmcia_slot:
+                note += (f"  -  for the PCMCIA slot of an A600 or A1200; the "
+                         f"{self._machine().label} has none.")
             elif not fits and package.unsuited_need(
-                    chipset, display, pi=pi, cpu=cpu, emu68_tag=tag):
+                    chipset, display, pi=pi, cpu=cpu, emu68_tag=tag,
+                    machine=self._machine()):
                 need = package.unsuited_need(chipset, display, pi=pi, cpu=cpu,
-                                             emu68_tag=tag)
+                                             emu68_tag=tag,
+                                             machine=self._machine())
                 note = (f"Needs {need.label}, which is not offered for this "
                         f"setup.  -  " + note)
             elif not fits:
@@ -4706,6 +4843,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             builder.Task.DRIVE_IMAGE: f"Build a card around "
                                       f"{Path(config.hdf_image).name} on",
             builder.Task.NEW_CARD: "Partition and build",
+            builder.Task.PIMIGA: "Build a card from PiMiga on",
             builder.Task.BOOT_CARD: "Write an Emu68 boot card to",
             builder.Task.AMIGA_DRIVE: "Build Amiga drives on",
             builder.Task.REBUILD: f"Rebuild {config.rewrite_drive} on",

@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import (bootcfg, builder, emu68, jobs,  # noqa: E402
-                                 machines, presets)
+                                 machines, packages, presets)
 from pistorm_imager.core.util import GIB, MIB  # noqa: E402
 
 Display = machines.Display
@@ -302,7 +302,7 @@ class TestMachineSetup(unittest.TestCase):
         self.assertIsNone(presets.pimiga_disks(self.folder / "nowhere"))
 
     def test_layout_is_valid_and_has_one_flexible_partition(self):
-        config = self.setup_for("a500")
+        config = self.setup_for("a500", Display.RTG_HDMI)
         self.assertEqual(config.validate(), [])
         flexible = [p for p in config.amiga_partitions if p.size is None]
         self.assertEqual(len(flexible), 1,
@@ -434,8 +434,18 @@ class TestMachineSetup(unittest.TestCase):
             str(self.folder / "c.img"), False, 64 * GIB, self.detected(),
             pimiga_folder=str(self.pimiga), system_source="adf")
         self.assertTrue(from_floppies.package_keys)
-        self.assertFalse(self.setup_for("a1200", Display.RTG_HDMI)
-                         .package_keys)
+        #  Only what it needs to reach a network on a PiStorm.
+        self.assertEqual(
+            self.setup_for("a1200", Display.RTG_HDMI).package_keys,
+            packages.to_get_online(machines.MACHINES_BY_KEY["a1200"],
+                                   Display.RTG_HDMI))
+
+    def test_pimiga_on_a_native_screen_is_refused(self):
+        """Its desktop was laid out for RTG; a native screen cannot show it."""
+        problems = self.setup_for("a500", Display.NATIVE).validate()
+        self.assertTrue(any("RTG display" in p for p in problems), problems)
+        self.assertIs(self.setup_for("a500", Display.RTG_HDMI).task,
+                      builder.Task.PIMIGA)
 
     def test_description_mentions_the_machine_and_display(self):
         config = self.setup_for("a500")
@@ -837,6 +847,39 @@ class TheEmulatorIsToldWhatTheCardWasBuiltFor(unittest.TestCase):
         for machine in machines.MACHINES:
             with self.subTest(machine.key):
                 self.assertTrue(emulate.fsuae_model(machine))
+
+
+class ForThePCMCIASlot(unittest.TestCase):
+    """Software for a card in the slot is offered only where there is one."""
+
+    def test_only_the_a600_and_a1200_have_one(self):
+        self.assertEqual([m.key for m in machines.MACHINES if m.pcmcia_slot],
+                         ["a600", "a1200"])
+
+    def test_pcmcia_software_follows_the_slot(self):
+        for package in [p for p in packages.CATALOGUE if p.needs_pcmcia]:
+            for machine in machines.MACHINES:
+                if machine.chipset is machines.Chipset.NONE:
+                    continue
+                self.assertEqual(
+                    package.suits(machine.chipset, Display.RTG_HDMI,
+                                  machine=machine),
+                    machine.pcmcia_slot, (package.key, machine.key))
+
+    def test_a_cd_drive_comes_with_a_file_system_to_read_it(self):
+        drive = next(p for p in packages.CATALOGUE
+                     if p.needs_pcmcia and p.download.write)
+        mountlist = drive.download.write[0].text
+        self.assertIn("Device         = pcmciacd.device", mountlist)
+        system = mountlist.split("L:")[1].split()[0]
+        self.assertTrue(any(
+            destination == "L" and inside.endswith("/" + system)
+            for key in packages.expand([drive.key])
+            for inside, destination in
+            packages.CATALOGUE_BY_KEY[key].download.items))
+        #  Mounted by hand, not at every boot.
+        self.assertTrue(drive.download.write[0].destination.startswith(
+            "Storage/"))
 
 
 if __name__ == "__main__":

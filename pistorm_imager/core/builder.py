@@ -91,6 +91,7 @@ class Task(enum.Enum):
     """
 
     NEW_CARD = "new-card"           # Emu68 boot partition and Amiga drives
+    PIMIGA = "pimiga"               # a new card built from PiMiga's drives
     SPLIT = "split"                 # a boot card, and the drives elsewhere
     BOOT_CARD = "boot-card"         # Emu68 only: the drives are elsewhere
     AMIGA_DRIVE = "amiga-drive"     # drives only, for the IDE or SCSI port
@@ -102,7 +103,8 @@ class Task(enum.Enum):
 
     @property
     def mode(self) -> BuildMode:
-        return {Task.NEW_CARD: BuildMode.FRESH, Task.SPLIT: BuildMode.FRESH,
+        return {Task.NEW_CARD: BuildMode.FRESH, Task.PIMIGA: BuildMode.FRESH,
+                Task.SPLIT: BuildMode.FRESH,
                 Task.BOOT_CARD: BuildMode.FRESH,
                 Task.AMIGA_DRIVE: BuildMode.FRESH,
                 Task.PREPARED: BuildMode.IMAGE,
@@ -122,8 +124,8 @@ class Task(enum.Enum):
         """
         if self in (Task.PREPARED, Task.UPDATE):
             return None
-        return self in (Task.NEW_CARD, Task.SPLIT, Task.BOOT_CARD,
-                        Task.DRIVE_IMAGE)
+        return self in (Task.NEW_CARD, Task.PIMIGA, Task.SPLIT,
+                        Task.BOOT_CARD, Task.DRIVE_IMAGE)
 
     @property
     def writes_boot_partition(self) -> bool:
@@ -132,8 +134,8 @@ class Task(enum.Enum):
     @property
     def fills_drives(self) -> bool:
         """Whether AmigaOS and software can be put on a drive."""
-        return self in (Task.NEW_CARD, Task.SPLIT, Task.AMIGA_DRIVE,
-                        Task.REBUILD)
+        return self in (Task.NEW_CARD, Task.PIMIGA, Task.SPLIT,
+                        Task.AMIGA_DRIVE, Task.REBUILD)
 
     def shape(self, config: "BuildConfig") -> "BuildConfig":
         """``config`` made the shape this task says, keeping everything else."""
@@ -143,7 +145,9 @@ class Task(enum.Enum):
             drives_target=config.drives_target if self is Task.SPLIT else "",
             boot_only=self is Task.BOOT_CARD,
             amiga_only=self is Task.AMIGA_DRIVE,
-            install_emu68=config.install_emu68 if emu68 is None else emu68)
+            install_emu68=config.install_emu68 if emu68 is None else emu68,
+            system_source=("pimiga" if self is Task.PIMIGA
+                           else config.system_source))
 
 
 @dataclasses.dataclass
@@ -420,7 +424,8 @@ class BuildConfig:
             if not package.content_words:
                 continue
             about = any(word in names for word in package.content_words)
-            if package.needed_for_content and about and package.key not in keys:
+            if package.needed_for_content and about and package.key not in keys \
+                    and not self._system_carries(package):
                 said.append(
                     f"There are games or demos on this card and "
                     f"{package.label} is not installed, so nothing on it can "
@@ -633,6 +638,65 @@ class BuildConfig:
                                 f"PFS3 drive.")
         return problems
 
+    def _system_carries(self, package: "packages.Package") -> bool:
+        """Whether the system drive being copied in has this package already.
+
+        PiMiga brings its own WHDLoad, and a card built from it was told
+        nothing could launch its games.  Read from the drive by the paths
+        the package says prove it is there.
+        """
+        boot = next((spec for spec in self.amiga_partitions if spec.bootable),
+                    None)
+        source = (boot.content_folder or boot.content_hdf) if boot else ""
+        if not source or not package.evidence or not Path(source).exists():
+            return False
+        try:
+            reader, _label = amigaos.open_amiga_volume(
+                source, boot.content_hdf_partition)
+        except Exception:                                    # noqa: BLE001
+            return False
+        try:
+            return any(reader.find(path) is not None
+                       for path in package.evidence)
+        except Exception:                                    # noqa: BLE001
+            return False
+        finally:
+            try:
+                reader.f.close()
+            except OSError:
+                pass
+
+    def pimiga_disks(self) -> Path | None:
+        """PiMiga's drives, when its System is this card's system."""
+        if self.system_source != "pimiga":
+            return None
+        boot = next((spec for spec in self.amiga_partitions if spec.bootable),
+                    None)
+        if boot is None or not boot.content_folder:
+            return None
+        return Path(boot.content_folder).parent
+
+    def _pimiga_problems(self) -> list[str]:
+        """What stops PiMiga's system running on this machine.
+
+        PiMiga's own requirements, read from the configuration that runs it,
+        held against the machine this card is for - whichever way the build
+        came to use PiMiga.
+        """
+        disks = self.pimiga_disks()
+        if disks is None or not (disks / "System").is_dir():
+            return []
+        from . import pimiga                                  # noqa: PLC0415
+        kickstart_version = None
+        if self.kickstart_path and Path(self.kickstart_path).is_file():
+            kickstart_version = kickstart.identify(
+                self.kickstart_path, self.kickstart_key or None).version
+        return pimiga.problems(pimiga.needs_cached(str(disks)),
+                               rtg_display=self.rtg_display,
+                               on_a_pistorm=self.on_a_pistorm(),
+                               cpu=self.cpu(),
+                               kickstart_version=kickstart_version)
+
     def _ide_reach_problems(self) -> list[str]:
         """What stops a drive for the IDE port being read to its end.
 
@@ -760,6 +824,11 @@ class BuildConfig:
                     and task.mode is not BuildMode.EXPORT \
                     and self.install_emu68 != task.emu68:
                 continue
+            #  The same shape as a new card; what makes it the PiMiga card is
+            #  that PiMiga's system is the one it carries.
+            if task in (Task.NEW_CARD, Task.PIMIGA) and \
+                    (task is Task.PIMIGA) != (self.system_source == "pimiga"):
+                continue
             return task
         return None
 
@@ -863,7 +932,8 @@ class BuildConfig:
             package = packages.CATALOGUE_BY_KEY.get(key)
             if package is not None and not package.suits(
                     chipset, display, pi=self.pi(), cpu=self.cpu(),
-                    emu68_tag=self.release_tag or None):
+                    emu68_tag=self.release_tag or None,
+                    machine=self.machine()):
                 out.append(package.label)
         return out
 
@@ -989,6 +1059,7 @@ class BuildConfig:
             if self.install_amigaos and not self.adf_folder:
                 problems.append("No folder of Workbench disk images was given.")
             problems += self._ide_reach_problems()
+            problems += self._pimiga_problems()
         if self.output_hdf:
             if self.mode is not BuildMode.FRESH:
                 problems.append(
@@ -1709,7 +1780,7 @@ def _install_amigaos(config: BuildConfig, handle, amiga: mbr.MbrPartition,
         spec = dataclasses.replace(spec, overlays=software.here(spec.overlays))
     _refuse_other_processors(credit, fixer, progress)
     if extra and config.replace_older_software:
-        fixer.displace(_landing_paths(extra))
+        fixer.displace(_displacing(extra, credit))
     fixer.supersede(config.leave_out or [])
     #  Any record an imported drive brings describes a card that no longer
     #  exists; this build writes its own in its place.
@@ -2215,6 +2286,26 @@ def _landing_paths(pairs: list[tuple[str, str]]) -> dict[str, str | None]:
     return out
 
 
+def _displacing(pairs: list[tuple[str, str]],
+                credit: dict[tuple[str, str], str]) -> dict[str, str | None]:
+    """What the packages put on the drive, for the copy to make room for.
+
+    Each path names the package's copy, so a drive's own newer release of
+    the same file can be kept.  Not for a TCP/IP stack: its commands belong
+    to its own bsdsocket.library, and a same-named command from another stack
+    is not a newer copy of it.  PiMiga's Roadshow AddNetInterface was kept
+    over lwIP's for being version 4 against 1, and talked to the wrong stack.
+    """
+    out: dict[str, str | None] = {}
+    for pair in pairs:
+        package = packages.CATALOGUE_BY_KEY.get(credit.get(pair, ""))
+        stack = package is not None and \
+            package.role == packages.ROLE_TCP_IP_STACK
+        for landing, source in _landing_paths([pair]).items():
+            out[landing] = None if stack else source
+    return out
+
+
 def _boot_drive_is_filled(config: "BuildConfig") -> bool:
     """Whether the drive the machine boots from is filled from elsewhere."""
     return any(spec.bootable and (spec.content_hdf or spec.content_folder)
@@ -2415,7 +2506,8 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     by_package = packages.overlays_by_package(
         config.package_keys, chipset=chipset, display=display,
         progress=progress, pi=config.pi(), cpu=config.cpu(),
-        emu68_tag=config.release_tag, kernel=config.driver_flavour())
+        emu68_tag=config.release_tag, kernel=config.driver_flavour(),
+        machine=config.machine())
     resolved = [pair for _key, pairs in by_package for pair in pairs]
 
     def credited(pairs: list[tuple[str, str]],
@@ -3205,7 +3297,7 @@ def _install_content(config: BuildConfig, handle, amiga: mbr.MbrPartition,
                                                  progress)
         _refuse_other_processors(credit, fixer, progress)
         if extra and config.replace_older_software:
-            fixer.displace(_landing_paths(extra))
+            fixer.displace(_displacing(extra, credit))
         if spec.bootable:
             fixer.supersede(config.leave_out or [])
         if spec.bootable:

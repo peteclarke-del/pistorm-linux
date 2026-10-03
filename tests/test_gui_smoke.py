@@ -30,7 +30,7 @@ from pistorm_imager.core import (bootcfg, builder, emu68, jobs,  # noqa: E402
                                  machines,
                                  packages as packages_mod)
 from pistorm_imager.ui.window import (FRESH_SOURCES,  # noqa: E402
-                                      MODES)
+                                      MODES, select_matching)
 
 import tempfile  # noqa: E402
 
@@ -1502,7 +1502,7 @@ def on_activate(app: ImagerApplication) -> None:
         check(after != before and "Found" in after,
               f"PiMiga content is described without a target chosen ({after!r})")
         window.quick_pimiga.set_path("")
-        check("No folder selected" in window.quick_pimiga_info.get_subtitle(),
+        check("Nothing chosen" in window.quick_pimiga_info.get_subtitle(),
               "clearing the PiMiga folder resets the description")
         #  Put the target back: later checks gather a full configuration.
         window.target_row.set_selected(1)
@@ -2308,6 +2308,32 @@ def on_activate(app: ImagerApplication) -> None:
               "a setup with no card chosen yet is still remembered")
         window._start_task(builder.Task.NEW_CARD)
         window._apply_saved(saved, state)
+
+        #  The PiMiga card: its tile is first on the second row, and taking
+        #  it up fixes what the card is built around and the screen PiMiga
+        #  was laid out for.
+        tiles = list(window.task_tiles)
+        check(tiles.index(builder.Task.PIMIGA) == 3,
+              f"the PiMiga card is first on the second row "
+              f"({tiles.index(builder.Task.PIMIGA)})")
+        select_matching(window.quick_display, machines.Display,
+                        lambda display: display is machines.Display.NATIVE)
+        window._start_task(builder.Task.PIMIGA)
+        pump()
+        check(window._primary() == "pimiga"
+              and not window.quick_primary.get_sensitive(),
+              "the PiMiga card is built around PiMiga, and that is fixed")
+        check(window._display().uses_rtg,
+              f"and on an RTG screen ({window._display().name})")
+        check(builder.Task.PIMIGA in window.task_tiles
+              and window.quick_pimiga._filters,
+              "PiMiga can be chosen as its image as well as a folder")
+        window._start_task(builder.Task.NEW_CARD)
+        pump()
+        check(window.quick_primary.get_sensitive()
+              and window._primary() == "default",
+              "and on a new card the choice is the user's again, starting "
+              "from a drive of its own rather than the PiMiga tile's")
 
         #  WHDLoad's Kickstarts are asked for under the software, and only
         #  while WHDLoad is ticked.

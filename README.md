@@ -39,6 +39,7 @@ build adds up to, what is still needed, and Write once nothing is.
 | **A new PiStorm card** | Machine, System, Drives, Software, Emu68, Target, Review | An MBR with a FAT32 boot partition (Emu68, the Raspberry Pi firmware, your Kickstart) and a `0x76` Amiga partition carrying a Rigid Disk Block, with AmigaOS installed from Workbench floppy images or an [AmigaOS 3.2, 3.5 or 3.9 CD](#amigaos-32-35-and-39), and the software you choose. |
 | **A PiStorm with its drives elsewhere** | the same | [Two things written by one build](#a-pistorm-with-its-drives-elsewhere): the Pi's boot card with Emu68, and the Amiga drives - Workbench and your software - on a CF card or disk for the IDE port, or an image of one. |
 | **A PiStorm boot card only** | Machine, Emu68, Target, Review | Emu68 and its settings and nothing else, for drives that already exist elsewhere. |
+| **A PiStorm card from PiMiga** | Machine, System, Drives, Software, Emu68, Target, Review | [PiMiga's System, Games, Demos and Work drives on a real Amiga](#a-pistorm-card-from-pimiga), taken from its `.img` or the folder it is mounted on. What only works in an emulator is left behind, the emulator's graphics driver is swapped for Emu68's, and PiMiga's own requirements - an RTG screen, a 68040 with an FPU, Kickstart 3.1 or 3.2 - are checked before anything is written. |
 | **A drive for the Amiga's IDE or SCSI port** | Machine, System, Drives, Software, Target, Review | Amiga drives with no boot partition: the Rigid Disk Block at block 0, where the controller looks for it. |
 | **Write an image to a card** | Machine, System, Drives, Emu68, Target, Review | One chooser for any image; the file says which it is. **A whole card** - PiMiga, an Emu68 Hatcher image, a backup of your own card - is streamed onto the target as it is, then your Emu68 build and settings are re-applied, optionally turning leftover space into a new Amiga partition. **An Amiga drive** - a WinUAE/FS-UAE/HstWB `.hdf`, the drive on its own - gets the boot partition built around it; one with no Rigid Disk Block gets one generated, and every imported drive is checked for PiStorm compatibility and repaired. The start of the file decides, compressed or not, because both kinds are often called `.img`. |
 | **Rebuild one drive** | Target, Machine, System, Software, Review | Formats one Amiga drive on a card or image you already have and fills it again, leaving the partition table, the boot partition and every other drive [exactly as they were](#rebuilding-one-drive). |
@@ -685,6 +686,7 @@ pistorm_imager/
     imgsrc.py    streaming readers for .img/.xz/.gz/.zip/.7z sources
     hdfcheck.py  PiStorm compatibility analysis and RDB repair
     pfs3.py      PFS3: reads real volumes, creates and fills new ones
+    pimiga.py    PiMiga as a source: its image or folder, and what it needs
     compat.py    automatic emulator-to-PiStorm fixes (RTG driver, startup)
     amigainfo.py Workbench .info icons, enough to retarget tool types
                  and to place an icon and its drawer's window
@@ -731,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1029 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1045 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -2082,7 +2084,7 @@ agree with perfectly:
 
 A Workbench installed from the original floppies is exactly what shipped in
 1994: no archiver, no installer, and no idea what WHDLoad is. The pieces most
-people add next are offered as a catalogue of 100 packages, grouped as Games,
+people add next are offered as a catalogue of 104 packages, grouped as Games,
 Files and archives, Internet, Workbench look, Pictures music and video, Speed
 and patches, Tools, Emu68 and the Pi, and the libraries the rest depend on.
 They are chosen [a group at a time](#choosing-the-software), with a search
@@ -3934,6 +3936,38 @@ there, and stages the rest in `Storage/Install/Roadshow`. Two details matter:
   to hang off Roadshow, which meant a card with a network device and a
   different stack got no interface file at all.
 
+## The PCMCIA slot
+
+An A600 and an A1200 have a PCMCIA slot on the side, which takes memory
+cards, CompactFlash adapters, network cards - and CD-ROM drives. The machine
+profiles say which models have one (`pcmcia_slot`), and a package that is only
+for a card in it says so (`needs_pcmcia`): it is offered on those two machines
+and not on an A500 or A2000, and on those the Software step says why.
+
+- **PCMCIA CD-ROM drive** - Aidan Holmes' PcmciaCD 1.9 (Aminet
+  `driver/media/PcmciaCD.lha`), for Sony's PCGA-CD51 and its relatives, which
+  plug straight in and need no power of their own. `pcmciacd.device` goes into
+  `Devs`, and a mountlist into `Storage/DOSDrivers` as **PCD0** - PCD0 rather
+  than CD0, which AmigaOS 3.2 already has for the IDE port. Double click it to
+  mount the drive, or move it into `Devs/DOSDrivers` to have it mounted at
+  every boot; nothing touches the slot at boot unasked. It reads CDs with
+  **AmiCDFS** 2.40, which comes with it: its author names it for Workbench
+  3.1, whose own CDFileSystem is too old, and for 3.2.3, whose CDFileSystem
+  hangs with this driver.
+- **CardPatch** 1.2 (Aminet `util/boot/CardPatch.lha`) - fixes the PCMCIA
+  system's own bugs: a card in the slot that nothing is using slows the
+  machine down, and a card is not reset when it is plugged in. Started from
+  `S:User-Startup`. Proved in FS-UAE on an emulated A1200 with Workbench 3.1:
+  it starts and the machine boots to Workbench as before.
+- **CardReset** 3.0 (Aminet `util/boot/CardReset.lha`) - resets a card that
+  has stopped answering. Installed in `C:` but not run at boot: it returns an
+  error when another driver owns the card, and in `S:User-Startup` that would
+  stop every line after it.
+
+All three come from Aminet, like everything else in the catalogue. The same
+three, with AmiCDFS, are on the `Amiga_PCMCIA_Driver.adf` that circulates;
+that disk is not used.
+
 ## USB on the Amiga
 
 A PiStorm card can give the Amiga real USB: keyboards, mice, memory sticks,
@@ -4309,6 +4343,102 @@ directions for good.
 Every step in both scripts is guarded with `IF EXISTS`. In an AmigaDOS script a
 command that fails - deleting a file that is not there, making a drawer that
 already exists - stops the whole script at the default `FAILAT` of 10.
+
+## A PiStorm card from PiMiga
+
+PiMiga is a Raspberry Pi image running Amiberry, an Amiga emulator, over four
+drives kept as Linux folders: System, Demos, Games and Work. **A PiStorm card
+from PiMiga** (first on the second row of the first screen) takes those
+drives - and nothing of the Linux around them - and makes a real PiStorm card
+of them.
+
+**Where it comes from.** PiMiga's `.img` itself, or the folder it is mounted
+on. The image is attached read-only through udisks, which needs no root, and
+its Linux partition mounted read-only; an image already mounted, as a desktop
+mounts one that is double clicked, is used where it is. A PiMiga that was not
+shut down cleanly has a journal to replay, which a read-only mount cannot do,
+and the System step says so: mount it once with the file manager and choose
+the folder instead.
+
+**What it needs is read from PiMiga.** The Amiberry configuration that mounts
+PiMiga's System drive - `Pimiga5.uae` - says what it was set up for, and the
+build holds the machine to it, whichever way it came to use PiMiga:
+
+| PiMiga asks for | What the build checks |
+| --- | --- |
+| A 68040 with its FPU | the processor that will run the card - Emu68 on a PiStorm |
+| A Zorro III RTG card | an RTG display, and a PiStorm to provide it through Emu68 |
+| Kickstart 3.1 or 3.2 | PiMiga ships no ROM, only a placeholder asking for "your 1200 3.1 kickstart"; its AmigaOS 3.9-era System runs on 3.1, and on 3.2 once its boot script's `LoadModule` cannot stop the boot (below) |
+
+It does not need AGA. With RTG the desktop is drawn on the Pi's HDMI rather
+than by the chipset, so an A500 or A600 is as good as an A1200 for it; the AGA
+games and demos are left out on a machine without AGA, as the content filter
+always does. PiMiga is set up for 8 MB of chip RAM and an A1200 has 2; booted
+in FS-UAE on 2 MB, its desktop came up with 1,972,744 bytes of chip RAM still
+free, so that does not matter either.
+
+**Only what is needed.** The System drive is copied whole and adapted:
+
+- UAE's RTG driver (`uaegfx.card`) is replaced by Emu68's `VideoCore.card`,
+  and the monitor retargeted to it;
+- emulator-only commands in its boot scripts are commented out;
+- a `LoadModule` in a boot script is wrapped in `FailAt 21` / `FailAt 10`.
+  PiMiga's Startup-Sequence opens with
+  `C:LoadModule LIBS:workbench.library LIBS:icon.library`; on a 3.2 ROM, whose
+  own workbench.library is newer, that fails with "already resident" (return
+  code 10), and a failed command ends the boot at a Shell prompt. Guarded, it
+  boots to PiMiga's desktop on 3.2 as it does on 3.1 (FS-UAE, A1200, 68040,
+  RTG). The command is recognised as the catalogue's module loader, not by a
+  name written into the check;
+- programs built for PowerPC, AROS or MorphOS are left out;
+- UAE's own bookkeeping files, `_UAEFSDB.___`, are never copied: they record
+  what a Linux folder cannot, and are not Amiga files at all.
+
+The Software step then offers what is left that a real Amiga is better off
+without, found the way it is on any drive - by what it does, not what it is
+called. On PiMiga that is the `Host Run fun` drawer and the Chrome and Firefox
+launchers, every one of which runs Amiberry's `host-run` to start a program on
+the Linux host; `Utilities/UAE`; an installer that replaces the boot script;
+empty drawers; and assigns to things that are not there. PiMiga's emulators
+of other computers - AmiCPC, AmiGameBoy, fMSX - are real Amiga programs, and
+stay.
+
+Not only whole drawers. Inside one AmigaOS owns, where the drawer itself is
+never offered, single files are:
+
+- **an emulator's control program**, by the name scripts call it by -
+  `C:uae-configuration`, `C:uaectrl`, `C:uae-control`, `C:host-run`,
+  `C:winuaeenforcer` (`compat.EMULATOR_COMMANDS`);
+- **a script whose every command is an emulator's** - PiMiga's `Tools/Power`
+  is the one line `host-run sudo shutdown -h now`, and
+  `Graphics/DPaintIV/copy_of_DPaintJS` opens a Linux desktop file. A script
+  that also does real work stays;
+- **a sound mode with no driver**: each file in `DEVS:AudioModes` names its
+  AHI driver, and PiMiga lists UAE's modes (and AHI's file-saving ones)
+  without `uae.audio` or `filesave.audio`, so choosing one in AHI Prefs leaves
+  the machine silent;
+- **a spare monitor for the emulator's graphics card**, kept in
+  `Storage/Monitors` - an icon whose `BOARDTYPE` is `uaegfx`.
+
+All of these are ticked by default. What is left out is also taken off
+PiMiga's dock: DockBot's settings in `ENVARC:` hold a block per button, and
+the compatibility pass drops the ones whose `path=` is no longer on the card -
+Firefox and Chromium on PiMiga.
+
+**Getting online.** PiMiga's TCP/IP stack was set up for the emulator's
+network. The card is given a stack that can be fetched and the Pi's own
+network interfaces (`packages.to_get_online`): lwIP and the WiFi driver, and
+the Ethernet driver on a Pi 4. A stack's commands belong to its own
+`bsdsocket.library`, so they replace the same-named ones the drive brings
+whatever their version - PiMiga's `AddNetInterface` is Roadshow's, version 4,
+and was kept over lwIP's version 1 until that was understood.
+
+**Drive sizes come from what is on them.** Each drive is given what is copied
+onto it and a quarter again: PFS3 rounds every small file up to a whole
+block, and a games drive is one people add to. What is left over is shared
+out as before, and Work takes the rest. A card too small for PiMiga is refused
+before anything is written; on a 64 GB card the four come out at about 11, 9.6
+and 32.5 GB with Work taking the remainder.
 
 ## Bringing an emulator installation to real hardware
 
