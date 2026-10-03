@@ -279,6 +279,9 @@ class Machine:
     #  on it is read by that driver, which is what decides how far into the
     #  drive the Amiga can reach.
     ide_port: bool = False
+    #  A PCMCIA slot on the board, run by Gayle's card.resource: memory
+    #  cards, CF adapters, network cards and CD-ROM drives plug in here.
+    pcmcia_slot: bool = False
 
     @property
     def aga(self) -> bool:
@@ -356,6 +359,7 @@ MACHINES: list[Machine] = [
     Machine("a600", "Amiga 600", Chipset.ECS, "pistorm32lite", "PiStorm16",
             ((40, 68), (40, 63)), pi_models=(Pi.CM4,),
             chip_ram_options=(1024, 2048), amiga_model="A600", ide_port=True,
+            pcmcia_slot=True,
             notes="PiStorm16 is the board for the A600 and uses a Compute "
                   "Module 4. It shares Emu68's build with the PiStorm32-lite."),
     Machine("a1000", "Amiga 1000", Chipset.OCS, "pistorm", "PiStorm (classic)",
@@ -370,6 +374,7 @@ MACHINES: list[Machine] = [
             "PiStorm32-lite", ((40, 68), (47, 111), (47, 96)),
             stock_cpu=Cpu.M68020, pi_models=(Pi.PI3, Pi.PI4, Pi.CM4),
             chip_ram_options=(2048,), amiga_model="A1200", ide_port=True,
+            pcmcia_slot=True,
             notes="AGA, and the only model here that can show 256-colour "
                   "native screen modes. The only one that shipped with a "
                   "68020, so the only one that could run AmigaOS 3.5 or 3.9 "

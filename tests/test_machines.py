@@ -849,6 +849,39 @@ class TheEmulatorIsToldWhatTheCardWasBuiltFor(unittest.TestCase):
                 self.assertTrue(emulate.fsuae_model(machine))
 
 
+class ForThePCMCIASlot(unittest.TestCase):
+    """Software for a card in the slot is offered only where there is one."""
+
+    def test_only_the_a600_and_a1200_have_one(self):
+        self.assertEqual([m.key for m in machines.MACHINES if m.pcmcia_slot],
+                         ["a600", "a1200"])
+
+    def test_pcmcia_software_follows_the_slot(self):
+        for package in [p for p in packages.CATALOGUE if p.needs_pcmcia]:
+            for machine in machines.MACHINES:
+                if machine.chipset is machines.Chipset.NONE:
+                    continue
+                self.assertEqual(
+                    package.suits(machine.chipset, Display.RTG_HDMI,
+                                  machine=machine),
+                    machine.pcmcia_slot, (package.key, machine.key))
+
+    def test_a_cd_drive_comes_with_a_file_system_to_read_it(self):
+        drive = next(p for p in packages.CATALOGUE
+                     if p.needs_pcmcia and p.download.write)
+        mountlist = drive.download.write[0].text
+        self.assertIn("Device         = pcmciacd.device", mountlist)
+        system = mountlist.split("L:")[1].split()[0]
+        self.assertTrue(any(
+            destination == "L" and inside.endswith("/" + system)
+            for key in packages.expand([drive.key])
+            for inside, destination in
+            packages.CATALOGUE_BY_KEY[key].download.items))
+        #  Mounted by hand, not at every boot.
+        self.assertTrue(drive.download.write[0].destination.startswith(
+            "Storage/"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

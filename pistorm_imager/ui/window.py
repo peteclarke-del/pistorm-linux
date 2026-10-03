@@ -4157,7 +4157,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
             fits = package.suits(chipset, display, pi=pi, cpu=cpu,
-                                 emu68_tag=tag)
+                                 emu68_tag=tag, machine=self._machine())
             note = package.description
             if not fits and package.rtg_only:
                 note += "  -  only useful with an RTG display."
@@ -4178,10 +4178,16 @@ class ImagerWindow(Adw.ApplicationWindow):
                 version = ".".join(str(part) for part in package.min_emu68)
                 note += (f"  -  needs Emu68 {version} or newer; choose one on "
                          f"the Emu68 step.")
+            elif not fits and package.needs_pcmcia \
+                    and not self._machine().pcmcia_slot:
+                note += (f"  -  for the PCMCIA slot of an A600 or A1200; the "
+                         f"{self._machine().label} has none.")
             elif not fits and package.unsuited_need(
-                    chipset, display, pi=pi, cpu=cpu, emu68_tag=tag):
+                    chipset, display, pi=pi, cpu=cpu, emu68_tag=tag,
+                    machine=self._machine()):
                 need = package.unsuited_need(chipset, display, pi=pi, cpu=cpu,
-                                             emu68_tag=tag)
+                                             emu68_tag=tag,
+                                             machine=self._machine())
                 note = (f"Needs {need.label}, which is not offered for this "
                         f"setup.  -  " + note)
             elif not fits:

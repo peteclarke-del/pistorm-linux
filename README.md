@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1042 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1045 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -2084,7 +2084,7 @@ agree with perfectly:
 
 A Workbench installed from the original floppies is exactly what shipped in
 1994: no archiver, no installer, and no idea what WHDLoad is. The pieces most
-people add next are offered as a catalogue of 100 packages, grouped as Games,
+people add next are offered as a catalogue of 104 packages, grouped as Games,
 Files and archives, Internet, Workbench look, Pictures music and video, Speed
 and patches, Tools, Emu68 and the Pi, and the libraries the rest depend on.
 They are chosen [a group at a time](#choosing-the-software), with a search
@@ -3935,6 +3935,38 @@ there, and stages the rest in `Storage/Install/Roadshow`. Two details matter:
   and a machine with two network cards needs a file for each of them. It used
   to hang off Roadshow, which meant a card with a network device and a
   different stack got no interface file at all.
+
+## The PCMCIA slot
+
+An A600 and an A1200 have a PCMCIA slot on the side, which takes memory
+cards, CompactFlash adapters, network cards - and CD-ROM drives. The machine
+profiles say which models have one (`pcmcia_slot`), and a package that is only
+for a card in it says so (`needs_pcmcia`): it is offered on those two machines
+and not on an A500 or A2000, and on those the Software step says why.
+
+- **PCMCIA CD-ROM drive** - Aidan Holmes' PcmciaCD 1.9 (Aminet
+  `driver/media/PcmciaCD.lha`), for Sony's PCGA-CD51 and its relatives, which
+  plug straight in and need no power of their own. `pcmciacd.device` goes into
+  `Devs`, and a mountlist into `Storage/DOSDrivers` as **PCD0** - PCD0 rather
+  than CD0, which AmigaOS 3.2 already has for the IDE port. Double click it to
+  mount the drive, or move it into `Devs/DOSDrivers` to have it mounted at
+  every boot; nothing touches the slot at boot unasked. It reads CDs with
+  **AmiCDFS** 2.40, which comes with it: its author names it for Workbench
+  3.1, whose own CDFileSystem is too old, and for 3.2.3, whose CDFileSystem
+  hangs with this driver.
+- **CardPatch** 1.2 (Aminet `util/boot/CardPatch.lha`) - fixes the PCMCIA
+  system's own bugs: a card in the slot that nothing is using slows the
+  machine down, and a card is not reset when it is plugged in. Started from
+  `S:User-Startup`. Proved in FS-UAE on an emulated A1200 with Workbench 3.1:
+  it starts and the machine boots to Workbench as before.
+- **CardReset** 3.0 (Aminet `util/boot/CardReset.lha`) - resets a card that
+  has stopped answering. Installed in `C:` but not run at boot: it returns an
+  error when another driver owns the card, and in `S:User-Startup` that would
+  stop every line after it.
+
+All three come from Aminet, like everything else in the catalogue. The same
+three, with AmiCDFS, are on the `Amiga_PCMCIA_Driver.adf` that circulates;
+that disk is not used.
 
 ## USB on the Amiga
 
