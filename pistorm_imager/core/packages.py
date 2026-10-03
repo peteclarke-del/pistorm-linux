@@ -107,6 +107,14 @@ SYSTEM_DRAWERS = ("C", "L", "S", "Libs", "Devs", "Prefs", "Locale", "Rexxc",
                   "Utilities", "Expansion")
 
 
+#  The job of a TCP/IP stack: the bsdsocket.library every network program
+#  opens.  Two packages do it, and a card wants one of them.
+ROLE_TCP_IP_STACK = "TCP/IP stack"
+
+#  Where a network interface's description goes - one file per device a
+#  stack is to bring up.  A package that writes one is a network interface.
+NET_INTERFACES = "Devs/NetInterfaces"
+
 #  Where AmigaOS finds things for itself: through the assigns it makes as it
 #  starts (C:, L:, S:, LIBS:, DEVS:, FONTS:, LOCALE:, ENVARC: under Prefs and
 #  the Classes LIBS: is extended with) or because Workbench looks there by
@@ -1638,7 +1646,7 @@ CATALOGUE: list[Package] = [
         #  Two TCP/IP stacks on one card is not a preference: the second one
         #  replaces the first one's bsdsocket.library and eight of its
         #  commands, and there is no undo.
-        role="TCP/IP stack",
+        role=ROLE_TCP_IP_STACK,
         #  The lines Roadshow's installer would have added to User-Startup.
         startup=("IF EXISTS S:Network-Startup",
                  "   Execute S:Network-Startup",
@@ -2881,7 +2889,7 @@ CATALOGUE: list[Package] = [
         startup=("IF EXISTS S:Network-Startup",
                  "   Execute S:Network-Startup",
                  "EndIF"),
-        role="TCP/IP stack",
+        role=ROLE_TCP_IP_STACK,
         note="Installing it replaces bsdsocket.library and the Roadshow "
              "commands of the same name in C:, and there is no undo - going "
              "back means reinstalling the other stack. It drives Ethernet "
@@ -3995,6 +4003,31 @@ def overlays_by_package(keys: list[str],
         if len(out) > before:
             by_package.append((key, out[before:]))
     return by_package
+
+
+def to_get_online(machine: Machine, display: Display, *,
+                  pi: Pi | None = None, cpu: Cpu | None = None,
+                  emu68_tag: str | None = None) -> list[str]:
+    """What a ready-made system needs added to reach a network on a PiStorm.
+
+    A TCP/IP stack that can be fetched - the recommended one, or another
+    doing the same job where that one is a manual download - and the Pi's
+    own network interfaces.  Everything else a system brings for itself:
+    PiMiga has its browsers, and its own stack was set up for an emulator.
+    """
+    def fits(package: Package) -> bool:
+        return package.suits(machine.chipset, display, pi=pi, cpu=cpu,
+                             emu68_tag=emu68_tag)
+
+    stacks = sorted((p for p in CATALOGUE
+                     if p.role == ROLE_TCP_IP_STACK and fits(p)
+                     and p.download is not None and not p.download.manual),
+                    key=lambda p: not p.default)
+    interfaces = [p for p in CATALOGUE
+                  if p.download is not None and fits(p)
+                  and any(item.destination.startswith(NET_INTERFACES)
+                          for item in p.download.write)]
+    return [p.key for p in stacks[:1] + interfaces]
 
 
 def suggested(machine: Machine, display: Display, *,
