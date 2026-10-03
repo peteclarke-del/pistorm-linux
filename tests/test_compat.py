@@ -196,6 +196,28 @@ class TestStartupCleaning(unittest.TestCase):
         out = self.fixer().offer("S/Startup-Sequence", script).decode()
         self.assertEqual(out.count("FailAt 21"), 1)
 
+    def test_a_dock_loses_the_buttons_for_what_is_left_out(self):
+        """PiMiga's DockBot opens with Firefox, which only runs on Linux."""
+        dock = (b"begin\n  position=bottom\n"
+                b"  begin\n    gadget=DockButton\n"
+                b"    path=System:Internet/Firefox/firefox\n  end\n"
+                b"  begin\n    gadget=DockButton\n"
+                b"    path=System:Internet/IBrowse/IBrowse\n  end\n"
+                b"end\n")
+        fixer = self.fixer()
+        fixer.supersede(["Internet/Firefox"])
+        out = fixer.offer("Prefs/Env-Archive/DockBot.prefs", dock).decode()
+        self.assertNotIn("Firefox", out)
+        self.assertIn("IBrowse", out)
+        self.assertEqual(out.count("begin"), out.count("end"))
+        self.assertEqual(out.count("begin"), 2)
+
+    def test_a_dock_with_nothing_left_out_is_unchanged(self):
+        dock = (b"begin\n  begin\n    gadget=DockButton\n"
+                b"    path=SYS:Tools/Clock\n  end\nend\n")
+        self.assertEqual(self.fixer().offer(
+            "Prefs/Env-Archive/DockBot.prefs", dock), dock)
+
     def test_disabled_fixer_changes_nothing(self):
         fixer = compat.Compatibility(QUIET, enabled=False)
         script = b"uae-configuration cachesize 1\n"

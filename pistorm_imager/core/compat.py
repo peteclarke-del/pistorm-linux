@@ -49,12 +49,20 @@ def _module_loaders() -> set[str]:
 EMULATOR_COMMANDS = [
     "uae-configuration", "uaequit", "uaectrl", "uae-control",
     "amiberry_", "uaehf", "uaescsi",
+    #  WinUAE's Enforcer, which reads the emulator's memory map rather than
+    #  an MMU's.
+    "winuaeenforcer",
     #  Amiberry's way of starting a program on the Linux host - Chrome, VLC -
     #  from the Amiga side. PiMiga's "Host Run fun" drawer is nothing else.
     "host-run",
 ]
 
 STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
+
+#  A dock's settings, as DockBot keeps them in ENVARC: a block per button
+#  naming the program it starts.
+DOCK_BUTTON = re.compile(rb"(?im)^\s*gadget\s*=\s*dockbutton\s*$")
+DOCK_PATH = re.compile(r"(?im)^\s*path\s*=\s*(.+?)\s*$")
 
 #  Workbench keeps the icons it lifts out onto the desktop in this file, one
 #  path per line, each written from the volume root with a leading colon. An
@@ -679,6 +687,8 @@ class Compatibility:
             return self._clean_startup(posix, data)
         if posix.lower() == BACKDROP:
             return self._clean_backdrop(posix, data)
+        if parts[:-1] == ["prefs", "env-archive"] and DOCK_BUTTON.search(data):
+            return self._clean_dock(posix, data)
         if parts[-1].startswith("def_") and parts[-1].endswith(".info"):
             return self._point_at_a_real_tool(posix, data)
         if len(parts) >= 2 and parts[-2] == "wbstartup" \
@@ -950,6 +960,49 @@ class Compatibility:
                                 f"Workbench desktop - "
                                 + "; ".join(dropped))
         return ("\n".join(out) + "\n").encode("latin-1") if out else b""
+
+    def _clean_dock(self, relative: str, data: bytes) -> bytes:
+        """Take a dock's buttons off for programs this build leaves out.
+
+        DockBot keeps its buttons as ``begin`` ... ``end`` blocks, each with
+        the ``path=`` it starts. PiMiga's dock opens with Firefox and
+        Chromium, which start programs on the emulator's Linux host; with
+        those left off the card, the buttons would start nothing.
+        """
+        lines = data.decode("latin-1").splitlines(keepends=True)
+        out: list[str] = []
+        dropped: list[str] = []
+        block: list[str] = []
+        depth = 0
+        for line in lines:
+            word = line.strip().lower()
+            if word == "begin":
+                depth += 1
+            if depth >= 2:
+                block.append(line)
+                if word == "end":
+                    depth -= 1
+                    found = DOCK_PATH.search("".join(block))
+                    named = found.group(1).split(":", 1)[-1].strip("/") \
+                        if found else ""
+                    low = named.lower()
+                    if named and any(low == drawer
+                                     or low.startswith(drawer + "/")
+                                     for drawer in self._supersede):
+                        dropped.append(named)
+                    else:
+                        out += block
+                    block = []
+                continue
+            if word == "end":
+                depth -= 1
+            out.append(line)
+        if dropped:
+            self.note("edited", f"{relative}: took {len(dropped)} button"
+                                f"{'s' if len(dropped) != 1 else ''} off the "
+                                f"dock for what this card leaves out - "
+                                + "; ".join(dropped))
+        return "".join(out).encode("latin-1")
 
     def _clean_startup(self, relative: str, data: bytes) -> bytes:
         text = data.decode("latin-1")
