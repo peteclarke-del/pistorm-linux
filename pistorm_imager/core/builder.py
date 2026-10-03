@@ -943,11 +943,16 @@ class BuildConfig:
         """Chosen packages that are a poor choice here, and why, by label."""
         chipset, display = self.package_screen()
         out: dict[str, list[str]] = {}
-        for key in packages.expand(self.package_keys or []):
+        chosen = packages.expand(self.package_keys or [])
+        for key in chosen:
             package = packages.CATALOGUE_BY_KEY.get(key)
             if package is None:
                 continue
+            #  A clash is said once, on the second of the two: the first in
+            #  the catalogue's order is the one it is said against.
+            earlier = chosen[:chosen.index(key)]
             said = package.advice(chipset, display, release=self.os_release(),
+                                  chosen=earlier,
                                   pi=self.pi(), cpu=self.cpu(),
                                   emu68_tag=self.release_tag or None,
                                   machine=self.machine())

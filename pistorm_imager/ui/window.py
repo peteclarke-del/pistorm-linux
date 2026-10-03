@@ -4172,13 +4172,21 @@ class ImagerWindow(Adw.ApplicationWindow):
                                          self._accelerator_cpu())
         tag = self._release_tag()
         release = self._os_release()
+        ticked = [p.key for p in packages.CATALOGUE
+                  if p.key in self.package_rows
+                  and self.package_rows[p.key].get_active()]
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
             fits = package.suits(chipset, display, pi=pi, cpu=cpu,
                                  emu68_tag=tag, machine=self._machine())
+            #  A ticked package is held against what is ticked before it,
+            #  so a clash between two is said once, on the second; one not
+            #  ticked is held against everything that is.
+            beside = (ticked[:ticked.index(key)] if key in ticked
+                      else ticked)
             said = package.advice(chipset, display, release=release, pi=pi,
                                   cpu=cpu, emu68_tag=tag,
-                                  machine=self._machine())
+                                  machine=self._machine(), chosen=beside)
             note = package.description
             if said:
                 #  First, where it is read: the reason is the news, and the
@@ -4476,11 +4484,15 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._refresh_older_copies()
         if row is not None and row.get_active():
             #  What came with it is asked about too: ticking a game that
-            #  needs ScummVM ticks ScummVM.
-            self._ask_about_advice([k for k in packages.expand([key])
+            #  needs ScummVM ticks ScummVM. Held against everything ticked
+            #  before it, so a clash with software already chosen is asked
+            #  about here, on the tick that made it.
+            came = packages.expand([key])
+            self._ask_about_advice([k for k in came
                                     if k in self.package_rows
-                                    and self.package_rows[k].get_active()])
-            self._ask_about_rivals(key)
+                                    and self.package_rows[k].get_active()],
+                                   beside=[k for k in self._chosen_packages()
+                                           if k not in came])
 
     def _os_release(self) -> tuple[int, ...] | None:
         """The AmigaOS release this card installs, as the build reads it."""
@@ -4492,18 +4504,26 @@ class ImagerWindow(Adw.ApplicationWindow):
                 amigaos.normalise_version(self._selected_adf_version()))
         return None
 
-    def _package_advice(self, key: str) -> list[str]:
+    def _package_advice(self, key: str,
+                        beside: Iterable[str] | None = None) -> list[str]:
+        """Why ``key`` is a poor choice here - beside everything else ticked,
+        unless told what to hold it against."""
         package = packages.CATALOGUE_BY_KEY.get(key)
         if package is None:
             return []
+        if beside is None:
+            beside = [k for k, row in self.package_rows.items()
+                      if k != key and row.get_active()]
         return package.advice(
             self._machine().chipset, self._display(),
             release=self._os_release(), pi=self._pi(),
             cpu=self._machine().cpu_fitted(self._accelerator(),
                                            self._accelerator_cpu()),
-            emu68_tag=self._release_tag(), machine=self._machine())
+            emu68_tag=self._release_tag(), machine=self._machine(),
+            chosen=beside)
 
-    def _ask_about_advice(self, keys: list[str]) -> None:
+    def _ask_about_advice(self, keys: list[str],
+                          beside: Iterable[str] | None = None) -> None:
         """Say why a ticked package is a poor choice, and let them decide.
 
         Always asked, never decided: a package that does not suit this card
@@ -4513,7 +4533,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         Software page in front of somebody - a tick restored from a saved
         setup waits for the page.
         """
-        wanted = {key: self._package_advice(key) for key in keys
+        wanted = {key: self._package_advice(key, beside) for key in keys
                   if key not in self._against_advice}
         wanted = {key: said for key, said in wanted.items() if said}
         self._advice_pending |= set(wanted)
@@ -4591,15 +4611,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         if self._advice_pending:
             self._ask_about_advice(sorted(self._advice_pending))
 
-    def _rivals(self, key: str) -> list[str]:
-        """Anything switched on that does the same job as ``key``."""
-        package = packages.CATALOGUE_BY_KEY.get(key)
-        if package is None or not package.role:
-            return []
-        return [other for other, row in self.package_rows.items()
-                if other != key and row.get_active()
-                and packages.CATALOGUE_BY_KEY[other].role == package.role]
-
     def _asking_is_welcome(self) -> bool:
         """Whether a question about the software would make any sense now.
 
@@ -4612,48 +4623,6 @@ class ImagerWindow(Adw.ApplicationWindow):
         if getattr(self, "_settling_packages", False):
             return False
         return self.stack.get_visible_child_name() == "packages"
-
-    def _ask_about_rivals(self, key: str) -> None:
-        """Two packages doing one job is rarely what anybody means.
-
-        Asked rather than decided: they patch the same part of the system and
-        the answer is usually to drop the older choice, but somebody may want
-        both and it is not this tool's place to overrule them.
-        """
-        if not self._asking_is_welcome():
-            return
-        rivals = self._rivals(key)
-        if not rivals:
-            return
-        package = packages.CATALOGUE_BY_KEY[key]
-        others = ", ".join(packages.CATALOGUE_BY_KEY[r].label for r in rivals)
-        dialog = Adw.AlertDialog(
-            heading=f"{others} does the same job",
-            body=(f"{package.label} and {others} are both a {package.role} "
-                  f"system, and they patch the same part of Workbench. "
-                  f"Would you like {others} taken off the card?"))
-        dialog.add_response("keep", "Keep both")
-        dialog.add_response("remove", f"Remove {others}")
-        dialog.set_response_appearance("remove",
-                                       Adw.ResponseAppearance.DESTRUCTIVE)
-        dialog.set_default_response("remove")
-        dialog.set_close_response("keep")
-
-        def answered(_dialog, response) -> None:
-            if response != "remove":
-                return
-            was = getattr(self, "_settling_packages", False)
-            self._settling_packages = True
-            try:
-                for other in rivals:
-                    self.package_rows[other].set_active(False)
-            finally:
-                self._settling_packages = was
-            self._toast(f"{others} removed")
-            self._on_layout_changed()
-
-        dialog.connect("response", answered)
-        dialog.present(self)
 
     def _chosen_packages(self) -> list[str]:
         #  Not "and sensitive": a package the display makes essential is

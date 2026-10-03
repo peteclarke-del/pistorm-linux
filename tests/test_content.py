@@ -4298,6 +4298,10 @@ class OneAnswerToWhatACardShouldCarry(unittest.TestCase):
                 continue
             if not package.suits(machine.chipset, machines.Display.NATIVE):
                 continue
+            #  Unless it clashes with one already in the set: the user is
+            #  told about that when they choose it, not handed it.
+            if package.clash_reasons(packages.expand(sorted(got))):
+                continue
             with self.subTest(package.key):
                 self.assertIn(package.key, got)
 
