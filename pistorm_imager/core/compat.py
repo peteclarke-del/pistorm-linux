@@ -550,9 +550,12 @@ class Compatibility:
                     or posix == drawer + ".info"):
                 if drawer not in self._superseded:
                     self._superseded.add(drawer)
-                    self.note("replaced",
-                              f"{self._supersede[drawer]} left out whole - "
-                              f"you chose a newer copy of what it holds")
+                    #  Chosen on the Software step, for one of several
+                    #  reasons - an older copy, or something only an
+                    #  emulator can run - so the log does not guess which.
+                    self.note("removed",
+                              f"{self._supersede[drawer]} left out whole, "
+                              f"as chosen on the Software step")
                 return True
         if posix in self._displace and self._system_is_newer(posix):
             self.note("kept",
