@@ -180,6 +180,44 @@ class TestStartupCleaning(unittest.TestCase):
         script = b"SetPatch QUIET\nLoadWB\n"
         self.assertEqual(self.fixer().offer("S/Startup-Sequence", script), script)
 
+    def test_a_loadmodule_cannot_stop_the_boot(self):
+        """PiMiga's first line, on a 3.2 ROM: "already resident", RC 10."""
+        script = (b"C:LoadModule LIBS:workbench.library LIBS:icon.library\n"
+                  b"SetPatch QUIET\n")
+        out = self.fixer().offer("S/Startup-Sequence", script).decode()
+        self.assertEqual(out.splitlines()[:3], [
+            "FailAt 21",
+            "C:LoadModule LIBS:workbench.library LIBS:icon.library",
+            "FailAt 10"])
+        self.assertIn("SetPatch QUIET", out)
+
+    def test_a_guarded_loadmodule_is_left_as_it_is(self):
+        script = b"FailAt 21\nLoadModule AUTO\nFailAt 10\n"
+        out = self.fixer().offer("S/Startup-Sequence", script).decode()
+        self.assertEqual(out.count("FailAt 21"), 1)
+
+    def test_a_dock_loses_the_buttons_for_what_is_left_out(self):
+        """PiMiga's DockBot opens with Firefox, which only runs on Linux."""
+        dock = (b"begin\n  position=bottom\n"
+                b"  begin\n    gadget=DockButton\n"
+                b"    path=System:Internet/Firefox/firefox\n  end\n"
+                b"  begin\n    gadget=DockButton\n"
+                b"    path=System:Internet/IBrowse/IBrowse\n  end\n"
+                b"end\n")
+        fixer = self.fixer()
+        fixer.supersede(["Internet/Firefox"])
+        out = fixer.offer("Prefs/Env-Archive/DockBot.prefs", dock).decode()
+        self.assertNotIn("Firefox", out)
+        self.assertIn("IBrowse", out)
+        self.assertEqual(out.count("begin"), out.count("end"))
+        self.assertEqual(out.count("begin"), 2)
+
+    def test_a_dock_with_nothing_left_out_is_unchanged(self):
+        dock = (b"begin\n  begin\n    gadget=DockButton\n"
+                b"    path=SYS:Tools/Clock\n  end\nend\n")
+        self.assertEqual(self.fixer().offer(
+            "Prefs/Env-Archive/DockBot.prefs", dock), dock)
+
     def test_disabled_fixer_changes_nothing(self):
         fixer = compat.Compatibility(QUIET, enabled=False)
         script = b"uae-configuration cachesize 1\n"
