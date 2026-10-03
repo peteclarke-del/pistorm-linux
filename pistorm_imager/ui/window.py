@@ -233,6 +233,8 @@ KEPT_ACROSS_QUICK_SETUP = (
     #  the boot partition are facts about somebody's hardware and their
     #  choice. A suggestion knows the Amiga, not what has been added to it.
     "pi_model", "usb_port", "chip_ram", "boot_addons",
+    #  Software installed against advice: the user was asked, and answered.
+    "against_advice",
 )
 
 #  The same for the boot settings.  The machine decides the ones that follow
@@ -736,6 +738,12 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._steps: tuple[str, ...] = ()
         self.stack.connect("notify::visible-child-name",
                            lambda *_a: self._update_navigation())
+        #  A tick a later change made unsuitable is asked about when the
+        #  Software page is in front of somebody, not in the middle of
+        #  another page.
+        self.stack.connect("notify::visible-child-name",
+                           lambda *_a: self._ask_about_advice(
+                               sorted(getattr(self, "_advice_pending", ()))))
 
         bottom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
                          margin_top=10, margin_bottom=10, margin_start=12, margin_end=12)
@@ -2347,6 +2355,14 @@ class ImagerWindow(Adw.ApplicationWindow):
         starting = set(packages.suggested(machines.MACHINES[0],
                                           list(machines.Display)[0]))
         self.package_rows: dict[str, PackageCheck] = {}
+        #  Ticked although the user was told it does not suit, or is a poor
+        #  choice on the AmigaOS chosen - their decision, kept and saved.
+        self._against_advice: set[str] = set()
+        #  Ticked packages a later change made unsuitable, waiting to be
+        #  asked about when the Software page is next in front of somebody.
+        self._advice_pending: set[str] = set()
+        #  Switched on by the display that needs them, not by the user.
+        self._forced_on: set[str] = set()
         self.package_groups: list[Adw.PreferencesGroup] = [self.packages_group]
         self.packages_group.add(self._software_browser(starting))
         page.add(self.packages_group)
@@ -3691,7 +3707,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             pi=self._pi(),
             cpu=self._machine().cpu_fitted(self._accelerator(),
                                            self._accelerator_cpu()),
-            emu68_tag=self._release_tag()))
+            emu68_tag=self._release_tag(),
+            release=self._os_release()))
         #  A whole set arriving at once is the suggestion being taken, not a
         #  person weighing one package against another; asking about each
         #  clash inside it would be a queue of dialogs answering nothing.
@@ -4154,44 +4171,19 @@ class ImagerWindow(Adw.ApplicationWindow):
         cpu = self._machine().cpu_fitted(self._accelerator(),
                                          self._accelerator_cpu())
         tag = self._release_tag()
+        release = self._os_release()
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
             fits = package.suits(chipset, display, pi=pi, cpu=cpu,
                                  emu68_tag=tag, machine=self._machine())
+            said = package.advice(chipset, display, release=release, pi=pi,
+                                  cpu=cpu, emu68_tag=tag,
+                                  machine=self._machine())
             note = package.description
-            if not fits and package.rtg_only:
-                note += "  -  only useful with an RTG display."
-            elif not fits and package.native_only:
-                note += "  -  only useful on the Amiga's own screen."
-            #  Said before the chipset, because on a card refused for both
-            #  reasons the Raspberry Pi is the one the user can do something
-            #  about: the Amiga is what it is, the Pi and the Emu68 build are
-            #  chosen here.
-            elif not fits and package.pi_models \
-                    and pi not in package.pi_models:
-                wanted = " or ".join(model.label
-                                     for model in package.pi_models)
-                note += (f"  -  needs {wanted} on the board; this card is "
-                         f"being built for {pi.label}.")
-            elif not fits and package.min_emu68 \
-                    and not emu68.at_least(tag or "", package.min_emu68):
-                version = ".".join(str(part) for part in package.min_emu68)
-                note += (f"  -  needs Emu68 {version} or newer; choose one on "
-                         f"the Emu68 step.")
-            elif not fits and package.needs_pcmcia \
-                    and not self._machine().pcmcia_slot:
-                note += (f"  -  for the PCMCIA slot of an A600 or A1200; the "
-                         f"{self._machine().label} has none.")
-            elif not fits and package.unsuited_need(
-                    chipset, display, pi=pi, cpu=cpu, emu68_tag=tag,
-                    machine=self._machine()):
-                need = package.unsuited_need(chipset, display, pi=pi, cpu=cpu,
-                                             emu68_tag=tag,
-                                             machine=self._machine())
-                note = (f"Needs {need.label}, which is not offered for this "
-                        f"setup.  -  " + note)
-            elif not fits:
-                note += "  -  not a fit for this chipset."
+            if said:
+                #  First, where it is read: the reason is the news, and the
+                #  description is already known from the label.
+                note = "Not advised here. " + " ".join(said) + "  -  " + note
             else:
                 where = package.download.source or "Aminet"
                 if package.download.manual:
@@ -4212,6 +4204,10 @@ class ImagerWindow(Adw.ApplicationWindow):
                 was = getattr(self, "_settling_packages", False)
                 self._settling_packages = True
                 try:
+                    if not row.get_active():
+                        #  The display's choice rather than the user's, so
+                        #  the display taking it back is not a question.
+                        self._forced_on.add(key)
                     row.set_active(True)
                 finally:
                     self._settling_packages = was
@@ -4225,12 +4221,29 @@ class ImagerWindow(Adw.ApplicationWindow):
                         "cannot be turned off - change the display on the "
                         "Machine step to release it.  -  " + note)
             else:
-                row.set_sensitive(fits)
-                if not fits:
-                    row.set_active(False)
+                #  Never greyed out: what does not suit is said, in the row
+                #  and in a question when it is ticked, and the choice stays
+                #  the user's.
+                row.set_sensitive(True)
+                if key in self._forced_on and not fits:
+                    #  On only because the display needed it; the display
+                    #  that needed it is gone, and so is the reason.
+                    self._forced_on.discard(key)
+                    was = getattr(self, "_settling_packages", False)
+                    self._settling_packages = True
+                    try:
+                        row.set_active(False)
+                    finally:
+                        self._settling_packages = was
+                if said and row.get_active() \
+                        and key not in self._against_advice:
+                    self._advice_pending.add(key)
+                elif not said or not row.get_active():
+                    self._advice_pending.discard(key)
             row.set_subtitle(GLib.markup_escape_text(note))
         self._refresh_usb()
         self._on_layout_changed()
+        self._ask_about_advice(sorted(self._advice_pending))
 
     def _chosen_addons(self) -> list[str]:
         return [key for key, row in getattr(self, "addon_rows", {}).items()
@@ -4424,6 +4437,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         if getattr(self, "_settling_packages", False):
             return
         row = self.package_rows.get(key)
+        if row is not None and not row.get_active():
+            #  Taken off: a later tick is a new choice, and asked about anew.
+            self._against_advice.discard(key)
+            self._forced_on.discard(key)
+            self._advice_pending.discard(key)
         self._settling_packages = True
         try:
             if row is not None and row.get_active():
@@ -4457,7 +4475,121 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  intermediate state as dependencies are switched on and off.
         self._refresh_older_copies()
         if row is not None and row.get_active():
+            #  What came with it is asked about too: ticking a game that
+            #  needs ScummVM ticks ScummVM.
+            self._ask_about_advice([k for k in packages.expand([key])
+                                    if k in self.package_rows
+                                    and self.package_rows[k].get_active()])
             self._ask_about_rivals(key)
+
+    def _os_release(self) -> tuple[int, ...] | None:
+        """The AmigaOS release this card installs, as the build reads it."""
+        source = self._system_source()
+        if source == "cd":
+            return packages.os_release(self._os_cd_release())
+        if source == "adf" and self._selected_adf_version():
+            return packages.os_release(
+                amigaos.normalise_version(self._selected_adf_version()))
+        return None
+
+    def _package_advice(self, key: str) -> list[str]:
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        if package is None:
+            return []
+        return package.advice(
+            self._machine().chipset, self._display(),
+            release=self._os_release(), pi=self._pi(),
+            cpu=self._machine().cpu_fitted(self._accelerator(),
+                                           self._accelerator_cpu()),
+            emu68_tag=self._release_tag(), machine=self._machine())
+
+    def _ask_about_advice(self, keys: list[str]) -> None:
+        """Say why a ticked package is a poor choice, and let them decide.
+
+        Always asked, never decided: a package that does not suit this card
+        or this AmigaOS is not ticked silently and not refused silently. The
+        user is told why and may install it anyway; that answer is kept and
+        not asked again while the package stays ticked. Asked only with the
+        Software page in front of somebody - a tick restored from a saved
+        setup waits for the page.
+        """
+        wanted = {key: self._package_advice(key) for key in keys
+                  if key not in self._against_advice}
+        wanted = {key: said for key, said in wanted.items() if said}
+        self._advice_pending |= set(wanted)
+        if not wanted or not self._asking_is_welcome() \
+                or getattr(self, "_advice_dialog_open", False):
+            return
+        labels = [packages.CATALOGUE_BY_KEY[key].label for key in wanted]
+        self._advice_dialog_open = True
+        if len(wanted) == 1:
+            key, said = next(iter(wanted.items()))
+            dialog = Adw.AlertDialog(heading=f"{labels[0]} is not advised here",
+                                     body=" ".join(said))
+            dialog.add_response("leave", "Leave it off")
+            dialog.add_response("install", "Install anyway")
+            dialog.set_response_appearance("install",
+                                           Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.connect("response", lambda _d, response:
+                           self._answer_advice(**{
+                               "install" if response == "install"
+                               else "leave": [key]}))
+        else:
+            #  Several at once - a change of AmigaOS, usually - and each is
+            #  its own decision: one switch apiece, every one off until
+            #  somebody turns it on.
+            dialog = Adw.AlertDialog(
+                heading=f"{len(wanted)} choices are not advised here",
+                body="Each is explained below. Switch on any you want "
+                     "installed anyway; the rest are left off.")
+            rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+            rows.add_css_class("boxed-list")
+            switches: dict[str, Adw.SwitchRow] = {}
+            for key, said in wanted.items():
+                row = Adw.SwitchRow(
+                    title=GLib.markup_escape_text(
+                        packages.CATALOGUE_BY_KEY[key].label),
+                    subtitle=GLib.markup_escape_text(" ".join(said)))
+                row.set_subtitle_lines(0)
+                switches[key] = row
+                rows.append(row)
+            scroller = Gtk.ScrolledWindow(
+                child=rows, propagate_natural_height=True,
+                max_content_height=420,
+                hscrollbar_policy=Gtk.PolicyType.NEVER)
+            dialog.set_extra_child(scroller)
+            dialog.add_response("done", "Done")
+            self._advice_switches = switches
+
+            def done(_dialog, _response) -> None:
+                chosen = [k for k, row in switches.items() if row.get_active()]
+                self._answer_advice(install=chosen,
+                                    leave=[k for k in switches
+                                           if k not in chosen])
+            dialog.connect("response", done)
+        dialog.set_default_response("leave" if len(wanted) == 1 else "done")
+        dialog.set_close_response("leave" if len(wanted) == 1 else "done")
+        self._advice_dialog = dialog
+        dialog.present(self)
+
+    def _answer_advice(self, install: Iterable[str] = (),
+                       leave: Iterable[str] = ()) -> None:
+        """Act on the answer: install some against advice, leave the rest off."""
+        install, leave = list(install), list(leave)
+        self._advice_dialog_open = False
+        self._advice_dialog = None
+        self._advice_pending -= set(install) | set(leave)
+        if install:
+            self._against_advice |= set(install)
+            labels = [packages.CATALOGUE_BY_KEY[key].label for key in install]
+            self._toast(f"{', '.join(labels)} will be installed against "
+                        f"advice")
+        for key in leave:
+            self.package_rows[key].set_active(False)
+        self._update_summary()
+        #  Anything that became pending while this was open.
+        if self._advice_pending:
+            self._ask_about_advice(sorted(self._advice_pending))
 
     def _rivals(self, key: str) -> list[str]:
         """Anything switched on that does the same job as ``key``."""
@@ -5245,6 +5377,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             off_desktop=sorted(
                 where for where, row in getattr(self, "desktop_rows", {}).items()
                 if not row.get_active()),
+            against_advice=sorted(self._against_advice
+                                  & set(self._chosen_packages())),
             machine_key=self._machine().key,
             #  Which Raspberry Pi is on the board, and which of its USB
             #  sockets the Amiga was given. Both are read from the widgets
@@ -6096,6 +6230,9 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  afterwards would clear anything it thought unusable, including
         #  choices that are perfectly usable. A row left insensitive is one
         #  the display makes essential, and it keeps the tick it was given.
+        #  Before the refresh, so a choice made against advice is not asked
+        #  about all over again.
+        self._against_advice = set(config.against_advice or ())
         self._refresh_packages()
         wanted = set(config.package_keys)
         was = getattr(self, "_settling_packages", False)
