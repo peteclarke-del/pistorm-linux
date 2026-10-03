@@ -826,6 +826,18 @@ def _tree_counts(reader, entry, depth: int = 0) -> tuple[int, int]:
     return files, drawers
 
 
+def _small_text(reader, entry) -> str:
+    """``_reads_as_text`` of a file, without reading one too big to be a script.
+
+    The size is in the directory entry, so a program or a picture is passed
+    over unread: PiMiga's System is eighty thousand files, and reading each
+    whole to find out it was not a script took over a minute.
+    """
+    if getattr(entry, "size", 0) > BIGGEST_SCRIPT:
+        return ""
+    return _reads_as_text(reader.read_file(entry))
+
+
 def _reads_as_text(data: bytes) -> str:
     """The readable content of a small file, or "" if it is not one to read.
 
@@ -924,7 +936,7 @@ def _emulator_only(reader, skip: set[str]) -> list[Clutter]:
             if item.is_dir or item.name.lower().endswith(ICON_SUFFIX):
                 continue
             try:
-                text = _reads_as_text(reader.read_file(item))
+                text = _small_text(reader, item)
             except Exception:                            # noqa: BLE001
                 continue
             if not text:
@@ -1064,7 +1076,7 @@ def _replaces_the_boot_script(reader, provided: Iterable[str],
             if item.is_dir or item.name.lower().endswith(NOT_A_SCRIPT):
                 continue
             try:
-                text = _reads_as_text(reader.read_file(item))
+                text = _small_text(reader, item)
             except Exception:                            # noqa: BLE001
                 continue
             if text and REPLACES_THE_BOOT.search(text):
