@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1068 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1074 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -3203,6 +3203,40 @@ a source. Advice is given only for an AmigaOS installed here, from a CD or
 floppies. A drive brought from elsewhere - PiMiga, an imported `.hdf` - carries
 a release this tool does not know, and no advice is better than advice made up.
 3.1.4 floppies are read as 3.1, so advice for 3.1.4 alone cannot be given yet.
+
+### Software that clashes with other software chosen
+
+The same warning covers two chosen packages that interact badly with each
+other. Each catalogue entry can carry `clashes`: the other package, the
+reason, and where it was read. A clash is read both ways, so ticking either
+package with the other already ticked asks the same question, with the same
+**Leave it off** or **Install anyway**. Two that do the same job (the same
+`role`) clash without needing to say so. A package and what it needs never
+clash: FText runs on FBlit.
+
+| Packages | Why | Source |
+| --- | --- | --- |
+| FBlit and Picasso96 | Picasso96 already does FBlit's job; never install them together | PeterK's icon.library manual |
+| Scalos and MCP | Scalos's mcpgfx.library is not compatible with MCP 1.30 | Scalos guide |
+| Scalos and NewIcons | NewIcons stops left-out icons being transparent | Scalos guide |
+| VisualPrefs and MCP | Several MCP patches must be off, and some combinations crash | VisualPrefs guide |
+| VisualPrefs and Birdie | Only with particular settings and start-up order | VisualPrefs guide |
+| Birdie and MCP | MCP's QuickDraw must be off | Birdie documentation |
+| Birdie and NewIcons | Use Birdie's NOICONBORDER, not NewIcons' | Birdie documentation |
+| MCP and NewIcons | MCP's QuickDraw must be off with NewIcons' NoIconBorder | MCP's notes |
+| MCP and MagicMenu | MCP's Force NewLook-Menus cannot be used with MagicMenu | MCP guide |
+| MagicMenu and FreeWheel | Lock-up with FreeWheel's Click2Front | MagicMenu FAQ |
+| BlazeWCP and Picasso96 | Must start before Picasso96, and is of little use with it | BlazeWCP guide |
+| NewIcons and DefIcons | NewIcons carries DefIcons; both would run it twice | NewIcons readme |
+| lwip-amiga and Roadshow | lwip replaces bsdsocket.library, so Roadshow stops working | emu68-driver-stack |
+
+**The suggested load never holds a clash.** Where two recommended packages
+clash, the first in the catalogue stays and the other is left for the user to
+choose. MagicMenu and FreeWheel are the case today: the suggestion keeps
+MagicMenu.
+
+The old "does the same job" question, which offered to remove the *other*
+package, is folded into this one.
 
 ### The software has a page of its own
 
