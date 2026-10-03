@@ -5230,8 +5230,10 @@ class WhatACardIsBetterOffWithout(unittest.TestCase):
     def test_a_drawer_holding_anything_real_is_not_emulator_only(self):
         files = {"Tools/Mixed/JIT": b"uae-configuration cpu_speed max\n",
                  "Tools/Mixed/Useful": b"Echo \"this one works anywhere\"\n"}
-        self.assertNotIn(content.EMULATOR,
-                         self.kinds(content.clutter(self._reader(files))).values())
+        #  The drawer stays; the one script in it that only an emulator can
+        #  run is offered on its own.
+        self.assertEqual(self.kinds(content.clutter(self._reader(files))),
+                         {"Tools/Mixed/JIT": content.EMULATOR})
 
     def test_a_button_bar_is_read_though_it_is_not_plain_text(self):
         """A ButtonMenu bar is a binary record with its commands inside it.

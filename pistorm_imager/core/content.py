@@ -20,6 +20,7 @@ import struct
 from collections.abc import Iterable
 from pathlib import Path
 
+from . import amigainfo
 from .machines import Chipset, Machine
 from .util import HUNK_HEADER
 
@@ -925,16 +926,27 @@ def _emulator_only(reader, skip: set[str]) -> list[Clutter]:
     from .compat import EMULATOR_COMMANDS                # noqa: PLC0415
     out: list[Clutter] = []
     for path, entry in _drawers_worth_looking_at(reader):
-        if path.lower() in skip:
+        #  A drawer AmigaOS owns - C, Tools - is never offered whole, but an
+        #  emulator's program inside one still is, file by file.
+        whole = path.lower() not in skip
+        if not whole and path.lower() not in _never_offer():
             continue
         try:
             inside = reader.listdir(_locator(entry))
         except Exception:                                # noqa: BLE001
             continue
         runnable = emulator = 0
+        alone: list[Clutter] = []
         for item in inside:
-            if item.is_dir or item.name.lower().endswith(ICON_SUFFIX):
+            low = item.name.lower()
+            if item.is_dir or low.endswith(ICON_SUFFIX):
                 continue
+            here = f"{path}/{item.name}"
+            #  An emulator's own control program, by the name every script
+            #  calls it by: C:uae-configuration, C:uaectrl and the rest.
+            if _is_emulator_command(low) and here.lower() not in skip:
+                alone.append(Clutter(here, "is an emulator's own control "
+                                           "program", EMULATOR))
             try:
                 text = _small_text(reader, item)
             except Exception:                            # noqa: BLE001
@@ -944,10 +956,118 @@ def _emulator_only(reader, skip: set[str]) -> list[Clutter]:
             runnable += 1
             if any(name in text.lower() for name in EMULATOR_COMMANDS):
                 emulator += 1
-        if runnable and emulator == runnable:
+                #  A script that does nothing but start something on the
+                #  emulator's host - PiMiga's Tools/Power is the one line
+                #  "host-run sudo shutdown -h now" - in a drawer whose other
+                #  files are real.
+                if _only_emulator_commands(text) \
+                        and here.lower() not in skip:
+                    alone.append(Clutter(here, "is a script that only works "
+                                               "inside an emulator", EMULATOR))
+        if whole and runnable and emulator == runnable:
             out.append(Clutter(
                 path, f"holds {emulator} script{'s' if emulator != 1 else ''} "
                       f"that only work inside an emulator", EMULATOR))
+        else:
+            out += alone
+    return out
+
+
+def _is_emulator_command(name: str) -> bool:
+    """Whether a file is called what an emulator's control program is."""
+    from .compat import EMULATOR_COMMANDS                # noqa: PLC0415
+    return any(name == command or name.startswith(command)
+               for command in EMULATOR_COMMANDS)
+
+
+def _only_emulator_commands(text: str) -> bool:
+    """Whether every command in a plain script is an emulator's."""
+    if "\0" in text:
+        return False
+    commands = [line.strip().lower() for line in text.splitlines()
+                if line.strip() and not line.strip().startswith(";")]
+    return bool(commands) and all(
+        _is_emulator_command(line.split()[0].rsplit(":", 1)[-1])
+        for line in commands)
+
+
+#  Where a spare monitor is kept, out of the way of the boot.
+STORED_MONITORS = "Storage/Monitors"
+
+
+def _stored_emulator_monitors(reader) -> list[Clutter]:
+    """Spare monitors, kept in Storage, for an emulator's graphics card.
+
+    The one in DEVS:Monitors is replaced by the compatibility pass; a copy
+    put away in SYS:Storage drives a board this machine has not got, and
+    dragged back into DEVS:Monitors it would fail at every boot.
+    """
+    from .compat import EMULATOR_MONITORS                # noqa: PLC0415
+    drawer = reader.find(STORED_MONITORS)
+    if drawer is None or not getattr(drawer, "is_dir", False):
+        return []
+    out: list[Clutter] = []
+    try:
+        inside = reader.listdir(_locator(drawer))
+    except Exception:                                    # noqa: BLE001
+        return []
+    for item in inside:
+        if item.is_dir or not item.name.lower().endswith(ICON_SUFFIX):
+            continue
+        try:
+            types = amigainfo.read_tooltypes(reader.read_file(item))
+        except Exception:                                # noqa: BLE001
+            continue
+        board = next((t.split("=", 1)[1].strip().lower() for t in types
+                      if t.upper().startswith("BOARDTYPE=")), "")
+        if board in EMULATOR_MONITORS:
+            out.append(Clutter(
+                f"{STORED_MONITORS}/{item.name[:-len(ICON_SUFFIX)]}",
+                f"is a spare monitor for {board}, an emulator's graphics "
+                f"card", EMULATOR))
+    return out
+
+
+#  Where AHI keeps the list of modes each audio driver offers, and the
+#  drivers themselves.
+AUDIO_MODES = "Devs/AudioModes"
+AUDIO_DRIVERS = "Devs/AHI"
+
+
+def _audio_modes_without_a_driver(reader) -> list[Clutter]:
+    """AHI mode files for a driver that is not on the drive.
+
+    Each file in DEVS:AudioModes names its driver in an ``AUDN`` chunk, and
+    AHI loads DEVS:AHI/<name>.audio to play through it. PiMiga carries UAE's
+    mode list without UAE's driver: AHI Prefs offers its modes, and choosing
+    one leaves the machine silent.
+    """
+    modes = reader.find(AUDIO_MODES)
+    if modes is None or not getattr(modes, "is_dir", False):
+        return []
+    out: list[Clutter] = []
+    try:
+        inside = reader.listdir(_locator(modes))
+    except Exception:                                    # noqa: BLE001
+        return []
+    for item in inside:
+        if item.is_dir or item.name.lower().endswith(ICON_SUFFIX):
+            continue
+        try:
+            data = reader.read_file(item) if getattr(item, "size", 0) \
+                <= BIGGEST_SCRIPT else b""
+        except Exception:                                # noqa: BLE001
+            continue
+        at = data.find(b"AUDN")
+        if not data.startswith(b"FORM") or at < 0 or len(data) < at + 8:
+            continue
+        size = int.from_bytes(data[at + 4:at + 8], "big")
+        driver = data[at + 8:at + 8 + size].split(b"\0")[0].decode(
+            "latin-1", "replace")
+        if driver and reader.find(f"{AUDIO_DRIVERS}/{driver}.audio") is None:
+            out.append(Clutter(f"{AUDIO_MODES}/{item.name}",
+                               f"lists the modes of {driver}.audio, which is "
+                               f"not on the drive", BROKEN))
     return out
 
 
@@ -1147,7 +1267,10 @@ def clutter(reader, volumes: Iterable[str] = (),
     found = (_empty_or_scaffold(reader, skip)
              + _emulator_only(reader, skip)
              + _replaces_the_boot_script(reader, provided, skip)
-             + _assigns_to_nothing(reader, going))
+             + _assigns_to_nothing(reader, going)
+             + [c for c in _audio_modes_without_a_driver(reader)
+                + _stored_emulator_monitors(reader)
+                if c.path.lower() not in skip])
     #  One entry per path, and a drawer already offered whole is not offered
     #  again file by file.
     out: list[Clutter] = []

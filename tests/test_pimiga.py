@@ -114,6 +114,64 @@ class OnlyWhatIsNeeded(_Scratch):
         self.assertIn("Host Run fun", found)
         self.assertNotIn("Utilities", found)
 
+    def test_emulator_programs_in_a_drawer_amigaos_owns(self):
+        """C and Tools stay; what in them only an emulator can run goes."""
+        system = self.pimiga() / "System"
+        (system / "C").mkdir()
+        (system / "C" / "Dir").write_bytes(b"\0\0\x03\xf3 a command")
+        (system / "C" / "uaectrl").write_bytes(b"\0\0\x03\xf3 uae control")
+        (system / "Tools").mkdir()
+        (system / "Tools" / "Power").write_text("host-run sudo shutdown -h now\n")
+        (system / "Tools" / "Power.info").write_bytes(b"\xe3\x10 icon")
+        (system / "Tools" / "Clock").write_bytes(b"\0\0\x03\xf3 clock")
+        found = {c.path: c.kind for c in content.clutter(
+            amigaos.FolderVolume(system))}
+        self.assertEqual(found.get("C/uaectrl"), content.EMULATOR)
+        self.assertEqual(found.get("Tools/Power"), content.EMULATOR)
+        for kept in ("C", "Tools", "C/Dir", "Tools/Clock"):
+            self.assertNotIn(kept, found)
+
+    def test_a_script_that_also_does_real_work_stays(self):
+        system = self.pimiga() / "System"
+        (system / "Tools").mkdir()
+        (system / "Tools" / "Both").write_text(
+            "uae-configuration cachesize 0\nLoadWB\n")
+        found = [c.path for c in content.clutter(amigaos.FolderVolume(system))]
+        self.assertNotIn("Tools/Both", found)
+
+    def test_a_sound_mode_whose_driver_is_missing(self):
+        """PiMiga lists UAE's AHI modes, without UAE's driver."""
+        system = self.pimiga() / "System"
+        modes = system / "Devs" / "AudioModes"
+        modes.mkdir(parents=True)
+        (system / "Devs" / "AHI").mkdir()
+        (system / "Devs" / "AHI" / "paula.audio").write_bytes(b"\0\0\x03\xf3")
+
+        def mode(driver: bytes) -> bytes:
+            name = driver + b"\0"
+            body = b"AHIM" + b"AUDN" + len(name).to_bytes(4, "big") + name
+            return b"FORM" + len(body).to_bytes(4, "big") + body
+        (modes / "PAULA").write_bytes(mode(b"paula"))
+        (modes / "uae").write_bytes(mode(b"uae"))
+        found = {c.path: c.kind for c in content.clutter(
+            amigaos.FolderVolume(system))}
+        self.assertEqual(found.get("Devs/AudioModes/uae"), content.BROKEN)
+        self.assertNotIn("Devs/AudioModes/PAULA", found)
+
+    def test_a_spare_monitor_for_the_emulators_card(self):
+        from test_compat import make_icon                     # noqa: PLC0415
+        system = self.pimiga() / "System"
+        stored = system / "Storage" / "Monitors"
+        stored.mkdir(parents=True)
+        (stored / "copy_of_uaegfx").write_bytes(b"\0\0\x03\xf3")
+        (stored / "copy_of_uaegfx.info").write_bytes(
+            make_icon(["BOARDTYPE=uaegfx"]))
+        (stored / "PAL").write_bytes(b"\0\0\x03\xf3")
+        (stored / "PAL.info").write_bytes(make_icon(["DOSTYPE=PAL"]))
+        found = [c.path for c in content.clutter(amigaos.FolderVolume(system))]
+        self.assertIn("Storage/Monitors/copy_of_uaegfx", found)
+        self.assertNotIn("Storage/Monitors/PAL", found)
+
     def test_the_folder_reader_ignores_case_as_amigados_does(self):
         system = self.pimiga() / "System"
         (system / "Devs" / "Monitors").mkdir(parents=True)
