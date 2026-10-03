@@ -932,7 +932,8 @@ class BuildConfig:
             package = packages.CATALOGUE_BY_KEY.get(key)
             if package is not None and not package.suits(
                     chipset, display, pi=self.pi(), cpu=self.cpu(),
-                    emu68_tag=self.release_tag or None):
+                    emu68_tag=self.release_tag or None,
+                    machine=self.machine()):
                 out.append(package.label)
         return out
 
@@ -2505,7 +2506,8 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
     by_package = packages.overlays_by_package(
         config.package_keys, chipset=chipset, display=display,
         progress=progress, pi=config.pi(), cpu=config.cpu(),
-        emu68_tag=config.release_tag, kernel=config.driver_flavour())
+        emu68_tag=config.release_tag, kernel=config.driver_flavour(),
+        machine=config.machine())
     resolved = [pair for _key, pairs in by_package for pair in pairs]
 
     def credited(pairs: list[tuple[str, str]],
