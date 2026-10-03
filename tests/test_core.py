@@ -1244,6 +1244,27 @@ class ChoosingWhereSoftwareIsKept(unittest.TestCase):
         self.assertEqual(jobs.from_dict(jobs.to_dict(config)), config)
 
 
+class AStacksCommandsAreItsOwn(_Scratch):
+    """A newer same-named command from another stack is not a newer copy."""
+
+    def test_a_stacks_files_always_take_the_place(self):
+        here = self.scratch()
+        command = here / "AddNetInterface"
+        command.write_bytes(b"\0\0\x03\xf3 lwip's")
+        library = here / "codesets.library"
+        library.write_bytes(b"\0\0\x03\xf3 codesets")
+        stack = next(p.key for p in packages.CATALOGUE
+                     if p.role == packages.ROLE_TCP_IP_STACK)
+        other = next(p.key for p in packages.CATALOGUE if not p.role)
+        made = builder._displacing(
+            [(str(command), "C"), (str(library), "Libs")],
+            {(str(command), "C"): stack, (str(library), "Libs"): other})
+        #  None: no version check, so the stack's copy goes on.
+        self.assertIsNone(made["C/AddNetInterface"])
+        #  Anything else keeps its copy, so a newer one on the drive stays.
+        self.assertEqual(made["Libs/codesets.library"], str(library))
+
+
 class TestJobs(_Scratch):
     def test_round_trip(self):
         config = builder.BuildConfig(

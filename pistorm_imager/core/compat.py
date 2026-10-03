@@ -41,6 +41,9 @@ EMULATOR_MONITORS = {"uaegfx"}
 EMULATOR_COMMANDS = [
     "uae-configuration", "uaequit", "uaectrl", "uae-control",
     "amiberry_", "uaehf", "uaescsi",
+    #  Amiberry's way of starting a program on the Linux host - Chrome, VLC -
+    #  from the Amiga side. PiMiga's "Host Run fun" drawer is nothing else.
+    "host-run",
 ]
 
 STARTUP_FILES = ["S/Startup-Sequence", "S/User-Startup"]
