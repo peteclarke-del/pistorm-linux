@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1086 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1095 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -2002,6 +2002,36 @@ None of it is shipped with this project - it belongs to its authors - so each is
 copied out of a system you already have. Point at a PiMiga folder or any
 Workbench System drive and whatever is present there becomes available; the
 rest is greyed out with the reason.
+
+## Which AmigaOS suits the machine
+
+The System step suggests one: **Suggested: AmigaOS 3.2 on Kickstart 3.2
+A1200 (47.96)**, with what is still needed under it and the reasons when it
+is opened. **Use this** chooses the system, the Kickstart to boot it from,
+and the software load the Software page suggests for that release, so
+nothing advised against on it is ticked. Where the suggestion needs
+something that is not to hand, such as the CD, a second button offers the
+best of what is: **Use Workbench 3.1 now**.
+
+It is worked out, not looked up (`core/suggest.py`):
+
+- **What each release needs:** the processor and the Kickstarts it runs on,
+  from the CD releases' own descriptions and the floppy releases' facts
+  (`amigaos.FLOPPY_RELEASES`), and **when it came out**. The numbers do not
+  say that: 3.5 and 3.9 are years older than 3.2.
+- **The machine:** the processor that will run the card (Emu68's 68040 on a
+  PiStorm, an accelerator's, or the stock one) and whether the screen is RTG,
+  which needs a 3.x release.
+- **The ranking:** with a PiStorm or an accelerator, the newest release that
+  runs. On a stock 68000, the newest release on a Kickstart the machine takes
+  as its own, which is 3.1 on an A500.
+- **The Kickstart:** the release's best ROM first. 3.2 is best on its own 3.2
+  ROM (`best_kickstart`): it runs on 3.1 by loading its modules over it, and
+  that is the combination with the documented crash. Next, one built for the
+  machine's chipset, and the newest revision. The 3.2 CD carries its own
+  Kickstarts, so with that disc chosen no ROM is missing.
+- **On a PiStorm** it also says so: the Kickstart is the file on the SD card,
+  not the chip in the Amiga, so no ROM has to be fitted.
 
 ## Checking and repairing an imported drive
 
