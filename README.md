@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1081 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1086 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1072,6 +1072,18 @@ asked first now, and the tools archive is the fallback for a release that has
 no such asset - which is every release before 1.1, and any build that is not
 installing Emu68 at all. The cached copy records which of the two it came
 from, so switching releases does not quietly reuse the other one.
+
+**It follows the Emu68 the setup names, however the files got there.** "The
+release being installed" used to mean a release the build downloaded. The
+window prepares Emu68 before the build starts, and so does a local archive, so
+on those builds no release was remembered and the tools' 1.3 went onto 1.1
+cards. The two do not mix. Emu68 1.1's release notes say it "requires
+VideoCore.card version 1.5 ... not compatible with Emu68 1.0", and a real A1200
+on 1.1.0-beta.1 with 1.3 crashed with #80000004 as Picasso96 started. The
+driver is now chosen from the setup's own Emu68 version (`release_tag`). From
+1.1 onwards it is that release's copy or none at all: offline, or with the
+release unreadable, the card goes without a driver rather than with one that
+crashes it.
 
 
 ## Why a build takes as long as it does
@@ -2515,6 +2527,19 @@ archive in rather than "the cache".
 The test for it used to ask the real cache, which meant it said different
 things on different machines and passed only because the warning had the same
 blind spot. It points at an empty folder of its own now.
+
+### A package and what it needs stay together
+
+Each package goes to the drive chosen for its kind on the Drives step, with
+one exception. A package and something it needs that fill the same drawer of
+their own go to the package's drive (`builder._homes_by_package`). AGS2 is
+Games software and its pictures are System, and both fill `Programs/AGS2`.
+Split, the menu program went to the drive chosen for Games while its icon
+stayed on System, so double clicking the icon started nothing. A drawer that
+several packages fill, all moved to one drive, now also counts as moved whole,
+so a path naming the drawer itself follows it: AGS2's `Assign AGS:
+SYS:Programs/AGS2`. Nothing names a drive here; the drives are the ones chosen
+in the window.
 
 ### Which copy wins when two packages carry the same file
 

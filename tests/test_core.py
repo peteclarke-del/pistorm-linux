@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pistorm_imager.core import machines  # noqa: E402
-from pistorm_imager.core import bootcfg, builder, emu68, fat32, jobs, kickstart, mbr, packages, rdb  # noqa: E402
+from pistorm_imager.core import bootcfg, builder, compat, emu68, fat32, jobs, kickstart, mbr, packages, rdb  # noqa: E402
 from pistorm_imager.core.util import GIB, MIB, Progress, parse_size  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from emu68_stub import EMU68  # noqa: E402
@@ -1190,6 +1190,34 @@ class ChoosingWhereSoftwareIsKept(unittest.TestCase):
                          {"Internet": "DH1", "Tools": "DH1",
                           "Games": "DH2"})
         self.assertEqual(self.about_software(config), [])
+
+    def test_a_package_and_what_shares_its_drawer_stay_together(self):
+        """AGS2 is Games and its pictures are System; both fill
+        Programs/AGS2. Split, the menu program went to the Games drive and
+        its icon stayed on System, and double clicking it started nothing."""
+        pairs = [("x/AGS2", "Programs/AGS2"), ("x/AGS2menu", "Programs/AGS2"),
+                 ("x/Background.iff", "Programs/AGS2"),
+                 ("x/Game Selector.info", "Programs/AGS2"),
+                 ("x/MUI", "System/MUI")]
+        credit = {pairs[0]: "ags2", pairs[1]: "ags2", pairs[2]: "ags2_screens",
+                  pairs[3]: "ags2_screens", pairs[4]: "mui"}
+        home = builder._homes_by_package(pairs, credit, {"Games": "DH1"})
+        self.assertEqual(home["ags2"], "DH1")
+        self.assertEqual(home["ags2_screens"], "DH1")
+        self.assertIsNone(home["mui"], "MUI shares no drawer with AGS2")
+
+    def test_a_drawer_two_packages_fill_moves_whole(self):
+        """So "Assign AGS: SYS:Programs/AGS2" follows it to its drive."""
+        pairs = [("x/AGS2", "Programs/AGS2"), ("x/pic.iff", "Programs/AGS2")]
+        credit = {pairs[0]: "ags2", pairs[1]: "ags2_screens"}
+        away = {pair: "DH1" for pair in pairs}
+        with unittest.mock.patch.object(builder, "_lands_at",
+                                        lambda pair: [f"{pair[1]}/{Path(pair[0]).name}"]):
+            whole = builder._drawers_moved_whole(pairs, away, credit)
+        self.assertEqual(whole.get("Programs/AGS2"), "DH1")
+        self.assertEqual(
+            compat.repath("Assign >NIL: AGS: SYS:Programs/AGS2\n", whole),
+            "Assign >NIL: AGS: DH1:Programs/AGS2\n")
 
     def test_the_boot_drive_keeps_what_no_other_is_given(self):
         config = self.config()

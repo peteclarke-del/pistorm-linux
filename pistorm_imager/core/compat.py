@@ -173,28 +173,57 @@ class Fix:
         return f"{self.kind}: {self.detail}"
 
 
-def videocore_source() -> tuple[str, str]:
+#  The first Emu68 whose RTG driver is published with the release rather than
+#  in Emu68-tools - and which refuses the tools' driver. Its release notes:
+#  "This version of Emu68 requires VideoCore.card version 1.5 ... not
+#  compatible with Emu68 1.0". A 1.1 card given the tools' 1.3 crashed with
+#  #80000004 as Picasso96 started.
+RELEASE_CARRIES_ITS_CARD = (1, 1)
+
+
+def videocore_source(emu68_tag: str = "") -> tuple[str, str] | None:
     """Where this build should take the RTG driver from, and what to call it.
 
-    Emu68 publishes ``VideoCore.card`` as a release asset from 1.1 onwards, and
-    that copy runs ahead of the one bundled in Emu68-tools: 1.5 against 1.3 at
-    the time of writing. A card should carry the driver that belongs to the
-    Emu68 it boots, so the release is asked first and the tools archive is the
-    fallback for a release that has no such asset - which is every release
-    before 1.1, and any build not installing Emu68 at all.
+    Emu68 publishes ``VideoCore.card`` as a release asset from 1.1 onwards,
+    and the two do not mix: 1.1 needs the 1.5 it ships, which 1.0 cannot run,
+    and the 1.3 in Emu68-tools crashes 1.1. So the driver follows the Emu68
+    the card boots - named by ``emu68_tag``, the setup's own choice, whichever
+    way the Emu68 files reached the build. Remembering only a release the
+    build downloaded missed a release the window had already prepared, and a
+    1.1 card went out with 1.3.
+
+    None when the card boots a 1.1 or later and its release's driver cannot
+    be found: no driver at all is better than one that crashes the machine.
     """
     release = emu68.release_in_use()
-    if release is not None:
+    if emu68_tag and (release is None or release.tag != emu68_tag):
+        try:
+            release = next((r for r in emu68.fetch_releases()
+                            if r.tag == emu68_tag), release)
+        except Exception:                                    # noqa: BLE001
+            pass
+    tag = emu68_tag or (release.tag if release is not None else "")
+    if release is not None and (not emu68_tag or release.tag == emu68_tag):
         asset = next((name for name in release.assets
                       if name.lower() == EMU68_CARD.lower()), None)
         if asset is not None:
             return release.assets[asset][0], f"the Emu68 {release.tag} release"
+    if tag and emu68.at_least(tag, RELEASE_CARRIES_ITS_CARD):
+        return None
     return EMU68_TOOLS_URL, "the Emu68-tools release"
 
 
-def fetch_videocore_card(progress: Progress) -> bytes | None:
+def fetch_videocore_card(progress: Progress,
+                         emu68_tag: str = "") -> bytes | None:
     """Get Emu68's RTG driver, from the cache when we already have it."""
-    url, where = videocore_source()
+    source = videocore_source(emu68_tag)
+    if source is None:
+        progress.log(f"Could not obtain {EMU68_CARD} for Emu68 {emu68_tag}: "
+                     f"it ships with that release, and the release could not "
+                     f"be read. The Emu68-tools copy crashes Emu68 1.1, so "
+                     f"none is put on the card.")
+        return None
+    url, where = source
     cache = emu68.cache_dir() / EMU68_CARD
     #  Remember which release it was taken out of. Cached on existence alone,
     #  a card extracted from Emu68-tools v1.1 would be used for ever, however
@@ -257,6 +286,8 @@ class Compatibility:
                  startup_editor=None):
         self._pending_data: bytes = b""
         self.progress = progress
+        #  The Emu68 the card boots, which decides the RTG driver it carries.
+        self.emu68_tag = ""
         self.enabled = enabled
         #  Whether the target is being watched on an RTG display at all.  With
         #  no RTG there is nothing to substitute the driver *for*, and the
@@ -1187,7 +1218,7 @@ class Compatibility:
                               "driver was removed rather than replaced")
             return
 
-        card = fetch_videocore_card(progress)
+        card = fetch_videocore_card(progress, self.emu68_tag)
         if card is None:
             progress.log("  compatibility - WARNING: could not add "
                          f"{EMU68_CARD}; RTG will not work until it is "
