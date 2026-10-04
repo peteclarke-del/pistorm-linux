@@ -171,6 +171,14 @@ class Release:
     places: tuple[Place, ...] = ()
     #  Where the disc keeps Kickstart ROMs of its own, if it has any.
     roms: str = ""
+    #  When it came out, for a suggestion: the numbers do not say - 3.5 and
+    #  3.9 are years older than 3.2.
+    year: int = 0
+    #  The Kickstart it is best on, where that is not the oldest it runs on.
+    #  3.2 runs on a 3.1 ROM by loading its own modules over it, and that is
+    #  the combination with the documented crash; its own 3.2 ROM is the
+    #  sound pairing.
+    best_kickstart: int = 0
 
     @property
     def loads_its_own_modules(self) -> bool:
@@ -394,9 +402,10 @@ RELEASES = (
     #  it is, and on an older one by loading the modules above.
     Release("3.2", "AmigaOS 3.2", "AmigaOS3.2CD", OS32_LAYERS,
             needs_cpu=Cpu.M68000, kickstart_to=None, options=(GLOWICONS,),
-            drawers=OS32_DRAWERS, places=OS32_PLACES, roms="ROM"),
-    Release("3.5", "AmigaOS 3.5", "AmigaOS3.5", OS35_LAYERS),
-    Release("3.9", "AmigaOS 3.9", "AmigaOS3.9", OS39_LAYERS),
+            drawers=OS32_DRAWERS, places=OS32_PLACES, roms="ROM",
+            year=2021, best_kickstart=47),
+    Release("3.5", "AmigaOS 3.5", "AmigaOS3.5", OS35_LAYERS, year=1999),
+    Release("3.9", "AmigaOS 3.9", "AmigaOS3.9", OS39_LAYERS, year=2000),
 )
 
 RELEASES_BY_KEY = {r.key: r for r in RELEASES}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import os
 import re
@@ -24,11 +25,18 @@ from ..core import (amigacd, amigaos, boingbag, bootaddon, bootcfg,  # noqa: E40
                     builder, content, devices,
                     distributions,
                     emu68, hdfcheck, jobs, kickstart, machines, packages,
-                    pimiga, prepare, presets)
+                    pimiga, prepare, presets, suggest)
 from ..core.util import (GIB, Progress, describe_size,  # noqa: E402
                          exact_size_text, human_size,  # noqa: E402
                          parse_size)
 from .app_updater import AppUpdateControls, AppUpdater, attach_to_about  # noqa: E402
+
+
+@functools.lru_cache(maxsize=8)
+def _scan_roms(folders: tuple[str, ...]) -> list:
+    """The usable Kickstarts in these folders, read once per set of them."""
+    return [rom for folder in folders for rom in kickstart.scan(folder)
+            if rom.usable]
 from .widgets import (FileRow, PackageCheck, SaveRow, combo,  # noqa: E402
                       select_matching, show_full_value)
 
@@ -1173,6 +1181,20 @@ class ImagerWindow(Adw.ApplicationWindow):
                      "built around RTG.")
         self.quick_os_hint.set_sensitive(False)
         group.add(self.quick_os_hint)
+        #  Which AmigaOS suits the machine chosen, worked out from what each
+        #  release needs and what is to hand - and the software load for it.
+        self.suggest_row = Adw.ExpanderRow(title="Suggested for this machine")
+        self.suggest_reasons: list[Adw.ActionRow] = []
+        self.suggest_use = Gtk.Button(label="Use this",
+                                      valign=Gtk.Align.CENTER)
+        self.suggest_use.connect("clicked",
+                                 lambda _b: self._use_suggestion(False))
+        self.suggest_instead = Gtk.Button(valign=Gtk.Align.CENTER)
+        self.suggest_instead.connect("clicked",
+                                     lambda _b: self._use_suggestion(True))
+        self.suggest_row.add_suffix(self.suggest_instead)
+        self.suggest_row.add_suffix(self.suggest_use)
+        group.add(self.suggest_row)
         #  Where the system comes from; moved to the System step.
         self.group_primary = group
 
@@ -4911,9 +4933,90 @@ class ImagerWindow(Adw.ApplicationWindow):
     def _toast(self, message: str) -> None:
         self.toasts.add_toast(Adw.Toast(title=message, timeout=4))
 
+    def _known_roms(self) -> list:
+        """The Kickstart files this tool can see, for a suggestion to pick."""
+        folders = [str(root) for root in presets._search_roots()]
+        if self.rom_row.path:
+            folders.append(str(Path(self.rom_row.path).parent))
+        return _scan_roms(tuple(dict.fromkeys(folders)))
+
+    def _suggestion(self):
+        return suggest.suggest(
+            self._machine(), self._accelerator(), self._display(),
+            card_cpu=self._accelerator_cpu(), pi=self._pi(),
+            emu68_tag=self._release_tag(),
+            networking=bool(self.ssid_row.get_text().strip()),
+            roms=self._known_roms(),
+            adf_versions=getattr(self, "_adf_versions", []),
+            cd_release=self._os_cd_release())
+
+    def _refresh_suggestion(self) -> None:
+        """Say which AmigaOS suits this machine, and why."""
+        if not hasattr(self, "suggest_row"):
+            return
+        #  Only for a drive this tool installs: PiMiga and an imported drive
+        #  bring their own system.
+        found = self._suggestion() if self._primary() == "default" else None
+        self.suggest_row.set_visible(found is not None)
+        if found is None:
+            return
+        rom = found.rom.name if found.rom is not None else "its own Kickstart"
+        self.suggest_row.set_title(GLib.markup_escape_text(
+            f"Suggested: {found.choice.label} on {rom}"))
+        under = ("Still needed: " + "; ".join(found.missing) + "."
+                 if found.missing else
+                 f"Everything it needs is here, with {len(found.packages)} "
+                 f"packages suggested for it.")
+        if found.instead is not None:
+            under += f" With what is here now: {found.instead.choice.label}."
+        self.suggest_row.set_subtitle(GLib.markup_escape_text(under))
+        for row in self.suggest_reasons:
+            self.suggest_row.remove(row)
+        self.suggest_reasons = []
+        for reason in found.reasons + [
+                f"The software load is the {len(found.packages)} packages "
+                f"the Software page suggests for {found.choice.label}."]:
+            row = Adw.ActionRow(title=GLib.markup_escape_text(reason))
+            row.set_title_lines(0)
+            self.suggest_row.add_row(row)
+            self.suggest_reasons.append(row)
+        self.suggest_instead.set_visible(found.instead is not None)
+        if found.instead is not None:
+            self.suggest_instead.set_label(
+                f"Use {found.instead.choice.label} now")
+        self._suggested = found
+
+    def _use_suggestion(self, instead: bool) -> None:
+        """Choose the suggested system, its Kickstart and its software."""
+        found = getattr(self, "_suggested", None)
+        if found is not None and instead:
+            found = found.instead
+        if found is None:
+            return
+        choice = found.choice
+        self.quick_system_source.set_selected(FRESH_SOURCES.index(choice.source))
+        if choice.source == "adf":
+            versions = getattr(self, "_adf_versions", [])
+            self._wanted_adf_version = choice.key
+            if choice.key in versions:
+                self.os_version_row.set_selected(versions.index(choice.key))
+        #  A disc that carries its own Kickstarts supplies the ROM itself,
+        #  once it is chosen; otherwise the one the suggestion found.
+        if found.rom is not None and not (choice.source == "cd"
+                                          and self.os_cd_row.path):
+            self.rom_row.set_path(str(found.rom.path))
+            self._on_rom_chosen()
+        self._apply_suggested_packages()
+        said = f"{choice.label} chosen, with its software"
+        if found.missing:
+            said += " - still needed: " + "; ".join(found.missing)
+        self._toast(said)
+        self._update_summary()
+
     def _update_summary(self) -> None:
         if not self._ready:
             return
+        self._refresh_suggestion()
         #  Before anything can return early: the button names the task, not
         #  the state of it, and an unfinished export was still offering to
         #  "Write card".
