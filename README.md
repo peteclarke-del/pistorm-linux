@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1084 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1086 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -2527,6 +2527,19 @@ archive in rather than "the cache".
 The test for it used to ask the real cache, which meant it said different
 things on different machines and passed only because the warning had the same
 blind spot. It points at an empty folder of its own now.
+
+### A package and what it needs stay together
+
+Each package goes to the drive chosen for its kind on the Drives step, with
+one exception. A package and something it needs that fill the same drawer of
+their own go to the package's drive (`builder._homes_by_package`). AGS2 is
+Games software and its pictures are System, and both fill `Programs/AGS2`.
+Split, the menu program went to the drive chosen for Games while its icon
+stayed on System, so double clicking the icon started nothing. A drawer that
+several packages fill, all moved to one drive, now also counts as moved whole,
+so a path naming the drawer itself follows it: AGS2's `Assign AGS:
+SYS:Programs/AGS2`. Nothing names a drive here; the drives are the ones chosen
+in the window.
 
 ### Which copy wins when two packages carry the same file
 
