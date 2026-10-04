@@ -251,7 +251,7 @@ class EveryCacheKnowsWhereItCameFrom(unittest.TestCase):
         body = inspect.getsource(compat.fetch_videocore_card)
         reuse = body.split("if cache.exists")[1][:400]
         self.assertIn("note.read_text().strip() == url", reuse)
-        self.assertIn("url, where = videocore_source()", body)
+        self.assertIn("source = videocore_source(emu68_tag)", body)
 
     def test_the_firmware_checks_what_actually_arrived(self):
         from pistorm_imager.core import emu68                 # noqa: PLC0415
