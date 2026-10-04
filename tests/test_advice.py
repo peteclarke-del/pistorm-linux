@@ -223,5 +223,31 @@ class WhatTheReleaseCarries(unittest.TestCase):
                     self.assertTrue(advice.on, package.key)
 
 
+class WhatAPackageBrings(unittest.TestCase):
+    """A tick never brings something the advice then warns against unsaid."""
+
+    RELEASES = [(1, 3), (2, 0), (2, 1), (3, 0), (3, 1), (3, 2), (3, 5),
+                (3, 9)]
+
+    def test_a_package_carries_the_advice_of_what_it_needs(self):
+        for package in packages.CATALOGUE:
+            for release in self.RELEASES:
+                if package.os_reasons(release):
+                    continue
+                for key in packages.expand([package.key], release):
+                    self.assertEqual(
+                        packages.CATALOGUE_BY_KEY[key].os_reasons(release),
+                        [], f"{package.key} on {release} brings {key}")
+
+    def test_cardreset_alone_on_3_2(self):
+        """The 3.2 FAQ recommends CardReset alone, and that is possible."""
+        self.assertEqual(packages.expand(["cardreset"], (3, 2)),
+                         ["cardreset"])
+        self.assertEqual(
+            packages.CATALOGUE_BY_KEY["cardreset"].os_reasons((3, 2)), [])
+        self.assertEqual(
+            packages.CATALOGUE_BY_KEY["pcmciacd"].os_reasons((3, 2)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

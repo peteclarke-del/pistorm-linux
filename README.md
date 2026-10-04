@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1095 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1097 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -3277,6 +3277,15 @@ is said on the second of the two, and what the display holds on always counts
 first (`packages.held_first`). So BlazeWCP beside Picasso96 on an RTG card is
 "BlazeWCP is not advised", on BlazeWCP's row and in its question. It used to
 be "Picasso96 is not advised", which nobody could act on.
+
+**A tick never brings what the advice then warns against, unsaid.** A
+package's AmigaOS advice includes that of what it needs: YAM on 1.3 says it
+brings MUI classes that need 3.0, on YAM's own row and in its own question. A
+test across the catalogue and every release holds each package to it. The
+test found one case that was a recommendation written as a requirement:
+CardReset listed CardPatch, which its readme only recommends. On 3.2, whose
+FAQ recommends CardReset alone, ticking CardReset ticked CardPatch and then
+warned against it, so CardReset alone could not be chosen.
 
 **What the AmigaOS advice is.** Each catalogue entry can carry `os_advice`:
 the releases it is a poor choice on, the reason in plain words, and the
