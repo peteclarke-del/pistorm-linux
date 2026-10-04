@@ -666,10 +666,24 @@ class Package:
                    for advice in self.os_advice)
 
     def os_reasons(self, release: tuple[int, ...] | None) -> list[str]:
-        """Why this is a poor choice on this release of AmigaOS, if it is."""
+        """Why this is a poor choice on this release of AmigaOS, if it is.
+
+        Its own reasons, and those of what it brings with it: YAM on 1.3
+        brings MUI classes that need 3.0, and the question belongs on the
+        tick that brings them, not only on them. What the release carries
+        itself is not brought, so says nothing.
+        """
         label = ".".join(str(part) for part in release or ())
-        return [f"On AmigaOS {label}: {advice.why}"
-                for advice in self.os_advice if advice.applies(release)]
+        out = [f"On AmigaOS {label}: {advice.why}"
+               for advice in self.os_advice if advice.applies(release)]
+        for key in expand([self.key], release):
+            need = CATALOGUE_BY_KEY.get(key)
+            if need is None or key == self.key:
+                continue
+            out += [f"On AmigaOS {label}, through {need.label}, which it "
+                    f"needs: {advice.why}"
+                    for advice in need.os_advice if advice.applies(release)]
+        return out
 
     def clash_reasons(self, chosen: Iterable[str]) -> list[str]:
         """Why this does not belong beside software already chosen."""
@@ -3026,7 +3040,9 @@ CATALOGUE: list[Package] = [
         download=Download("util/boot/CardReset.lha", (("CardReset", "C"),)),
         #  Not started at boot: it returns an error when another driver owns
         #  the card, and in S:User-Startup that would stop every line after.
-        requires=("cardpatch",),
+        #  Its readme recommends CardPatch rather than needing it, and on
+        #  AmigaOS 3.2 - whose FAQ recommends CardReset alone - requiring it
+        #  ticked the very patch the advice then warned against.
         needs_pcmcia=True,
         note="Run CardReset from a Shell when a PCMCIA card stops answering.",
         evidence=("C/CardReset",),
