@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1074 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1079 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -3176,6 +3176,24 @@ reason, and nothing is ticked or unticked behind anybody's back:
 - **What the display needs is not a question.** Picasso96 is switched on and
   held by an RTG display, and comes off again quietly if that display is
   changed, because the display chose it, not you.
+
+**What the release already carries is not a requirement.** Advice that a
+release carries a package itself (`provided=True`: picture.datatype V43,
+ClassAct, Installer and DefIcons on 3.2, 3.5 and 3.9, and LoadModule on 3.2)
+also means anything that needs that package is satisfied by the release.
+Ticking Picasso96 on 3.2 does not tick picture.datatype V43, the build does
+not put the older copy over 3.2's own, and leaving it off takes nothing with
+it. Before this, leaving it off on 3.2 unticked Picasso96 too. The display
+then held the switch locked off, so a card asked for with both screens was
+written with no RTG at all. A switch the display locks can no longer be taken
+off by anything else, and when the display ticks a package it ticks what that
+package needs, as any other tick does.
+
+**A clash with what the display holds falls on the other package.** A clash
+is said on the second of the two, and what the display holds on always counts
+first (`packages.held_first`). So BlazeWCP beside Picasso96 on an RTG card is
+"BlazeWCP is not advised", on BlazeWCP's row and in its question. It used to
+be "Picasso96 is not advised", which nobody could act on.
 
 **What the AmigaOS advice is.** Each catalogue entry can carry `os_advice`:
 the releases it is a poor choice on, the reason in plain words, and the

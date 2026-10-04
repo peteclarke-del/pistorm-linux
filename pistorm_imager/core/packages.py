@@ -410,6 +410,11 @@ class OsAdvice:
     on: tuple[str, ...] = ()
     below: str = ""
     source: str = ""
+    #  The release carries this itself, so anything needing it is satisfied
+    #  by the release: it is not dragged onto the card as a requirement, and
+    #  leaving it off takes nothing with it. Picasso96 needs a V43
+    #  picture.datatype, and 3.2 has a newer one of its own.
+    provided: bool = False
 
     def applies(self, release: tuple[int, ...] | None) -> bool:
         if release is None:
@@ -654,6 +659,11 @@ class Package:
                     + (need.why_unsuited(chipset, display, **hardware)
                        or "it is not offered here."))
         return "It does not suit this chipset."
+
+    def provided_by(self, release: tuple[int, ...] | None) -> bool:
+        """Whether this release of AmigaOS carries this package's job itself."""
+        return any(advice.provided and advice.applies(release)
+                   for advice in self.os_advice)
 
     def os_reasons(self, release: tuple[int, ...] | None) -> list[str]:
         """Why this is a poor choice on this release of AmigaOS, if it is."""
@@ -929,7 +939,8 @@ CATALOGUE: list[Package] = [
         os_advice=(
             OsAdvice(on=('3.2', '3.5', '3.9'),
                      why='This AmigaOS ships a newer Installer, which this one (43.3) would replace with an older copy.',
-                     source='https://www.codewiz.org/projects/amiga/V44_Changes/V44_Changes_guide/'),
+                     source='https://www.codewiz.org/projects/amiga/V44_Changes/V44_Changes_guide/',
+                     provided=True),
         ),
     ),
     Package(
@@ -1165,7 +1176,8 @@ CATALOGUE: list[Package] = [
         os_advice=(
             OsAdvice(on=('3.2',),
                      why='AmigaOS 3.2 carries LoadModule on its Modules disk.',
-                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt',
+                     provided=True),
         ),
     ),
     Package(
@@ -1561,7 +1573,8 @@ CATALOGUE: list[Package] = [
         os_advice=(
             OsAdvice(on=('3.2', '3.9'),
                      why='This AmigaOS starts its own DefIcons, so this would be a second, older one.',
-                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt',
+                     provided=True),
             OsAdvice(below='3.2',
                      why='It needs AmigaOS 3.5 or newer.',
                      source='https://aminet.net/util/wb/DefIcons44.readme'),
@@ -3038,7 +3051,8 @@ CATALOGUE: list[Package] = [
         os_advice=(
             OsAdvice(on=('3.2', '3.5', '3.9'),
                      why='This AmigaOS already has a V43 or newer picture.datatype.',
-                     source='https://aminet.net/util/dtype/WarpJPEGdt.readme'),
+                     source='https://aminet.net/util/dtype/WarpJPEGdt.readme',
+                     provided=True),
         ),
     ),
     Package(
@@ -3165,7 +3179,8 @@ CATALOGUE: list[Package] = [
         os_advice=(
             OsAdvice(on=('3.2', '3.5', '3.9'),
                      why="This AmigaOS carries ReAction, ClassAct's successor; ClassAct would put older classes over it.",
-                     source='https://aminet.net/docs/help/OS35FAQ.txt https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
+                     source='https://aminet.net/docs/help/OS35FAQ.txt https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt',
+                     provided=True),
         ),
     ),
     Package(
@@ -3492,19 +3507,47 @@ CATALOGUE: list[Package] = [
 CATALOGUE_BY_KEY = {p.key: p for p in CATALOGUE}
 
 
-def expand(keys: Iterable[str]) -> list[str]:
+def held_first(keys: Iterable[str], chipset: Chipset,
+               display: Display) -> list[str]:
+    """``keys`` in the order a clash between two of them is judged.
+
+    The second of a clashing pair is the one advised against - so what the
+    display holds on comes first. Picasso96 on an RTG screen is not the
+    user's to leave off, and a clash with it belongs on the other package:
+    BlazeWCP, not Picasso96. The rest keep the order they were given.
+    """
+    keys = list(keys)
+
+    def held(key: str) -> bool:
+        package = CATALOGUE_BY_KEY.get(key)
+        return bool(package and package.essential
+                    and package.suits(chipset, display))
+    return [k for k in keys if held(k)] + [k for k in keys if not held(k)]
+
+
+def expand(keys: Iterable[str],
+           release: tuple[int, ...] | None = None) -> list[str]:
     """``keys`` plus everything they require, dependencies first.
 
     Order matters: a dependency's files should be on the card, and its lines
     in ``S:User-Startup``, before whatever needs it.
+
+    A requirement ``release`` - the AmigaOS being installed - carries itself
+    is met by it, and left out: putting the catalogue's older copy over the
+    release's own is the opposite of what was needed. One named in ``keys``
+    is kept: that was asked for by name.
     """
+    keys = list(keys)
     out: list[str] = []
+    named = set(keys)
 
     def add(key: str, seen: tuple[str, ...] = ()) -> None:
         if key in out or key in seen:
             return                      # already added, or a cycle
         package = CATALOGUE_BY_KEY.get(key)
         if package is None:
+            return
+        if seen and key not in named and package.provided_by(release):
             return
         for need in package.requires:
             add(need, seen + (key,))
@@ -4499,7 +4542,8 @@ def overlays_by_package(keys: list[str],
                         emu68_tag: str | None = None,
                         kernel: str = "",
                         machine: Machine | None = None,
-                        insisted: Iterable[str] = ()
+                        insisted: Iterable[str] = (),
+                        release: tuple[int, ...] | None = None
                         ) -> list[tuple[str, list[tuple[str, str]]]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
@@ -4525,7 +4569,7 @@ def overlays_by_package(keys: list[str],
                 out.append(pair)
 
     by_package: list[tuple[str, list[tuple[str, str]]]] = []
-    wanted = expand(keys)
+    wanted = expand(keys, release)
     #  Installed although they do not suit: the user was told why and chose
     #  them anyway - and so is what each needs, which came with the choice.
     overruled = set(expand(list(insisted)))

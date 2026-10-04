@@ -183,6 +183,45 @@ class SoftwareThatClashes(unittest.TestCase):
                             [k for k in chosen if k != key]), [],
                         f"{key} on {machine.key}, {display.name}")
 
+    def test_a_clash_with_what_the_display_holds_falls_on_the_other(self):
+        """Picasso96 on an RTG screen is not the user's to leave off."""
+        made = config(native_display=True, package_display="both",
+                      package_keys=["blazewcp", "picasso96"])
+        said = made.advised_against()
+        self.assertIn("BlazeWCP", said)
+        self.assertNotIn("Picasso96", said)
+
+
+class WhatTheReleaseCarries(unittest.TestCase):
+    """A requirement the AmigaOS being installed already meets is met."""
+
+    def test_picasso96_does_not_bring_an_older_datatype_onto_3_2(self):
+        self.assertEqual(packages.expand(["picasso96"], (3, 2)), ["picasso96"])
+        self.assertIn("picturedt43", packages.expand(["picasso96"], (3, 1)))
+
+    def test_asked_for_by_name_it_is_kept(self):
+        self.assertIn("picturedt43",
+                      packages.expand(["picasso96", "picturedt43"], (3, 2)))
+
+    def test_the_build_installs_picasso96_without_it(self):
+        made = config(os_cd="/tmp/AmigaOS3.2CD.iso", os_cd_release="3.2",
+                      package_keys=["picasso96"])
+        self.assertNotIn("picture.datatype V43", made.advised_against())
+
+        def fetch(package, *_args):
+            return [(f"cache/{package.key}", f"Libs/{package.key}")]
+        with unittest.mock.patch.object(packages, "fetch", fetch):
+            got = packages.overlays_by_package(
+                ["picasso96"], display=Display.BOTH, release=(3, 2),
+                machine=machines.MACHINES_BY_KEY["a1200"])
+        self.assertEqual([key for key, _pairs in got], ["picasso96"])
+
+    def test_only_what_the_release_really_carries_is_marked(self):
+        for package in packages.CATALOGUE:
+            for advice in package.os_advice:
+                if advice.provided:
+                    self.assertTrue(advice.on, package.key)
+
 
 if __name__ == "__main__":
     unittest.main()
