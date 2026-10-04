@@ -2508,8 +2508,12 @@ def _drawers_moved_whole(pairs: list[tuple[str, str]],
                   if any(path.lower() == drawer.lower()
                          or path.lower().startswith(drawer.lower() + "/")
                          for path in paths)]
-        if inside and all(away.get(pair) == home
-                          and credit.get(pair) == key for pair in inside):
+        #  Everything this build puts in it went to the same drive: one
+        #  package's, or several that share it - AGS2 and its pictures both
+        #  fill Programs/AGS2, and its script assigns AGS: to the drawer.
+        if inside and all(away.get(pair) == home for pair in inside) \
+                and ("/" in drawer
+                     or all(credit.get(pair) == key for pair in inside)):
             whole[drawer] = home
     return whole
 
@@ -2536,6 +2540,37 @@ def _fills(spec: AmigaPartitionSpec) -> bool:
                 or _keeps_software(spec))
 
 
+def _homes_by_package(pairs: list[tuple[str, str]],
+                      credit: dict[tuple[str, str], str],
+                      homes: dict[str, str]) -> dict[str, str | None]:
+    """The drive each chosen package is kept on.
+
+    Its category's drive - except that a package and what it needs, filling
+    the same drawer of their own, stay together on the package's drive. AGS2
+    is Games and its pictures are System, and both fill Programs/AGS2: kept
+    apart, the menu program went to the Games drive and its icon stayed on
+    System, so double clicking it started nothing.
+    """
+    where: dict[str, set[str]] = {}
+    for pair in pairs:
+        key = credit.get(pair, "")
+        drawer = pair[1].strip("/").lower()
+        if key and drawer and not packages.in_amigaos(drawer) \
+                and drawer not in packages.WORKBENCH_DRAWERS:
+            where.setdefault(key, set()).add(drawer)
+    home_of: dict[str, str | None] = {}
+    for key in where.keys() | {credit[pair] for pair in pairs
+                               if pair in credit}:
+        package = packages.CATALOGUE_BY_KEY.get(key)
+        home_of[key] = homes.get(package.category.value) if package else None
+    for key in list(home_of):
+        for need in packages.expand([key]):
+            if need != key and need in home_of \
+                    and where.get(key, set()) & where.get(need, set()):
+                home_of[need] = home_of[key]
+    return home_of
+
+
 def _software(config: "BuildConfig", progress: Progress) -> _Software:
     """The chosen software, resolved and placed - once per build.
 
@@ -2551,10 +2586,10 @@ def _software(config: "BuildConfig", progress: Progress) -> _Software:
     credit: dict[tuple[str, str], str] = {}
     resolved = _package_overlays(config, existing, progress, credit)
     homes = _homes(config)
+    home_of = _homes_by_package(existing + resolved, credit, homes)
     away: dict[tuple[str, str], str] = {}
     for pair in existing + resolved:
-        package = packages.CATALOGUE_BY_KEY.get(credit.get(pair, ""))
-        home = homes.get(package.category.value) if package else None
+        home = home_of.get(credit.get(pair, ""))
         if home and not packages.in_amigaos(pair[1]):
             away[pair] = home
     moves = {landing: home for pair, home in away.items()
@@ -3083,6 +3118,9 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
                                  #  install does.
                                  startup_editor=_startup_sequence_editor(
                                      config, progress))
+    #  The RTG driver has to match the Emu68 the card boots: 1.1 crashes on
+    #  the driver 1.0 uses, and the other way round.
+    fixer.emu68_tag = config.release_tag or ""
     #  The RTG subsystem, whichever package provides it: the one package that
     #  an RTG screen cannot do without.  Named by what it is rather than by
     #  its key, so the check follows the catalogue.
