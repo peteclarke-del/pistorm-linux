@@ -1508,6 +1508,50 @@ class TheDrivesUserStartupIsKeptAndAddedTo(unittest.TestCase):
         self.assertLess(text.index("Assign-Startup"), text.index("C:FBlit"),
                         "ours must come after theirs")
 
+    def written(self, keys, boot="") -> str:
+        from pistorm_imager.core import amigaos, builder, rdb, pfs3  # noqa: PLC0415
+        folder = Path(tempfile.mkdtemp(prefix="pistorm-startup-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        image = folder / "drive.hdf"
+        size = 8 * 1024 * 1024
+        with open(image, "wb") as handle:
+            handle.truncate(size)
+        with open(image, "r+b") as handle:
+            volume = amigaos.make_volume(handle, 0, size // 512, "Test",
+                                         rdb.DOSTYPE_PFS3)
+            config = builder.BuildConfig(target="/tmp/x", package_keys=keys)
+            builder._write_user_startup(volume, config, Progress(),
+                                        boot=boot)
+            volume.close()
+        with open(image, "rb") as handle:
+            back = pfs3.Pfs3Volume(handle, 0)
+            return back.read_file(back.find("S/User-Startup")).decode(
+                "latin-1")
+
+    def test_no_package_line_can_stop_the_boot(self):
+        """CardPatch on the 3.2 ROM returns 10, and the boot stopped at a
+        Shell before LoadWB. Every line any package adds runs where no
+        failure ends the script - the whole catalogue, not CardPatch."""
+        keys = [p.key for p in packages.CATALOGUE if p.startup]
+        lines = [line.strip() for line in self.written(keys).splitlines()]
+        start = lines.index("FailAt 21")
+        end = len(lines) - 1 - lines[::-1].index("FailAt 10")
+        ours = lines[lines.index(
+            "; Added by the PiStorm imager for the software you chose.") + 1:]
+        self.assertEqual(ours[0], "FailAt 21")
+        self.assertEqual(ours[-1], "FailAt 10")
+        self.assertLess(start, end)
+
+    def test_the_drive_s_own_fail_level_is_put_back(self):
+        """PiMiga runs User-Startup at 21; lowering it would change the
+        rest of its boot."""
+        pimiga = "FailAt 21\nExecute S:User-Startup\nLoadWB\n"
+        text = self.written(["cardpatch"], boot=pimiga)
+        self.assertNotIn("FailAt 10", text)
+        stock = "FailAt 10\nIF EXISTS S:User-Startup\n  Execute S:User-Startup\nEndIF\n"
+        text = self.written(["cardpatch"], boot=stock)
+        self.assertTrue(text.rstrip().endswith("FailAt 10"))
+
     def test_nothing_is_held_back_when_no_package_needs_a_line(self):
         fixer = compat.Compatibility(Progress())
         fixer.offer("S/User-Startup", b"theirs")
