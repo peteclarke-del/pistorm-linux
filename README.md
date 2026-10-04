@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1079 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1081 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -2999,6 +2999,34 @@ So a package whose startup line cannot be installed is now **left off the card
 entirely**, with the reason said plainly in the log rather than discovered on
 the Amiga. Installing something that cannot work, in a place where something
 else will trip over it, is worse than not installing it at all.
+
+### Nothing added to User-Startup can stop the boot
+
+A command that fails in an AmigaDOS script ends the script once its return
+code reaches the CLI's fail level. The AmigaOS 3.2 Startup-Sequence runs
+`S:User-Startup` at `FailAt 10`, and CardPatch returns 10 on the 3.2 ROM. So
+a 3.2 card with CardPatch stopped at a Shell prompt, and `LoadWB` never ran.
+The 3.1 script runs User-Startup at `FailAt 21`, which is why the same line
+did no harm there.
+
+Everything the imager adds to `S:User-Startup` is now one block run at
+`FailAt 21`, so a failing command is reported and the boot goes on. Afterwards
+the block puts back the level the drive's own Startup-Sequence was at when it
+ran User-Startup: the last `FailAt` before that line, read from the script
+(`builder._fail_level_for_user_startup`). FailAt belongs to the CLI and
+outlives the script that sets it, so restoring a fixed 10 would have lowered
+PiMiga's 21 for the rest of its boot. Where the level is already 21 or more,
+no guard is added.
+
+A test holds the whole catalogue to this: every package with a startup line,
+written together, has to land inside the guarded block. It was proven in
+FS-UAE: a 3.2 drive built by the app with CardPatch boots to Workbench on the
+A1200 3.2 ROM.
+
+CardPatch itself now carries AmigaOS 3.2 advice. The 3.2 FAQ recommends
+CardReset alone for the A1200's PCMCIA problems. CardPatch is also no longer
+dragged in by the PCMCIA CD driver: that was CardReset's recommendation, two
+steps removed, not something the driver needs.
 
 ### Choosing the software
 

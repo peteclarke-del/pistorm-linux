@@ -2964,8 +2964,11 @@ CATALOGUE: list[Package] = [
                            PCMCIA_CD_MOUNTLIST),),
             retool=(("Pcmciacd/CD0.info", "Storage/DOSDrivers", "PCD0.info",
                      "C:Mount"),)),
-        #  Its author recommends CardReset, which recommends CardPatch.
-        requires=("amicdfs", "cardpatch", "cardreset"),
+        #  Its author recommends CardReset. CardReset recommends CardPatch,
+        #  but that is advice two steps removed rather than something the
+        #  driver needs, and on the 3.2 ROM CardPatch will not start - so it
+        #  is a choice of its own, not dragged in with the driver.
+        requires=("amicdfs", "cardreset"),
         needs_pcmcia=True,
         note="Double click Storage/DOSDrivers/PCD0 to mount the drive, or "
              "move it to Devs/DOSDrivers to have it mounted at every boot. "
@@ -2995,6 +2998,14 @@ CATALOGUE: list[Package] = [
         needs_pcmcia=True,
         evidence=("C/CardPatch",),
         os_advice=(
+            OsAdvice(on=('3.2',),
+                     why="It patches the card.resource of older Kickstarts, "
+                         "and on the 3.2 ROM it refuses to start: booted in "
+                         "FS-UAE with the A1200 3.2 ROM it returns 10, which "
+                         "stopped S:User-Startup. The AmigaOS 3.2 FAQ "
+                         "recommends CardReset, alone, for the A1200's "
+                         "PCMCIA problems.",
+                     source='https://aminet.net/docs/help/AmigaOS_3.2-FAQ.txt'),
             OsAdvice(below='2.0',
                      why='It needs AmigaOS 2.0 or newer.',
                      source='https://aminet.net/util/boot/CardPatch.readme'),
