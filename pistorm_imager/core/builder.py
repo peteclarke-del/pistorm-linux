@@ -943,7 +943,9 @@ class BuildConfig:
         """Chosen packages that are a poor choice here, and why, by label."""
         chipset, display = self.package_screen()
         out: dict[str, list[str]] = {}
-        chosen = packages.expand(self.package_keys or [], self.os_release())
+        chosen = packages.held_first(
+            packages.expand(self.package_keys or [], self.os_release()),
+            chipset, display)
         for key in chosen:
             package = packages.CATALOGUE_BY_KEY.get(key)
             if package is None:

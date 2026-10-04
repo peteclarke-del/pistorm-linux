@@ -183,6 +183,14 @@ class SoftwareThatClashes(unittest.TestCase):
                             [k for k in chosen if k != key]), [],
                         f"{key} on {machine.key}, {display.name}")
 
+    def test_a_clash_with_what_the_display_holds_falls_on_the_other(self):
+        """Picasso96 on an RTG screen is not the user's to leave off."""
+        made = config(native_display=True, package_display="both",
+                      package_keys=["blazewcp", "picasso96"])
+        said = made.advised_against()
+        self.assertIn("BlazeWCP", said)
+        self.assertNotIn("Picasso96", said)
+
 
 class WhatTheReleaseCarries(unittest.TestCase):
     """A requirement the AmigaOS being installed already meets is met."""
