@@ -2043,6 +2043,31 @@ def _already_started(commands: list[str], boot: str) -> bool:
                for name in commands)
 
 
+#  A fail level no command reaches: what the imager adds to a boot script runs
+#  at this, so nothing it adds can stop the boot.
+GUARDED_FAIL_LEVEL = 21
+#  AmigaDOS's own, and what the stock Startup-Sequence sets before it runs
+#  S:User-Startup.
+DEFAULT_FAIL_LEVEL = 10
+
+
+def _fail_level_for_user_startup(boot: str) -> int:
+    """The FailAt in force where the boot script runs S:User-Startup.
+
+    Read from the drive's own Startup-Sequence: the last FailAt before the
+    line that executes User-Startup. PiMiga runs it at 21, the stock 3.x
+    script at 10; with nothing to read, AmigaDOS's own 10.
+    """
+    level = DEFAULT_FAIL_LEVEL
+    for line in boot.splitlines():
+        words = line.split(";", 1)[0].lower().split()
+        if len(words) >= 2 and words[0] == "failat" and words[1].isdigit():
+            level = int(words[1])
+        elif "execute" in words and any("user-startup" in w for w in words):
+            return level
+    return DEFAULT_FAIL_LEVEL
+
+
 def _write_user_startup(volume, config: "BuildConfig",
                         progress: Progress, kept: bytes = b"",
                         boot: str = "",
@@ -2074,6 +2099,16 @@ def _write_user_startup(volume, config: "BuildConfig",
         head = kept.decode("latin-1")
         if not head.endswith("\n"):
             head += "\n"
+    #  None of it may stop the boot. A command that fails in a script ends
+    #  it at the CLI's fail level - CardPatch on the 3.2 ROM returns 10, and
+    #  the machine stopped at a Shell before LoadWB. So the block runs at
+    #  FailAt 21 and puts back the level the drive's own Startup-Sequence
+    #  was at when it ran this file: FailAt is the CLI's, and outlives the
+    #  script that set it.
+    level = _fail_level_for_user_startup(boot)
+    if level < GUARDED_FAIL_LEVEL:
+        lines = ([f"FailAt {GUARDED_FAIL_LEVEL}"] + list(lines)
+                 + [f"FailAt {level}"])
     body = (head
             + "\n; Added by the PiStorm imager for the software you chose.\n"
             + "\n".join(lines) + "\n")
