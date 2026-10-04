@@ -2672,11 +2672,11 @@ class ImagerWindow(Adw.ApplicationWindow):
         #  Ties both ways, from the catalogue: what this one brings with it,
         #  and what that is switched on cannot do without it.
         needs = [packages.CATALOGUE_BY_KEY[k].label
-                 for k in packages.expand([key]) if k != key]
+                 for k in self._expand([key]) if k != key]
         needed_by = [packages.CATALOGUE_BY_KEY[k].label
                      for k, other in self.package_rows.items()
                      if k != key and other.get_active()
-                     and key in packages.expand([k])]
+                     and key in self._expand([k])]
         ties = []
         if needs:
             ties.append("Brings with it: " + ", ".join(needs) + ".")
@@ -4217,6 +4217,12 @@ class ImagerWindow(Adw.ApplicationWindow):
                         #  the display taking it back is not a question.
                         self._forced_on.add(key)
                     row.set_active(True)
+                    #  And what it needs, as any tick brings: Picasso96 on
+                    #  3.1 needs a V43 picture.datatype.
+                    for needed in self._expand([key]):
+                        other = self.package_rows.get(needed)
+                        if other is not None and needed != key:
+                            other.set_active(True)
                 finally:
                     self._settling_packages = was
                 row.set_sensitive(False)
@@ -4412,7 +4418,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         for other, row in self.package_rows.items():
             if other in (key, ignoring) or not row.get_active():
                 continue
-            if key in packages.expand([other]):
+            if key in self._expand([other]):
                 return True
         return False
 
@@ -4428,7 +4434,7 @@ class ImagerWindow(Adw.ApplicationWindow):
         for key, row in list(self.package_rows.items()):
             if not row.get_active():
                 continue
-            for needed in packages.expand([key]):
+            for needed in self._expand([key]):
                 other = self.package_rows.get(needed)
                 if other is not None and needed != key and not other.get_active():
                     other.set_active(True)
@@ -4453,19 +4459,23 @@ class ImagerWindow(Adw.ApplicationWindow):
         self._settling_packages = True
         try:
             if row is not None and row.get_active():
-                for needed in packages.expand([key]):
+                for needed in self._expand([key]):
                     other = self.package_rows.get(needed)
                     if other is not None and needed != key:
                         other.set_active(True)
             elif row is not None:
-                #  Whatever required it cannot work without it.
+                #  Whatever required it cannot work without it - unless the
+                #  AmigaOS being installed carries it (self._expand leaves
+                #  those out), or the display holds the other on: Picasso96
+                #  stays while the screen it serves is chosen.
                 for other_key, other_row in list(self.package_rows.items()):
-                    if other_key == key or not other_row.get_active():
+                    if other_key == key or not other_row.get_active() \
+                            or not other_row.get_sensitive():
                         continue
-                    if key in packages.expand([other_key]):
+                    if key in self._expand([other_key]):
                         other_row.set_active(False)
                 #  Then let go of anything that was only propping this up.
-                for gone in packages.expand([key]):
+                for gone in self._expand([key]):
                     package = packages.CATALOGUE_BY_KEY.get(gone)
                     other = self.package_rows.get(gone)
                     if (gone != key and package is not None and other is not None
@@ -4487,12 +4497,17 @@ class ImagerWindow(Adw.ApplicationWindow):
             #  needs ScummVM ticks ScummVM. Held against everything ticked
             #  before it, so a clash with software already chosen is asked
             #  about here, on the tick that made it.
-            came = packages.expand([key])
+            came = self._expand([key])
             self._ask_about_advice([k for k in came
                                     if k in self.package_rows
                                     and self.package_rows[k].get_active()],
                                    beside=[k for k in self._chosen_packages()
                                            if k not in came])
+
+    def _expand(self, keys: Iterable[str]) -> list[str]:
+        """``packages.expand`` for the AmigaOS being installed: what it
+        carries itself is not a requirement to tick."""
+        return packages.expand(keys, self._os_release())
 
     def _os_release(self) -> tuple[int, ...] | None:
         """The AmigaOS release this card installs, as the build reads it."""
@@ -4606,6 +4621,10 @@ class ImagerWindow(Adw.ApplicationWindow):
                         f"advice")
         for key in leave:
             self.package_rows[key].set_active(False)
+        #  Whatever the display needs is held on again, should anything
+        #  above have taken it off: a switch that is locked must never be
+        #  locked off.
+        self._refresh_packages()
         self._update_summary()
         #  Anything that became pending while this was open.
         if self._advice_pending:
