@@ -943,7 +943,9 @@ class BuildConfig:
         """Chosen packages that are a poor choice here, and why, by label."""
         chipset, display = self.package_screen()
         out: dict[str, list[str]] = {}
-        chosen = packages.expand(self.package_keys or [])
+        chosen = packages.held_first(
+            packages.expand(self.package_keys or [], self.os_release()),
+            chipset, display)
         for key in chosen:
             package = packages.CATALOGUE_BY_KEY.get(key)
             if package is None:
@@ -973,7 +975,7 @@ class BuildConfig:
         chipset, display = self.package_screen()
         out = []
         insisted = set(packages.expand(list(self.against_advice or [])))
-        for key in packages.expand(self.package_keys):
+        for key in packages.expand(self.package_keys, self.os_release()):
             package = packages.CATALOGUE_BY_KEY.get(key)
             if key in insisted:
                 continue
@@ -2554,7 +2556,8 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
         config.package_keys, chipset=chipset, display=display,
         progress=progress, pi=config.pi(), cpu=config.cpu(),
         emu68_tag=config.release_tag, kernel=config.driver_flavour(),
-        machine=config.machine(), insisted=config.against_advice or ())
+        machine=config.machine(), insisted=config.against_advice or (),
+        release=config.os_release())
     resolved = [pair for _key, pairs in by_package for pair in pairs]
 
     def credited(pairs: list[tuple[str, str]],
