@@ -3507,6 +3507,24 @@ CATALOGUE: list[Package] = [
 CATALOGUE_BY_KEY = {p.key: p for p in CATALOGUE}
 
 
+def held_first(keys: Iterable[str], chipset: Chipset,
+               display: Display) -> list[str]:
+    """``keys`` in the order a clash between two of them is judged.
+
+    The second of a clashing pair is the one advised against - so what the
+    display holds on comes first. Picasso96 on an RTG screen is not the
+    user's to leave off, and a clash with it belongs on the other package:
+    BlazeWCP, not Picasso96. The rest keep the order they were given.
+    """
+    keys = list(keys)
+
+    def held(key: str) -> bool:
+        package = CATALOGUE_BY_KEY.get(key)
+        return bool(package and package.essential
+                    and package.suits(chipset, display))
+    return [k for k in keys if held(k)] + [k for k in keys if not held(k)]
+
+
 def expand(keys: Iterable[str],
            release: tuple[int, ...] | None = None) -> list[str]:
     """``keys`` plus everything they require, dependencies first.

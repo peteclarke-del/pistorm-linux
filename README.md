@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1078 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1079 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -3188,6 +3188,12 @@ then held the switch locked off, so a card asked for with both screens was
 written with no RTG at all. A switch the display locks can no longer be taken
 off by anything else, and when the display ticks a package it ticks what that
 package needs, as any other tick does.
+
+**A clash with what the display holds falls on the other package.** A clash
+is said on the second of the two, and what the display holds on always counts
+first (`packages.held_first`). So BlazeWCP beside Picasso96 on an RTG card is
+"BlazeWCP is not advised", on BlazeWCP's row and in its question. It used to
+be "Picasso96 is not advised", which nobody could act on.
 
 **What the AmigaOS advice is.** Each catalogue entry can carry `os_advice`:
 the releases it is a poor choice on, the reason in plain words, and the
