@@ -1112,6 +1112,33 @@ def on_activate(app: ImagerApplication) -> None:
             check(not window.package_rows[unsuited].get_active(),
                   "leaving it off unticks it")
 
+        #  Leaving picture.datatype V43 off on AmigaOS 3.2 - which has its
+        #  own - took Picasso96 with it, and the display then held the
+        #  switch locked off: a card for RTG with no RTG on it.
+        for index, display in enumerate(machines.Display):
+            if display is machines.Display.BOTH:
+                window.quick_display.set_selected(index)
+        window._on_display_changed()
+        pump()
+        real_release = window._os_release
+        window._os_release = lambda: (3, 2)
+        window.stack.set_visible_child_name("packages")
+        window.package_rows["picturedt43"].set_active(True)
+        pump()
+        window._answer_advice(leave=["picturedt43"])
+        dialog = getattr(window, "_advice_dialog", None)
+        if dialog is not None:
+            dialog.force_close()
+        check(window.package_rows["picasso96"].get_active()
+              and "picasso96" in window._chosen_packages(),
+              "on 3.2, leaving picture.datatype off keeps Picasso96 on")
+        window._os_release = real_release
+        window._advice_pending.clear()
+        #  Back to the release the window really has, and what it needs.
+        window._tick_what_is_needed()
+        window._refresh_packages()
+        pump()
+
         #  SysInfo, whose 4.0 carries a guru that Aminet still ships a
         #  patch for - fixed in 4.4, which its Aminet address serves.
         check("sysinfo" in window.package_rows, "SysInfo is on offer")
