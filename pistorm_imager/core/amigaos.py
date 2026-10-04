@@ -70,6 +70,30 @@ def normalise_version(text: str) -> str:
     return text
 
 
+@dataclasses.dataclass(frozen=True)
+class FloppyRelease:
+    """A Workbench release that came on floppies, for a suggestion to weigh.
+
+    ``kickstart`` is the ROM it was released with; ``year`` when it came out.
+    """
+
+    version: str
+    kickstart: int
+    year: int
+
+
+#  The releases a floppy set can be, as normalise_version spells them. 3.1.4
+#  came on floppies too, but its disks read as 3.1 here, so it is not one of
+#  its own yet.
+FLOPPY_RELEASES = (
+    FloppyRelease("1.3", 34, 1988),
+    FloppyRelease("2.0", 37, 1990),
+    FloppyRelease("2.1", 37, 1992),
+    FloppyRelease("3.0", 39, 1992),
+    FloppyRelease("3.1", 40, 1994),
+)
+
+
 @dataclasses.dataclass
 class DiskMatch:
     path: Path

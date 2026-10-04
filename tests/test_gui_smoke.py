@@ -1166,6 +1166,24 @@ def on_activate(app: ImagerApplication) -> None:
         window._refresh_packages()
         pump()
 
+        #  The System step suggests the AmigaOS that suits the machine, and
+        #  choosing it sets the system, its Kickstart and its software.
+        window._update_summary()
+        pump()
+        found = getattr(window, "_suggested", None)
+        check(found is not None and window.suggest_row.get_visible(),
+              "the System step suggests an AmigaOS for this machine")
+        if found is not None:
+            use = found.instead if found.instead is not None else found
+            window._use_suggestion(found.instead is not None)
+            pump()
+            check(window._system_source() == use.choice.source,
+                  f"and using it chooses it ({use.choice.label})")
+            check(set(window._chosen_packages()) >= set(use.packages),
+                  "with the software load suggested for it")
+            close_dialogs(window)
+            window._advice_pending.clear()
+
         #  SysInfo, whose 4.0 carries a guru that Aminet still ships a
         #  patch for - fixed in 4.4, which its Aminet address serves.
         check("sysinfo" in window.package_rows, "SysInfo is on offer")
