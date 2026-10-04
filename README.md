@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1081 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1084 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -1072,6 +1072,18 @@ asked first now, and the tools archive is the fallback for a release that has
 no such asset - which is every release before 1.1, and any build that is not
 installing Emu68 at all. The cached copy records which of the two it came
 from, so switching releases does not quietly reuse the other one.
+
+**It follows the Emu68 the setup names, however the files got there.** "The
+release being installed" used to mean a release the build downloaded. The
+window prepares Emu68 before the build starts, and so does a local archive, so
+on those builds no release was remembered and the tools' 1.3 went onto 1.1
+cards. The two do not mix. Emu68 1.1's release notes say it "requires
+VideoCore.card version 1.5 ... not compatible with Emu68 1.0", and a real A1200
+on 1.1.0-beta.1 with 1.3 crashed with #80000004 as Picasso96 started. The
+driver is now chosen from the setup's own Emu68 version (`release_tag`). From
+1.1 onwards it is that release's copy or none at all: offline, or with the
+release unreadable, the card goes without a driver rather than with one that
+crashes it.
 
 
 ## Why a build takes as long as it does

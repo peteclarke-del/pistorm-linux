@@ -3083,6 +3083,9 @@ def _make_fixer(config: BuildConfig, progress: Progress) -> "compat.Compatibilit
                                  #  install does.
                                  startup_editor=_startup_sequence_editor(
                                      config, progress))
+    #  The RTG driver has to match the Emu68 the card boots: 1.1 crashes on
+    #  the driver 1.0 uses, and the other way round.
+    fixer.emu68_tag = config.release_tag or ""
     #  The RTG subsystem, whichever package provides it: the one package that
     #  an RTG screen cannot do without.  Named by what it is rather than by
     #  its key, so the check follows the catalogue.
