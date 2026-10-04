@@ -218,6 +218,21 @@ def wait_for(condition, what: str, seconds: float = 5.0) -> bool:
     return True
 
 
+def close_dialogs(window) -> None:
+    """Close every dialog the window shows, asking again until each takes.
+
+    A dialog still animating open ignores force_close(), and one left open
+    is what the About dialog's checks later find instead of their own.
+    """
+    def none_left() -> bool:
+        dialog = window.get_visible_dialog()
+        if dialog is None:
+            return True
+        dialog.force_close()
+        return False
+    wait_for(none_left, "the advice dialog to close")
+
+
 def settle(seconds: float) -> None:
     """Run the main loop for a while, for an animation that has no signal."""
     import time                                             # noqa: PLC0415
@@ -1095,8 +1110,7 @@ def on_activate(app: ImagerApplication) -> None:
                   "and its row says why before it is ticked")
             dialog = window._advice_dialog
             window._answer_advice(install=[unsuited])
-            if dialog is not None:
-                dialog.force_close()
+            close_dialogs(window)
             check(unsuited in window.gather().against_advice,
                   "installing anyway is kept, so the build installs it")
             window.package_rows[unsuited].set_active(False)
@@ -1107,8 +1121,7 @@ def on_activate(app: ImagerApplication) -> None:
             pump()
             dialog = window._advice_dialog
             window._answer_advice(leave=[unsuited])
-            if dialog is not None:
-                dialog.force_close()
+            close_dialogs(window)
             check(not window.package_rows[unsuited].get_active(),
                   "leaving it off unticks it")
 
@@ -1127,11 +1140,25 @@ def on_activate(app: ImagerApplication) -> None:
         pump()
         window._answer_advice(leave=["picturedt43"])
         dialog = getattr(window, "_advice_dialog", None)
-        if dialog is not None:
-            dialog.force_close()
+        close_dialogs(window)
         check(window.package_rows["picasso96"].get_active()
               and "picasso96" in window._chosen_packages(),
               "on 3.2, leaving picture.datatype off keeps Picasso96 on")
+        #  A clash with what the display holds on is said on the other one:
+        #  BlazeWCP is the choice, Picasso96 is the display's.
+        window._advice_pending.clear()
+        window.package_rows["blazewcp"].set_active(True)
+        pump()
+        dialog = getattr(window, "_advice_dialog", None)
+        check(any("Picasso96" in r for r in window._package_advice("blazewcp"))
+              and window.package_rows["blazewcp"].get_subtitle()
+              .startswith("Not advised here."),
+              "BlazeWCP beside Picasso96 says why, on BlazeWCP's row")
+        check(not window.package_rows["picasso96"].get_subtitle()
+              .startswith("Not advised here."),
+              "and not on Picasso96's, which the display holds on")
+        window._answer_advice(leave=["blazewcp"])
+        close_dialogs(window)
         window._os_release = real_release
         window._advice_pending.clear()
         #  Back to the release the window really has, and what it needs.

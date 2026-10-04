@@ -4172,9 +4172,10 @@ class ImagerWindow(Adw.ApplicationWindow):
                                          self._accelerator_cpu())
         tag = self._release_tag()
         release = self._os_release()
-        ticked = [p.key for p in packages.CATALOGUE
-                  if p.key in self.package_rows
-                  and self.package_rows[p.key].get_active()]
+        ticked = packages.held_first(
+            [p.key for p in packages.CATALOGUE
+             if p.key in self.package_rows
+             and self.package_rows[p.key].get_active()], chipset, display)
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
             fits = package.suits(chipset, display, pi=pi, cpu=cpu,
@@ -4565,8 +4566,8 @@ class ImagerWindow(Adw.ApplicationWindow):
             dialog.add_response("install", "Install anyway")
             dialog.set_response_appearance("install",
                                            Adw.ResponseAppearance.DESTRUCTIVE)
-            dialog.connect("response", lambda _d, response:
-                           self._answer_advice(**{
+            dialog.connect("response", lambda d, response:
+                           self._advice_dialog is d and self._answer_advice(**{
                                "install" if response == "install"
                                else "leave": [key]}))
         else:
@@ -4596,7 +4597,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             dialog.add_response("done", "Done")
             self._advice_switches = switches
 
-            def done(_dialog, _response) -> None:
+            def done(answered, _response) -> None:
+                #  Once: a dialog already answered - or closed after being
+                #  answered some other way - says nothing more.
+                if self._advice_dialog is not answered:
+                    return
                 chosen = [k for k, row in switches.items() if row.get_active()]
                 self._answer_advice(install=chosen,
                                     leave=[k for k in switches
