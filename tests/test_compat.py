@@ -697,7 +697,7 @@ class OneBoardGetsOneMonitor(unittest.TestCase):
             fixer.expect_picasso()
         volume = FakeVolume()
         with unittest.mock.patch.object(compat, "fetch_videocore_card",
-                                        lambda _progress: b"card"):
+                                        lambda *_args: b"card"):
             fixer.finish(volume, QUIET)
         return volume
 
@@ -884,9 +884,45 @@ class TheRtgDriverComesFromTheReleaseTheCardBoots(unittest.TestCase):
 
     def test_a_release_without_one_falls_back_to_the_tools_archive(self):
         #  Every release before 1.1: the asset did not exist yet.
-        emu68.use_release(self.release(
-            {"Emu68-pistorm.zip": ("https://example/Emu68-pistorm.zip", 1)}))
+        emu68.use_release(emu68.Release(
+            tag="v1.0.7", name="Emu68 1.0.7", prerelease=False,
+            published="2025-12-08",
+            assets={"Emu68-pistorm.zip": ("https://example/Emu68.zip", 1)}))
         url, _where = compat.videocore_source()
+        self.assertEqual(url, compat.EMU68_TOOLS_URL)
+
+    def test_the_setup_s_emu68_decides_however_the_files_arrived(self):
+        """The window prepares Emu68 before the build, so the build never
+        downloads a release - and a 1.1 card went out with the tools' 1.3,
+        which crashed Picasso96 with #80000004 at boot."""
+        emu68.use_release(None)
+        published = self.release(
+            {"VideoCore.card": ("https://example/VideoCore.card", 25864)})
+        with unittest.mock.patch.object(emu68, "fetch_releases",
+                                        lambda *a, **k: [published]):
+            url, where = compat.videocore_source("v1.1.0-beta.1")
+        self.assertEqual(url, "https://example/VideoCore.card")
+
+    def test_a_1_1_card_never_gets_the_tools_driver(self):
+        """Offline, or the release unreadable: no driver, not a crashing one."""
+        emu68.use_release(None)
+
+        def offline(*_a, **_k):
+            raise OSError("no network")
+        with unittest.mock.patch.object(emu68, "fetch_releases", offline):
+            self.assertIsNone(compat.videocore_source("v1.1.0-beta.1"))
+            self.assertIsNone(compat.fetch_videocore_card(QUIET,
+                                                          "v1.1.0-beta.1"))
+
+    def test_a_1_0_card_keeps_the_tools_driver(self):
+        """1.5 is not compatible with Emu68 1.0, so 1.0 stays on 1.3."""
+        emu68.use_release(None)
+        old = emu68.Release(tag="v1.0.7", name="Emu68 1.0.7",
+                            prerelease=False, published="2025-12-08",
+                            assets={"Emu68-pistorm.zip": ("https://x/E.zip", 1)})
+        with unittest.mock.patch.object(emu68, "fetch_releases",
+                                        lambda *a, **k: [old]):
+            url, _where = compat.videocore_source("v1.0.7")
         self.assertEqual(url, compat.EMU68_TOOLS_URL)
 
     def test_and_so_does_a_build_that_is_not_installing_emu68(self):
