@@ -2120,8 +2120,14 @@ CATALOGUE: list[Package] = [
         "an OCS or ECS machine watching its own video, AWeb is the lighter "
         "choice.",
         category=Category.NETWORK,
+        #  Its drawer whole, as the archive has it - and the usergroup.library
+        #  it opens at start-up into LIBS: as well. The archive keeps it in
+        #  its own Libs drawer, where AmigaOS never looks, and a TCP/IP stack
+        #  that does not bring one (lwip-amiga does not; Roadshow does) left
+        #  NetSurf stopping with "usergroup.library could not be initialized".
         download=Download("comm/www/netsurf-m68k.lha",
-                          stage="Internet/NetSurf"),
+                          (("NetSurf", "Internet/NetSurf"),
+                           ("NetSurf/Libs/usergroup.library", "Libs"))),
         requires=("mui",),
         note="Unpacked into Internet/NetSurf, ready to run.",
         default=True,
