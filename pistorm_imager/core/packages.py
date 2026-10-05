@@ -392,6 +392,11 @@ def os_release(text: str) -> tuple[int, ...] | None:
     return found or None
 
 
+#  MUI 5 for AmigaOS 3, as its developers publish it.
+MUI5 = ("https://github.com/amiga-mui/muidev/releases/download/"
+        "MUI-5.0-20210831/MUI-5.0-20210831-os3.lha")
+
+
 @dataclasses.dataclass(frozen=True)
 class OsAdvice:
     """Why a package is a poor choice on some releases of AmigaOS.
@@ -1065,11 +1070,20 @@ CATALOGUE: list[Package] = [
         #  expects to be found through a MUI: assign, with its own libraries
         #  and locale added to the system's.  This is how a real MUI install
         #  is arranged, and how the donor systems carry it.
-        #  MUI 3.8 as published. A donor's MUI is usually richer - PiMiga's
-        #  carries 84 classes against this archive's 36 - so the release goes
-        #  on first and the donor fills in the extra classes behind it.
-        download=Download("util/libs/mui38usr.lha",
-                          (("MUI", "System/MUI"),)),
+        #  MUI 5 on a 68020 or better, from its publisher - the direct
+        #  successor of 3.8, by permission of its author, and built for the
+        #  68020 up, so a 68000 keeps 3.8. Both archives keep it in a MUI
+        #  drawer. 3.8 is not enough for current software: iGame 2.6.1, which
+        #  says it needs "MUI 3.8 or higher", stalled before opening its
+        #  window on an AmigaOS 3.2 card with 3.8, and opened with 5.0 on the
+        #  same card - proven in FS-UAE on a 68040, with 256 MB.
+        download=Download(
+            "util/libs/mui38usr.lha", (("MUI", "System/MUI"),),
+            per_cpu=(
+                (Cpu.M68000.value, "util/libs/mui38usr.lha"),
+                *((cpu.value, MUI5) for cpu in (Cpu.M68020, Cpu.M68030,
+                                                Cpu.M68040, Cpu.M68060)),
+            )),
         #  MUI reads its configuration from ENV:MUI, which Workbench fills
         #  from ENVARC: at boot.  Without it every MUI application starts on
         #  built-in defaults and loses whatever the donor had set up.
