@@ -89,5 +89,54 @@ class WhatSuits(unittest.TestCase):
                 key)
 
 
+A600 = machines.MACHINES_BY_KEY["a600"]
+
+
+class TheRomThatIsFitted(unittest.TestCase):
+    """The chip in the machine decides - unless it is a PiStorm's file."""
+
+    def suggest(self, accelerator, fitted, card=Cpu.M68020, machine=None):
+        return suggest.suggest(machine or A600, accelerator, Display.NATIVE,
+                               card_cpu=card, roms=ROMS,
+                               adf_versions=["3.1"], cd_release="3.9",
+                               fitted_rom=fitted)
+
+    def test_a_3_1_chip_and_a_68020_card_gets_3_9(self):
+        found = self.suggest(Accelerator.ACCELERATOR, rom(40, 63, False))
+        self.assertEqual(found.choice.key, "3.9")
+        self.assertEqual(found.rom.version, 40, "the chip, not another file")
+        self.assertEqual(found.missing, [])
+
+    def test_a_3_2_chip_gets_3_2_and_never_what_needs_3_1(self):
+        found = self.suggest(Accelerator.ACCELERATOR, rom(47, 96, False))
+        self.assertEqual(found.choice.key, "3.2")
+        self.assertIsNone(found.instead, "3.9 cannot run on a 3.2 ROM")
+
+    def test_3_2_on_a_3_1_chip_comes_after_what_was_made_for_it(self):
+        cpu = Cpu.M68020
+        runs = [c for c in suggest.choices()
+                if cpu.at_least(c.needs_cpu) and suggest._runs_on(c, 40)]
+        ranked = [c.key for c in suggest._ranked(runs, A600,
+                                                 Accelerator.ACCELERATOR,
+                                                 cpu, 40)]
+        self.assertLess(ranked.index("3.1"), ranked.index("3.2"))
+        self.assertEqual(ranked[0], "3.9")
+
+    def test_a_stock_machine_with_its_3_1_chip_gets_3_1(self):
+        found = self.suggest(Accelerator.STOCK, rom(40, 63, False), card=None)
+        self.assertEqual(found.choice.key, "3.1")
+
+    def test_a_pistorm_is_not_held_to_a_rom(self):
+        """Its Kickstart is a file: any release's own ROM can be had."""
+        found = self.suggest(Accelerator.PISTORM, rom(40, 68, True),
+                             machine=A1200)
+        self.assertEqual(found.choice.key, "3.2")
+        self.assertEqual(found.rom.version, 47)
+
+    def test_without_the_rom_it_asks_for_it(self):
+        found = self.suggest(Accelerator.ACCELERATOR, None)
+        self.assertTrue(any("Kickstart is fitted" in r for r in found.reasons))
+
+
 if __name__ == "__main__":
     unittest.main()
