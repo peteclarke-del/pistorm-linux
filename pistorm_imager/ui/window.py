@@ -3730,7 +3730,7 @@ class ImagerWindow(Adw.ApplicationWindow):
             cpu=self._machine().cpu_fitted(self._accelerator(),
                                            self._accelerator_cpu()),
             emu68_tag=self._release_tag(),
-            release=self._os_release()))
+            release=self._os_release(), emu68=self._runs_emu68()))
         #  A whole set arriving at once is the suggestion being taken, not a
         #  person weighing one package against another; asking about each
         #  clash inside it would be a queue of dialogs answering nothing.
@@ -4201,7 +4201,8 @@ class ImagerWindow(Adw.ApplicationWindow):
         for key, row in self.package_rows.items():
             package = packages.CATALOGUE_BY_KEY[key]
             fits = package.suits(chipset, display, pi=pi, cpu=cpu,
-                                 emu68_tag=tag, machine=self._machine())
+                                 emu68_tag=tag, machine=self._machine(),
+                                 emu68=self._runs_emu68())
             #  A ticked package is held against what is ticked before it,
             #  so a clash between two is said once, on the second; one not
             #  ticked is held against everything that is.
@@ -4209,7 +4210,8 @@ class ImagerWindow(Adw.ApplicationWindow):
                       else ticked)
             said = package.advice(chipset, display, release=release, pi=pi,
                                   cpu=cpu, emu68_tag=tag,
-                                  machine=self._machine(), chosen=beside)
+                                  machine=self._machine(), chosen=beside,
+                                  emu68=self._runs_emu68())
             note = package.description
             if said:
                 #  First, where it is read: the reason is the news, and the
@@ -4558,7 +4560,11 @@ class ImagerWindow(Adw.ApplicationWindow):
             cpu=self._machine().cpu_fitted(self._accelerator(),
                                            self._accelerator_cpu()),
             emu68_tag=self._release_tag(), machine=self._machine(),
-            chosen=beside)
+            chosen=beside, emu68=self._runs_emu68())
+
+    def _runs_emu68(self) -> bool:
+        """Whether this card runs under Emu68: a PiStorm, not another CPU."""
+        return self._accelerator() is machines.Accelerator.PISTORM
 
     def _ask_about_advice(self, keys: list[str],
                           beside: Iterable[str] | None = None) -> None:
