@@ -4954,7 +4954,24 @@ class ImagerWindow(Adw.ApplicationWindow):
             networking=bool(self.ssid_row.get_text().strip()),
             roms=self._known_roms(),
             adf_versions=getattr(self, "_adf_versions", []),
-            cd_release=self._os_cd_release())
+            cd_release=self._os_cd_release(),
+            fitted_rom=self._fitted_rom())
+
+    def _fitted_rom(self):
+        """The Kickstart fitted in the machine, where it is a chip.
+
+        On a PiStorm the Kickstart is a file Emu68 maps, and any release's
+        own ROM can be had; anywhere else the ROM chosen on the Machine step
+        is the chip in the machine, and decides what can run.
+        """
+        if self._runs_emu68() or not self.rom_row.path:
+            return None
+        try:
+            found = kickstart.identify(self.rom_row.path,
+                                       self.rom_key_row.path or None)
+        except Exception:                                    # noqa: BLE001
+            return None
+        return found if found.usable and found.version else None
 
     def _refresh_suggestion(self) -> None:
         """Say which AmigaOS suits this machine, and why."""

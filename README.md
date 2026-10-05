@@ -733,9 +733,10 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1102 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1108 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
+python3 tests/os_suggestions.py       # redraws docs/os-suggestions.md
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
 ```
 
@@ -2022,9 +2023,19 @@ It is worked out, not looked up (`core/suggest.py`):
 - **The machine:** the processor that will run the card (Emu68's 68040 on a
   PiStorm, an accelerator's, or the stock one) and whether the screen is RTG,
   which needs a 3.x release.
-- **The ranking:** with a PiStorm or an accelerator, the newest release that
-  runs. On a stock 68000, the newest release on a Kickstart the machine takes
-  as its own, which is 3.1 on an A500.
+- **The Kickstart fitted decides, unless it can be soft-loaded.** Without a
+  PiStorm the ROM chosen on the Machine step is the chip in the machine. Only
+  releases that run on it are suggested, and one made for it comes first,
+  newest first: an A600 with a 68020 card and a 3.1 chip gets AmigaOS 3.9, and
+  with a 3.2 chip gets 3.2. 3.2 on a 3.1 chip, by soft-loading its modules at
+  every boot, comes after and says why. On a PiStorm the Kickstart is a file,
+  so the release's own ROM can always be had.
+- **The ranking otherwise:** with a PiStorm or an accelerator, the newest
+  release that runs. On a stock 68000 with no ROM given, the newest release
+  on a Kickstart the machine takes as its own, which is 3.1 on an A500. With
+  no ROM given and no PiStorm, it asks for the ROM.
+- **Every combination is listed** in `docs/os-suggestions.md`, redrawn from
+  the code by `python3 tests/os_suggestions.py`.
 - **The Kickstart:** the release's best ROM first. 3.2 is best on its own 3.2
   ROM (`best_kickstart`): it runs on 3.1 by loading its modules over it, and
   that is the combination with the documented crash. Next, one built for the
