@@ -249,5 +249,22 @@ class WhatAPackageBrings(unittest.TestCase):
             packages.CATALOGUE_BY_KEY["pcmciacd"].os_reasons((3, 2)), [])
 
 
+class WhichMui(unittest.TestCase):
+    """MUI 5 where it runs, 3.8 where it has to."""
+
+    def test_mui_follows_the_processor(self):
+        from pistorm_imager.core.machines import Cpu    # noqa: PLC0415
+        mui = packages.CATALOGUE_BY_KEY["mui"]
+        #  iGame 2.6.1 stalled before opening its window on 3.8, and opened
+        #  on 5.0, on the same 3.2 card - and Emu68 is a 68040.
+        for cpu in (Cpu.M68020, Cpu.M68030, Cpu.M68040, Cpu.M68060):
+            self.assertIn("MUI-5", mui.archive(cpu).path, cpu)
+        #  MUI 5 is built for the 68020 and up.
+        self.assertIn("mui38", mui.archive(Cpu.M68000).path)
+        #  Either way it lands in the same place, for the same assigns.
+        self.assertEqual(mui.archive(Cpu.M68040).items,
+                         mui.archive(Cpu.M68000).items)
+
+
 if __name__ == "__main__":
     unittest.main()

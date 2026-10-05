@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1097 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1098 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -3990,7 +3990,21 @@ options the card in front of you actually sets.
 
 ### MUI, and the classes that are not in MUI
 
-MUI is published on Aminet, and what it publishes is MUI 3.8 with 36 classes.
+**MUI 5 on a 68020 or better; 3.8 on a 68000.** MUI 5 is the direct successor
+of 3.8, published free for AmigaOS 3 by its developers on GitHub
+(`amiga-mui/muidev`) and built for the 68020 up. So the package picks the
+archive by processor (`per_cpu`), and both keep MUI in a `MUI` drawer, so the
+assigns are the same. 3.8 was not enough. iGame 2.6.1's readme says it needs
+"MUI 3.8 or higher", yet on an AmigaOS 3.2 card with 3.8 it stopped before
+opening its window: SnoopDos showed it load MUI and every class, read its
+settings and its repositories, then nothing. With MUI 5 on the same card it
+opened. This was proven in FS-UAE on a 68040 with 256 MB, started as a
+Workbench double click (`WBRun`), on a System drive rebuilt by the app. MUI 5
+also bundles a newer `Urltext.mcc` (21.26) than the separate package (19.7),
+and that is the copy kept. The rest of this section is about the classes MUI
+does not carry, whichever MUI it is.
+
+MUI 3.8 on Aminet has 36 classes.
 A ready-made distribution's MUI is usually the richer one - PiMiga's carries 84
 - which is what made mining one so tempting, and why the classes iGame needs
 are named and fetched individually instead.
