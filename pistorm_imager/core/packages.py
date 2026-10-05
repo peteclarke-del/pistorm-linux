@@ -586,11 +586,17 @@ class Package:
     os_advice: tuple[OsAdvice, ...] = ()
     #  Other packages this one interacts badly with, and why.
     clashes: tuple[Clash, ...] = ()
+    #  Works only under Emu68 on a PiStorm: it drives the Raspberry Pi, or
+    #  Emu68 itself. A package naming a Pi or an Emu68 version is that
+    #  already; this is for the ones that name neither - the Pi's WiFi,
+    #  the Pi's clock, Emu68's own tools.
+    emu68_only: bool = False
 
     def suits(self, chipset: Chipset, display: Display, *,
               pi: Pi | None = None, cpu: Cpu | None = None,
               emu68_tag: str | None = None,
-              machine: Machine | None = None) -> bool:
+              machine: Machine | None = None,
+              emu68: bool | None = None) -> bool:
         """Whether this package is worth having on the card being built.
 
         The three keyword arguments describe the Raspberry Pi side of the
@@ -600,6 +606,11 @@ class Package:
         some of them.
         """
         from . import emu68 as emu68_module                   # noqa: PLC0415
+        #  ``emu68`` says whether the card runs under Emu68 - a PiStorm - and
+        #  None is "nobody said", which refuses nothing: an A600 with a 68020
+        #  card has no Pi to drive and no Emu68 to talk to.
+        if emu68 is False and self.needs_emu68:
+            return False
         if self.needs_pcmcia and machine is not None \
                 and not machine.pcmcia_slot:
             return False
@@ -622,19 +633,28 @@ class Package:
         #  needs ScummVM, which needs an RTG screen; offered on a native one
         #  it could be ticked, and dragged ScummVM onto the card with it.
         return self.unsuited_need(chipset, display, pi=pi, cpu=cpu,
-                                  emu68_tag=emu68_tag,
-                                  machine=machine) is None
+                                  emu68_tag=emu68_tag, machine=machine,
+                                  emu68=emu68) is None
+
+    @property
+    def needs_emu68(self) -> bool:
+        """Whether this only works on a PiStorm, under Emu68."""
+        return self.emu68_only or bool(self.pi_models) or bool(self.min_emu68)
 
     def why_unsuited(self, chipset: Chipset, display: Display, *,
                      pi: Pi | None = None, cpu: Cpu | None = None,
                      emu68_tag: str | None = None,
-                     machine: Machine | None = None) -> str:
+                     machine: Machine | None = None,
+                     emu68: bool | None = None) -> str:
         """Why this does not suit the card, in words; "" when it does."""
         from . import emu68 as emu68_module                   # noqa: PLC0415
         hardware = {"pi": pi, "cpu": cpu, "emu68_tag": emu68_tag,
-                    "machine": machine}
+                    "machine": machine, "emu68": emu68}
         if self.suits(chipset, display, **hardware):
             return ""
+        if emu68 is False and self.needs_emu68:
+            return ("It only works on a PiStorm, under Emu68, and this "
+                    "machine has none.")
         if self.rtg_only and not display.uses_rtg:
             return "It is only useful with an RTG display."
         if self.native_only and not display.uses_native:
@@ -721,13 +741,14 @@ class Package:
     def unsuited_need(self, chipset: Chipset, display: Display, *,
                       pi: Pi | None = None, cpu: Cpu | None = None,
                       emu68_tag: str | None = None,
-                      machine: Machine | None = None) -> "Package | None":
+                      machine: Machine | None = None,
+                      emu68: bool | None = None) -> "Package | None":
         """The first package this one needs that does not suit, if any."""
         for key in self.requires:
             other = CATALOGUE_BY_KEY.get(key)
             if other is not None and not other.suits(
                     chipset, display, pi=pi, cpu=cpu, emu68_tag=emu68_tag,
-                    machine=machine):
+                    machine=machine, emu68=emu68):
                 return other
         return None
 
@@ -2059,6 +2080,7 @@ CATALOGUE: list[Package] = [
         note="Needs the WiFi network filled in on the Emu68 step: the driver "
              "reads the same wpa_supplicant.conf the Pi is given.",
         default=True,
+        emu68_only=True,
     ),
 
     Package(
@@ -3282,6 +3304,7 @@ CATALOGUE: list[Package] = [
              "Pi itself, which reloads the Kickstart and config.txt.",
         default=True,
         evidence=("C/Emu68Info", "C/ListDeviceTree"),
+        emu68_only=True,
     ),
     Package(
         "rtci2c", "Real-time clock on the Pi (SetClockI2C)",
@@ -3309,6 +3332,7 @@ CATALOGUE: list[Package] = [
              "44/45, the bus SetClockI2C is built for. Set the clock once and "
              "store it with \"SetClockI2C SAVE\".",
         evidence=("C/SetClockI2C",),
+        emu68_only=True,
     ),
     Package(
         "xhcidriver", "USB host controller driver (xhci.device)",
@@ -4590,7 +4614,8 @@ def overlays_by_package(keys: list[str],
                         kernel: str = "",
                         machine: Machine | None = None,
                         insisted: Iterable[str] = (),
-                        release: tuple[int, ...] | None = None
+                        release: tuple[int, ...] | None = None,
+                        emu68: bool | None = None
                         ) -> list[tuple[str, list[tuple[str, str]]]]:
     """Turn chosen packages into (source, destination) pairs to copy.
 
@@ -4626,7 +4651,7 @@ def overlays_by_package(keys: list[str],
         package = CATALOGUE_BY_KEY.get(key)
         if package is None or (key not in overruled and not package.suits(
                 chipset, display, pi=pi, cpu=cpu, emu68_tag=emu68_tag,
-                machine=machine)):
+                machine=machine, emu68=emu68)):
             continue
         if not allow_download or package.download is None:
             continue
@@ -4648,7 +4673,8 @@ def overlays_by_package(keys: list[str],
                        and other.download is not None
                        and not other.download.manual
                        and other.suits(chipset, display, pi=pi, cpu=cpu,
-                                       emu68_tag=emu68_tag, machine=machine)]
+                                       emu68_tag=emu68_tag, machine=machine,
+                                       emu68=emu68)]
             if instead:
                 progress.log(f"  {' or '.join(instead)} does the same job and "
                              f"can be downloaded; tick it on the Packages "
@@ -4665,7 +4691,8 @@ def overlays_by_package(keys: list[str],
 
 def to_get_online(machine: Machine, display: Display, *,
                   pi: Pi | None = None, cpu: Cpu | None = None,
-                  emu68_tag: str | None = None) -> list[str]:
+                  emu68_tag: str | None = None,
+                  emu68: bool | None = None) -> list[str]:
     """What a ready-made system needs added to reach a network on a PiStorm.
 
     A TCP/IP stack that can be fetched - the recommended one, or another
@@ -4675,7 +4702,8 @@ def to_get_online(machine: Machine, display: Display, *,
     """
     def fits(package: Package) -> bool:
         return package.suits(machine.chipset, display, pi=pi, cpu=cpu,
-                             emu68_tag=emu68_tag, machine=machine)
+                             emu68_tag=emu68_tag, machine=machine,
+                             emu68=emu68)
 
     stacks = sorted((p for p in CATALOGUE
                      if p.role == ROLE_TCP_IP_STACK and fits(p)
@@ -4691,7 +4719,8 @@ def to_get_online(machine: Machine, display: Display, *,
 def suggested(machine: Machine, display: Display, *,
               networking: bool = False, pi: Pi | None = None,
               cpu: Cpu | None = None, emu68_tag: str | None = None,
-              release: tuple[int, ...] | None = None) -> list[str]:
+              release: tuple[int, ...] | None = None,
+              emu68: bool | None = None) -> list[str]:
     """A sensible set for this machine and this screen.
 
     Nothing is listed here.  Every package says for itself whether it is
@@ -4730,7 +4759,7 @@ def suggested(machine: Machine, display: Display, *,
             and not p.support_only              # arrives via ``requires``
             and (networking or p.category is not Category.NETWORK)
             and p.suits(machine.chipset, display, pi=pi, cpu=cpu,
-                        emu68_tag=emu68_tag, machine=machine)
+                        emu68_tag=emu68_tag, machine=machine, emu68=emu68)
             #  Nor anything advised against on the AmigaOS being installed:
             #  a suggestion is not the place to overrule the advice.
             and not p.os_reasons(release)]

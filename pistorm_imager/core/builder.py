@@ -925,6 +925,12 @@ class BuildConfig:
                         "vectors at address 0 and will crash.")
         return said
 
+    def runs_emu68(self) -> bool:
+        """Whether the card runs under Emu68 - a PiStorm, not any other CPU."""
+        from . import machines                              # noqa: PLC0415
+        return machines.Accelerator(self.accelerator or "pistorm") \
+            is machines.Accelerator.PISTORM
+
     def os_release(self) -> tuple[int, ...] | None:
         """The AmigaOS release this card installs, None when it is not said.
 
@@ -954,7 +960,7 @@ class BuildConfig:
             #  the catalogue's order is the one it is said against.
             earlier = chosen[:chosen.index(key)]
             said = package.advice(chipset, display, release=self.os_release(),
-                                  chosen=earlier,
+                                  chosen=earlier, emu68=self.runs_emu68(),
                                   pi=self.pi(), cpu=self.cpu(),
                                   emu68_tag=self.release_tag or None,
                                   machine=self.machine())
@@ -982,7 +988,7 @@ class BuildConfig:
             if package is not None and not package.suits(
                     chipset, display, pi=self.pi(), cpu=self.cpu(),
                     emu68_tag=self.release_tag or None,
-                    machine=self.machine()):
+                    machine=self.machine(), emu68=self.runs_emu68()):
                 out.append(package.label)
         return out
 
@@ -2627,7 +2633,7 @@ def _package_overlays(config: "BuildConfig", existing: list[tuple[str, str]],
         progress=progress, pi=config.pi(), cpu=config.cpu(),
         emu68_tag=config.release_tag, kernel=config.driver_flavour(),
         machine=config.machine(), insisted=config.against_advice or (),
-        release=config.os_release())
+        release=config.os_release(), emu68=config.runs_emu68())
     resolved = [pair for _key, pairs in by_package for pair in pairs]
 
     def credited(pairs: list[tuple[str, str]],
