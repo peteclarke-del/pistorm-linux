@@ -148,7 +148,8 @@ def _for(choice: OsChoice, machine: Machine, accelerator: Accelerator,
                           "the sound pairing)" if rom is not None else ""))
     load = packages.suggested(machine, display, networking=networking,
                               pi=pi, cpu=cpu, emu68_tag=emu68_tag,
-                              release=packages.os_release(choice.key))
+                              release=packages.os_release(choice.key),
+                              emu68=accelerator is Accelerator.PISTORM)
     return Suggestion(choice, rom, reasons, missing, load)
 
 
