@@ -87,15 +87,31 @@ def _fast(machine: Machine, accelerator: Accelerator, cpu: Cpu) -> bool:
     return accelerator is not Accelerator.STOCK or cpu.at_least(Cpu.M68020)
 
 
+def _runs_on(choice: OsChoice, version: int) -> bool:
+    """Whether ``choice`` runs on a Kickstart of this major version."""
+    return version >= choice.kickstart_from and (
+        choice.kickstart_to is None or version <= choice.kickstart_to)
+
+
 def _ranked(found: list[OsChoice], machine: Machine,
-            accelerator: Accelerator, cpu: Cpu) -> list[OsChoice]:
+            accelerator: Accelerator, cpu: Cpu,
+            fitted: int | None = None) -> list[OsChoice]:
     """Best first.
 
-    With a PiStorm or another accelerator, the newest release that runs:
-    it has years of fixes the older ones never got, and the speed to carry
-    them. On a stock 68000 the newest release whose Kickstart the machine
-    itself was sold with: what it was built to run, not asked to stretch.
+    With a ROM chip that is known - anything but a PiStorm, whose Kickstart
+    is a file - a release made for that ROM first, newest first: 3.9 on a
+    3.1 chip, 3.2 on a 3.2 chip. One that only runs on it by loading its
+    own modules over it - 3.2 on a 3.1 chip, the pairing with a documented
+    crash - comes after.
+
+    Otherwise, with a PiStorm or another accelerator, the newest release
+    that runs: it has years of fixes the older ones never got, and the
+    speed to carry them. On a stock 68000 the newest release whose
+    Kickstart the machine itself takes: what it was built to run.
     """
+    if fitted is not None:
+        return sorted(found, key=lambda c: (c.best_kickstart == fitted,
+                                            c.year), reverse=True)
     if _fast(machine, accelerator, cpu):
         return sorted(found, key=lambda c: c.year, reverse=True)
     own = {major for major, _rev in machine.kickstarts}
@@ -111,11 +127,28 @@ def _carries_its_roms(choice: OsChoice) -> bool:
 
 def _for(choice: OsChoice, machine: Machine, accelerator: Accelerator,
          display: Display, cpu: Cpu, *, pi, emu68_tag, networking, roms,
-         have_media: bool, cd_rom) -> Suggestion:
+         have_media: bool, cd_rom,
+         fitted_rom: kickstart.RomInfo | None = None) -> Suggestion:
     """Everything that goes with installing ``choice`` on this machine."""
-    rom = _rom_for(choice, list(roms) + ([cd_rom] if cd_rom else []), machine)
+    soft = accelerator is Accelerator.PISTORM
+    rom = (fitted_rom if fitted_rom is not None and not soft else
+           _rom_for(choice, list(roms) + ([cd_rom] if cd_rom else []),
+                    machine))
     reasons: list[str] = []
-    if _fast(machine, accelerator, cpu):
+    if fitted_rom is not None and not soft:
+        fitted = fitted_rom.version or 0
+        if choice.best_kickstart == fitted:
+            reasons.append(f"{choice.label} ({choice.year}) is the newest "
+                           f"release made for the {fitted_rom.name} fitted "
+                           f"in this machine, and it runs on the {cpu.label}.")
+        else:
+            reasons.append(
+                f"{choice.label} runs on the {fitted_rom.name} fitted in this "
+                f"machine only by loading its own Kickstart "
+                f"{choice.best_kickstart} modules over it at every boot. Fit "
+                f"a Kickstart {choice.best_kickstart} ROM for the sound "
+                f"pairing.")
+    elif _fast(machine, accelerator, cpu):
         provided = ("Emu68 provides" if accelerator is Accelerator.PISTORM
                     else "it has")
         reasons.append(f"{choice.label} ({choice.year}) is the newest "
@@ -126,10 +159,15 @@ def _for(choice: OsChoice, machine: Machine, accelerator: Accelerator,
                        f"Kickstart the {machine.label} takes as its own; "
                        f"newer ones cost a stock {cpu.label} speed and "
                        f"memory it has not got to spare.")
-    if choice.best_kickstart != choice.kickstart_from:
+    if choice.best_kickstart != choice.kickstart_from \
+            and (soft or fitted_rom is None):
         reasons.append(f"Boot it from its own Kickstart "
                        f"{choice.best_kickstart} ROM rather than an older "
                        f"one.")
+    if fitted_rom is None and not soft:
+        reasons.append("Say which Kickstart is fitted - the ROM on the "
+                       "Machine step - and this is worked out for it: the "
+                       "chip in the machine decides what can run.")
     if display.uses_rtg:
         reasons.append("It runs the RTG screen through Picasso96.")
     if accelerator is Accelerator.PISTORM:
@@ -141,7 +179,11 @@ def _for(choice: OsChoice, machine: Machine, accelerator: Accelerator,
         missing.append(f"the {choice.label} CD image" if choice.source == "cd"
                        else f"the {choice.label} floppy images")
     best_rom = rom is not None and rom.version == choice.best_kickstart
-    if not best_rom and not (_carries_its_roms(choice) and have_media):
+    if fitted_rom is not None and not soft:
+        #  The chip is what it is: its pairing is said in the reasons, and
+        #  is not something a file from anywhere can supply.
+        pass
+    elif not best_rom and not (_carries_its_roms(choice) and have_media):
         missing.append(f"a Kickstart {choice.best_kickstart} ROM for the "
                        f"{machine.label}"
                        + (" (it runs on the older one found, but this is "
@@ -159,7 +201,9 @@ def suggest(machine: Machine, accelerator: Accelerator, display: Display, *,
             roms: list[kickstart.RomInfo] = (),
             adf_versions: list[str] = (),
             cd_release: str = "",
-            cd_rom: kickstart.RomInfo | None = None) -> Suggestion | None:
+            cd_rom: kickstart.RomInfo | None = None,
+            fitted_rom: kickstart.RomInfo | None = None
+            ) -> Suggestion | None:
     """The AmigaOS that best suits this machine, and what goes with it.
 
     ``adf_versions`` are the floppy sets found, ``cd_release`` the release of
@@ -169,8 +213,13 @@ def suggest(machine: Machine, accelerator: Accelerator, display: Display, *,
     be installed with what is.
     """
     cpu = machine.cpu_fitted(accelerator, card_cpu)
+    #  The Kickstart fitted, where it decides: a chip, not a PiStorm's file.
+    fitted = (fitted_rom.version if fitted_rom is not None
+              and fitted_rom.version
+              and accelerator is not Accelerator.PISTORM else None)
     runs = [c for c in choices() if cpu.at_least(c.needs_cpu)
-            and (not display.uses_rtg or c.best_kickstart >= 39)]
+            and (not display.uses_rtg or c.best_kickstart >= 39)
+            and (fitted is None or _runs_on(c, fitted))]
     if not runs:
         return None
 
@@ -179,8 +228,9 @@ def suggest(machine: Machine, accelerator: Accelerator, display: Display, *,
             (choice.source == "adf" and choice.key in set(adf_versions))
 
     common = dict(pi=pi, emu68_tag=emu68_tag, networking=networking,
-                  roms=roms, cd_rom=cd_rom)
-    ranked = _ranked(runs, machine, accelerator, cpu)
+                  roms=roms, cd_rom=cd_rom,
+                  fitted_rom=fitted_rom if fitted is not None else None)
+    ranked = _ranked(runs, machine, accelerator, cpu, fitted)
     best = _for(ranked[0], machine, accelerator, display, cpu,
                 have_media=here(ranked[0]), **common)
     if best.missing:
