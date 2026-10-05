@@ -266,5 +266,38 @@ class WhichMui(unittest.TestCase):
                          mui.archive(Cpu.M68000).items)
 
 
+class OnlyOnAPiStorm(unittest.TestCase):
+    """An A600 with a 68020 card has no Pi to drive and no Emu68."""
+
+    def test_what_drives_the_pi_needs_emu68(self):
+        for key in ("wifipi", "emu68tools", "rtci2c", "genet", "xhcidriver",
+                    "nvme"):
+            self.assertTrue(packages.CATALOGUE_BY_KEY[key].needs_emu68, key)
+        for key in ("whdload", "mui", "lwip", "picasso96"):
+            self.assertFalse(packages.CATALOGUE_BY_KEY[key].needs_emu68, key)
+
+    def test_left_out_and_said_without_a_pistorm(self):
+        a600 = dict(machine_key="a600", accelerator="accelerator",
+                    accelerator_cpu="68020", rtg_display=False,
+                    native_display=True, package_display="native",
+                    package_keys=["wifipi", "emu68tools", "whdload"])
+        made = builder.BuildConfig(target="/tmp/card.img", **a600)
+        self.assertEqual(sorted(made.unsuited_packages()),
+                         ["Emu68 tools",
+                          "The Pi's WiFi as an Amiga network card"])
+        self.assertTrue(any("PiStorm" in reason for reason in
+                            made.advised_against()["Emu68 tools"]))
+
+    def test_a_pistorm_keeps_them(self):
+        made = config(package_keys=["wifipi", "emu68tools"])
+        self.assertEqual(made.unsuited_packages(), [])
+
+    def test_a_suggestion_without_a_pistorm_has_none(self):
+        a600 = machines.MACHINES_BY_KEY["a600"]
+        for key in packages.suggested(a600, Display.NATIVE, networking=True,
+                                      emu68=False):
+            self.assertFalse(packages.CATALOGUE_BY_KEY[key].needs_emu68, key)
+
+
 if __name__ == "__main__":
     unittest.main()

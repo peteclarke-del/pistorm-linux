@@ -733,7 +733,7 @@ tests/           unit tests plus a real end-to-end image build;
 ## Tests
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1098 tests
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # 1102 tests
 python3 tests/test_gui_smoke.py                           # needs a display
 python3 tests/shots.py                # redraws the screenshots in this README
 python3 tests/bootcheck.py card.img   # boots a built card in FS-UAE
@@ -3286,6 +3286,16 @@ test found one case that was a recommendation written as a requirement:
 CardReset listed CardPatch, which its readme only recommends. On 3.2, whose
 FAQ recommends CardReset alone, ticking CardReset ticked CardPatch and then
 warned against it, so CardReset alone could not be chosen.
+
+**What only works on a PiStorm says so.** A package that drives the
+Raspberry Pi or Emu68 itself is marked `needs_emu68`. Anything naming a Pi
+model or an Emu68 version counts, and `emu68_only` covers the ones that name
+neither: the Pi's WiFi, the Pi's real-time clock, Emu68's own tools. On a
+machine with another accelerator, or none, such a package does not suit
+("It only works on a PiStorm, under Emu68, and this machine has none"). It is
+said in its row and its question, left out of the suggested load and of the
+build, and named on the Review page. Before this, an A600 with a 68020 card
+was offered the Pi's WiFi driver as though it had a Pi to drive.
 
 **What the AmigaOS advice is.** Each catalogue entry can carry `os_advice`:
 the releases it is a poor choice on, the reason in plain words, and the
