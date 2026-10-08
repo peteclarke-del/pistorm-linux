@@ -36,6 +36,7 @@ to hang a build.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -358,6 +359,7 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
 
     progress.step(f"Applying {bag.label} with its own Updater under FS-UAE")
     backup = _install_hook(boot_on, bag)
+    authority_copy: Path | None = None
     try:
         config = emulate.fsuae_config(
             machine, boot_on, rom_on,
@@ -376,6 +378,7 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
                 "hard_drive_3_label": TARGET_LABEL,
                 #  Nothing to look at and nobody to watch it.
                 "fullscreen": "0",
+                "window_hidden": "1",
                 "window_width": "640",
                 "window_height": "512",
                 **({"hard_drive_2": str(disc_here),
@@ -387,11 +390,39 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
         if marker.exists():
             marker.unlink()
 
-        process = subprocess.Popen(
-            [command, str(config_file)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        #  FS-UAE uses OpenGL, so SDL's dummy video driver cannot run it.  A
+        #  GUI card build forwards the desktop display through pkexec; a CLI
+        #  build without one cannot run this graphical emulator.
+        emulator_env = os.environ.copy()
+        if not (emulator_env.get("DISPLAY") or
+                emulator_env.get("WAYLAND_DISPLAY")):
+            progress.log(f"  {bag.label}: FS-UAE needs a desktop display for "
+                         "OpenGL, but none was available to the build")
+            return False
+        #  A snap can read its own common directory but not the caller's home.
+        #  Give it a private copy of X11's cookie in that readable work area.
+        if (emulator_env.get("DISPLAY") and
+                emulator_env.get("XAUTHORITY") and is_confined(command)):
+            source_authority = Path(emulator_env["XAUTHORITY"])
+            if source_authority.is_file():
+                authority_copy = work_dir / ".Xauthority"
+                shutil.copyfile(source_authority, authority_copy)
+                authority_copy.chmod(0o600)
+                emulator_env["XAUTHORITY"] = str(authority_copy)
+        emulator_log = work_dir / "fs-uae.log"
+        log_stream = emulator_log.open("wb")
+        try:
+            process = subprocess.Popen(
+                [command, str(config_file)],
+                stdout=log_stream, stderr=subprocess.STDOUT,
+                env=emulator_env)
+        except BaseException:
+            log_stream.close()
+            raise
         deadline = time.monotonic() + timeout
+        started = time.monotonic()
         applied = False
+        stop_reason = ""
         #  Watched rather than merely waited on: the Updater writes into the
         #  target tree as it goes, so its progress is visible from here, and
         #  the run is given more time for as long as it is making some.
@@ -419,16 +450,21 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
                 elif time.monotonic() > idle_until:
                     progress.log(f"  {bag.label}: nothing has been written "
                                  f"for {IDLE_TIMEOUT} seconds; giving up")
+                    stop_reason = (f"stopped after {IDLE_TIMEOUT} seconds "
+                                   "with no file writes")
                     break
                 time.sleep(2.0)
         finally:
             if process.poll() is None:
+                if not stop_reason:
+                    stop_reason = f"timed out after {timeout} seconds"
                 process.terminate()
                 try:
                     process.wait(timeout=15)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=15)
+            log_stream.close()
 
         #  Whatever the update did not write, put back.  After a good run
         #  this restores nothing, because every file moved aside has been
@@ -447,9 +483,24 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
         if applied:
             progress.log(f"  {bag.label}: applied by its own Updater")
         else:
-            progress.log(f"  {bag.label}: the emulator did not finish the "
-                         f"update within {timeout} seconds")
-        return applied
+            elapsed = time.monotonic() - started
+            returncode = process.returncode
+            if stop_reason:
+                reason = f"{stop_reason} ({elapsed:.1f} seconds elapsed)"
+            else:
+                reason = (f"exited with status {returncode} after "
+                          f"{elapsed:.1f} seconds")
+            progress.log(f"  {bag.label}: FS-UAE {reason}")
+            if emulator_log.is_file():
+                try:
+                    tail = emulator_log.read_text(
+                        encoding="utf-8", errors="replace").splitlines()[-12:]
+                except OSError:
+                    tail = []
+                for line in tail:
+                    if line.strip():
+                        progress.log(f"    FS-UAE: {line[-500:]}")
+            return applied
     finally:
         _restore_targets(target_on, kept_aside)
         _remove_hook(staged)
@@ -459,6 +510,8 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
                 shutil.rmtree(leaving, ignore_errors=True)
             elif leaving.exists():
                 leaving.unlink()
+        if authority_copy is not None:
+            authority_copy.unlink(missing_ok=True)
 
 
 def apply_or_report(bag: boingbag.Bag, archive_root: Path, staged: Path,
