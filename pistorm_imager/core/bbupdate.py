@@ -500,7 +500,7 @@ def apply_locked(bag: boingbag.Bag, archive_root: Path, staged: Path,
                 for line in tail:
                     if line.strip():
                         progress.log(f"    FS-UAE: {line[-500:]}")
-            return applied
+        return applied
     finally:
         _restore_targets(target_on, kept_aside)
         _remove_hook(staged)
