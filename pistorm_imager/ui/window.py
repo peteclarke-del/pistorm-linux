@@ -5676,7 +5676,19 @@ class ImagerWindow(Adw.ApplicationWindow):
             return
 
         cli = Path(__file__).resolve().parent.parent / "cli.py"
-        argv = ["pkexec", sys.executable, str(cli), "build",
+        #  pkexec deliberately drops the caller's display environment.  The
+        #  card builder runs as root, but FS-UAE still needs the desktop's
+        #  OpenGL display to create its emulation context.
+        display_variables = (("DISPLAY", "XAUTHORITY")
+                             if os.environ.get("DISPLAY") else
+                             ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"))
+        desktop_environment = [
+            f"{name}={os.environ[name]}"
+            for name in display_variables
+            if os.environ.get(name)
+        ]
+        argv = ["pkexec", "/usr/bin/env", *desktop_environment,
+                sys.executable, str(cli), "build",
                 "--job", str(job), "--progress-json"]
         GLib.idle_add(self._append_log, "$ " + " ".join(argv))
         try:
